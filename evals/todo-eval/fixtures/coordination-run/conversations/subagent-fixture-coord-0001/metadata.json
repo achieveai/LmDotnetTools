@@ -3,7 +3,7 @@
     "sample.subAgentOf": "thread-fixture-coord",
     "sample.subAgentTask": "Own workstream 1 and report back when every subtask is complete.",
     "sample.subAgentName": "workstream-1",
-    "sample.spawnTimings": "[{\"AgentId\":\"agent-1\",\"Template\":\"general-purpose\",\"QueuedMs\":4,\"ToolRegistryMs\":37,\"ContextFanOutMs\":12,\"TotalMs\":61,\"ToolCatalogBytes\":18432}]",
-    "usage.records": "[{\"ProviderAttemptId\":\"subagent-fixture-coord-0001:s1\",\"ExecutionKind\":1,\"ParentExecutionId\":\"subagent-fixture-coord-0001\",\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":400,\"OutputTokens\":100,\"CacheReadTokens\":0,\"CacheWriteTokens\":0,\"ReasoningTokens\":0,\"TotalTokens\":500},{\"ProviderAttemptId\":\"thread-fixture-coord:r1\",\"ExecutionKind\":0,\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":1200,\"OutputTokens\":300,\"CacheReadTokens\":900,\"CacheWriteTokens\":100,\"ReasoningTokens\":50,\"TotalTokens\":1500}]"
+    "usage.records": "[{\"ProviderAttemptId\":\"subagent-fixture-coord-0001:s1\",\"ExecutionKind\":1,\"ParentExecutionId\":\"subagent-fixture-coord-0001\",\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":400,\"OutputTokens\":100,\"CacheReadTokens\":0,\"CacheWriteTokens\":0,\"ReasoningTokens\":0,\"TotalTokens\":500},{\"ProviderAttemptId\":\"thread-fixture-coord:r1\",\"ExecutionKind\":0,\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":1200,\"OutputTokens\":300,\"CacheReadTokens\":900,\"CacheWriteTokens\":100,\"ReasoningTokens\":50,\"TotalTokens\":1500}]",
+    "subagents.spawnTimings": "[{\"AgentId\":\"agent-1\",\"Template\":\"general-purpose\",\"ToolRegistryMs\":37,\"ContextFanOutMs\":12,\"TotalMs\":61,\"InheritedToolCount\":21,\"ToolCatalogBytes\":18432,\"Reconstructed\":false}]"
   }
 }

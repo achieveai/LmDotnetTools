@@ -39,6 +39,19 @@ public record SubAgentOptions
     public int OutputChannelCapacity { get; init; } = 1000;
 
     /// <summary>
+    /// Opt-in sink for the coordination work a run does around the model calls themselves: per-spawn
+    /// tool-registry construction and context fan-out, finished-agent reconstruction, per-turn
+    /// template-catalog serialization, and full-directory <c>GetAgents</c> responses (#670).
+    /// </summary>
+    /// <remarks>
+    /// Null (default) means every seam short-circuits and nothing is allocated, so a host that does not
+    /// opt in behaves exactly as before. Inherited verbatim through <see cref="ForChildLoop"/> so the
+    /// measurement covers every spawn depth. Measuring these costs does not pre-judge any of them as a
+    /// defect; it makes a later claim that one shrank checkable.
+    /// </remarks>
+    public SubAgentInstrumentation? Instrumentation { get; init; }
+
+    /// <summary>
     /// Fallback conversation store factory when a template doesn't specify one.
     /// Null = no persistence for sub-agents.
     /// </summary>
@@ -366,6 +379,9 @@ public record SubAgentOptions
             SpawnNameGate = null,
             SpawnModelSelectionResolver = null,
             SpawnMetadataResolver = null,
+            // Instrumentation is deliberately NOT cleared here, unlike the three spawn-authority hooks
+            // above: a grandchild's construction is still this run's coordination cost, and a sink that
+            // stopped at depth 1 would under-report a fan-out shape precisely when it is deepest.
         };
 }
 

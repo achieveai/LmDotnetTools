@@ -1,6 +1,7 @@
 ﻿using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -528,6 +529,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// instead of inventing one. Sourced from <see cref="SubAgentOptions.AvailableModelIds"/>; null/empty
     /// when the host supplied none.
     /// </summary>
+    /// <summary>
+    /// The opt-in measurement sink (#670), or null when the host did not ask for one. Exposed so
+    /// <see cref="SubAgentToolProvider"/> can record the descriptor and directory-listing sizes it
+    /// produces without being handed the options wholesale.
+    /// </summary>
+    internal SubAgentInstrumentation? Instrumentation => _options.Instrumentation;
+
     internal IReadOnlyCollection<string>? AvailableModelIds => _options.AvailableModelIds;
 
     /// <summary>
@@ -1767,7 +1775,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                         // happens to be in flight now.
                         state.Lineage,
                         state.Task,
-                        state.Name
+                        state.Name,
+                        // This rebuilds a FINISHED agent rather than starting a new one. Both pay the
+                        // same construction cost, so it counts as a spawn AND is flagged, which is the
+                        // only way a run's "how much of this was re-construction?" question is answerable.
+                        reconstructed: true
                     );
 
                 // Presentation-only: the replacement is now built and we are about to dispose the previous
@@ -2964,6 +2976,29 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// UTF-8 size of the names and descriptions of the parent tools a child inherited — what the
+    /// child's every request re-sends, and therefore the per-spawn tool surface a fix would shrink.
+    /// Parameter schemas are excluded: they are provider-serialized in shapes this layer does not own,
+    /// so including them would make the number depend on the transport rather than on the catalog.
+    /// </summary>
+    private int MeasureToolCatalogBytes(IReadOnlyCollection<string> inheritedToolNames)
+    {
+        var inherited = new HashSet<string>(inheritedToolNames, StringComparer.Ordinal);
+        var bytes = 0;
+        foreach (var contract in _parentContracts)
+        {
+            if (!inherited.Contains(contract.Name))
+            {
+                continue;
+            }
+
+            bytes += Encoding.UTF8.GetByteCount(contract.Name) + Encoding.UTF8.GetByteCount(contract.Description ?? "");
+        }
+
+        return bytes;
+    }
+
+    /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
     private async Task<(
@@ -2982,7 +3017,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? modelSelectionSource,
         AgentLineage lineage,
         string? task = null,
-        string? spawnName = null
+        string? spawnName = null,
+        bool reconstructed = false
     )
     {
         // Guard the free-form `model` override before anything downstream consumes it. The Agent tool
@@ -3275,6 +3311,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Determine conversation store (see ResolveChildStore): a template's own factory wins;
             // otherwise the provenance-aware host factory (#275) is preferred, invoked with THIS manager's
             // own identity so a grandchild is attributed to its actual parent instead of a captured root.
+            // Phase clocks for the opt-in measurement sink (#670). Started unconditionally - a
+            // Stopwatch timestamp is a few nanoseconds and branching here would fork the hot path for
+            // no measurable gain - but only READ when a sink exists.
+            var spawnClock = Stopwatch.StartNew();
             store = ResolveChildStore(agentId, template, lineage);
 
             // Stamp the child with the launching conversation's tenant and owner BEFORE the loop
@@ -3284,6 +3324,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             await AgentThreadOwnership
                 .InheritAsync(store, lineage.ParentThreadId, ChildThreadId(agentId), CancellationToken.None)
                 .ConfigureAwait(false);
+            var contextFanOutMs = spawnClock.ElapsedMilliseconds;
 
             // Build a fresh FunctionRegistry with filtered parent tools. `enabledSet` was resolved (and
             // validated) above, before the provider was allocated and before the metadata stamp, so a
@@ -3301,6 +3342,23 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _ = registry.AddFunction(contract, handler, "ParentTools");
                 inheritedToolNames.Add(contract.Name);
             }
+
+            _options.Instrumentation?.RecordSpawn(
+                new SubAgentSpawnTiming
+                {
+                    AgentId = agentId,
+                    Template = template.Name ?? string.Empty,
+                    ToolRegistryMs = spawnClock.ElapsedMilliseconds - contextFanOutMs,
+                    ContextFanOutMs = contextFanOutMs,
+                    TotalMs = spawnClock.ElapsedMilliseconds,
+                    InheritedToolCount = inheritedToolNames.Count,
+                    // The size question, not the duration question: timings move with the hardware and
+                    // a fast box hides a catalog that keeps growing, so this is the number a threshold
+                    // can be set on. Computed only when a sink exists, since it walks every contract.
+                    ToolCatalogBytes = MeasureToolCatalogBytes(inheritedToolNames),
+                    Reconstructed = reconstructed,
+                }
+            );
 
             // Observability: the effective tool set this sub-agent inherited from its parent. Tool names
             // are content-free system identifiers (no task/prompt/EUII), and this is the boundary that

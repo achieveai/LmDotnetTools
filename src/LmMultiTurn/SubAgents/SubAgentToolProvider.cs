@@ -373,6 +373,13 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         var typeList = string.Join(", ", templates.Keys);
 
+        // Measured where the bytes are actually produced, so the counter tracks real work rather than
+        // an assumed cadence: since #675 this runs on a GetFunctions memo MISS, not once per turn, and
+        // the counter reads as rebuilds. Recording it here rather than at the call site is what keeps
+        // that true without the sink having to know the memo exists.
+        var templateCatalog = BuildTemplateCatalog(templates);
+        _manager.Instrumentation?.RecordTemplateCatalog(Encoding.UTF8.GetByteCount(templateCatalog));
+
         var contract = new FunctionContract
         {
             Name = SpawnToolName,
@@ -393,7 +400,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "spawning a fresh agent for the same or a follow-up task. Only spawn a new "
                 + "agent when no suitable live agent exists, or when you deliberately want "
                 + "independent/parallel work.\n\n"
-                + BuildTemplateCatalog(templates),
+                + templateCatalog,
             Parameters =
             [
                 new FunctionParameterContract
@@ -1745,7 +1752,16 @@ public class SubAgentToolProvider : IFunctionProvider
                 .IsAllowed,
         });
 
-        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(JsonSerializer.Serialize(payload)));
+        var json = JsonSerializer.Serialize(payload);
+
+        // Entries and bytes both, because they answer different questions: entries is how many agent
+        // rows the result carries, bytes is what the model actually pays to read them. Entries counts
+        // the LISTED rows, not the directory, so the pair always describes the same payload — once the
+        // retained tail is capped those two diverge, and recording the directory size against the
+        // capped payload's bytes would make bytes-per-agent fall as a conversation grows.
+        _manager.Instrumentation?.RecordDirectoryListing(listed.Count, Encoding.UTF8.GetByteCount(json));
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(json));
     }
 
     /// <summary>

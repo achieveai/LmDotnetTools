@@ -37,35 +37,44 @@ internal sealed record PerToolScore
 }
 
 /// <summary>
-/// What the host's own startup and directory work cost, stamped onto the root conversation by the
-/// host (<c>sample.startupWork</c>) and read back offline here. Every field is a COUNT, not a
-/// verdict: #670 measures this cost so #671-#676 can be judged against it, and measuring it does
-/// not pre-judge any of it as a defect.
+/// What a run's coordination construction cost, stamped by <c>SubAgentInstrumentationProjection</c>
+/// under <c>subagents.startupWork</c> and read back offline here. The mirror of
+/// <c>SubAgentStartupWork</c>; every field is a COUNT, not a verdict. #670 measures this cost so
+/// #671-#676 can be judged against it, and measuring it does not pre-judge any of it as a defect.
 /// </summary>
 internal sealed record StartupWork
 {
-    public int FunctionRegistryBuilds { get; init; }
-    public int DescriptorCacheHits { get; init; }
-    public int DescriptorCacheMisses { get; init; }
-    public int RestartRebuilds { get; init; }
-    public int GetAgentsCalls { get; init; }
-    public int GetAgentsEntries { get; init; }
-    public long GetAgentsBytes { get; init; }
+    public int Spawns { get; init; }
+    public int Reconstructions { get; init; }
+    public long SpawnToolRegistryMs { get; init; }
+    public long SpawnContextFanOutMs { get; init; }
+    public long SpawnTotalMs { get; init; }
+    public int TemplateCatalogBuilds { get; init; }
+    public long TemplateCatalogBytes { get; init; }
+    public int DirectoryListings { get; init; }
+    public long DirectoryListingEntries { get; init; }
+    public long DirectoryListingBytes { get; init; }
 }
 
 /// <summary>
-/// One sub-agent spawn's phase timings, as the host's <c>OnSpawnTimed</c> seam recorded them and
-/// <c>SubAgentProvenance</c> stamped them into the child's <c>metadata.json</c>.
+/// One sub-agent construction's phase timings, the mirror of <c>SubAgentSpawnTiming</c>, stamped
+/// under <c>subagents.spawnTimings</c>.
 /// </summary>
 internal sealed record SpawnTiming
 {
     public string AgentId { get; init; } = "";
     public string Template { get; init; } = "";
-    public long QueuedMs { get; init; }
     public long ToolRegistryMs { get; init; }
     public long ContextFanOutMs { get; init; }
     public long TotalMs { get; init; }
+    public int InheritedToolCount { get; init; }
     public int ToolCatalogBytes { get; init; }
+
+    /// <summary>
+    /// True when this rebuilt a FINISHED agent rather than spawning a new one. Both pay the same
+    /// construction cost, so a run's re-construction share is invisible without the flag.
+    /// </summary>
+    public bool Reconstructed { get; init; }
 }
 
 /// <summary>

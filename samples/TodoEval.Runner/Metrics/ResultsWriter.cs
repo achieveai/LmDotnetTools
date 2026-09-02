@@ -299,11 +299,11 @@ internal static class ResultsWriter
         else
         {
             sb.AppendLine(
-                "| Spawns | Avg queued ms | Avg tool-registry ms | Avg context fan-out ms | Avg total ms | Avg tool-catalog bytes |"
+                "| Spawns | Rebuilt | Avg tool-registry ms | Avg context fan-out ms | Avg total ms | Avg tool-catalog bytes |"
             );
             sb.AppendLine("|---:|---:|---:|---:|---:|---:|");
             sb.AppendLine(
-                $"| {spawns.Count} | {Avg(spawns.Select(t => t.QueuedMs))} | {Avg(spawns.Select(t => t.ToolRegistryMs))} "
+                $"| {spawns.Count} | {spawns.Count(t => t.Reconstructed)} | {Avg(spawns.Select(t => t.ToolRegistryMs))} "
                     + $"| {Avg(spawns.Select(t => t.ContextFanOutMs))} | {Avg(spawns.Select(t => t.TotalMs))} "
                     + $"| {Avg(spawns.Select(t => (long)t.ToolCatalogBytes))} |"
             );
@@ -314,18 +314,20 @@ internal static class ResultsWriter
         if (work is null)
         {
             sb.AppendLine(
-                "The host stamped no sample.startupWork block, so its registry and directory work is unmeasured here."
+                "No subagents.startupWork block was stamped, so this run's construction and directory work "
+                    + "is UNMEASURED here - not zero. The host opts in through SubAgentOptions.Instrumentation."
             );
             return;
         }
 
         sb.AppendLine(
-            "| Registry builds | Descriptor cache hits | misses | Restart rebuilds | GetAgents calls | entries | bytes |"
+            "| Spawns | Rebuilt | Tool-registry ms | Context fan-out ms | Catalog builds | Catalog bytes | Listings | entries | bytes |"
         );
-        sb.AppendLine("|---:|---:|---:|---:|---:|---:|---:|");
+        sb.AppendLine("|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         sb.AppendLine(
-            $"| {work.FunctionRegistryBuilds} | {work.DescriptorCacheHits} | {work.DescriptorCacheMisses} "
-                + $"| {work.RestartRebuilds} | {work.GetAgentsCalls} | {work.GetAgentsEntries} | {work.GetAgentsBytes} |"
+            $"| {work.Spawns} | {work.Reconstructions} | {work.SpawnToolRegistryMs} | {work.SpawnContextFanOutMs} "
+                + $"| {work.TemplateCatalogBuilds} | {work.TemplateCatalogBytes} | {work.DirectoryListings} "
+                + $"| {work.DirectoryListingEntries} | {work.DirectoryListingBytes} |"
         );
     }
 

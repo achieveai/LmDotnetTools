@@ -692,6 +692,37 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         return PublishToAllAsync(notify, ct);
     }
 
+    /// <summary>
+    /// Stamps this run's coordination-work measurements (#670) alongside the base metadata record, so
+    /// the per-spawn registry/fan-out costs, reconstructions, template-catalog serializations and
+    /// directory listings are readable OFFLINE from an archived store rather than only from live logs.
+    /// </summary>
+    /// <remarks>
+    /// A separate write rather than folded into the base record: the base rebuilds the whole metadata
+    /// row from scratch, while this needs the store's read-merge-write so it cannot clobber a property
+    /// another writer set in between. No-ops entirely when the host did not opt into instrumentation,
+    /// which is every host that has not asked to be measured.
+    /// </remarks>
+    protected override async Task UpdateMetadataAsync(CancellationToken ct)
+    {
+        await base.UpdateMetadataAsync(ct);
+
+        if (Store is not { } store || SubAgentManager?.Instrumentation is not { } instrumentation)
+        {
+            return;
+        }
+
+        try
+        {
+            await SubAgentInstrumentationProjection.SaveAsync(store, ThreadId, instrumentation, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Measurement must never fail a run: the numbers exist to judge the run, not to gate it.
+            Logger.LogWarning(ex, "Failed to persist sub-agent instrumentation for thread {ThreadId}", ThreadId);
+        }
+    }
+
     /// <inheritdoc />
     protected override async Task OnDisposeAsync()
     {

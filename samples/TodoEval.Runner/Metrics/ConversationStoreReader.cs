@@ -29,11 +29,15 @@ internal static class ConversationStoreReader
     private const string SubAgentParentKey = "sample.subAgentOf";
     private const string TodoBoardKey = "todo.board";
 
-    /// <summary>Per-spawn phase timings the host stamps onto each sub-agent thread (#670 seam).</summary>
-    public const string SpawnTimingsKey = "sample.spawnTimings";
+    /// <summary>
+    /// Per-spawn phase timings, stamped by <c>SubAgentInstrumentationProjection</c> on whichever
+    /// thread owns the spawning loop. Library-owned (<c>subagents.*</c>), like <c>usage.records</c>,
+    /// rather than host-owned (<c>sample.*</c>) - the sample only opts in.
+    /// </summary>
+    public const string SpawnTimingsKey = "subagents.spawnTimings";
 
-    /// <summary>Host-side startup and directory work, stamped onto the root conversation.</summary>
-    public const string StartupWorkKey = "sample.startupWork";
+    /// <summary>Run-level construction and directory work, stamped on the same threads.</summary>
+    public const string StartupWorkKey = "subagents.startupWork";
     public const string SubAgentDirPrefix = "subagent-";
 
     /// <summary>The error code reported when a failing result names none (metrics-spec.md).</summary>
@@ -88,10 +92,10 @@ internal static class ConversationStoreReader
         /// <summary>Raw <c>usage.records</c> property value from <c>metadata.json</c>, or null when absent.</summary>
         public string? UsageRecordsJson { get; init; }
 
-        /// <summary>Raw <c>sample.spawnTimings</c> property value, or null when the host stamped none.</summary>
+        /// <summary>Raw <c>subagents.spawnTimings</c> property value, or null when nothing stamped one.</summary>
         public string? SpawnTimingsJson { get; init; }
 
-        /// <summary>Raw <c>sample.startupWork</c> property value, or null when the host stamped none.</summary>
+        /// <summary>Raw <c>subagents.startupWork</c> property value, or null when nothing stamped one.</summary>
         public string? StartupWorkJson { get; init; }
 
         /// <summary>

@@ -337,17 +337,26 @@ cannot silently blank the block into "this run cost nothing".
 - **Tokens are not attributable to a tool family.** One turn's prompt carries every tool's
   schema at once; no per-family split exists in the data and none is invented.
 
-### Spawn timings and host startup work
-Two host stamps, both JSON strings in the thread `metadata.json` properties bag and both
-therefore readable offline from an archived store:
+### Spawn timings and coordination startup work
+Two stamps written by `SubAgentInstrumentationProjection` when a host opts into
+`SubAgentOptions.Instrumentation`, both JSON strings in the thread `metadata.json` properties
+bag and both therefore readable offline from an archived store. The keys are library-owned
+(`subagents.*`), like `usage.records`, because the library writes them; the host only asks to
+be measured.
 
-- `sample.spawnTimings` — an array, one entry per sub-agent spawn, with `agentId`,
-  `template`, `queuedMs`, `toolRegistryMs`, `contextFanOutMs`, `totalMs` and
-  `toolCatalogBytes`. Concatenated across threads into `spawnTimings`.
-- `sample.startupWork` — one object of host counters: `functionRegistryBuilds`,
-  `descriptorCacheHits`, `descriptorCacheMisses`, `restartRebuilds`, `getAgentsCalls`,
-  `getAgentsEntries`, `getAgentsBytes`. The first one found is reported as `startupWork`;
-  `null` when no thread carries it.
+- `subagents.spawnTimings` — an array, one entry per sub-agent construction, with `AgentId`,
+  `Template`, `ToolRegistryMs`, `ContextFanOutMs`, `TotalMs`, `InheritedToolCount`,
+  `ToolCatalogBytes` and `Reconstructed`. Concatenated across threads into `spawnTimings`.
+- `subagents.startupWork` — one roll-up object: `Spawns`, `Reconstructions`,
+  `SpawnToolRegistryMs`, `SpawnContextFanOutMs`, `SpawnTotalMs`, `TemplateCatalogBuilds`,
+  `TemplateCatalogBytes`, `DirectoryListings`, `DirectoryListingEntries`,
+  `DirectoryListingBytes`. The first one found is reported as `startupWork`; `null` when no
+  thread carries it.
+
+`Reconstructed` separates a rebuilt finished agent from a fresh spawn: both pay the same
+construction cost, so a run's re-construction share is invisible without the flag.
+`ToolCatalogBytes` and the two `*Bytes` counters are the numbers a threshold can be set on -
+milliseconds move with the hardware, and a fast box hides a catalog that keeps growing.
 
 A malformed or older-shaped stamp costs the run its timings, never its score.
 
@@ -439,12 +448,15 @@ with `subagent-`.
     "unattributedTurnTokens": 0,
     "notes": [ "Turn attribution is a HEURISTIC ...", "Tokens are NOT attributable to a tool family ..." ]
   },
-  "spawnTimings": [ { "agentId": "agent-1", "template": "general-purpose", "queuedMs": 4,
-                      "toolRegistryMs": 37, "contextFanOutMs": 12, "totalMs": 61,
-                      "toolCatalogBytes": 18432 } ],
-  "startupWork": { "functionRegistryBuilds": 3, "descriptorCacheHits": 11,
-                   "descriptorCacheMisses": 2, "restartRebuilds": 0, "getAgentsCalls": 1,
-                   "getAgentsEntries": 2, "getAgentsBytes": 412 },
+  "spawnTimings": [ { "AgentId": "agent-1", "Template": "general-purpose",
+                      "ToolRegistryMs": 37, "ContextFanOutMs": 12, "TotalMs": 61,
+                      "InheritedToolCount": 21, "ToolCatalogBytes": 18432,
+                      "Reconstructed": false } ],
+  "startupWork": { "Spawns": 3, "Reconstructions": 1, "SpawnToolRegistryMs": 91,
+                   "SpawnContextFanOutMs": 30, "SpawnTotalMs": 174,
+                   "TemplateCatalogBuilds": 11, "TemplateCatalogBytes": 47300,
+                   "DirectoryListings": 1, "DirectoryListingEntries": 2,
+                   "DirectoryListingBytes": 412 },
   "fingerprints": { "taskCorpusHash": "...", "specHash": "...", "evaluatorHash": "...",
                     "specVersion": "todo-eval/metrics-spec@2" },
   "retryStormCount": 0,

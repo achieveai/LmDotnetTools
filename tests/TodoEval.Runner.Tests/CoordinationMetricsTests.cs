@@ -159,7 +159,7 @@ public class CoordinationMetricsTests
     }
 
     [Fact]
-    public void SpawnTimingsAndStartupWork_AreReadBackFromTheHostStamps()
+    public void SpawnTimingsAndStartupWork_AreReadBackFromThePersistedStamps()
     {
         var run = Run();
 
@@ -167,11 +167,13 @@ public class CoordinationMetricsTests
         timing.AgentId.Should().Be("agent-1");
         timing.ToolRegistryMs.Should().Be(37);
         timing.ToolCatalogBytes.Should().Be(18432);
+        timing.Reconstructed.Should().BeFalse("a fresh spawn must be tellable from a rebuilt one");
 
         run.StartupWork.Should().NotBeNull();
-        run.StartupWork!.FunctionRegistryBuilds.Should().Be(3);
-        run.StartupWork.DescriptorCacheHits.Should().Be(11);
-        run.StartupWork.GetAgentsBytes.Should().Be(412);
+        run.StartupWork!.TemplateCatalogBuilds.Should().Be(11);
+        run.StartupWork.Reconstructions.Should().Be(1);
+        run.StartupWork.TemplateCatalogBytes.Should().Be(47300);
+        run.StartupWork.DirectoryListingBytes.Should().Be(412);
     }
 
     [Fact]

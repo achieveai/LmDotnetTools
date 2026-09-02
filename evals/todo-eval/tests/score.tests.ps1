@@ -471,7 +471,9 @@ try {
 
     # M12: the host stamps and the obligations sentinel.
     Assert ($m.spawnTimings[0].ToolRegistryMs -eq 37) 'M12: a spawn timing stamp is read back from metadata'
-    Assert ($m.startupWork.FunctionRegistryBuilds -eq 3) 'M12: the startup-work stamp is read back too'
+    Assert ($m.spawnTimings[0].Reconstructed -eq $false) 'M12: and a fresh spawn is told apart from a rebuilt one'
+    Assert ($m.startupWork.TemplateCatalogBuilds -eq 11) 'M12: the startup-work roll-up is read back too'
+    Assert ($m.startupWork.Reconstructions -eq 1) 'M12: including the share of construction that was re-construction'
     Assert ($m.openObligations.resultsCarryingField -eq 0) 'M12: no result carries openObligations yet'
     Assert ($m.openObligations.note -match 'NOT REPORTED') 'M12: so the zero is labelled NOT REPORTED rather than left to be read as none-open'
 

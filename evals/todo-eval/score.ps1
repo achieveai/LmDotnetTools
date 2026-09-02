@@ -557,9 +557,9 @@ foreach ($dir in $threadDirs) {
         catch { $properties = $null }
     }
     foreach ($row in @(Get-UsageRows (Get-Prop $properties 'usage.records'))) { $usageRecords.Add($row) }
-    foreach ($timing in @(Get-Stamp (Get-Prop $properties 'sample.spawnTimings'))) { $spawnTimings.Add($timing) }
+    foreach ($timing in @(Get-Stamp (Get-Prop $properties 'subagents.spawnTimings'))) { $spawnTimings.Add($timing) }
     if ($null -eq $startupWork) {
-        $startupWork = Get-Stamp (Get-Prop $properties 'sample.startupWork') -Single
+        $startupWork = Get-Stamp (Get-Prop $properties 'subagents.startupWork') -Single
     }
 
     # Pass 1: pair results by tool_call_id (within this thread only).
