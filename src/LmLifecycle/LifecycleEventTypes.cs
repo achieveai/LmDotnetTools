@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmLifecycle;
+﻿namespace AchieveAi.LmDotnetTools.LmLifecycle;
 
 /// <summary>
 /// The V1 lifecycle event-type discriminators.
@@ -42,6 +42,15 @@ public static class LifecycleEventTypes
     /// </summary>
     public const string SandboxCreated = "sandbox_created";
 
+    /// <summary>The just-in-time compaction policy recorded a decision for the request about to be sent (spec 679 §5.5).</summary>
+    public const string CompactionDecided = "compaction_decided";
+
+    /// <summary>A compaction checkpoint reached <c>Active</c>; the execution view now hides the rows it covers.</summary>
+    public const string CompactionApplied = "compaction_applied";
+
+    /// <summary>A compaction was rejected or rolled back; the payload carries the typed reason.</summary>
+    public const string CompactionFailed = "compaction_failed";
+
     /// <summary>
     /// One agent loop's request was sized against its model's window — estimated before dispatch,
     /// measured once the provider reported usage. Payload:
@@ -66,6 +75,9 @@ public static class LifecycleEventTypes
             RunCompleted,
             SandboxCreated,
             ContextMeasured,
+            CompactionDecided,
+            CompactionApplied,
+            CompactionFailed,
         };
 
     /// <summary>

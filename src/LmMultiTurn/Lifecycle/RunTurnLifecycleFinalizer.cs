@@ -981,6 +981,41 @@ public sealed class RunTurnLifecycleFinalizer
             ct
         );
 
+    /// <summary>
+    /// Publishes one of the three compaction events (spec 679 §5.5): <c>compaction_decided</c> for every
+    /// policy pass, <c>compaction_applied</c> when a checkpoint reaches <c>Active</c>,
+    /// <c>compaction_failed</c> when one is rejected or rolled back. Returns false when lifecycle
+    /// publishing is off.
+    /// </summary>
+    public async Task<bool> CompactionAsync(
+        string eventType,
+        string runId,
+        string generationId,
+        CompactionPayload payload,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrEmpty(eventType);
+        ArgumentNullException.ThrowIfNull(payload);
+        if (!PublishesEvents)
+        {
+            return false;
+        }
+
+        payload.RunId = runId;
+        payload.GenerationId = generationId;
+        var parentRunId = _inFlight.TryGetValue(runId, out var progress) ? progress.ParentRunId : null;
+        await PublishAsync(
+                eventType,
+                payload,
+                BuildCorrelation(runId, generationId, parentRunId),
+                _services.TimeProvider.GetUtcNow(),
+                ct
+            )
+            .ConfigureAwait(false);
+        return true;
+    }
+
     private LifecycleCorrelation BuildCorrelation(
         string runId,
         string? generationId,
