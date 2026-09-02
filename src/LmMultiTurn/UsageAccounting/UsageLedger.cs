@@ -83,7 +83,7 @@ public sealed class UsageLedger : IUsageSink
                 Revision = revision,
                 RootConversationId = RootConversationId,
             };
-            merged = WithEstimatedCost(merged);
+            merged = WithEstimatedCost(merged, observation);
             _byAttempt[observation.ProviderAttemptId] = merged;
             _watermark.Commit(revision);
         }
@@ -146,7 +146,7 @@ public sealed class UsageLedger : IUsageSink
         {
             foreach (var record in records)
             {
-                _ = _byAttempt.TryAdd(record.ProviderAttemptId, WithDerivedProvenance(record));
+                _ = _byAttempt.TryAdd(record.ProviderAttemptId, WithDerivedCompleteness(WithDerivedProvenance(record)));
             }
 
             _watermark.SeedPrefix(foldedRevision);
@@ -179,29 +179,58 @@ public sealed class UsageLedger : IUsageSink
         return record;
     }
 
-    private UsageRecord WithEstimatedCost(UsageRecord record)
+    private static UsageRecord WithDerivedCompleteness(UsageRecord record)
     {
-        // Only fill an estimate the observation didn't already carry — a provider-reported estimate wins.
-        if (_pricingResolver is null || record.EstimatedPublicCostMicros is not null)
-        {
-            return record;
-        }
-
-        var pricing = _pricingResolver.Resolve(record.EffectiveModelId);
-        if (pricing is null)
+        // Same shape as WithDerivedProvenance, for #682's field: a row persisted before CostCompleteness
+        // existed deserializes with the Unavailable default beside a populated estimate. That estimate was
+        // computed from two categories (input + output) with every cache category ignored, so it is a
+        // lower bound — Partial — not unavailable and certainly not complete. Only the default is derived
+        // over; an explicitly stamped completeness is trusted as-is.
+        if (record.CostCompleteness != CostCompleteness.Unavailable || record.EstimatedPublicCostMicros is null)
         {
             return record;
         }
 
         return record with
         {
-            EstimatedPublicCostMicros = pricing.EstimateMicros(record.InputTokens, record.OutputTokens),
-            // A provider-reported figure is the ground truth for provenance; filling in a public estimate
-            // alongside it (kept for comparison) must not downgrade that.
+            CostCompleteness = CostCompleteness.Partial,
+        };
+    }
+
+    private UsageRecord WithEstimatedCost(UsageRecord merged, UsageRecord observation)
+    {
+        // An observation that already carries an estimate was priced upstream (a child ledger relaying into
+        // this one, or a caller that resolved its own catalog); its figure and completeness stamp are the
+        // record of truth and are never re-priced here. Only an observation that arrives WITHOUT one is
+        // priced — and it is priced from the MERGED (cumulative max) counts, not the observation's, so a
+        // cumulative stream that grows the counts grows the estimate with them rather than freezing the
+        // first chunk's figure onto the record (#682).
+        if (_pricingResolver is null || observation.EstimatedPublicCostMicros is not null)
+        {
+            return merged;
+        }
+
+        var pricing = _pricingResolver.Resolve(merged.EffectiveModelId);
+        if (pricing is null)
+        {
+            return merged;
+        }
+
+        var estimate = pricing.Estimate(merged);
+        return merged with
+        {
+            EstimatedPublicCostMicros = estimate.Micros,
+            CostCompleteness = estimate.Completeness,
+            // A provider-reported figure is the ground truth for provenance, whether it arrived already
+            // stamped or only as the populated field; filling in a public estimate alongside it (kept for
+            // comparison) must not downgrade that. And a null estimate (nothing priceable) resolves no cost,
+            // so it stamps no provenance.
             CostProvenance =
-                record.CostProvenance == CostProvenance.ProviderReported
-                    ? record.CostProvenance
-                    : CostProvenance.PublicEstimate,
+                merged.CostProvenance == CostProvenance.ProviderReported
+                || merged.ProviderReportedCostMicros is not null
+                    ? CostProvenance.ProviderReported
+                : estimate.Micros is not null ? CostProvenance.PublicEstimate
+                : merged.CostProvenance,
         };
     }
 
@@ -218,11 +247,19 @@ public sealed class UsageLedger : IUsageSink
             OutputTokens = Math.Max(existing.OutputTokens, observation.OutputTokens),
             CacheReadTokens = Math.Max(existing.CacheReadTokens, observation.CacheReadTokens),
             CacheWriteTokens = Math.Max(existing.CacheWriteTokens, observation.CacheWriteTokens),
+            CacheWrite1hTokens = MaxNullable(existing.CacheWrite1hTokens, observation.CacheWrite1hTokens),
             ReasoningTokens = Math.Max(existing.ReasoningTokens, observation.ReasoningTokens),
             EstimatedPublicCostMicros = MaxNullable(
                 existing.EstimatedPublicCostMicros,
                 observation.EstimatedPublicCostMicros
             ),
+            // The completeness stamp travels with the estimate it describes: an observation that carries
+            // its own estimate carries the stamp for it; one that carries none inherits the existing stamp,
+            // which WithEstimatedCost then replaces together with the recomputed figure.
+            CostCompleteness = observation.EstimatedPublicCostMicros is not null
+                ? observation.CostCompleteness
+                : existing.CostCompleteness,
+            CompactionCheckpointId = observation.CompactionCheckpointId ?? existing.CompactionCheckpointId,
             ProviderReportedCostMicros = MaxNullable(
                 existing.ProviderReportedCostMicros,
                 observation.ProviderReportedCostMicros

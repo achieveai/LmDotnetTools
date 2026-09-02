@@ -339,4 +339,218 @@ public class UsageLedgerTests
 
         ledger.SnapshotRecords().Single().OccurredAtUtc.Should().Be(DayOne);
     }
+
+    // --- Category-complete estimation (#682): the ledger prices every billed category through
+    // ModelPricing.Estimate, keeps provider-reported and public-estimate figures separately, and stamps
+    // completeness so a partial estimate is never mistaken for an exact one. ---
+
+    private static readonly ModelPricing AnthropicPricing = new()
+    {
+        ModelId = "claude",
+        PromptPerMillion = 3m,
+        CompletionPerMillion = 15m,
+        CacheReadPerMillion = 0.30m,
+        CacheWrite5mPerMillion = 3.75m,
+        CacheWrite1hPerMillion = 6m,
+        CacheAccounting = CacheAccounting.Additive,
+    };
+
+    private static readonly ModelPricing OpenAiPricing = new()
+    {
+        ModelId = "gpt",
+        PromptPerMillion = 3m,
+        CompletionPerMillion = 15m,
+        CacheReadPerMillion = 0.30m,
+        CacheAccounting = CacheAccounting.SubsetOfInput,
+    };
+
+    private sealed class CatalogResolver(params ModelPricing[] entries) : IPricingResolver
+    {
+        public ModelPricing? Resolve(string modelId) =>
+            entries.FirstOrDefault(p => string.Equals(p.ModelId, modelId, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UpsertAttempt_PricesEveryCategory_AnthropicAdditiveShape()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(AnthropicPricing));
+
+        // input EXCLUDES the 4,000 reads and 2,000 writes. TTL split unknown -> 5m rate, Partial.
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "claude", input: 1_000, output: 100) with
+            {
+                CacheReadTokens = 4_000,
+                CacheWriteTokens = 2_000,
+            }
+        );
+
+        // 3,000 + 1,200 + 7,500 + 1,500 = 13,200 micros.
+        merged.EstimatedPublicCostMicros.Should().Be(13_200);
+        merged.CostCompleteness.Should().Be(CostCompleteness.Partial);
+        merged.CostProvenance.Should().Be(CostProvenance.PublicEstimate);
+    }
+
+    [Fact]
+    public void UpsertAttempt_PricesEveryCategory_OpenAiSubsetShape_WithoutDoubleCounting()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        // 5,000 input of which 4,000 cached: 1,000 @ $3 + 4,000 @ $0.30 + 100 @ $15 = 5,700 micros.
+        var merged = ledger.UpsertAttempt(Obs("a1", "gpt", input: 5_000, output: 100) with { CacheReadTokens = 4_000 });
+
+        merged.EstimatedPublicCostMicros.Should().Be(5_700);
+        merged.CostCompleteness.Should().Be(CostCompleteness.Complete);
+    }
+
+    [Fact]
+    public void Snapshot_MixedModels_SumsEachModelUnderItsOwnAccounting_AndCarriesTheWeakestCompleteness()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(AnthropicPricing, OpenAiPricing));
+
+        ledger.UpsertAttempt(
+            Obs("a1", "claude", input: 1_000, output: 100) with
+            {
+                CacheReadTokens = 4_000,
+                CacheWriteTokens = 2_000,
+            }
+        );
+        ledger.UpsertAttempt(Obs("b1", "gpt", input: 5_000, output: 100) with { CacheReadTokens = 4_000 });
+
+        var snap = ledger.Snapshot();
+
+        snap.EstimatedPublicCostMicros.Should().Be(13_200 + 5_700);
+        // The Anthropic attempt is Partial (cache-write TTL unknown), so the conversation figure is too.
+        snap.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+        snap.PerModel.Single(m => m.ModelId == "gpt").EstimatedCostCompleteness.Should().Be(CostCompleteness.Complete);
+    }
+
+    [Fact]
+    public void UpsertAttempt_UnknownModel_IsUnavailable_NotZero()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        var merged = ledger.UpsertAttempt(Obs("a1", "no-such-model", input: 5_000, output: 100));
+
+        merged.EstimatedPublicCostMicros.Should().BeNull();
+        merged.CostCompleteness.Should().Be(CostCompleteness.Unavailable);
+        merged.CostProvenance.Should().Be(CostProvenance.Unavailable);
+    }
+
+    [Fact]
+    public void UpsertAttempt_CategoryWithTokensButNoRate_IsPartial_NeverBaseRate()
+    {
+        // A legacy two-rate entry: cache reads have tokens but no rate.
+        var legacy = OpenAiPricing with
+        {
+            CacheReadPerMillion = null,
+        };
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(legacy));
+
+        var merged = ledger.UpsertAttempt(Obs("a1", "gpt", input: 5_000, output: 100) with { CacheReadTokens = 4_000 });
+
+        merged.EstimatedPublicCostMicros.Should().Be(4_500); // 1,000 uncached @ $3 + 100 @ $15
+        merged.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void UpsertAttempt_RecomputesTheEstimate_AsCumulativeCountsGrow()
+    {
+        // Cumulative streaming re-observes one attempt with growing counts. The first observation's
+        // estimate must not be frozen onto the record: the merged (max) counts are what get priced.
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        ledger.UpsertAttempt(Obs("a1", "gpt", input: 1_000, output: 0));
+        var merged = ledger.UpsertAttempt(Obs("a1", "gpt", input: 1_000, output: 100, finalized: true));
+
+        merged.EstimatedPublicCostMicros.Should().Be(3_000 + 1_500);
+    }
+
+    [Fact]
+    public void UpsertAttempt_KeepsProviderReportedAndEstimate_SeparatelyQueryable_AndPrefersReported()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "gpt", input: 1_000, output: 100) with
+            {
+                ProviderReportedCostMicros = 9_999,
+            }
+        );
+
+        merged.ProviderReportedCostMicros.Should().Be(9_999);
+        merged.EstimatedPublicCostMicros.Should().Be(4_500);
+        merged.PreferredCostMicros.Should().Be(9_999);
+        merged.CostProvenance.Should().Be(CostProvenance.ProviderReported);
+    }
+
+    [Fact]
+    public void UpsertAttempt_KeepsAnEstimateTheObservationAlreadyCarries_WithItsCompleteness()
+    {
+        // A record relayed from a child ledger arrives already priced (and already labelled). The parent
+        // must not re-price it against its own catalog — the child's stamp is the record of truth.
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "gpt", input: 1_000, output: 100) with
+            {
+                EstimatedPublicCostMicros = 1,
+                CostCompleteness = CostCompleteness.Partial,
+                CostProvenance = CostProvenance.PublicEstimate,
+            }
+        );
+
+        merged.EstimatedPublicCostMicros.Should().Be(1);
+        merged.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void UpsertAttempt_CarriesCompactionCheckpointId_AndCompactionKind()
+    {
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(OpenAiPricing));
+
+        ledger.UpsertAttempt(Obs("a1", "gpt", input: 1_000, output: 0));
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "gpt", input: 1_000, output: 100) with
+            {
+                ExecutionKind = UsageExecutionKind.Compaction,
+                CompactionCheckpointId = "cp-1",
+            }
+        );
+
+        merged.ExecutionKind.Should().Be(UsageExecutionKind.Compaction);
+        merged.CompactionCheckpointId.Should().Be("cp-1");
+    }
+
+    [Fact]
+    public void SeedFromRecords_DerivesPartialCompleteness_ForALegacyRowThatCarriesAnEstimate()
+    {
+        // A row persisted before #682 deserializes with the Unavailable default beside a populated
+        // two-category estimate. It is not unavailable (there is a number) and not complete (cache
+        // categories were ignored when it was priced), so Partial is the honest re-derivation.
+        var ledger = new UsageLedger("conv-1");
+        ledger.SeedFromRecords(
+            [Obs("a1", "gpt", input: 1_000, output: 100) with { EstimatedPublicCostMicros = 4_500 }],
+            foldedRevision: 1
+        );
+
+        ledger.SnapshotRecords().Single().CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void SeedFromRecords_DoesNotRelabelAnExplicitlyStampedCompleteness()
+    {
+        var ledger = new UsageLedger("conv-1");
+        ledger.SeedFromRecords(
+            [
+                Obs("a1", "gpt", input: 1_000, output: 100) with
+                {
+                    EstimatedPublicCostMicros = 4_500,
+                    CostCompleteness = CostCompleteness.Complete,
+                },
+            ],
+            foldedRevision: 1
+        );
+
+        ledger.SnapshotRecords().Single().CostCompleteness.Should().Be(CostCompleteness.Complete);
+    }
 }
