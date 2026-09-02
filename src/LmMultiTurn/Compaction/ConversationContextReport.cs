@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -67,7 +68,8 @@ public sealed record AgentContextRow
     /// <summary>The spawning agent's id; null for the root.</summary>
     public string? ParentAgentId { get; init; }
 
-    /// <summary>How the loop was produced.</summary>
+    /// <summary>How the loop was produced. Serialized by name (spec 679 §4.3), independent of the host's options.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public UsageExecutionKind ExecutionKind { get; init; }
 
     /// <summary>The latest observation, live when a loop vouched for one, else persisted; null when none.</summary>
@@ -111,12 +113,15 @@ public sealed record ConversationCostTotal
     public long? PreferredCostMicros { get; init; }
 
     /// <summary>Provider-reported only when every priced row was; public estimate when any fell back.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public CostProvenance CostProvenance { get; init; } = CostProvenance.Unavailable;
 
     /// <summary>Completeness of the summed public estimate.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public CostCompleteness CostCompleteness { get; init; } = CostCompleteness.Unavailable;
 
     /// <summary>Whether the persisted ledger is still accumulating; null when nothing was persisted.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public UsageCompleteness? UsageCompleteness { get; init; }
 }
 
