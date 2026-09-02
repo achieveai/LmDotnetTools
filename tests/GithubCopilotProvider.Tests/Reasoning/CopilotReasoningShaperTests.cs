@@ -54,6 +54,77 @@ public sealed class CopilotReasoningShaperTests
         reasoning.Summary.Should().Be("auto");
     }
 
+    [Fact]
+    public void Shape_requests_summarized_thinking_for_adaptive_anthropic_models()
+    {
+        // Regression (#709): an adaptive-thinking Claude model returns a thinking block whose text is
+        // EMPTY unless the request opts into `display: "summarized"` — Anthropic's default display is
+        // "omitted". Sending output_config.effort alone (what this arm used to do) is what left every
+        // Claude thinking pill blank.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: true, "low", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
+
+        result["OutputConfig"].Should().BeEquivalentTo(new AnthropicOutputConfig { Effort = "high" });
+        var thinking = result["Thinking"].Should().BeOfType<AnthropicThinking>().Which;
+        thinking.Type.Should().Be("adaptive");
+        thinking.Display.Should().Be("summarized");
+        // Adaptive models reject budget_tokens outright, so it must never ride along.
+        thinking.BudgetTokens.Should().BeNull();
+    }
+
+    [Fact]
+    public void Shape_requests_summarized_thinking_for_adaptive_models_even_without_an_effort()
+    {
+        // #709 gap: the display opt-in is not an effort knob. When no effort is requested — a template
+        // that sets none, or a root that explicitly opts out — the effort gate returned Empty before the
+        // thinking shape was ever decided, so a Claude sub-agent reached the model with no `display` and
+        // went back to blank pills. Effort is optional here; the display opt-in is not.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: true, "low", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, requestedEffort: null);
+
+        var thinking = result["Thinking"].Should().BeOfType<AnthropicThinking>().Which;
+        thinking.Type.Should().Be("adaptive");
+        thinking.Display.Should().Be("summarized");
+        result.Should().NotContainKey("OutputConfig", "no effort was requested, so none may be invented");
+    }
+
+    [Fact]
+    public void Shape_requests_summarized_thinking_for_adaptive_models_advertising_no_effort()
+    {
+        // The same hole reached the other way: an effort IS requested but the model advertises none, so
+        // SelectEffort returns null and the effort gate bailed out before the thinking shape.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: true);
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
+
+        result["Thinking"].Should().BeOfType<AnthropicThinking>().Which.Display.Should().Be("summarized");
+        result.Should().NotContainKey("OutputConfig");
+    }
+
+    [Fact]
+    public void Shape_stays_empty_without_an_effort_for_classic_anthropic_models()
+    {
+        // Classic models reject thinking.type.adaptive, so an effort-less request still shapes nothing.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: false, "low", "high");
+
+        CopilotReasoningShaper.Shape(model, requestedEffort: null).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Shape_omits_thinking_for_classic_anthropic_models()
+    {
+        // Classic Claude models reject thinking.type.adaptive; their budget-based thinking is wired
+        // by the host's provider defaults, not by effort shaping. This arm must stay effort-only.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: false, "low", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
+
+        result.Should().NotContainKey("Thinking");
+        result.Should().ContainSingle().Which.Key.Should().Be("OutputConfig");
+    }
+
     [Theory]
     [InlineData(ReasoningEffort.Low, "low,medium,high", "low")]
     [InlineData(ReasoningEffort.High, "low,medium,high", "high")]
