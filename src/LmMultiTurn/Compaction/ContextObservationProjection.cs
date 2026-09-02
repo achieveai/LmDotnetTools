@@ -82,16 +82,18 @@ public static class ContextObservationProjection
                 // measured after the provider's usage arrives, and the later observation supersedes the
                 // earlier one in place. Only the tail is compared - an older generation re-observed out of
                 // order is a different record, not a correction.
+                var recorded = observation;
                 if (
                     observations.Count > 0
                     && string.Equals(observations[^1].GenerationId, observation.GenerationId, StringComparison.Ordinal)
                 )
                 {
-                    observations[^1] = observation;
+                    recorded = Supersede(observations[^1], observation);
+                    observations[^1] = recorded;
                 }
                 else
                 {
-                    observations.Add(observation);
+                    observations.Add(recorded);
                 }
 
                 if (observations.Count > historyLength)
@@ -112,12 +114,33 @@ public static class ContextObservationProjection
                             MetadataProjectionJson.Options
                         )
                     ),
-                    (LatestPropertyKey, JsonSerializer.Serialize(observation, MetadataProjectionJson.Options))
+                    (LatestPropertyKey, JsonSerializer.Serialize(recorded, MetadataProjectionJson.Options))
                 );
             },
             ct
         );
     }
+
+    /// <summary>
+    ///     Stamps <paramref name="incoming" /> onto the generation's existing record. One generation is
+    ///     written by two independent authors - the loop's measurement (#681) and the policy's decision
+    ///     (#684; spec 679 §5.5 stamps the decision <em>on the observation</em>) - and neither carries the
+    ///     other's fields, so superseding must not blank what it does not itself observe.
+    /// </summary>
+    private static ContextObservation Supersede(ContextObservation previous, ContextObservation incoming) =>
+        incoming with
+        {
+            MeasuredInputTokens = incoming.MeasuredInputTokens ?? previous.MeasuredInputTokens,
+            // Provenance describes the size number that survives, so it follows the carried-forward one.
+            Provenance =
+                incoming.MeasuredInputTokens is null && previous.MeasuredInputTokens is not null
+                    ? previous.Provenance
+                    : incoming.Provenance,
+            WindowTokens = incoming.WindowTokens ?? previous.WindowTokens,
+            PromptCachingEnabled = incoming.PromptCachingEnabled ?? previous.PromptCachingEnabled,
+            ActiveCheckpointId = incoming.ActiveCheckpointId ?? previous.ActiveCheckpointId,
+            Decision = incoming.Decision ?? previous.Decision,
+        };
 
     /// <summary>The thread's latest observation, or null when absent, corrupt, or newer than this build.</summary>
     public static async Task<ContextObservation?> LoadLatestAsync(

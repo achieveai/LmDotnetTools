@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmLifecycle.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
@@ -54,6 +54,7 @@ namespace AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
 [JsonSerializable(typeof(RunCompletedPayload))]
 [JsonSerializable(typeof(SandboxCreatedPayload))]
 [JsonSerializable(typeof(ContextMeasuredPayload))]
+[JsonSerializable(typeof(CompactionPayload))]
 [JsonSerializable(typeof(ToolApprovalRequest))]
 [JsonSerializable(typeof(ToolApprovalDecision))]
 [JsonSerializable(typeof(JsonElement))]

@@ -1,4 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
@@ -222,6 +222,9 @@ public static class LifecycleSerializer
             LifecycleEventTypes.RunCompleted => typeof(RunCompletedPayload),
             LifecycleEventTypes.SandboxCreated => typeof(SandboxCreatedPayload),
             LifecycleEventTypes.ContextMeasured => typeof(ContextMeasuredPayload),
+            LifecycleEventTypes.CompactionDecided
+            or LifecycleEventTypes.CompactionApplied
+            or LifecycleEventTypes.CompactionFailed => typeof(CompactionPayload),
             _ => null,
         };
 

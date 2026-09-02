@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -121,8 +122,8 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
     public void ToolControlOverload_Exists_WithRequiredIncludeFlagsAndDescendantQuestionSink_AndNoAmbiguityWithPriorConstructor()
     {
         // The designated overload: same shape as the prior constructor, plus two REQUIRED (no
-        // default) bool parameters carrying the new controls, plus the new optional
-        // descendantQuestionSink parameter. Because the bool flags have no default value, C# cannot
+        // default) bool parameters carrying the new controls, plus the optional
+        // descendantQuestionSink and compaction (#684) parameters. Because the bool flags have no default value, C# cannot
         // resolve a short-form call (e.g. 3 positional args) to this overload, so it can never collide
         // with the back-compat constructor above — the two are only ambiguous if both are
         // simultaneously applicable, and a required parameter with no supplied argument makes an
@@ -132,7 +133,7 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
         var withFlags = ctors.SingleOrDefault(ctor =>
         {
             var parameters = ctor.GetParameters();
-            return parameters.Length == PriorConstructorParameterTypes.Length + 3
+            return parameters.Length == PriorConstructorParameterTypes.Length + 4
                 && parameters.Any(p =>
                     p.Name == "includeAskUserQuestionTool" && p.ParameterType == typeof(bool) && !p.IsOptional
                 )
@@ -142,6 +143,12 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
                 && parameters.Any(p =>
                     p.Name == "descendantQuestionSink"
                     && p.ParameterType == typeof(Func<NotifyMessage, CancellationToken, ValueTask>)
+                    && p.IsOptional
+                    && p.DefaultValue == null
+                )
+                && parameters.Any(p =>
+                    p.Name == "compaction"
+                    && p.ParameterType == typeof(CompactionSetup)
                     && p.IsOptional
                     && p.DefaultValue == null
                 );

@@ -11,8 +11,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Recovery;
 /// </param>
 internal sealed record TurnExecutionResult(TurnAttemptState Attempt, Exception? RetryableInterruption = null)
 {
+    /// <summary>
+    ///     The provider refused the request as larger than its context window, when the compaction
+    ///     runtime classified the failure so (spec 679 §5.1). The run loop compacts and retries once.
+    /// </summary>
+    public Exception? Overflow { get; init; }
+
     /// <summary>The provider stream ran to completion.</summary>
-    public bool CompletedNormally => RetryableInterruption is null;
+    public bool CompletedNormally => RetryableInterruption is null && Overflow is null;
 
     /// <summary>The turn emitted at least one locally executed tool call, so another turn is owed.</summary>
     public bool HasToolCalls => Attempt.HasToolCalls;

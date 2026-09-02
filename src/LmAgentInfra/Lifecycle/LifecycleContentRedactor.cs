@@ -61,6 +61,29 @@ public sealed class LifecycleContentRedactor
 
     private static readonly AllowList ErrorAllowList = new(("code", null));
 
+    // A compaction decision is numbers, identifiers and typed reasons; the summary text it may have
+    // produced never rides on the event, so the whole payload is safe without content capability.
+    private static readonly AllowList CompactionAllowList = new(
+        ("run_id", null),
+        ("generation_id", null),
+        ("decision", null),
+        ("reason", null),
+        ("trigger", null),
+        ("checkpoint_id", null),
+        ("boundary_seq", null),
+        ("utilization", null),
+        ("tokens", null),
+        ("window", null),
+        ("reserve", null),
+        ("cache_temperature", null),
+        ("cooldown_remaining", null),
+        ("predicted_savings_micros", null),
+        ("cut_seq", null),
+        ("tokens_after", null),
+        ("rows_covered", null),
+        ("latency_ms", null)
+    );
+
     private readonly Dictionary<string, AllowList> _allowListsByEventType;
 
     /// <summary>Creates a redactor over the built-in per-event-type allow-lists.</summary>
@@ -139,6 +162,9 @@ public sealed class LifecycleContentRedactor
             // the inventory's `id`/`version` enumerate the host's installed toolchain. Only the
             // per-entry `kind` survives, which answers "was anything provisioned" without answering
             // "what exactly is in there".
+            [LifecycleEventTypes.CompactionDecided] = CompactionAllowList,
+            [LifecycleEventTypes.CompactionApplied] = CompactionAllowList,
+            [LifecycleEventTypes.CompactionFailed] = CompactionAllowList,
             [LifecycleEventTypes.SandboxCreated] = new(
                 ("session_id", null),
                 ("workspace_id", null),
