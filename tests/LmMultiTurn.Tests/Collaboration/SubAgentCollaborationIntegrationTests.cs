@@ -900,6 +900,82 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .BeTrue(because: "a parent may always read a child it spawned");
     }
 
+    [Fact]
+    public async Task GetAgents_WithinTheCap_ReportsTheCountsAndNoTruncation()
+    {
+        // The counts are unconditional so a reader never has to infer completeness from the array
+        // length: "returned == total, truncated false" is the statement that the listing is whole.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "helper");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(2);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(2);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeFalse();
+        doc.RootElement.TryGetProperty("truncation_note", out _)
+            .Should()
+            .BeFalse("an untruncated listing pays nothing for a cap that did not bite");
+    }
+
+    [Fact]
+    public async Task GetAgents_OverTheCap_DropsRetainedAgentsAndAnnouncesTheTruncation()
+    {
+        // A retired agent's row is never removed from the directory, so the listing grows without
+        // bound over a long run and every turn pays for the whole history in input tokens. The cap
+        // trims that tail — and says so, because a silently truncated directory invites the model to
+        // conclude an agent it cannot see does not exist.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 3 });
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "live-a");
+        _ = RegisterPeer(root, "live-b");
+        foreach (var name in new[] { "done-a", "done-b", "done-c" })
+        {
+            var (_, peer) = RegisterPeer(root, name);
+            _ = root.Bundle.RetireAgent(peer.AgentId, AgentCollaborationStatuses.Completed);
+        }
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(6);
+        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(3);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("truncation_note").GetString().Should().Contain("finished");
+
+        var listed = doc.RootElement.GetProperty("agents").EnumerateArray().ToList();
+        listed.Should().OnlyContain(a => a.GetProperty("is_live").GetBoolean());
+        listed.Select(a => a.GetProperty("name").GetString()).Should().BeEquivalentTo([root.Name, "live-a", "live-b"]);
+    }
+
+    [Fact]
+    public async Task GetAgents_WithMoreLiveAgentsThanTheCap_StillListsEveryLiveAgent()
+    {
+        // The cap bounds the RETAINED tail only. Hiding a live agent would be the one failure mode
+        // this change must not have: the caller would spawn a duplicate of an agent it can already
+        // address, which costs far more than the tokens the cap saves.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 1 });
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "live-a");
+        _ = RegisterPeer(root, "live-b");
+        var (_, retired) = RegisterPeer(root, "done-a");
+        _ = root.Bundle.RetireAgent(retired.AgentId, AgentCollaborationStatuses.Completed);
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(3);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(4);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Select(a => a.GetProperty("name").GetString())
+            .Should()
+            .BeEquivalentTo([root.Name, "live-a", "live-b"]);
+    }
+
     #endregion
 
     #region SendMessage

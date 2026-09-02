@@ -1278,43 +1278,96 @@ public class SubAgentToolProvider : IFunctionProvider
             );
         }
 
+        var snapshot = collaboration.Directory.Snapshot();
+        var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
+
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
-        var payload = JsonSerializer.Serialize(
-            new
-            {
-                collaboration_id = collaboration.Bundle.CollaborationId,
-                your_agent_id = collaboration.AgentId,
-                agents = collaboration
-                    .Directory.Snapshot()
-                    .Select(e => new
-                    {
-                        agent_id = e.AgentId,
-                        name = e.Name,
-                        role = e.Role,
-                        description = e.Description,
-                        kind = e.Kind.ToString(),
-                        agent_type = e.AgentType,
-                        parent_agent_id = e.ParentAgentId,
-                        depth = e.StructuralDepth,
-                        // Both depths, because they answer different questions and diverge: structural depth is
-                        // where an agent sits, delegation depth is how much spawning budget reaching it spent,
-                        // and a workflow controller hop advances one without the other.
-                        structural_depth = e.StructuralDepth,
-                        delegation_depth = e.DelegationDepth,
-                        status = e.Status,
-                        is_live = e.IsLive,
-                        is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
-                        // Stated up front so the reader does not have to discover by refusal which transcripts
-                        // it may read; the policy is evaluated here rather than assumed from the hierarchy.
-                        transcript_readable = collaboration
-                            .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
-                            .IsAllowed,
-                    }),
-            }
-        );
+        // A dictionary rather than an anonymous type because the truncation note is present only when
+        // the cap actually bit — an untruncated listing must not pay for wording it does not need.
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["collaboration_id"] = collaboration.Bundle.CollaborationId,
+            ["your_agent_id"] = collaboration.AgentId,
+            // Unconditional, so completeness is stated rather than inferred from the array length.
+            ["returned"] = listed.Count,
+            ["total"] = snapshot.Count,
+            ["truncated"] = listed.Count < snapshot.Count,
+        };
 
-        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload));
+        if (listed.Count < snapshot.Count)
+        {
+            payload["truncation_note"] =
+                $"Showing {listed.Count} of {snapshot.Count} agents. Every LIVE agent is listed; the "
+                + "omitted ones are finished agents kept only for history, so nothing you can still "
+                + "address is missing from this list.";
+        }
+
+        payload["agents"] = listed.Select(e => new
+        {
+            agent_id = e.AgentId,
+            name = e.Name,
+            role = e.Role,
+            description = e.Description,
+            kind = e.Kind.ToString(),
+            agent_type = e.AgentType,
+            parent_agent_id = e.ParentAgentId,
+            depth = e.StructuralDepth,
+            // Both depths, because they answer different questions and diverge: structural depth is
+            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+            // and a workflow controller hop advances one without the other.
+            structural_depth = e.StructuralDepth,
+            delegation_depth = e.DelegationDepth,
+            status = e.Status,
+            is_live = e.IsLive,
+            is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
+            // Stated up front so the reader does not have to discover by refusal which transcripts
+            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+            transcript_readable = collaboration
+                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                .IsAllowed,
+        });
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(JsonSerializer.Serialize(payload)));
+    }
+
+    /// <summary>
+    /// The rows a <c>GetAgents</c> result carries: every live agent, then as much of the retained tail
+    /// as <paramref name="maxTotalAgents"/> leaves room for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The directory never removes an entry — a finished agent is marked retained so a sender holding
+    /// an open question can still learn its target is gone — so the listing grows for the whole life of
+    /// a conversation and every turn that calls this tool pays for the entire history in input tokens.
+    /// The live half cannot grow: it is bounded by the root-wide capacity permit
+    /// (<see cref="AgentCollaborationOptions.MaxTotalAgents"/>), which is why that same bound is the
+    /// cap here rather than a second number to keep in step with it.
+    /// </para>
+    /// <para>
+    /// The cap trims the RETAINED tail only. Dropping a live agent would be the one failure mode worth
+    /// avoiding at any token price: the caller would spawn a duplicate of an agent it could already
+    /// address. So a collaboration with more live agents than the cap returns all of them and reports
+    /// the overrun honestly rather than silently hiding one.
+    /// </para>
+    /// <para>
+    /// Both halves keep the directory's ordinal <c>agent_id</c> order, so repeated calls at an
+    /// unchanged directory read identically instead of shuffling.
+    /// </para>
+    /// </remarks>
+    private static List<AgentDirectoryEntry> SelectListedAgents(
+        IReadOnlyList<AgentDirectoryEntry> snapshot,
+        int maxTotalAgents
+    )
+    {
+        var listed = snapshot.Where(e => e.IsLive).ToList();
+        var retainedBudget = Math.Max(0, maxTotalAgents - listed.Count);
+        if (retainedBudget > 0)
+        {
+            listed.AddRange(snapshot.Where(e => !e.IsLive).Take(retainedBudget));
+        }
+
+        return listed;
     }
 
     private async Task<ToolHandlerResult> HandleWaitForAgentsToolAsync(
