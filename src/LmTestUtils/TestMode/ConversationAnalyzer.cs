@@ -9,6 +9,13 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, IInstructionChainParser chainParser)
     : IConversationAnalyzer
 {
+    /// <summary>
+    ///     Opening tag of the <c>NotifyMessage</c> envelope (<c>NotifyMessage.BuildEnvelope</c> always emits
+    ///     <c>&lt;notification kind="…"</c> first, with no leading whitespace). Tag name plus the following
+    ///     space, so a user prompt that merely begins with a similar word is not mistaken for an envelope.
+    /// </summary>
+    private const string NotificationEnvelopePrefix = "<notification ";
+
     private readonly IInstructionChainParser _chainParser =
         chainParser ?? throw new ArgumentNullException(nameof(chainParser));
 
@@ -149,7 +156,7 @@ public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, I
 
             if (content.ValueKind == JsonValueKind.String)
             {
-                extractedChain = _chainParser.ExtractInstructionChain(content.GetString() ?? string.Empty);
+                extractedChain = ExtractChainFromUserText(content.GetString() ?? string.Empty);
             }
             else if (content.ValueKind == JsonValueKind.Array)
             {
@@ -164,7 +171,7 @@ public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, I
                         && text.ValueKind == JsonValueKind.String
                     )
                     {
-                        extractedChain = _chainParser.ExtractInstructionChain(text.GetString() ?? string.Empty);
+                        extractedChain = ExtractChainFromUserText(text.GetString() ?? string.Empty);
                         if (extractedChain != null)
                         {
                             break;
@@ -187,6 +194,26 @@ public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, I
         }
 
         return (chain, chainMessageIndex);
+    }
+
+    /// <summary>
+    ///     Extracts a chain from one user text, ignoring out-of-band notification envelopes
+    ///     (<c>NotifyMessage.Text</c>, always <c>&lt;notification kind="…"&gt;…&lt;/notification&gt;</c>).
+    ///     A sub-agent completion relays the child's raw task — in test mode its own
+    ///     <c>&lt;|instruction_start|&gt;</c> block — inside that envelope on a user turn, so without this
+    ///     filter the newest-first scan would adopt the CHILD's chain as the parent's script and the parent
+    ///     would never resume its own next step (#711). Only the script the test author sent as a real user
+    ///     prompt drives the mock.
+    /// </summary>
+    private InstructionPlan[]? ExtractChainFromUserText(string text)
+    {
+        if (text.StartsWith(NotificationEnvelopePrefix, StringComparison.Ordinal))
+        {
+            _logger.LogDebug("Skipping notification envelope when searching for an instruction chain");
+            return null;
+        }
+
+        return _chainParser.ExtractInstructionChain(text);
     }
 
     private static int CountAssistantResponsesAfterChain(JsonElement messages, int chainMessageIndex)
