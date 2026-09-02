@@ -208,6 +208,7 @@ vi.mock('@/composables/useChat', async () => {
       sharedMocks.chatOptions = options;
       const threadId = ref<string | null>(sharedMocks.currentThreadId);
       const conversationTodo = ref<unknown>(null);
+      const contextPressure = ref<unknown>(null);
       // Published (like providerSelectionRef) so a test can mutate them after mount.
       sharedMocks.chatThreadIdRef = threadId;
       sharedMocks.conversationTodoRef = conversationTodo;
@@ -228,6 +229,8 @@ vi.mock('@/composables/useChat', async () => {
         // Hoisted useTodoBoard(...) watches this eagerly to establish its dependency, so unlike the
         // lazily-read fields above it must actually be present here (#583).
         conversationTodo,
+        // Same for the hoisted useContextReport(...) (#685).
+        contextPressure,
         pendingMessages: ref([]),
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
@@ -314,6 +317,12 @@ vi.mock('@/composables/useWorkspaces', async () => {
 vi.mock('@/api/conversationsApi', () => ({
   updateConversationMetadata: vi.fn(async () => {}),
   conversationExists: (threadId: string) => sharedMocks.conversationExists(threadId),
+}));
+
+// The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
+// this the hoisted useContextReport would hit real fetch on every started conversation.
+vi.mock('@/api/contextApi', () => ({
+  getConversationContext: vi.fn(async () => null),
 }));
 
 // The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
