@@ -124,9 +124,19 @@ public class ScorerParityTests : IDisposable
 
     private JsonElement RunOracle()
     {
-        // Skipped, never failed, when pwsh is absent: the oracle is a cross-check, and a machine
-        // without PowerShell 7 must still be able to run the Runner's own suite.
-        Skip.IfNot(HasPwsh(), "pwsh is not on PATH, so the reference oracle cannot be run.");
+        // Locally this is skipped rather than failed: the oracle is a cross-check, and a machine without
+        // PowerShell 7 must still be able to run the Runner's own suite. On CI it must FAIL instead.
+        // These are the only tests that compare the two scorers against each other, so a silent skip
+        // there would let both drift together undetected - and two scorers wrong in the same way is
+        // precisely what parity testing cannot otherwise catch.
+        if (!HasPwsh())
+        {
+            Assert.True(
+                string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI")),
+                "pwsh is not on PATH on a CI leg, so the reference-oracle parity check silently did not run."
+            );
+            Skip.If(true, "pwsh is not on PATH, so the reference oracle cannot be run.");
+        }
 
         Directory.CreateDirectory(_temp);
         var outFile = Path.Combine(_temp, "oracle.json");

@@ -133,9 +133,13 @@ internal static class TranscriptRedactor
 
         foreach (var key in ProseProperties)
         {
-            if (properties[key]?.GetValue<string>() is { } prose)
+            // Same guard and same OBJECT form as RedactProse, and for two reasons beyond symmetry:
+            // metrics-spec.md promises one form for both, and `GetValue<string>()` THROWS once the value
+            // is already the signals object - so redacting an archive twice used to be a crash rather
+            // than a no-op. Matching on JsonValue makes the second pass skip what the first replaced.
+            if (properties[key] is JsonValue value && value.TryGetValue<string>(out var prose))
             {
-                properties[key] = ClaimSignals(prose).ToJsonString();
+                properties[key] = ClaimSignals(prose);
             }
         }
 

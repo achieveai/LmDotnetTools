@@ -474,6 +474,16 @@ try {
     Assert ($m.spawnTimings[0].Reconstructed -eq $false) 'M12: and a fresh spawn is told apart from a rebuilt one'
     Assert ($m.startupWork.TemplateCatalogBuilds -eq 11) 'M12: the startup-work roll-up is read back too'
     Assert ($m.startupWork.Reconstructions -eq 1) 'M12: including the share of construction that was re-construction'
+    # One cumulative sink is shared down the hierarchy and stamped by each collaborating loop onto its
+    # OWN thread, so the sub-agent thread holds an earlier PREFIX of the same series. Appending every
+    # thread's stamp multiplied the run's spawn cost by the thread count; taking the first roll-up took
+    # the sub-agent's partial one, because `subagent-` sorts before `thread-`. Opposite directions, so
+    # neither number contradicted the other.
+    Assert (@($m.spawnTimings).Count -eq 3) 'M12: one shared sink stamped on two threads counts once, not once per thread'
+    Assert ((@($m.spawnTimings) | Measure-Object -Property TotalMs -Sum).Sum -eq 174) 'M12: and the spawn total is the run''s, not the run''s times the thread count'
+    Assert ($m.startupWork.Spawns -eq 3) 'M12: the roll-up is the richest stamp, not the sub-agent''s mid-run one'
+    Assert ($m.startupWork.TemplateCatalogBytes -eq 47300) 'M12: so its catalog bytes are the run''s 47300, not the partial stamp''s 8600'
+    Assert (@($m.spawnTimings).Count -eq $m.startupWork.Spawns) 'M12: both artifacts come from the SAME stamp, so they describe one moment'
     Assert ($m.openObligations.resultsCarryingField -eq 0) 'M12: no result carries openObligations yet'
     Assert ($m.openObligations.note -match 'NOT REPORTED') 'M12: so the zero is labelled NOT REPORTED rather than left to be read as none-open'
 

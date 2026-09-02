@@ -176,6 +176,16 @@ function Get-ErrorCode {
     return $null
 }
 
+function Sort-Ordinal {
+    # `Sort-Object -CaseSensitive` is still a CULTURE comparer, and the C# twin sorts every one of
+    # these with StringComparer.Ordinal. They agree for today's ASCII tool names, but they are not the
+    # same comparer, and the evaluator hash they both feed must not depend on which one ran.
+    param([string[]]$Values)
+    $sorted = [string[]]@($Values)
+    [Array]::Sort($sorted, [System.StringComparer]::Ordinal)
+    return $sorted
+}
+
 function Get-Sha256Hex {
     param([byte[]]$Bytes)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -442,8 +452,8 @@ function Get-EvaluatorHash {
     # Every constant that can move a measured NUMBER, and nothing else. Deliberately excludes any
     # build identity: rebuilding a scorer must not invalidate an archived baseline.
     param()
-    $tasks = @($TaskTools | Sort-Object -CaseSensitive) -join ','
-    $coordination = @($CoordinationTools | Sort-Object -CaseSensitive) -join ','
+    $tasks = (Sort-Ordinal $TaskTools) -join ','
+    $coordination = (Sort-Ordinal $CoordinationTools) -join ','
     return Get-Sha256OfText ((Get-SpecHash) + "`n" + $tasks + "`n" + $coordination + "`n" + $StormThreshold + "`n" + $RedactedArgsKey)
 }
 
@@ -452,14 +462,14 @@ function ConvertTo-SortedCountMap {
     # depends on insertion order.
     param([hashtable]$Map)
     $out = [ordered]@{}
-    foreach ($key in @($Map.Keys | Sort-Object -CaseSensitive)) { $out[$key] = $Map[$key] }
+    foreach ($key in (Sort-Ordinal @($Map.Keys))) { $out[$key] = $Map[$key] }
     return $out
 }
 
 function ConvertTo-SortedMap {
     param([hashtable]$Map)
     $out = [ordered]@{}
-    foreach ($key in @($Map.Keys | Sort-Object -CaseSensitive)) { $out[$key] = $Map[$key] }
+    foreach ($key in (Sort-Ordinal @($Map.Keys))) { $out[$key] = $Map[$key] }
     return $out
 }
 
@@ -529,8 +539,11 @@ $openObligationsLastObserved = 0
 $openObligationResults = 0
 $usageRecords = [System.Collections.Generic.List[object]]::new()
 $generationIdsByThread = @{}
-$spawnTimings = [System.Collections.Generic.List[object]]::new()
+$spawnTimings = @()
 $startupWork = $null
+# How much of the run the stamp currently held saw; -2 = none held yet. See the accumulation site
+# for why ONE stamp is chosen rather than every thread's being merged.
+$stampObservations = -2
 $storms = [System.Collections.Generic.List[object]]::new()
 $blockRecorded = $false
 $blockExplicitlyCleared = $false
@@ -557,9 +570,23 @@ foreach ($dir in $threadDirs) {
         catch { $properties = $null }
     }
     foreach ($row in @(Get-UsageRows (Get-Prop $properties 'usage.records'))) { $usageRecords.Add($row) }
-    foreach ($timing in @(Get-Stamp (Get-Prop $properties 'subagents.spawnTimings'))) { $spawnTimings.Add($timing) }
-    if ($null -eq $startupWork) {
-        $startupWork = Get-Stamp (Get-Prop $properties 'subagents.startupWork') -Single
+    # One sink measures the WHOLE run, and every collaborating thread stamps that same running
+    # snapshot onto its OWN metadata, so these stamps are repeats of ONE series rather than
+    # per-thread parts of it. Appending them multiplied the run's spawn cost by the thread count,
+    # and first-wins took a sub-agent's mid-run roll-up because `subagent-` sorts before `thread-`.
+    # Keep the single richest stamp, and keep BOTH artifacts from that same thread so the timings
+    # and the roll-up can never describe different moments.
+    $threadTimings = @(Get-Stamp (Get-Prop $properties 'subagents.spawnTimings'))
+    $threadWork = Get-Stamp (Get-Prop $properties 'subagents.startupWork') -Single
+    if ($null -ne $threadWork -or $threadTimings.Count -gt 0) {
+        $observations = if ($null -eq $threadWork) { -1 } else {
+            [long]$threadWork.Spawns + [long]$threadWork.TemplateCatalogBuilds + [long]$threadWork.DirectoryListings
+        }
+        if ($observations -gt $stampObservations) {
+            $stampObservations = $observations
+            $spawnTimings = $threadTimings
+            $startupWork = $threadWork
+        }
     }
 
     # Pass 1: pair results by tool_call_id (within this thread only).

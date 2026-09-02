@@ -157,6 +157,18 @@ public class TranscriptRedactorTests : IDisposable
 
         redacted.Should().NotContain("remaining board tasks");
         redacted.Should().Contain("thread-1", "structural properties are not prose and must survive");
+
+        // metrics-spec.md promises ONE form for prose everywhere: the signals OBJECT, as RedactProse
+        // emits for message fields. Emitting a JSON string here instead made the two paths disagree.
+        var signals = System.Text.Json.Nodes.JsonNode.Parse(redacted)!["properties"]!["sample.subAgentTask"];
+        signals
+            .Should()
+            .BeOfType<System.Text.Json.Nodes.JsonObject>("the spec's form is an object, not a string holding one");
+        signals!["length"]!.GetValue<int>().Should().Be("Complete the remaining board tasks".Length);
+
+        // Redacting an already-redacted archive must be a no-op. It used to THROW, because the second
+        // pass called GetValue<string>() on the signals object it had just written.
+        TranscriptRedactor.RedactMetadata(redacted).Should().Be(redacted, "redaction is idempotent");
     }
 
     private string Score(string conversationsDir, string label)

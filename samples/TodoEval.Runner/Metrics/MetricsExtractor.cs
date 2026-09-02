@@ -403,6 +403,15 @@ internal static class MetricsExtractor
                 : expectedBoard.Evaluate(flat, blockRecorded, blockCleared);
         }
 
+        // One sink measures the WHOLE run, and every collaborating thread stamps that same running
+        // snapshot onto its own metadata (SubAgentOptions.ForChildLoop shares the instance on purpose).
+        // These stamps are therefore repeats of ONE series, not per-thread parts of it: concatenating
+        // them multiplied the run's spawn cost by the thread count, and taking the first roll-up took a
+        // sub-agent's mid-run one, because `subagent-` sorts before `thread-`. Take the single richest
+        // stamp, and take BOTH artifacts from that one thread so they cannot disagree - the same reason
+        // SaveAsync snapshots them together under one lock.
+        var stamp = RichestStamp(group);
+
         return baseMetrics with
         {
             Threads = group.Count,
@@ -421,8 +430,8 @@ internal static class MetricsExtractor
                 group.Sum(t => t.OpenObligationResults)
             ),
             Usage = usage,
-            SpawnTimings = [.. group.SelectMany(t => SpawnTimingsOf(t))],
-            StartupWork = group.Select(t => StartupWorkOf(t)).FirstOrDefault(w => w is not null),
+            SpawnTimings = stamp.Timings,
+            StartupWork = stamp.Work,
             RetryStormCount = storms.Count,
             RetryStorms = storms,
             BoardIdVanished = BoardIdVanishedReport.From(vanishes),
@@ -467,6 +476,31 @@ internal static class MetricsExtractor
         IReadOnlyDictionary<string, PerToolScore> perTool,
         ToolFamily family
     ) => [.. perTool.Where(kvp => ToolFamilies.Classify(kvp.Key) == family).Select(kvp => kvp.Value)];
+
+    /// <summary>
+    /// The one thread stamp that saw the most of the run, with its timings and roll-up kept together.
+    /// Ties keep ordinal thread order, so two equally complete stamps still extract deterministically.
+    /// </summary>
+    private static (IReadOnlyList<SpawnTiming> Timings, StartupWork? Work) RichestStamp(
+        IEnumerable<ConversationStoreReader.ThreadData> threads
+    )
+    {
+        var best = threads
+            .Select(t => (Timings: SpawnTimingsOf(t), Work: StartupWorkOf(t)))
+            .Where(s => s.Work is not null || s.Timings.Count > 0)
+            .OrderByDescending(s => Observations(s.Work))
+            .FirstOrDefault();
+
+        return (best.Timings ?? [], best.Work);
+    }
+
+    /// <summary>
+    /// How much of the run a stamp saw. Mirrors the host-side watermark
+    /// (<c>SubAgentInstrumentationProjection.Observations</c>), so the extractor ranks stamps by the same
+    /// measure the host used to decide which snapshot was safe to persist.
+    /// </summary>
+    private static long Observations(StartupWork? work) =>
+        work is null ? -1 : work.Spawns + (long)work.TemplateCatalogBuilds + work.DirectoryListings;
 
     private static IReadOnlyList<SpawnTiming> SpawnTimingsOf(ConversationStoreReader.ThreadData thread) =>
         ReadStamp<List<SpawnTiming>>(thread.SpawnTimingsJson) ?? [];

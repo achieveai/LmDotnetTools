@@ -163,17 +163,46 @@ public class CoordinationMetricsTests
     {
         var run = Run();
 
-        var timing = run.SpawnTimings.Should().ContainSingle().Subject;
+        var timing = run.SpawnTimings[0];
         timing.AgentId.Should().Be("agent-1");
         timing.ToolRegistryMs.Should().Be(37);
         timing.ToolCatalogBytes.Should().Be(18432);
         timing.Reconstructed.Should().BeFalse("a fresh spawn must be tellable from a rebuilt one");
+        run.SpawnTimings.Should().HaveCount(3).And.OnlyHaveUniqueItems(t => t.AgentId);
 
         run.StartupWork.Should().NotBeNull();
         run.StartupWork!.TemplateCatalogBuilds.Should().Be(11);
         run.StartupWork.Reconstructions.Should().Be(1);
         run.StartupWork.TemplateCatalogBytes.Should().Be(47300);
         run.StartupWork.DirectoryListingBytes.Should().Be(412);
+    }
+
+    [Fact]
+    public void SharedSinkStampedOnEveryThread_IsCountedOnce_NotOncePerThread()
+    {
+        // The fixture is the shape production actually produces: ONE cumulative sink, shared down the
+        // hierarchy by SubAgentOptions.ForChildLoop, stamped by each collaborating loop onto its OWN
+        // thread - so the sub-agent thread carries an earlier PREFIX of the very same series (1 spawn,
+        // 4 catalog builds) that the root thread carries in full (3 spawns, 11 builds).
+        //
+        // Concatenating those stamps reported 4 spawns for a run that did 3, and first-wins reported the
+        // sub-agent's mid-run roll-up because `subagent-` sorts before `thread-`. The two errors point in
+        // OPPOSITE directions, so neither number contradicts the other and nothing looks wrong. The eval
+        // dispatches one sub-agent per workstream, so the archived baseline would have carried roughly
+        // one multiplied spawn cost per thread, and every later "the wave shrank spawn cost" claim would
+        // have been measured against it.
+        var run = Run();
+
+        run.SpawnTimings.Should()
+            .HaveCount(3, "the run spawned three agents; a fourth entry would be the child's repeat of agent-1");
+        run.SpawnTimings.Sum(t => t.TotalMs)
+            .Should()
+            .Be(174, "the total must be the run's, not the run's multiplied by the thread count");
+        run.StartupWork!.Spawns.Should().Be(3, "not the 1 the sub-agent's earlier stamp recorded");
+        run.StartupWork.TemplateCatalogBytes.Should().Be(47300, "not the 8600 of that partial stamp");
+
+        // The two artifacts must come from the SAME stamp, or the report describes two different moments.
+        run.SpawnTimings.Count.Should().Be(run.StartupWork.Spawns);
     }
 
     [Fact]
