@@ -69,24 +69,31 @@ public sealed class SqliteConversationStore
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
-        using var transaction = connection.BeginTransaction();
+        // BEGIN IMMEDIATE, not deferred: the sequence is read (MAX) and then extended (INSERT) inside
+        // this transaction, and two processes appending to the same thread must serialize on the
+        // write lock from the READ onward or both would compute the same next Seq.
+        using var transaction = connection.BeginTransaction(deferred: false);
 
         try
         {
-            foreach (var message in messages)
+            var next = await BackfillLegacySeqAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
+
+            foreach (var message in MessageSequence.BatchOrder(messages))
             {
                 using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = """
                     INSERT INTO messages (
                         id, thread_id, run_id, parent_run_id, generation_id,
-                        message_order_idx, timestamp, message_type, role, from_agent, message_json
+                        message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
                     ) VALUES (
                         $id, $thread_id, $run_id, $parent_run_id, $generation_id,
-                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json
+                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json, $seq
                     );
                     """;
 
+                // The store owns Seq; whatever the caller put on the row is ignored.
+                _ = command.Parameters.AddWithValue("$seq", ++next);
                 _ = command.Parameters.AddWithValue("$id", message.Id);
                 _ = command.Parameters.AddWithValue("$thread_id", message.ThreadId);
                 _ = command.Parameters.AddWithValue("$run_id", message.RunId);
@@ -114,6 +121,125 @@ public sealed class SqliteConversationStore
         }
     }
 
+    /// <summary>
+    /// Numbers every row of <paramref name="threadId"/> that predates the <c>seq</c> column, in
+    /// <c>(timestamp, message_order_idx, rowid)</c> order after the highest existing Seq, and returns
+    /// the thread's watermark afterwards. Idempotent: a thread with no null rows is one
+    /// <c>MAX(seq)</c> read. Runs inside the caller's write transaction so the backfill and the
+    /// append that triggered it commit together.
+    /// </summary>
+    private static async Task<long> BackfillLegacySeqAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        long watermark;
+        using (var max = connection.CreateCommand())
+        {
+            max.Transaction = transaction;
+            max.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
+            _ = max.Parameters.AddWithValue("$thread_id", threadId);
+            watermark = Convert.ToInt64(
+                await max.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture
+            );
+        }
+
+        var legacyIds = new List<string>();
+        using (var select = connection.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = """
+                SELECT id FROM messages
+                WHERE thread_id = $thread_id AND seq IS NULL
+                ORDER BY timestamp ASC, message_order_idx ASC, rowid ASC;
+                """;
+            _ = select.Parameters.AddWithValue("$thread_id", threadId);
+            await using var reader = await select.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                legacyIds.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (var id in legacyIds)
+        {
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE messages SET seq = $seq WHERE id = $id AND thread_id = $thread_id;";
+            _ = update.Parameters.AddWithValue("$seq", ++watermark);
+            _ = update.Parameters.AddWithValue("$id", id);
+            _ = update.Parameters.AddWithValue("$thread_id", threadId);
+            _ = await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        return watermark;
+    }
+
+    /// <inheritdoc />
+    public async Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture
+        );
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        if (limit <= 0 || toSeq < fromSeq)
+        {
+            return [];
+        }
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {MessageSelectSql}
+            WHERE thread_id = $thread_id AND seq >= $from_seq AND seq <= $to_seq
+            ORDER BY seq ASC
+            LIMIT $limit;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$from_seq", fromSeq);
+        _ = command.Parameters.AddWithValue("$to_seq", toSeq);
+        _ = command.Parameters.AddWithValue("$limit", limit);
+
+        var messages = new List<PersistedMessage>();
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            messages.Add(ReadMessage(reader));
+        }
+
+        return messages;
+    }
+
     /// <inheritdoc />
     public async Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
@@ -124,8 +250,9 @@ public sealed class SqliteConversationStore
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
-        // Preserve the existing timestamp (don't update it on replace) so load ordering stays
-        // stable when a deferred placeholder is later resolved.
+        // Preserve the existing timestamp and seq (neither is in the SET list) so load ordering stays
+        // stable when a deferred placeholder is later resolved: a replacement is a mutation in place,
+        // not an append, and must not move the watermark.
         using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE messages SET
@@ -170,13 +297,13 @@ public sealed class SqliteConversationStore
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
+        // Append order: sequenced rows first by seq, then any legacy rows (seq IS NULL) by the
+        // (timestamp, idx) order the backfill will later assign them - see MessageSequence.Order.
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT id, thread_id, run_id, parent_run_id, generation_id,
-                   message_order_idx, timestamp, message_type, role, from_agent, message_json
-            FROM messages
+        command.CommandText = $"""
+            {MessageSelectSql}
             WHERE thread_id = $thread_id
-            ORDER BY timestamp ASC, message_order_idx ASC;
+            ORDER BY (seq IS NULL) ASC, seq ASC, timestamp ASC, message_order_idx ASC;
             """;
         _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
@@ -1422,10 +1549,17 @@ public sealed class SqliteConversationStore
         }
     }
 
+    private const string MessageSelectSql = """
+        SELECT id, thread_id, run_id, parent_run_id, generation_id,
+               message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
+        FROM messages
+        """;
+
     private static PersistedMessage ReadMessage(SqliteDataReader reader)
     {
         return new PersistedMessage
         {
+            Seq = reader.IsDBNull(11) ? null : reader.GetInt64(11),
             Id = reader.GetString(0),
             ThreadId = reader.GetString(1),
             RunId = reader.GetString(2),

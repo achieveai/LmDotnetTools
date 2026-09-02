@@ -42,6 +42,22 @@ public sealed record PersistedMessage
     public required long Timestamp { get; init; }
 
     /// <summary>
+    /// The row's position in its thread: 1-based, dense, monotonic, assigned by the STORE on append
+    /// and never by the caller (a supplied value is ignored). <c>null</c> only on a row written by a
+    /// build that predates this column; the first append to such a thread backfills every legacy row
+    /// in <c>(timestamp, message_order_idx)</c> order and the value never changes afterwards, not even
+    /// through <see cref="IConversationStore.ReplaceMessageAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes "no rows were appended since I looked" an answerable question:
+    /// <see cref="IConversationStore.GetMessageWatermarkAsync"/> is the highest value in the thread,
+    /// and a compaction checkpoint is allowed to activate only while the watermark it captured is
+    /// still current (spec 679 §2.2, §3.5). <c>(timestamp, message_order_idx)</c> could not serve —
+    /// it is neither dense nor total (a clock step, two rows in one millisecond).
+    /// </remarks>
+    public long? Seq { get; init; }
+
+    /// <summary>
     /// The concrete message type name (e.g., "TextMessage", "ToolCallMessage").
     /// </summary>
     public required string MessageType { get; init; }

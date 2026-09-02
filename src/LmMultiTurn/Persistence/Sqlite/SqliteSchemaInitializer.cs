@@ -240,6 +240,20 @@ public static class SqliteSchemaInitializer
         ON resource_grants (tenant_id, subject_id, resource_type);
         """;
 
+    // migration step 5 - the per-thread message sequence (#680, spec 679 §2.2 / §8.3). Nullable,
+    // because SQLite cannot add a NOT NULL column without a default AND because null is the signal
+    // for "legacy, not yet sequenced": the store backfills a thread's null rows on its first append
+    // and reads the watermark as 0 until then. The CREATE is re-issued first because a database
+    // migrated to version 2 by a build that never created the messages table is a real state (see
+    // SqliteSchemaMigrationTests) and an ALTER on a missing table is not an IF NOT EXISTS.
+    private const string AddMessagesSeqColumnSql = "ALTER TABLE messages ADD COLUMN seq INTEGER;";
+
+    // Exactly the watermark (MAX(seq) per thread) and the range read (thread, seq BETWEEN).
+    private const string CreateMessagesSeqIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_messages_thread_seq
+        ON messages (thread_id, seq);
+        """;
+
     /// <summary>One ordered migration step, applied atomically with its version bump.</summary>
     /// <param name="Version">
     /// The <c>PRAGMA user_version</c> the database holds after this step commits. This array is
@@ -285,6 +299,7 @@ public static class SqliteSchemaInitializer
         ),
         new(3, [.. AddThreadMetadataOwnerColumnsSql, CreateThreadMetadataOwnerIndexSql]),
         new(4, [CreateResourceGrantsTableSql, CreateResourceGrantsSubjectIndexSql]),
+        new(5, [AddMessagesSeqColumnSql, CreateMessagesSeqIndexSql]),
     ];
 
     /// <summary>

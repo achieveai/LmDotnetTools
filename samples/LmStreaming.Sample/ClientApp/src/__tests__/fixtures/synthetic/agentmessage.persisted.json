@@ -6,6 +6,7 @@
   "parentRunId": null,
   "generationId": "agentmsg:2f1e9c7c4b1e4a7f9c2d5b8e6a3f0d11",
   "messageOrderIdx": 3,
+  "seq": null,
   "timestamp": 1754000000000,
   "messageType": "AgentMessage",
   "role": "User",
