@@ -1,8 +1,10 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
+using Microsoft.Extensions.Logging;
 using static LmStreaming.Sample.Tests.Services.Discovery.MarketplaceCatalogFixture;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
@@ -156,7 +158,7 @@ public class MarketplaceSubAgentLoaderTests
     }
 
     [Fact]
-    public void MergeFillGaps_AddsAgentsForKeysNotAlreadyPresent()
+    public void MergeFillGaps_AddsAgentsForKeysNotAlreadyPresent_AndWarnsAboutPreviewMetadata()
     {
         var existing = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
         {
@@ -166,10 +168,13 @@ public class MarketplaceSubAgentLoaderTests
             Catalog(Marketplace("official", null, Plugin("p", Agent("code-reviewer")))),
             AgentFactory
         );
+        var logger = new CapturingLogger<MarketplaceSubAgentLoader>();
 
-        MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
+        MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, logger);
 
         existing.Should().ContainKey("p:code-reviewer");
+        logger.CountAtLevel(LogLevel.Warning, "metadata-poor marketplace preview").Should().Be(1);
+        logger.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle(message => message.Contains("1"));
     }
 
     [Fact]

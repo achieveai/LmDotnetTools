@@ -49,6 +49,7 @@ public class SpawnNameGateTests
         selection.Should().NotBeNull();
         selection!.Model.Should().BeNull();
         selection.ModelIntelligence.Should().BeNull();
+        selection.SelectionSource.Should().Be("workflow-unit");
     }
 
     [Fact]

@@ -612,8 +612,13 @@ public sealed class S2SReviewAgentTests
     [InlineData(HttpStatusCode.NotFound, "{\"error\":\"not_found\"}", "does not advertise conversation capabilities")]
     [InlineData(
         HttpStatusCode.OK,
-        "{\"schemaVersion\":1,\"messageIdempotency\":false,\"spawnSuppression\":true}",
+        "{\"schemaVersion\":1,\"messageIdempotency\":false,\"spawnSuppression\":true,\"rootReasoningEffort\":true}",
         "does not support messageIdempotency"
+    )]
+    [InlineData(
+        HttpStatusCode.OK,
+        "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true}",
+        "does not support rootReasoningEffort"
     )]
     [InlineData(
         HttpStatusCode.Unauthorized,

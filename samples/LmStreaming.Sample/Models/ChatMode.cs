@@ -90,6 +90,25 @@ public record ChatMode
     public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
 
     /// <summary>
+    /// Optional conversation-wide reasoning effort for sub-agents. Null preserves existing behavior;
+    /// supported values are validated where modes are loaded or written.
+    /// </summary>
+    public string? SubAgentReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Authoritative model-intelligence tier keyed by canonical registered <c>subagent_type</c>.
+    /// Null means the mode declares no type-keyed policy.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
+
+    /// <summary>
+    /// Tier used for canonical <c>code-reviewer:*</c> types not present in
+    /// <see cref="SubAgentModelIntelligenceByType"/>. Other type families retain their caller/template
+    /// routing so a review-mode fallback cannot override unrelated children.
+    /// </summary>
+    public int? DefaultSubAgentModelIntelligence { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -115,6 +134,9 @@ public record ChatMode
             SubAgentPrompt = SubAgentPrompt,
             SubAgentPromptPlacement = SubAgentPromptPlacement,
             SubAgentRequiredTools = SubAgentRequiredTools,
+            SubAgentReasoningEffort = SubAgentReasoningEffort,
+            SubAgentModelIntelligenceByType = SubAgentModelIntelligenceByType,
+            DefaultSubAgentModelIntelligence = DefaultSubAgentModelIntelligence,
         };
 
     /// <summary>
@@ -188,6 +210,15 @@ public record ChatModeCreateUpdate
     /// <see cref="ChatMode.SubAgentRequiredTools"/>. Null/empty = not enforced.
     /// </summary>
     public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
+
+    /// <summary>Conversation-wide child reasoning effort. See <see cref="ChatMode.SubAgentReasoningEffort"/>.</summary>
+    public string? SubAgentReasoningEffort { get; init; }
+
+    /// <summary>Canonical child-type routing map. See <see cref="ChatMode.SubAgentModelIntelligenceByType"/>.</summary>
+    public IReadOnlyDictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
+
+    /// <summary>Fallback child tier. See <see cref="ChatMode.DefaultSubAgentModelIntelligence"/>.</summary>
+    public int? DefaultSubAgentModelIntelligence { get; init; }
 }
 
 /// <summary>

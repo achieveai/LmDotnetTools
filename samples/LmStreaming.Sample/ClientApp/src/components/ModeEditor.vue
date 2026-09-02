@@ -154,6 +154,11 @@ function handleSave(): void {
     // saved before these fields existed.
     subAgentPrompt: trimmedSubAgentPrompt || undefined,
     subAgentPromptPlacement: trimmedSubAgentPrompt ? subAgentPromptPlacement.value : undefined,
+    // These policy fields are not editable in this form. Preserve an existing mode's values rather
+    // than silently clearing them on save.
+    subAgentReasoningEffort: props.mode?.subAgentReasoningEffort,
+    subAgentModelIntelligenceByType: props.mode?.subAgentModelIntelligenceByType,
+    defaultSubAgentModelIntelligence: props.mode?.defaultSubAgentModelIntelligence,
     // props.mode is passed so a group the catalog could not show is preserved, not zeroed.
     ...selectionToModeFields(selectedToolIds.value, props.tools, props.mode),
   };

@@ -94,6 +94,30 @@ describe('ModeEditor sub-agent prompt fragment', () => {
   });
 });
 
+describe('ModeEditor sub-agent routing policy', () => {
+  it('preserves policy fields that the form does not render when editing a mode', async () => {
+    const policy = {
+      subAgentReasoningEffort: 'xhigh',
+      subAgentModelIntelligenceByType: {
+        'code-reviewer:architecture-review': 5,
+        'code-reviewer:test-coverage-review': 3,
+      },
+      defaultSubAgentModelIntelligence: 3,
+    };
+    const wrapper = mount(ModeEditor, {
+      props: {
+        mode: { ...baseMode, ...policy },
+        tools: [],
+      },
+    });
+
+    await wrapper.get('[data-testid="mode-editor-name"]').setValue('Renamed Mode');
+    await wrapper.get('form').trigger('submit');
+
+    expect(lastSave(wrapper)).toMatchObject(policy);
+  });
+});
+
 describe('ModeEditor required sub-agent tools', () => {
   const catalog: ToolDefinition[] = [
     { name: 'claim-task', group: 'tasks', groupLabel: 'Task Management' },

@@ -60,6 +60,7 @@ internal sealed class S2SReviewAgent
     private readonly string _modeId;
     private readonly string? _systemPrompt;
     private readonly string? _subAgentModelId;
+    private readonly string? _reasoningEffort;
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
@@ -101,7 +102,8 @@ internal sealed class S2SReviewAgent
         TimeSpan? interruptedGrace = null,
         Action<string>? onConversationMinted = null,
         string? existingThreadId = null,
-        string? subAgentModelId = null
+        string? subAgentModelId = null,
+        string? reasoningEffort = null
     )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -113,6 +115,7 @@ internal sealed class S2SReviewAgent
         _modeId = modeId;
         _systemPrompt = systemPrompt;
         _subAgentModelId = subAgentModelId;
+        _reasoningEffort = reasoningEffort;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _onConversationMinted = onConversationMinted;
@@ -307,12 +310,13 @@ internal sealed class S2SReviewAgent
         }
 
         var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, ct)
+            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, _reasoningEffort, ct)
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(
             "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "
-                + "mode {ModeId}, system prompt {SystemPromptChars} chars, sub-agent model {SubAgentModelId}).",
+                + "mode {ModeId}, system prompt {SystemPromptChars} chars, sub-agent model {SubAgentModelId}, "
+                + "requested root effort {RequestedRootEffort}).",
             threadId,
             _workspaceId,
             _providerId,
@@ -324,7 +328,13 @@ internal sealed class S2SReviewAgent
             // exactly the claims that got conflated while this knob drove nothing.
             string.IsNullOrWhiteSpace(_subAgentModelId)
                 ? "(inherit parent)"
-                : _subAgentModelId
+                : _subAgentModelId,
+            _reasoningEffort switch
+            {
+                null => "(provider default)",
+                "" => "(omitted)",
+                _ => _reasoningEffort,
+            }
         );
 
         // The run-scoped checkpoint comes FIRST and is deliberately NOT guarded: from this line on there is a

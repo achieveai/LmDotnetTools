@@ -37,6 +37,12 @@ export interface ChatMode {
    * today's behavior exactly.
    */
   subAgentRequiredTools?: string[];
+  /** Provider-neutral reasoning effort requested for children in this mode. */
+  subAgentReasoningEffort?: string;
+  /** Authoritative child tier keyed by canonical registered sub-agent type. */
+  subAgentModelIntelligenceByType?: Record<string, number>;
+  /** Review-child fallback tier for canonical `code-reviewer:*` types absent from the map. */
+  defaultSubAgentModelIntelligence?: number;
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -58,6 +64,12 @@ export interface ChatModeCreateUpdate {
   subAgentPromptPlacement?: 'prepend' | 'append';
   /** Guaranteed sub-agent tools; see {@link ChatMode.subAgentRequiredTools}. Omit for "not enforced". */
   subAgentRequiredTools?: string[];
+  /** Provider-neutral reasoning effort requested for children in this mode. */
+  subAgentReasoningEffort?: string;
+  /** Authoritative child tier keyed by canonical registered sub-agent type. */
+  subAgentModelIntelligenceByType?: Record<string, number>;
+  /** Review-child fallback tier for canonical `code-reviewer:*` types absent from the map. */
+  defaultSubAgentModelIntelligence?: number;
 }
 
 /**

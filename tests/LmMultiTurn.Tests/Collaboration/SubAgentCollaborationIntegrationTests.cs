@@ -695,6 +695,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                     AvailableModelIds = ["catalog-model"],
                     SpawnNameGate = name => name == AuthoredUnit ? null : $"'{name}' is not a unit of this workflow.",
                     SpawnModelSelectionResolver = _ => new SubAgentSpawnModelSelection("catalog-model", null),
+                    SpawnTypeModelSelectionResolver = _ => new SubAgentSpawnModelSelection(null, 3),
                     SpawnMetadataResolver = _ => new SubAgentSpawnMetadata(
                         "authored role",
                         "Authored by the workflow, not by whoever called the tool."
@@ -723,6 +724,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         delegateLoop
             .SubAgentManager.SpawnModelSelectionResolver.Should()
             .BeNull("authority over a spawn's model belongs to the host that authored that spawn");
+        delegateLoop
+            .SubAgentManager.SpawnTypeModelSelectionResolver.Should()
+            .NotBeNull("a mode-wide type policy applies at every review delegation depth");
         delegateLoop
             .SubAgentManager.AvailableModelIds.Should()
             .Equal(["catalog-model"], "the catalog is configuration, not authority, so it is inherited");

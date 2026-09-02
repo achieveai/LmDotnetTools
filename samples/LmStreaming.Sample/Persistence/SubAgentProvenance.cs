@@ -71,11 +71,11 @@ public static class SubAgentProvenance
     /// template/parent precedence resolved (<see cref="SubAgentSnapshot.EffectiveModelId"/>).
     /// </summary>
     /// <remarks>
-    /// Not a <see cref="RemovalMarker"/> key, unlike <see cref="TerminalAtKey"/>. A child's effective model
-    /// is decided once, when its provider is constructed, and does not go stale the way a terminal instant
-    /// does across a restart — so omitting on absence is correct and explicitly clearing is not. Absent means
-    /// "no model was recorded for this child", which is a fact in its own right (a queued spawn has not been
-    /// routed yet) and must never be filled in from the run-level model downstream.
+    /// A replacement provider is constructed when a finished child is continued, and current capabilities
+    /// may produce a different or absent model/effort. <see cref="Build"/> therefore emits
+    /// <see cref="RemovalMarker"/> when a live snapshot has no value, so the additive metadata merge cannot
+    /// preserve stale routing from the provider it replaced. Legacy metadata with no live snapshot remains
+    /// untouched and projects absence honestly.
     /// </remarks>
     public const string ModelKey = "sample.subAgentModel";
 
@@ -95,6 +95,12 @@ public static class SubAgentProvenance
     /// (#529) from a child that simply inherited its parent's.
     /// </summary>
     public const string ModelSelectionSourceKey = "sample.subAgentModelSource";
+
+    /// <summary>Normalized effort requested before provider capability shaping.</summary>
+    public const string RequestedReasoningEffortKey = "sample.subAgentRequestedReasoningEffort";
+
+    /// <summary>Provider capability-shaped effort placed on the request.</summary>
+    public const string ShapedReasoningEffortKey = "sample.subAgentShapedReasoningEffort";
 
     /// <summary>
     /// Sentinel value for <see cref="TerminalAtKey"/> meaning "remove this key" rather than "set this
@@ -163,23 +169,25 @@ public static class SubAgentProvenance
 
             builder[StatusKey] = snapshot.Status.ToString().ToLowerInvariant();
 
-            // Model routing. Omitted rather than defaulted when the manager has nothing to report — a
-            // queued spawn has not been routed yet, and a fabricated value here would be indistinguishable
-            // downstream from a recorded one.
-            if (!string.IsNullOrWhiteSpace(snapshot.EffectiveModelId))
-            {
-                builder[ModelKey] = snapshot.EffectiveModelId;
-            }
-
-            if (snapshot.EffectiveModelIntelligence is { } tier)
-            {
-                builder[ModelIntelligenceKey] = tier;
-            }
+            // Model routing. A reconstructed child may select a different provider or effort. Null on a
+            // live snapshot must therefore clear the original stamp, not merely omit the key from this
+            // additive merge. The pending source still records why there is no routed model yet.
+            builder[ModelKey] = !string.IsNullOrWhiteSpace(snapshot.EffectiveModelId)
+                ? snapshot.EffectiveModelId
+                : RemovalMarker;
+            builder[ModelIntelligenceKey] = snapshot.EffectiveModelIntelligence is { } tier ? tier : RemovalMarker;
 
             if (!string.IsNullOrWhiteSpace(snapshot.ModelSelectionSource))
             {
                 builder[ModelSelectionSourceKey] = snapshot.ModelSelectionSource;
             }
+
+            builder[RequestedReasoningEffortKey] = !string.IsNullOrWhiteSpace(snapshot.RequestedReasoningEffort)
+                ? snapshot.RequestedReasoningEffort
+                : RemovalMarker;
+            builder[ShapedReasoningEffortKey] = !string.IsNullOrWhiteSpace(snapshot.ShapedReasoningEffort)
+                ? snapshot.ShapedReasoningEffort
+                : RemovalMarker;
 
             if (TerminalStatuses.Contains(snapshot.Status))
             {
@@ -266,6 +274,8 @@ public static class SubAgentProvenance
             EffectiveModelId = ReadString(metadata, ModelKey),
             EffectiveModelIntelligence = ReadInt32(metadata, ModelIntelligenceKey),
             ModelSelectionSource = ReadString(metadata, ModelSelectionSourceKey),
+            RequestedReasoningEffort = ReadString(metadata, RequestedReasoningEffortKey),
+            ShapedReasoningEffort = ReadString(metadata, ShapedReasoningEffortKey),
         };
     }
 

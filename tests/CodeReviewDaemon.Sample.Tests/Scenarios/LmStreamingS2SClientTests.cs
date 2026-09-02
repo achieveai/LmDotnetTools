@@ -35,7 +35,7 @@ public sealed class LmStreamingS2SClientTests
                     : null;
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("{\"threadId\":\"thread-abc123\"}"),
+                    Content = new StringContent("{\"threadId\":\"thread-abc123\",\"reasoningEffortAccepted\":true}"),
                 };
             }
         );
@@ -53,6 +53,7 @@ public sealed class LmStreamingS2SClientTests
             "workspace-agent",
             "REVIEW METHODOLOGY",
             "gpt-5.6-sol",
+            "xhigh",
             CancellationToken.None
         );
 
@@ -74,11 +75,70 @@ public sealed class LmStreamingS2SClientTests
             .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"")
             // The configured sub-agent model rides the same call. Provision is the only moment it can be
             // set: the host builds a thread's sub-agent options once, when it creates the agent.
-            .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"");
+            .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"")
+            // Root effort is also conversation-scoped. It must cross S2S instead of falling back to the
+            // provider default, which is only medium for the deployed GPT-5.6 models.
+            .And.Contain("\"reasoningEffort\":\"xhigh\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
         capturedS2SAuth.Should().Be("s2s-secret");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_rejects_a_host_that_does_not_acknowledge_requested_reasoning_effort()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-old-host\"}"
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "xhigh",
+                CancellationToken.None
+            );
+
+        var thrown = await act.Should().ThrowAsync<ReviewHostContractException>();
+        thrown.Which.Message.Should().Contain("did not acknowledge");
+        thrown.Which.Message.Should().Contain("reasoning effort");
+        thrown.Which.Message.Should().Contain("xhigh");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_turns_an_invalid_effort_400_into_a_bounded_contract_error()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"error\":\"reasoning_effort_invalid\",\"code\":\"reasoning_effort_invalid\"}",
+            HttpStatusCode.BadRequest
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "turbo",
+                CancellationToken.None
+            );
+
+        var thrown = await act.Should().ThrowAsync<ReviewHostContractException>();
+        thrown.Which.Message.Should().Contain("reasoning_effort_invalid");
+        thrown.Which.Message.Should().Contain("turbo");
     }
 
     [Fact]
@@ -98,6 +158,7 @@ public sealed class LmStreamingS2SClientTests
             "workspace-agent",
             systemPromptAppendix: null,
             subAgentModelId: null,
+            reasoningEffort: null,
             CancellationToken.None
         );
 
@@ -109,6 +170,58 @@ public sealed class LmStreamingS2SClientTests
         // Same for an unconfigured sub-agent model: an explicit null, never an empty string. A host that
         // stored "" would then hand every spawn a blank model id instead of leaving it to inherit.
         recorded.Body.Should().Contain("\"subAgentModelId\":null");
+        // Null means "use the host/provider default" and must stay distinct from explicit empty below.
+        recorded.Body.Should().Contain("\"reasoningEffort\":null");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_preserves_an_explicit_empty_reasoning_effort_on_the_wire()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-effort-empty\",\"reasoningEffortAccepted\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        _ = await client.ProvisionAsync(
+            "ws-1",
+            "openai",
+            "workspace-agent",
+            systemPromptAppendix: null,
+            subAgentModelId: null,
+            reasoningEffort: string.Empty,
+            CancellationToken.None
+        );
+
+        handler.Requests.Should().ContainSingle().Subject.Body.Should().Contain("\"reasoningEffort\":\"\"");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_empty_reasoning_effort_still_requires_host_acknowledgement()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-effort-unacknowledged\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "openai",
+                "workspace-agent",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: string.Empty,
+                CancellationToken.None
+            );
+
+        var thrown = await act.Should().ThrowAsync<ReviewHostContractException>();
+        thrown.Which.Message.Should().Contain("did not acknowledge requested root reasoning effort");
     }
 
     /// <summary>
@@ -139,6 +252,7 @@ public sealed class LmStreamingS2SClientTests
                 "code-review-daemon",
                 systemPromptAppendix: null,
                 subAgentModelId: null,
+                reasoningEffort: null,
                 CancellationToken.None
             );
 
@@ -167,6 +281,7 @@ public sealed class LmStreamingS2SClientTests
             "workspace-agent",
             systemPromptAppendix: null,
             subAgentModelId: "   ",
+            reasoningEffort: null,
             CancellationToken.None
         );
 
@@ -563,7 +678,8 @@ public sealed class LmStreamingS2SClientTests
             "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
                 + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
                 + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-sol\","
-                + "\"effectiveModelIntelligence\":3,\"modelSelectionSource\":\"template-tier\"}]}"
+                + "\"effectiveModelIntelligence\":5,\"modelSelectionSource\":\"spawn-tier\","
+                + "\"requestedReasoningEffort\":\"xhigh\",\"shapedReasoningEffort\":\"xhigh\"}]}"
         );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
@@ -572,8 +688,10 @@ public sealed class LmStreamingS2SClientTests
 
         var node = snapshot.Nodes.Should().ContainSingle().Subject;
         node.EffectiveModelId.Should().Be("gpt-5.6-sol");
-        node.EffectiveModelIntelligence.Should().Be(3);
-        node.ModelSelectionSource.Should().Be("template-tier");
+        node.EffectiveModelIntelligence.Should().Be(5);
+        node.ModelSelectionSource.Should().Be("spawn-tier");
+        node.RequestedReasoningEffort.Should().Be("xhigh");
+        node.ShapedReasoningEffort.Should().Be("xhigh");
     }
 
     [Fact]
@@ -602,6 +720,8 @@ public sealed class LmStreamingS2SClientTests
         node.EffectiveModelId.Should().BeNull("absent is not a model, and must not become one downstream");
         node.EffectiveModelIntelligence.Should().BeNull();
         node.ModelSelectionSource.Should().BeNull();
+        node.RequestedReasoningEffort.Should().BeNull();
+        node.ShapedReasoningEffort.Should().BeNull();
     }
 
     [Fact]

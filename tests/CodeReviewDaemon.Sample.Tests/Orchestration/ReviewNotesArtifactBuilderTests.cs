@@ -121,13 +121,17 @@ public sealed class ReviewNotesArtifactBuilderTests
         string name,
         string? model,
         int? tier = null,
-        string? source = null
+        string? source = null,
+        string? requestedEffort = null,
+        string? shapedEffort = null
     ) =>
         Node(agentId, name) with
         {
             EffectiveModelId = model,
             EffectiveModelIntelligence = tier,
             ModelSelectionSource = source,
+            RequestedReasoningEffort = requestedEffort,
+            ShapedReasoningEffort = shapedEffort,
         };
 
     private static ReviewNotesArtifactContext NewContext(params ReviewSubAgentNode[] nodes) =>
@@ -1323,18 +1327,30 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         var files = await BuildAsync(
             builder,
-            NewContext(NodeOnModel("agent-1", "architecture", "gpt-5.6-sol", tier: 3, source: "template-tier"))
+            NewContext(
+                NodeOnModel(
+                    "agent-1",
+                    "architecture",
+                    "gpt-5.6-sol",
+                    tier: 5,
+                    source: "spawn-tier",
+                    requestedEffort: "xhigh",
+                    shapedEffort: "xhigh"
+                )
+            )
         );
 
         var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
         findings.Content.Should().Contain("| Model | gpt-5.6-sol |");
-        findings.Content.Should().Contain("| Model tier | 3 |");
+        findings.Content.Should().Contain("| Model tier | 5 |");
         findings
             .Content.Should()
             .Contain(
-                "| Model source | template-tier |",
+                "| Model source | spawn-tier |",
                 "the model id alone cannot tell a tier that resolved to it from a caller that named it outright"
             );
+        findings.Content.Should().Contain("| Requested effort | xhigh |");
+        findings.Content.Should().Contain("| Shaped effort | xhigh |");
 
         var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
         contextFile.Content.Should().Contain("| # | Agent | Model | Template | Status | Findings file |");
@@ -1358,6 +1374,8 @@ public sealed class ReviewNotesArtifactBuilderTests
             .NotContain("| Model | test-model |", "test-model is the RUN's model and this agent's is not recorded");
         findings.Content.Should().Contain("| Model tier | (unrecorded) |");
         findings.Content.Should().Contain("| Model source | (unrecorded) |");
+        findings.Content.Should().Contain("| Requested effort | (unrecorded) |");
+        findings.Content.Should().Contain("| Shaped effort | (unrecorded) |");
 
         var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
         contextFile.Content.Should().Contain("| 1 | architecture | (unrecorded) | reviewer |");

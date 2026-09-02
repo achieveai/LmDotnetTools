@@ -87,9 +87,10 @@ internal sealed class LmStreamingS2SClient
 
     /// <summary>
     /// Provisions a new conversation thread and returns its server-minted thread id.
-    /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: provision carries no
-    /// model or tool overrides, so it is the ONLY channel by which the daemon's review methodology, output
-    /// contract and sub-agent-dispatch instructions reach the hosted agent. The host records it in thread
+    /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: the optional provision
+    /// model/effort fields configure execution rather than instructions, so this is the ONLY channel by which
+    /// the daemon's review methodology, output contract and sub-agent-dispatch instructions reach the hosted
+    /// agent. The host records it in thread
     /// metadata and composes it into the prompt at agent build via
     /// <c>SystemPromptAugmenter.ComposeAsync</c>, LAST — after the mode prompt, the workspace suffix and
     /// the discovered CLAUDE.md/AGENTS.md block (additive, not a replacement).
@@ -121,6 +122,7 @@ internal sealed class LmStreamingS2SClient
         string modeId,
         string? systemPromptAppendix,
         string? subAgentModelId,
+        string? reasoningEffort,
         CancellationToken ct
     )
     {
@@ -134,6 +136,9 @@ internal sealed class LmStreamingS2SClient
                 ModeId = modeId,
                 SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix) ? null : systemPromptAppendix,
                 SubAgentModelId = string.IsNullOrWhiteSpace(subAgentModelId) ? null : subAgentModelId,
+                // Do not normalize empty to null: empty explicitly asks the host to omit effort, while null
+                // leaves the provider's default intact.
+                ReasoningEffort = reasoningEffort,
             },
             ct
         );
@@ -155,8 +160,26 @@ internal sealed class LmStreamingS2SClient
             );
         }
 
+        if (response.StatusCode == HttpStatusCode.BadRequest)
+        {
+            var detail = await response.Content.ReadAsStringAsync(ct);
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} rejected the review-conversation contract "
+                    + $"(POST api/conversations returned 400). Requested reasoning effort: "
+                    + $"'{reasoningEffort ?? "(absent)"}'. Host response: {detail}"
+            );
+        }
+
         _ = response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
+        if (reasoningEffort is not null && !ReadBoolProperty(body, "reasoningEffortAccepted"))
+        {
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} did not acknowledge requested root reasoning effort "
+                    + $"'{reasoningEffort}'. Upgrade the review host before running this review."
+            );
+        }
+
         return ReadStringProperty(body, "threadId");
     }
 
@@ -201,8 +224,8 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
-    /// Verifies, WITHOUT queueing anything, that the host implements the two message-level contracts every
-    /// review turn depends on: per-turn spawn suppression and message idempotency.
+    /// Verifies, WITHOUT creating or queueing anything, that the host implements the three contracts a review
+    /// depends on: root reasoning effort, per-turn spawn suppression, and message idempotency.
     /// <para>
     /// Response acknowledgements alone are too late for the FIRST send. An old host ignores unknown request
     /// properties, so the daemon only learns its key was never honored after that turn is already queued and
@@ -228,8 +251,8 @@ internal sealed class LmStreamingS2SClient
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} does not advertise conversation capabilities "
                     + $"(GET api/conversations/capabilities returned {(int)response.StatusCode}), so it "
-                    + "predates the per-turn spawn suppression and message idempotency contracts this review "
-                    + "requires. Upgrade the review host."
+                    + "predates the root reasoning-effort, per-turn spawn-suppression, and message-idempotency "
+                    + "contracts this review requires. Upgrade the review host."
             );
         }
 
@@ -255,6 +278,11 @@ internal sealed class LmStreamingS2SClient
         if (!ReadBoolProperty(body, "spawnSuppression"))
         {
             missing.Add("spawnSuppression");
+        }
+
+        if (!ReadBoolProperty(body, "rootReasoningEffort"))
+        {
+            missing.Add("rootReasoningEffort");
         }
 
         if (missing.Count > 0)
@@ -634,6 +662,8 @@ internal sealed class LmStreamingS2SClient
             EffectiveModelId = OptionalString(element, "effectiveModelId"),
             EffectiveModelIntelligence = OptionalInt(element, "effectiveModelIntelligence"),
             ModelSelectionSource = OptionalString(element, "modelSelectionSource"),
+            RequestedReasoningEffort = OptionalString(element, "requestedReasoningEffort"),
+            ShapedReasoningEffort = OptionalString(element, "shapedReasoningEffort"),
         };
     }
 

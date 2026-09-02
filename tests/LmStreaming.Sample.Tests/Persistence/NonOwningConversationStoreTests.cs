@@ -137,6 +137,63 @@ public sealed class NonOwningConversationStoreTests
         (saved!.Properties?.ContainsKey(SubAgentProvenance.ParentThreadIdKey) ?? false).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task NonOwningWrapper_RemovesStaleRoutingAndEffort_WhenReplacementSnapshotHasNone()
+    {
+        var underlying = new InMemoryConversationStore();
+        SubAgentSnapshot snapshot = new(
+            AgentId: "child-1",
+            Name: "alpha",
+            TemplateName: "code-reviewer:security",
+            Task: "check auth",
+            Status: SubAgentStatus.Running,
+            ThreadId: ThreadId,
+            LastActivityUtc: null,
+            EffectiveModelId: "gpt-5.6-sol",
+            EffectiveModelIntelligence: 5,
+            ModelSelectionSource: "spawn-tier",
+            RequestedReasoningEffort: "xhigh",
+            ShapedReasoningEffort: "xhigh"
+        );
+        var wrapper = new NonOwningConversationStore(
+            underlying,
+            ThreadId,
+            () => SubAgentProvenance.Build("thread-parent", snapshot)
+        );
+
+        await wrapper.SaveMetadataAsync(ThreadId, new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+        var routed = await underlying.LoadMetadataAsync(ThreadId);
+        routed!
+            .Properties!.Should()
+            .ContainKeys(
+                SubAgentProvenance.ModelKey,
+                SubAgentProvenance.ModelIntelligenceKey,
+                SubAgentProvenance.RequestedReasoningEffortKey,
+                SubAgentProvenance.ShapedReasoningEffortKey
+            );
+
+        snapshot = snapshot with
+        {
+            EffectiveModelId = null,
+            EffectiveModelIntelligence = null,
+            ModelSelectionSource = "parent",
+            RequestedReasoningEffort = null,
+            ShapedReasoningEffort = null,
+        };
+        await wrapper.UpdateMetadataAsync(ThreadId, existing => existing! with { LastUpdated = 2 });
+
+        var replacement = await underlying.LoadMetadataAsync(ThreadId);
+        replacement!
+            .Properties!.Should()
+            .NotContainKeys(
+                SubAgentProvenance.ModelKey,
+                SubAgentProvenance.ModelIntelligenceKey,
+                SubAgentProvenance.RequestedReasoningEffortKey,
+                SubAgentProvenance.ShapedReasoningEffortKey
+            );
+        replacement!.Properties![SubAgentProvenance.ModelSelectionSourceKey].Should().Be("parent");
+    }
+
     /// <summary>
     /// Task 1 (daemon-recursive-review-completion-barrier): the manager's causal terminal-state push
     /// goes through this wrapper's <see cref="NonOwningConversationStore.UpdateMetadataAsync"/> path —

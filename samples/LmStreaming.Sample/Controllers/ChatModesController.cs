@@ -55,7 +55,7 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] ChatModeCreateUpdate createData, CancellationToken ct = default)
     {
-        if (InvalidPlacement(createData) is { } invalid)
+        if (InvalidMode(createData) is { } invalid)
         {
             return invalid;
         }
@@ -71,7 +71,7 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
         CancellationToken ct = default
     )
     {
-        if (InvalidPlacement(updateData) is { } invalid)
+        if (InvalidMode(updateData) is { } invalid)
         {
             return invalid;
         }
@@ -111,16 +111,27 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     /// the fold point downstream never re-validates. System modes get the same rule at yaml load
     /// (<see cref="Persistence.SystemChatModes"/>).
     /// </summary>
-    private static BadRequestObjectResult? InvalidPlacement(ChatModeCreateUpdate data) =>
-        Services.ModeSubAgentPrompt.IsValidPlacement(data?.SubAgentPromptPlacement)
-            ? null
-            : new BadRequestObjectResult(
+    private static BadRequestObjectResult? InvalidMode(ChatModeCreateUpdate data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if (!Services.ModeSubAgentPrompt.IsValidPlacement(data.SubAgentPromptPlacement))
+        {
+            return new BadRequestObjectResult(
                 new
                 {
-                    error = $"Invalid subAgentPromptPlacement '{data!.SubAgentPromptPlacement}'. "
+                    error = $"Invalid subAgentPromptPlacement '{data.SubAgentPromptPlacement}'. "
                         + $"Valid values: {Services.ModeSubAgentPrompt.Prepend}, {Services.ModeSubAgentPrompt.Append}.",
                 }
             );
+        }
+
+        var policyError = Services.ModeSubAgentPolicy.Validate(
+            data.SubAgentReasoningEffort,
+            data.SubAgentModelIntelligenceByType,
+            data.DefaultSubAgentModelIntelligence
+        );
+        return policyError is null ? null : new BadRequestObjectResult(new { error = policyError });
+    }
 
     [HttpPost("{modeId}/copies")]
     public async Task<IActionResult> Copy(

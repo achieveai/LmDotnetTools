@@ -131,6 +131,7 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
                     DefaultOptions = new GenerateReplyOptions { ModelId = "tier-five-model" },
                     IsModelTierResolved = true,
                     ModelIntelligence = 5,
+                    Effort = ReasoningEffort.Xhigh,
                 },
             },
             MaxConcurrentSubAgents = 5,
@@ -166,6 +167,8 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
         routing["TemplateModelIntelligence"].Should().Be(5);
         routing["EffectiveModelId"].Should().Be("tier-five-model");
         routing["EffectiveModelIntelligence"].Should().Be(5);
+        routing["RequestedReasoningEffort"].Should().Be("xhigh");
+        routing["ShapedReasoningEffort"].Should().BeNull("the test factory does not shape provider metadata");
     }
 
     /// <summary>

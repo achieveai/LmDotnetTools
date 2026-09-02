@@ -75,4 +75,26 @@ public sealed record AgentProfile(
     /// <see cref="SubAgentPrompt"/>.
     /// </summary>
     public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
+
+    /// <summary>
+    /// Conversation-wide reasoning effort requested for sub-agents in this profile. Hosts parse and
+    /// capability-shape this provider-neutral token before invoking a selected model. Null leaves the
+    /// existing inheritance/template behavior unchanged.
+    /// </summary>
+    public string? SubAgentReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Authoritative model-intelligence tier keyed by the canonical registered <c>subagent_type</c>.
+    /// Null means this profile has no type-keyed routing policy. An empty map is still a policy when
+    /// <see cref="DefaultSubAgentModelIntelligence"/> is present.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
+
+    /// <summary>
+    /// Authoritative tier for types absent from <see cref="SubAgentModelIntelligenceByType"/>. Null
+    /// means unmapped types preserve their caller/template model selection. Hosts may scope this
+    /// fallback to a type family; the LmStreaming review-mode policy applies it only to canonical
+    /// <c>code-reviewer:*</c> types so unrelated children retain their own routing.
+    /// </summary>
+    public int? DefaultSubAgentModelIntelligence { get; init; }
 }

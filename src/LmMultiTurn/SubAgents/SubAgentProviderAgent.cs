@@ -57,4 +57,10 @@ public sealed record SubAgentProviderAgent
     /// back from an unsupported explicit model to the parent provider agent.
     /// </summary>
     public bool UseParentModel { get; init; }
+
+    /// <summary>
+    /// Provider capability-shaped reasoning effort placed on the request, or null when effort was
+    /// omitted or the provider uses an opaque legacy reasoning shape.
+    /// </summary>
+    public string? ShapedEffort { get; init; }
 }

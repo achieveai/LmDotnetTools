@@ -160,12 +160,20 @@ public sealed class SubAgentProvenanceTests
     // that names a run's sub-agents — and the daemon artifacts built from it — could not say what any of
     // them ran on (#552).
 
-    private static SubAgentSnapshot MakeRoutedSnapshot(string? effectiveModelId, int? tier, string selectionSource) =>
+    private static SubAgentSnapshot MakeRoutedSnapshot(
+        string? effectiveModelId,
+        int? tier,
+        string selectionSource,
+        string? requestedEffort = null,
+        string? shapedEffort = null
+    ) =>
         MakeSnapshot(SubAgentStatus.Completed, DateTimeOffset.UnixEpoch) with
         {
             EffectiveModelId = effectiveModelId,
             EffectiveModelIntelligence = tier,
             ModelSelectionSource = selectionSource,
+            RequestedReasoningEffort = requestedEffort,
+            ShapedReasoningEffort = shapedEffort,
         };
 
     [Fact]
@@ -182,18 +190,44 @@ public sealed class SubAgentProvenanceTests
     }
 
     [Fact]
-    public void Build_OmitsTheModelKeys_RatherThanMarkingThemForRemoval_WhenNothingWasRouted()
+    public void Build_StampsRequestedAndShapedEffortTokens()
     {
-        // Deliberately NOT the RemovalMarker treatment TerminalAtKey gets. A child's effective model is
-        // decided once, when its provider is built, and does not go stale across a restart the way a
-        // terminal instant does — so there is no stale value to clear, and omitting is the honest write.
+        var properties = SubAgentProvenance.Build(
+            ParentThreadId,
+            MakeRoutedSnapshot("gpt-5.6-sol", 5, "spawn-tier", "xhigh", "xhigh")
+        );
+
+        properties[SubAgentProvenance.RequestedReasoningEffortKey].Should().Be("xhigh");
+        properties[SubAgentProvenance.ShapedReasoningEffortKey].Should().Be("xhigh");
+    }
+
+    [Fact]
+    public void Build_MarksNullableRoutingValuesForRemoval_WhenReplacementHasNone()
+    {
+        // The characteristics factory is re-invoked when a finished child is reconstructed. Its replacement
+        // may select a different model or omit an effort the original provider supported. The metadata store
+        // merges stamps additively, so omission would preserve the original value and report stale routing.
         var properties = SubAgentProvenance.Build(
             ParentThreadId,
             MakeRoutedSnapshot(effectiveModelId: null, tier: null, selectionSource: "pending")
         );
 
-        properties.Should().NotContainKey(SubAgentProvenance.ModelKey);
-        properties.Should().NotContainKey(SubAgentProvenance.ModelIntelligenceKey);
+        foreach (
+            var key in new[]
+            {
+                SubAgentProvenance.ModelKey,
+                SubAgentProvenance.ModelIntelligenceKey,
+                SubAgentProvenance.RequestedReasoningEffortKey,
+                SubAgentProvenance.ShapedReasoningEffortKey,
+            }
+        )
+        {
+            properties.Should().ContainKey(key);
+            ReferenceEquals(properties[key], SubAgentProvenance.RemovalMarker)
+                .Should()
+                .BeTrue($"{key} must clear any value left by the original provider");
+        }
+
         properties[SubAgentProvenance.ModelSelectionSourceKey]
             .Should()
             .Be("pending", "a spawn that has not been routed yet says so, which is not the same as saying nothing");
@@ -206,14 +240,19 @@ public sealed class SubAgentProvenanceTests
         {
             ThreadId = ChildThreadId,
             LastUpdated = 1,
-            Properties = SubAgentProvenance.Build(ParentThreadId, MakeRoutedSnapshot("gpt-5.6-terra", 2, "spawn-tier")),
+            Properties = SubAgentProvenance.Build(
+                ParentThreadId,
+                MakeRoutedSnapshot("gpt-5.6-terra", 3, "spawn-tier", "xhigh", "high")
+            ),
         };
 
         var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
 
         summary!.EffectiveModelId.Should().Be("gpt-5.6-terra");
-        summary.EffectiveModelIntelligence.Should().Be(2);
+        summary.EffectiveModelIntelligence.Should().Be(3);
         summary.ModelSelectionSource.Should().Be("spawn-tier");
+        summary.RequestedReasoningEffort.Should().Be("xhigh");
+        summary.ShapedReasoningEffort.Should().Be("high");
     }
 
     [Fact]

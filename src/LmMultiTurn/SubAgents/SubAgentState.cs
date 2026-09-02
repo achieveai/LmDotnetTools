@@ -200,6 +200,12 @@ internal class SubAgentState
     /// </summary>
     public int? ModelIntelligence { get; init; }
 
+    /// <summary>
+    /// Stable host-policy label attached to the authoritative spawn selection, or null when the model/tier
+    /// came directly from the caller. Retained so an owned-provider restart preserves truthful provenance.
+    /// </summary>
+    public string? AuthoritativeModelSelectionSource { get; init; }
+
     /// <summary>The final resolved model this sub-agent was built with (override &gt; template &gt; parent, after
     /// characteristics processing) — captured at creation so descendant usage is billed to the model that
     /// actually handled the request, not a value re-derived later that could diverge. Refreshed on an
@@ -212,6 +218,12 @@ internal class SubAgentState
 
     /// <summary>Stable explanation of the winning model-selection input.</summary>
     public string ModelSelectionSource { get; set; } = "parent";
+
+    /// <summary>Normalized effort selected before provider capability shaping.</summary>
+    public string? RequestedReasoningEffort { get; set; }
+
+    /// <summary>Provider capability-shaped effort placed on the request, or null when omitted.</summary>
+    public string? ShapedReasoningEffort { get; set; }
 
     public string[]? AddTools { get; init; }
     public string[]? RemoveTools { get; init; }

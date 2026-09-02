@@ -67,7 +67,11 @@ public sealed class S2SReviewAgentLoopFactoryTests
                 "/status",
                 "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"answer\"}}"
             )
-            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
+            .OnJson(
+                HttpMethod.Post,
+                "api/conversations",
+                "{\"threadId\":\"thread-fresh\",\"reasoningEffortAccepted\":true}"
+            );
 
     /// <summary>The <c>providerId</c> the daemon named on the provision request — i.e. the model the hosted
     /// conversation will run on, since a Copilot-discovered provider id IS a model id on the review host.</summary>
@@ -286,6 +290,30 @@ public sealed class S2SReviewAgentLoopFactoryTests
     /// this one.
     /// </para>
     /// </summary>
+    [Fact]
+    public async Task Create_puts_the_requested_reasoning_effort_on_the_provision_wire()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http)
+            .Create(
+                Profile,
+                modelId: null,
+                threadId: "review-run-7-a",
+                reasoningEffort: "xhigh",
+                reviewWorkspace: Workspace
+            );
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain("\"reasoningEffort\":\"xhigh\"");
+    }
+
     [Fact]
     public async Task Create_puts_the_configured_SubAgentModelId_on_the_provision_wire()
     {

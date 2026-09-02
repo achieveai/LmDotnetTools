@@ -159,6 +159,16 @@ public record SubAgentOptions
     public ReasoningEffort? InheritedEffort { get; init; }
 
     /// <summary>
+    /// Conversation-wide reasoning-effort floor for characteristics-backed sub-agents. Unlike
+    /// <see cref="InheritedEffort"/>, this remains in force when a spawn or template selects a different
+    /// model or tier; the selected model's capability shaper may still reduce or omit it. A template's own
+    /// <see cref="SubAgentTemplate.Effort"/> remains authoritative and may deliberately choose a lower value.
+    /// Null (default) preserves the existing effort-resolution behavior. Inherited through
+    /// <see cref="ForChildLoop"/> so every descendant in the conversation receives the same floor.
+    /// </summary>
+    public ReasoningEffort? ConversationEffortFloor { get; init; }
+
+    /// <summary>
     /// Pre-shaped reasoning metadata a plain-path delegate inherits when its template carries no
     /// <see cref="SubAgentTemplate.CharacteristicsAgentFactory"/> (e.g. a WorkflowAgent controller's
     /// transparent delegate) and no reasoning of its own. Unlike <see cref="InheritedEffort"/> — an abstract
@@ -268,6 +278,18 @@ public record SubAgentOptions
     public Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver { get; init; }
 
     /// <summary>
+    /// Optional host authority for a spawn's model selection keyed by its resolved
+    /// <c>subagent_type</c>. The Agent-tool boundary canonicalizes the required type against the live
+    /// template catalog first, then invokes this resolver and replaces both caller-supplied model
+    /// fields when it returns a selection. This keeps a mode's routing policy independent of the
+    /// optional, caller-authored display <c>name</c>. This resolver is evaluated before
+    /// <see cref="SpawnModelSelectionResolver"/>; a non-null type-keyed selection therefore wins over
+    /// a workflow unit's name-keyed selection. Null (default), or a null resolver result, preserves
+    /// ordinary Agent behavior and allows the name-keyed resolver to run.
+    /// </summary>
+    public Func<string, SubAgentSpawnModelSelection?>? SpawnTypeModelSelectionResolver { get; init; }
+
+    /// <summary>
     /// Optional host authority for a named spawn's collaboration <c>role</c> and <c>description</c>. When
     /// this resolver returns metadata, admission uses it in place of the caller/LLM supplied values, so a
     /// host that already knows what it delegated — a workflow controller spawning an authored task —
@@ -295,12 +317,14 @@ public record SubAgentOptions
     /// <summary>
     /// The options a spawned child's OWN loop runs on. Everything the host configured — templates,
     /// limits, model selection/validation, tool inheritance, per-agent providers — is preserved, but the
-    /// three spawn-authority hooks are cleared, because they belong to ONE host at ONE level rather than
-    /// to the whole subtree. A workflow controller closes them over its live runtime to gate spawns by
-    /// authored unit name and to stamp trusted role/description onto them; inherited verbatim by a
-    /// delegate, they would reject the delegate's ordinary sub-agents (whose names are not workflow
+    /// three workflow-local spawn-authority hooks are cleared, because they belong to ONE host at ONE level
+    /// rather than to the whole subtree. A workflow controller closes them over its live runtime to gate
+    /// spawns by authored unit name and to stamp trusted role/description onto them; inherited verbatim by
+    /// a delegate, they would reject the delegate's ordinary sub-agents (whose names are not workflow
     /// units), silently overwrite their model selection, and publish the controller's authored metadata
-    /// as if it described work the delegate invented. See #244.
+    /// as if it described work the delegate invented. See #244. The type-keyed resolver is deliberately
+    /// preserved: unlike a workflow unit name, a canonical <c>subagent_type</c> has the same meaning at every
+    /// depth, and a conversation-wide mode policy must govern all review descendants.
     /// <para>
     /// <see cref="ProvenanceAwareConversationStoreFactory"/> and <see cref="ChildToolProviderFactory"/>
     /// are deliberately NOT among the cleared hooks: both take their identity from the invoking manager
@@ -317,8 +341,12 @@ public record SubAgentOptions
         };
 }
 
-/// <summary>An authoritative per-spawn model override/tier pair supplied by a host.</summary>
-public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntelligence);
+/// <summary>
+/// An authoritative per-spawn model override/tier pair supplied by a host. <paramref name="SelectionSource"/>
+/// is a stable, content-free telemetry label for the host policy that supplied the selection; null preserves
+/// the ordinary <c>spawn-model</c>/<c>spawn-tier</c> labels for legacy resolvers.
+/// </summary>
+public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntelligence, string? SelectionSource = null);
 
 /// <summary>
 /// Authoritative per-spawn collaboration metadata supplied by a host that owns the delegation's meaning.

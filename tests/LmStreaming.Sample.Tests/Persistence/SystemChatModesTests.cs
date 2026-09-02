@@ -277,6 +277,31 @@ public class SystemChatModesTests
 
         mode.SubAgentPrompt.Should().Contain("claim the task", "the todo-claim fragment reaches every sub-agent");
         mode.SubAgentPromptPlacement.Should().Be(ModeSubAgentPrompt.Prepend);
+        mode.SubAgentReasoningEffort.Should().Be("xhigh");
+        mode.DefaultSubAgentModelIntelligence.Should().Be(3, "unmapped review children use Terra");
+        mode.SubAgentModelIntelligenceByType.Should()
+            .BeEquivalentTo(
+                new Dictionary<string, int>
+                {
+                    ["code-reviewer:architecture-review"] = 5,
+                    ["code-reviewer:euii-leak-detector"] = 5,
+                    ["code-reviewer:schema-compatibility-review"] = 5,
+                    ["code-reviewer:exception-handling-review"] = 5,
+                    ["code-reviewer:review-grader"] = 5,
+                    ["code-reviewer:class-design-simplifier"] = 5,
+                    ["code-reviewer:over-engineering-review"] = 5,
+                    ["code-reviewer:performance-review"] = 3,
+                    ["code-reviewer:test-coverage-review"] = 3,
+                    ["code-reviewer:pr-context-gatherer"] = 3,
+                    ["code-reviewer:nscript-review"] = 3,
+                    ["code-reviewer:orleans-review"] = 3,
+                    ["code-reviewer:feature-flag-reviewer"] = 3,
+                    ["code-reviewer:temp-code-review"] = 1,
+                    ["code-reviewer:duplicate-code-detector"] = 1,
+                    ["code-reviewer:code-simplifier"] = 1,
+                },
+                "the policy contains every canonical code-reviewer agent and no stale aliases"
+            );
     }
 
     /// <summary>
@@ -308,7 +333,7 @@ public class SystemChatModesTests
         prompt.Should().NotContain("post-pr-comments").And.NotContain("post-pr-review");
         // Review methodology (the pr-review skill, COLLECT/SYNTHESIS) lives in the daemon appendix.
         prompt.Should().NotContain("code-reviewer:pr-review");
-        // Model routing belongs to SubAgentModelId, not prompt doctrine.
+        // Model routing is structured mode policy, not prompt doctrine.
         prompt.Should().NotContain("claude-opus-5").And.NotContain("gpt-5.6").And.NotContain("<cost_priority>");
         // The audience is a bot conversation; the user-accessibility block does not travel.
         prompt.Should().NotContain("dyslexic").And.NotContain("ADHD");

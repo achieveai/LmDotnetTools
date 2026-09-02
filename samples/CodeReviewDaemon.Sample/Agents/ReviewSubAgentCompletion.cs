@@ -76,6 +76,12 @@ internal sealed record ReviewSubAgentNode
     /// <c>parent</c>, or <c>pending</c>.
     /// </summary>
     public string? ModelSelectionSource { get; init; }
+
+    /// <summary>Normalized effort requested before provider capability shaping.</summary>
+    public string? RequestedReasoningEffort { get; init; }
+
+    /// <summary>Provider capability-shaped effort placed on the request, or null when omitted.</summary>
+    public string? ShapedReasoningEffort { get; init; }
 }
 
 /// <summary>

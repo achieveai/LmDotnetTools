@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.Misc.Utils;
@@ -17,6 +18,18 @@ public sealed class ProgramModeRequiredToolsTests
 {
     private static AgentProfile Profile(IReadOnlyList<string>? requiredTools) =>
         new("mode-1", "Mode One", "primary prompt") { SubAgentRequiredTools = requiredTools };
+
+    private static AgentProfile ReviewPolicyProfile() =>
+        new("review-mode", "Review Mode", "primary prompt")
+        {
+            SubAgentReasoningEffort = "xhigh",
+            SubAgentModelIntelligenceByType = new Dictionary<string, int>
+            {
+                ["code-reviewer:architecture-review"] = 5,
+                ["code-reviewer:duplicate-code-detector"] = 1,
+            },
+            DefaultSubAgentModelIntelligence = 3,
+        };
 
     /// <summary>
     /// Runs the REAL composition-root path (non-test provider branch, no sandbox) so deleting the
@@ -93,6 +106,54 @@ public sealed class ProgramModeRequiredToolsTests
         };
 
         mode.ToAgentProfile().SubAgentRequiredTools.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task BuildSubAgentOptions_AppliesTheModeReasoningAndTypeRoutingPolicy()
+    {
+        var options = await BuildAsync(ReviewPolicyProfile());
+
+        options!.ConversationEffortFloor.Should().Be(ReasoningEffort.Xhigh);
+        options
+            .SpawnTypeModelSelectionResolver!("code-reviewer:architecture-review")
+            .Should()
+            .Be(new SubAgentSpawnModelSelection(null, 5, "type-policy"));
+        options
+            .SpawnTypeModelSelectionResolver("code-reviewer:unmapped-review")
+            .Should()
+            .Be(new SubAgentSpawnModelSelection(null, 3, "type-policy-default"));
+        options
+            .SpawnTypeModelSelectionResolver("general-purpose")
+            .Should()
+            .BeNull("the Terra fallback is for review children and must not override unrelated templates");
+    }
+
+    [Fact]
+    public async Task BuildSubAgentOptions_ModeWithoutPolicyPreservesTheExistingSpawnBehavior()
+    {
+        var options = await BuildAsync(Profile(requiredTools: null));
+
+        options!.ConversationEffortFloor.Should().BeNull();
+        options.SpawnTypeModelSelectionResolver.Should().BeNull();
+    }
+
+    [Fact]
+    public void ToAgentProfile_CarriesTheModeReasoningAndTypeRoutingPolicy()
+    {
+        var mode = new ChatMode
+        {
+            Id = "m",
+            Name = "M",
+            SystemPrompt = "p",
+            SubAgentReasoningEffort = "xhigh",
+            SubAgentModelIntelligenceByType = new Dictionary<string, int> { ["code-reviewer:architecture-review"] = 5 },
+            DefaultSubAgentModelIntelligence = 3,
+        };
+
+        var profile = mode.ToAgentProfile();
+        profile.SubAgentReasoningEffort.Should().Be("xhigh");
+        profile.SubAgentModelIntelligenceByType.Should().Contain("code-reviewer:architecture-review", 5);
+        profile.DefaultSubAgentModelIntelligence.Should().Be(3);
     }
 
     [Fact]

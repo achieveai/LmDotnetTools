@@ -262,6 +262,55 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         resolved.Payload.Text.Should().Contain("Unknown template").And.Contain("researcher").And.Contain("coder");
     }
 
+    [Theory]
+    [InlineData("no-such-agent")]
+    [InlineData("shared")]
+    public async Task HandleAgentToolAsync_UnresolvableTypeDoesNotInvokeTypePolicy(string requestedType)
+    {
+        var typePolicyInvocations = 0;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["plugin-a:shared"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "a",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+                ["plugin-b:shared"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "b",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnTypeModelSelectionResolver = _ =>
+            {
+                typePolicyInvocations++;
+                return new SubAgentSpawnModelSelection(null, 5, "type-policy");
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source
+        );
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+
+        var result = await handler(
+            JsonSerializer.Serialize(new { subagent_type = requestedType, prompt = "work" }),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.ErrorCode.Should().Be("unknown_subagent_type");
+        typePolicyInvocations.Should().Be(0, "routing policy applies only after a canonical type resolves");
+    }
+
     [Fact]
     public async Task HandleAgentToolAsync_QueueFull_ReturnsRecoverableError()
     {
@@ -458,6 +507,139 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         observed
             .Should()
             .BeNull(because: "the workflow unit's authoritative null tier must erase the LLM's placeholder zero");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_TypePolicyUsesCanonicalTypeAndOverridesCallerModelSelection()
+    {
+        string? observedType = null;
+        int? observedTier = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["code-reviewer:architecture-review"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "architecture",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnTypeModelSelectionResolver = subagentType =>
+            {
+                observedType = subagentType;
+                return new SubAgentSpawnModelSelection(
+                    Model: null,
+                    ModelIntelligence: 5,
+                    SelectionSource: "type-policy"
+                );
+            },
+            TierModelResolver = tier =>
+            {
+                observedTier = tier;
+                return "gpt-5.6-sol";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source
+        );
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "architecture-review",
+                prompt = "work",
+                model = "gpt-5.6-luna",
+                modelIntelligence = 1,
+            }
+        );
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observedType.Should().Be("code-reviewer:architecture-review");
+        observedTier.Should().Be(5, "the mode policy must replace both caller-authored model fields");
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("type-policy");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_NullTypePolicyFallsThroughToWorkflowNamePolicy()
+    {
+        int? observedTier = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnTypeModelSelectionResolver = _ => null,
+            SpawnModelSelectionResolver = name =>
+                name == "unit:1:task" ? new SubAgentSpawnModelSelection(Model: null, ModelIntelligence: 4) : null,
+            TierModelResolver = tier =>
+            {
+                observedTier = tier;
+                return "tier-model";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source
+        );
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "work",
+                name = "unit:1:task",
+                model = "caller-model",
+                modelIntelligence = 1,
+            }
+        );
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observedTier
+            .Should()
+            .Be(4, "a non-applicable type policy must not suppress an authoritative workflow-unit selection");
+    }
+
+    [Fact]
+    public void ForChildLoop_PreservesConversationTypePolicyAndClearsWorkflowLocalPolicy()
+    {
+        Func<string, SubAgentSpawnModelSelection?> typePolicy = _ => new SubAgentSpawnModelSelection(
+            null,
+            3,
+            "type-policy"
+        );
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>(),
+            SpawnTypeModelSelectionResolver = typePolicy,
+            SpawnModelSelectionResolver = _ => new SubAgentSpawnModelSelection(null, 5, "workflow-unit"),
+            SpawnNameGate = _ => "workflow-local",
+            SpawnMetadataResolver = _ => new SubAgentSpawnMetadata("role", "description"),
+        };
+
+        var childOptions = options.ForChildLoop();
+
+        childOptions.SpawnTypeModelSelectionResolver.Should().BeSameAs(typePolicy);
+        childOptions.SpawnModelSelectionResolver.Should().BeNull();
+        childOptions.SpawnNameGate.Should().BeNull();
+        childOptions.SpawnMetadataResolver.Should().BeNull();
     }
 
     [Fact]

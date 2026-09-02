@@ -61,6 +61,7 @@ public sealed class CharacteristicsAgentFactoryTests
 
         result.Agent.Should().BeSameAs(modelAgent);
         result.OwnsAgent.Should().BeTrue();
+        result.ShapedEffort.Should().Be("medium");
         createdFor.Should().BeSameAs(model);
         if (transport == CopilotModelTransport.Anthropic)
         {
@@ -98,6 +99,7 @@ public sealed class CharacteristicsAgentFactoryTests
 
         result.Agent.Should().BeSameAs(parentAgent);
         result.OwnsAgent.Should().BeFalse();
+        result.ShapedEffort.Should().Be("medium");
         var reasoning = result.ExtraProperties["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
         reasoning.Effort.Should().Be("medium");
         reasoning.Summary.Should().Be("auto");
@@ -185,6 +187,8 @@ public sealed class CharacteristicsAgentFactoryTests
 
         first.ExtraProperties.Should().BeEmpty();
         second.ExtraProperties.Should().BeEmpty();
+        first.ShapedEffort.Should().BeNull();
+        second.ShapedEffort.Should().BeNull();
         var debug = logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Debug).Which;
         debug.Message.Should().Contain(ReasoningEffort.High.ToString());
         debug.Message.Should().Contain(model.Id);

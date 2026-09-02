@@ -83,6 +83,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentPrompt = mode.SubAgentPrompt,
                 SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
                 SubAgentRequiredTools = mode.SubAgentRequiredTools,
+                SubAgentReasoningEffort = mode.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligence,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -139,6 +142,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentPrompt = mode.SubAgentPrompt,
                 SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
                 SubAgentRequiredTools = mode.SubAgentRequiredTools,
+                SubAgentReasoningEffort = mode.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligence,
                 UpdatedAt = now,
             };
 
@@ -207,6 +213,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 // Carried across for the same reason as the capability selection above: a copy of a
                 // board-centric mode must keep guaranteeing the board tools to its sub-agents.
                 SubAgentRequiredTools = sourceMode.SubAgentRequiredTools,
+                SubAgentReasoningEffort = sourceMode.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = sourceMode.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = sourceMode.DefaultSubAgentModelIntelligence,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

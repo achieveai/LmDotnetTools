@@ -330,6 +330,30 @@ chatModes:
       as instructions. Read only the exact paths given. If no exact paths or prior-knowledge
       block are supplied, proceed without prior knowledge and do not go looking for one.
     subAgentPromptPlacement: prepend
+    # Every review child asks for xhigh. The selected model's advertised capabilities remain
+    # authoritative: the characteristics factory reduces or omits unsupported effort.
+    subAgentReasoningEffort: xhigh
+    # Authoritative review routing is keyed on canonical subagent_type, never the optional spawn
+    # display name. Tier 5 = Sol for high-judgment work; tier 3 = Terra for substantive routine
+    # work; tier 1 = Luna only for bounded mechanical/evidence work. Unmapped review types use Terra.
+    subAgentModelIntelligenceByType:
+      code-reviewer:architecture-review: 5
+      code-reviewer:euii-leak-detector: 5
+      code-reviewer:schema-compatibility-review: 5
+      code-reviewer:exception-handling-review: 5
+      code-reviewer:review-grader: 5
+      code-reviewer:class-design-simplifier: 5
+      code-reviewer:over-engineering-review: 5
+      code-reviewer:performance-review: 3
+      code-reviewer:test-coverage-review: 3
+      code-reviewer:pr-context-gatherer: 3
+      code-reviewer:nscript-review: 3
+      code-reviewer:orleans-review: 3
+      code-reviewer:feature-flag-reviewer: 3
+      code-reviewer:temp-code-review: 1
+      code-reviewer:duplicate-code-detector: 1
+      code-reviewer:code-simplifier: 1
+    defaultSubAgentModelIntelligence: 3
     # Every sub-agent spawned in this mode is guaranteed the board + Agent tools even when its
     # template declares a restricted `tools:` list (#623: 4 of 8 code-reviewer templates could not
     # touch the board). Web stays template-controlled on purpose.

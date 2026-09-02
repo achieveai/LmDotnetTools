@@ -49,6 +49,45 @@ public sealed class WorkspaceWorkflowWiringTests
     }
 
     [Fact]
+    public void WorkflowControllerPolicy_InheritsConversationWideEffortAndTypeRouting()
+    {
+        Func<string, SubAgentSpawnModelSelection?> typePolicy = type =>
+            type == "code-reviewer:security" ? new SubAgentSpawnModelSelection(null, 5, "type-policy") : null;
+        var conversationOptions = new SubAgentOptions
+        {
+            Templates = BuiltInSubAgentTemplates.Create(FakeAgent),
+            ConversationEffortFloor = ReasoningEffort.Xhigh,
+            SpawnTypeModelSelectionResolver = typePolicy,
+        };
+        var controllerOptions = RestrictedControllerOptions();
+
+        var applied = global::Program.ApplyConversationSubAgentPolicyToController(
+            controllerOptions,
+            conversationOptions
+        );
+
+        applied.ConversationEffortFloor.Should().Be(ReasoningEffort.Xhigh);
+        applied.SpawnTypeModelSelectionResolver.Should().BeSameAs(typePolicy);
+        applied
+            .SpawnTypeModelSelectionResolver!("code-reviewer:security")
+            .Should()
+            .Be(new SubAgentSpawnModelSelection(null, 5, "type-policy"));
+    }
+
+    [Fact]
+    public void WorkflowControllerPolicy_WithNoConversationOptions_PreservesControllerDefaults()
+    {
+        var controllerOptions = RestrictedControllerOptions();
+
+        var applied = global::Program.ApplyConversationSubAgentPolicyToController(
+            controllerOptions,
+            conversationOptions: null
+        );
+
+        applied.Should().BeSameAs(controllerOptions);
+    }
+
+    [Fact]
     public void ControllerTemplates_AreInheritAll_AndAcceptedByWorkflowManager_WithStructuralExclusion()
     {
         var templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent);

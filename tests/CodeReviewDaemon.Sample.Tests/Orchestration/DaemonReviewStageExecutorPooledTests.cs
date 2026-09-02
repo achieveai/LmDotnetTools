@@ -577,6 +577,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
+        fixture
+            .Factory.ReasoningEfforts.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(
+                "medium",
+                "the pooled tool-assisted path uses ToolAssistedReasoningEffort rather than the diff-only setting"
+            );
+
         // The context carries the read-only allow-list as data. Write-scoping is NOT carried here, and no mount
         // takes its place: writes outside the notes dir are ineffective rather than blocked — the commit gate
         // stages only the PR's notes dir and the next lease's clean-on-entry erases the rest — so this

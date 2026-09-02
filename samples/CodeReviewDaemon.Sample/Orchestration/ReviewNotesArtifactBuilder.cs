@@ -549,6 +549,18 @@ internal sealed class ReviewNotesArtifactBuilder
             ? UnrecordedModel
             : UntrustedTranscriptText.Inline(node.ModelSelectionSource, maxChars: 40);
 
+    /// <summary>Normalized requested reasoning effort, or <see cref="UnrecordedModel"/>.</summary>
+    private static string RenderRequestedEffort(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.RequestedReasoningEffort)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.RequestedReasoningEffort, maxChars: 20);
+
+    /// <summary>Provider capability-shaped reasoning effort, or <see cref="UnrecordedModel"/>.</summary>
+    private static string RenderShapedEffort(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.ShapedReasoningEffort)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.ShapedReasoningEffort, maxChars: 20);
+
     private async Task<IReadOnlyList<FindingsArtifact>> BuildFindingsAsync(
         ReviewRun run,
         string round,
@@ -625,6 +637,12 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine(" |")
             .Append("| Model source | ")
             .Append(RenderModelSource(node))
+            .AppendLine(" |")
+            .Append("| Requested effort | ")
+            .Append(RenderRequestedEffort(node))
+            .AppendLine(" |")
+            .Append("| Shaped effort | ")
+            .Append(RenderShapedEffort(node))
             .AppendLine(" |")
             .Append("| Template | ")
             .Append(UntrustedTranscriptText.Inline(node.Template))

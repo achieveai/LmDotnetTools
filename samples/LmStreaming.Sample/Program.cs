@@ -1520,14 +1520,35 @@ try
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
 
-                    // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
-                    // testable helper so the per-provider wiring is regression-guarded; see
-                    // ProgramReasoningExtraPropertiesTests. Discovered Copilot models map by transport,
-                    // and adaptive-thinking models opt out of the classic thinking budget request.
-                    var extraProperties = BuildReasoningExtraProperties(
+                    // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
+                    // effort is read from durable conversation metadata here, at the request-options build
+                    // boundary, so it survives pool eviction and host restart. Null preserves the pre-existing
+                    // provider default shape; empty explicitly omits effort; non-empty values are capability-
+                    // shaped for the discovered model.
+                    var requestedRootEffort = ConversationRootReasoningEffort
+                        .ReadAsync(conversationStore, threadId)
+                        .GetAwaiter()
+                        .GetResult();
+                    var rootReasoningLogger = loggerFactory.CreateLogger("LmStreaming.Sample.RootReasoning");
+                    var extraProperties = BuildConversationReasoningExtraProperties(
+                        providerRegistry,
+                        isCopilotBackedModel ? copilotModelInfo.Id : normalizedProviderId,
                         normalizedProviderId,
-                        isCopilotBackedModel ? copilotModelInfo.Transport : null,
-                        isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking
+                        requestedRootEffort,
+                        onUnsupportedEffort: effort =>
+                            rootReasoningLogger.LogWarning(
+                                "Root reasoning effort {RequestedReasoningEffort} cannot be capability-shaped for "
+                                    + "provider {ProviderId}; preserving the provider's default reasoning shape",
+                                effort,
+                                normalizedProviderId
+                            )
+                    );
+                    rootReasoningLogger.LogInformation(
+                        "Root reasoning configuration for thread {ThreadId}: requested effort "
+                            + "{RequestedReasoningEffort}, shaped effort {ShapedReasoningEffort}",
+                        threadId,
+                        requestedRootEffort,
+                        ReadShapedReasoningEffort(extraProperties)
                     );
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
@@ -1828,7 +1849,12 @@ try
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
                             // nested workflow tab survives a page reload (live streaming works regardless).
-                            return ApplyDefaultSubAgentStore(outputTokenPolicy.ApplyDelegated(opts), conversationStore);
+                            return ApplyDefaultSubAgentStore(
+                                outputTokenPolicy.ApplyDelegated(
+                                    ApplyConversationSubAgentPolicyToController(opts, subAgentOptions)
+                                ),
+                                conversationStore
+                            );
                         }
 
                         var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
@@ -2668,6 +2694,83 @@ public partial class Program
     }
 
     /// <summary>
+    /// Builds the root conversation's reasoning metadata from its persisted optional effort. A null request
+    /// preserves the host's existing provider-specific reasoning shape. Empty explicitly omits the request.
+    /// Recognized non-empty values are capability-shaped for discovered Copilot models. Unknown persisted
+    /// values and providers without an advertised effort surface preserve their provider-default shape and
+    /// invoke <paramref name="onUnsupportedEffort"/> rather than silently weakening reasoning.
+    /// </summary>
+    internal static ImmutableDictionary<string, object?> BuildConversationReasoningExtraProperties(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        string? requestedEffort,
+        Action<string>? onUnsupportedEffort = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(providerRegistry);
+
+        if (requestedEffort is null)
+        {
+            if (
+                !string.IsNullOrWhiteSpace(copilotModelKey)
+                && providerRegistry.TryGetCopilotModel(copilotModelKey, out var model)
+            )
+            {
+                return BuildReasoningExtraProperties(
+                    fallbackProviderId,
+                    model.Transport,
+                    model.SupportsAdaptiveThinking
+                );
+            }
+
+            return BuildReasoningExtraProperties(fallbackProviderId);
+        }
+
+        if (requestedEffort.Length == 0)
+        {
+            return ImmutableDictionary<string, object?>.Empty;
+        }
+
+        if (!ConversationRootReasoningEffort.TryParse(requestedEffort, out var parsedEffort))
+        {
+            onUnsupportedEffort?.Invoke(requestedEffort);
+            return BuildConversationReasoningExtraProperties(
+                providerRegistry,
+                copilotModelKey,
+                fallbackProviderId,
+                requestedEffort: null
+            );
+        }
+
+        if (!string.IsNullOrWhiteSpace(copilotModelKey) && providerRegistry.TryGetCopilotModel(copilotModelKey, out _))
+        {
+            return BuildControllerReasoningExtraProperties(
+                providerRegistry,
+                copilotModelKey,
+                fallbackProviderId,
+                parsedEffort
+            );
+        }
+
+        onUnsupportedEffort?.Invoke(requestedEffort);
+        return BuildReasoningExtraProperties(fallbackProviderId);
+    }
+
+    /// <summary>
+    /// Reports the exact provider capability-shaped effort represented by root reasoning metadata.
+    /// The result is a safe configuration token, not reasoning content.
+    /// </summary>
+    internal static string? ReadShapedReasoningEffort(ImmutableDictionary<string, object?> extraProperties) =>
+        extraProperties.TryGetValue("Reasoning", out var reasoning)
+        && reasoning is ResponseReasoningOptions { Effort: { } responsesEffort }
+            ? responsesEffort
+        : extraProperties.TryGetValue("OutputConfig", out var outputConfig)
+        && outputConfig is AnthropicOutputConfig { Effort: { } anthropicEffort }
+            ? anthropicEffort
+        : null;
+
+    /// <summary>
     ///     Builds the reasoning metadata for a StartWorkflowAgent CONTROLLER loop (and its plain-path
     ///     delegates), shaped for the controller's own model so the orchestrator thinks at the parent's
     ///     level instead of running un-nudged (the observed "acts as dumb as it acts" starvation). The
@@ -3295,6 +3398,26 @@ public partial class Program
             : null;
 
     /// <summary>
+    /// Carries conversation-wide review policy into a workflow controller's delegate options. The
+    /// controller keeps ownership of workflow-local name routing, metadata, and gates; only the
+    /// conversation's type-based routing authority and reasoning floor cross this boundary.
+    /// </summary>
+    internal static SubAgentOptions ApplyConversationSubAgentPolicyToController(
+        SubAgentOptions controllerOptions,
+        SubAgentOptions? conversationOptions
+    )
+    {
+        ArgumentNullException.ThrowIfNull(controllerOptions);
+        return conversationOptions is null
+            ? controllerOptions
+            : controllerOptions with
+            {
+                ConversationEffortFloor = conversationOptions.ConversationEffortFloor,
+                SpawnTypeModelSelectionResolver = conversationOptions.SpawnTypeModelSelectionResolver,
+            };
+    }
+
+    /// <summary>
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
     /// </summary>
@@ -3502,7 +3625,11 @@ public partial class Program
         if (sandboxSession is null)
         {
             return ApplyCharacteristicsAgentFactory(
-                ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode, logger),
+                ApplyModeSubAgentPolicy(
+                    ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode, logger),
+                    mode,
+                    logger
+                ),
                 characteristicsAgentFactory
             );
         }
@@ -3523,13 +3650,68 @@ public partial class Program
         // Folded AFTER enrichment so the fragment lands on every tier uniformly — built-in,
         // workspace-discovered, and marketplace templates alike.
         return ApplyCharacteristicsAgentFactory(
-            ApplyModeRequiredTools(
-                ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
+            ApplyModeSubAgentPolicy(
+                ApplyModeRequiredTools(
+                    ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
+                    mode,
+                    logger
+                ),
                 mode,
                 logger
             ),
             characteristicsAgentFactory
         );
+    }
+
+    /// <summary>
+    /// Applies a mode's conversation-wide child reasoning floor and authoritative
+    /// <c>subagent_type</c>-to-tier policy. Null fields leave the options untouched. The type map
+    /// and fallback are captured into immutable snapshots so later user-mode updates affect only
+    /// newly built conversations.
+    /// </summary>
+    internal static SubAgentOptions ApplyModeSubAgentPolicy(
+        SubAgentOptions options,
+        AgentProfile mode,
+        Microsoft.Extensions.Logging.ILogger? logger = null
+    )
+    {
+        var applied = options;
+        if (!string.IsNullOrWhiteSpace(mode.SubAgentReasoningEffort))
+        {
+            if (ConversationRootReasoningEffort.TryParse(mode.SubAgentReasoningEffort, out var effort))
+            {
+                applied = applied with { ConversationEffortFloor = effort };
+            }
+            else
+            {
+                logger?.LogWarning(
+                    "Mode {ModeId} has unsupported SubAgentReasoningEffort {ReasoningEffort}; the child effort floor is omitted",
+                    mode.Id,
+                    mode.SubAgentReasoningEffort
+                );
+            }
+        }
+
+        var routing = mode.SubAgentModelIntelligenceByType;
+        var fallbackTier = mode.DefaultSubAgentModelIntelligence;
+        if (routing is not null || fallbackTier is not null)
+        {
+            var snapshot = routing is null
+                ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, int>(routing, StringComparer.OrdinalIgnoreCase);
+            applied = applied with
+            {
+                SpawnTypeModelSelectionResolver = subagentType =>
+                    snapshot.TryGetValue(subagentType, out var tier)
+                        ? new SubAgentSpawnModelSelection(null, tier, "type-policy")
+                    : fallbackTier is { } fallback
+                    && subagentType.StartsWith("code-reviewer:", StringComparison.OrdinalIgnoreCase)
+                        ? new SubAgentSpawnModelSelection(null, fallback, "type-policy-default")
+                    : null,
+            };
+        }
+
+        return applied;
     }
 
     /// <summary>
