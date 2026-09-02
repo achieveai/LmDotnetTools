@@ -35,6 +35,16 @@ public class VocabularyParityTests
     }
 
     [Fact]
+    public void SubAgentThreadPrefix_MatchesTheOneTheLibraryMints()
+    {
+        // The Runner decides which threads are sub-agent threads - and therefore what `primaryTurns`
+        // and `subAgentCount` mean - from this hand-copied prefix. #710 renamed the rest of the thread
+        // id under the wave and left the prefix alone; the next such change would silently reclassify
+        // every sub-agent thread as a root one, and every affected count would move without failing.
+        ConversationStoreReader.SubAgentDirPrefix.Should().Be(SubAgentThreadIds.Prefix);
+    }
+
+    [Fact]
     public void TheTwoFamilies_DoNotOverlap()
     {
         // An overlap would make Classify order-dependent and silently move a tool between the

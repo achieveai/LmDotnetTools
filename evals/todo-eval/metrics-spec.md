@@ -414,7 +414,10 @@ with `subagent-`.
 
 ## Score object
 
-`score.ps1` emits exactly one JSON object:
+`score.ps1` emits exactly one JSON object. **Every value below is an illustrative
+placeholder chosen to show the shape** — none of them is a recorded measurement, so no
+threshold may be set from a number on this page. Real figures live in an archived run's
+`summary.md` and `runs.jsonl`.
 
 ```json
 {
