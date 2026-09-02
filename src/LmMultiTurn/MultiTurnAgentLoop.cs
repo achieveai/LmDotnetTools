@@ -846,15 +846,20 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
 
-            // A large conversation almost certainly failed on context exhaustion — the endpoint typically
-            // aborts the stream (a transport error) rather than returning a clean 400. Classify it in the
-            // error the caller sees so a dropped sub-agent reads as "context too large", not a network blip.
-            const long largeConversationTokenEstimate = 100_000;
-            var errorMessage =
-                estTokens >= largeConversationTokenEstimate
-                    ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
-                        + "window; reduce scope or use a bigger-window model)"
-                    : ex.Message;
+            // Classify the failure in the error the caller sees so a dropped sub-agent reads as "context too
+            // large" when — and only when — the exception says so. The provider's own overflow error is
+            // definitive at any size; a transport abort on a large conversation is the shape a huge request
+            // usually fails in (the endpoint cuts the stream rather than returning a clean 400), so it is
+            // called LIKELY. Size alone earns nothing: a disposed client or a programming fault on a big
+            // history is still a disposed client or a programming fault (#693).
+            var errorMessage = ProviderErrorClassifier.ClassifyContextOverflow(ex, estTokens) switch
+            {
+                ContextOverflowVerdict.Overflow => $"{ex.Message} (conversation ~{estTokens} tokens est — exceeded "
+                    + "the model context window; reduce scope or use a bigger-window model)",
+                ContextOverflowVerdict.LikelyOverflow => $"{ex.Message} (conversation ~{estTokens} tokens est — "
+                    + "likely exceeded the model context window; reduce scope or use a bigger-window model)",
+                _ => ex.Message,
+            };
 
             await CompleteRunAsync(
                 assignment.RunId,
