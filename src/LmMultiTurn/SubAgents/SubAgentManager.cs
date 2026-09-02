@@ -3308,13 +3308,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
             }
 
+            // Phase clock for the opt-in measurement sink (#670). Started unconditionally - a Stopwatch
+            // timestamp is a few nanoseconds and branching here would fork the hot path for no
+            // measurable gain - but only READ when a sink exists.
+            var spawnClock = Stopwatch.StartNew();
+
             // Determine conversation store (see ResolveChildStore): a template's own factory wins;
             // otherwise the provenance-aware host factory (#275) is preferred, invoked with THIS manager's
             // own identity so a grandchild is attributed to its actual parent instead of a captured root.
-            // Phase clocks for the opt-in measurement sink (#670). Started unconditionally - a
-            // Stopwatch timestamp is a few nanoseconds and branching here would fork the hot path for
-            // no measurable gain - but only READ when a sink exists.
-            var spawnClock = Stopwatch.StartNew();
             store = ResolveChildStore(agentId, template, lineage);
 
             // Stamp the child with the launching conversation's tenant and owner BEFORE the loop
