@@ -91,15 +91,32 @@ internal static class ReadmeUsageSample
     }
 
     /// <summary>
-    /// The README's "Artifact retention and cleanup" block, compiled: run a command, consume its output,
-    /// then reclaim the stdout/stderr artifacts that command left in the workspace.
+    /// The README's "Artifact retention and cleanup" block, compiled: a succeeding command needs no
+    /// cleanup call because <see cref="SandboxClient.ExecuteAsync"/> already released its record, while a
+    /// FAILING one keeps its record as a replay handle and is reclaimed explicitly.
     /// </summary>
-    public static async Task ReclaimCommandArtifactsAsync(SandboxClient client, string sessionId)
+    public static async Task ReclaimCommandArtifactsAsync(SandboxClient client, string sessionId, string id)
     {
+        // An SDK-minted id needs no cleanup: ExecuteAsync released the record and its artifacts, and
+        // result.OperationRecordReleased says whether that succeeded.
         var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"]));
         Console.WriteLine(result.StandardOutput);
 
-        // The output has been consumed; reclaim the stdout/stderr files it left behind.
-        await client.DeleteOperationAsync(sessionId, result.OperationId);
+        try
+        {
+            // Supplying an id keeps the record replayable — and makes reclaiming it yours to do.
+            var replayable = await client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["git", "status"], operationId: id)
+            );
+            Console.WriteLine(replayable.StandardOutput);
+            await client.DeleteOperationAsync(sessionId, replayable.OperationId);
+        }
+        catch (SandboxException ex) when (ex.OperationId is { } failed)
+        {
+            // A failure keeps its record on purpose, so the id stays a replay handle. Reclaim it explicitly
+            // once you have given up on re-reading that operation's output.
+            await client.DeleteOperationAsync(sessionId, failed);
+        }
     }
 }

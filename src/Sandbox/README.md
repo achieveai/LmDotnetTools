@@ -67,8 +67,9 @@ the workflow is the operative pin.
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
   its exact captured output back. See [Command execution](#command-execution) below.
 - **Operation cleanup:** `DeleteOperationAsync(sessionId, operationId)` — reclaim one finished command's
-  gateway-side record and its on-disk stdout/stderr artifacts, so a long-lived sandbox can bound its
-  artifact footprint without being torn down. See
+  gateway-side record and its on-disk stdout/stderr artifacts. `ExecuteAsync` already calls it for you
+  when it minted the operation id itself and the command succeeded; this is the manual entry point for
+  the records it deliberately leaves behind — a caller-supplied `OperationId`, or a failed command. See
   [Artifact retention and cleanup](#artifact-retention-and-cleanup) below.
 - **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
@@ -273,8 +274,26 @@ A command's stdout/stderr artifacts are created, retained, and deleted **by the 
 sandbox, under the reserved `.mcp-gateway/operations/<operation_id>/<generation>/` prefix. This SDK
 writes no artifact, keeps no manifest, lease, or bookkeeping of its own, and runs no cleanup pass — so
 there is no SDK-side retention window to configure, and no stale-artifact sweep that a caller could
-trigger or tune. Cleanup is per-operation and caller-driven: you name the operation to reclaim
-(`DeleteOperationAsync`, below) and the gateway does the deleting.
+trigger or tune. Cleanup is per-operation: one named operation is reclaimed at a time and the gateway
+does the deleting.
+
+**`ExecuteAsync` reclaims only the operations it named itself.** When you leave
+`SandboxCommand.OperationId` null, the SDK mints the id, nobody else can name that record, and a
+successful command ends with `DELETE .../operations/{operation_id}` — issued once both artifacts have
+been downloaded and decoded, and only then, because the same `DELETE` removes the artifact directory it
+just read. That is what keeps a long-lived session under the gateway's
+`OPERATION_MAX_RECORDS_PER_SESSION` cap (default 256), whose terminal-TTL reaper would otherwise take an
+hour to free each slot and would leave the files behind even then. **A caller-supplied `OperationId` is
+never released by the SDK** — passing an id is your statement that you own that record's lifecycle
+(replay, artifact reads, and the eventual `DeleteOperationAsync`), and reclaiming it here would silently
+break all three; `OperationRecordReleased` is always `false` for such a command. The release is otherwise
+**best-effort**: it never throws and never changes the command's outcome, and
+`SandboxCommandResult.OperationRecordReleased` reports whether it happened — a caller running many
+commands with SDK-minted ids on one session should report a persistent `false` **once per session**,
+since it is the early warning for `503 operation_capacity_exhausted`. A **failing** `ExecuteAsync`
+likewise releases nothing on purpose: the operation id is the idempotent-replay recovery handle described
+above, and deleting the record under (say) a lost artifact download would force a re-run of a
+side-effecting command.
 
 **Artifact files are not time-expired.** ADR 0031 §5's reaper prunes terminal **in-memory operation
 records** after `OPERATION_TERMINAL_TTL_SECS` (default 3600); it does **not** delete the on-disk files.
@@ -289,18 +308,34 @@ primitive — `DELETE /api/v1/sandboxes/{session_id}/operations/{operation_id}` 
 or reserved operation's record and best-effort deletes its generation-scoped artifact directory:
 
 ```csharp
+// An SDK-minted id needs no cleanup: ExecuteAsync released the record and its artifacts, and
+// result.OperationRecordReleased says whether that succeeded.
 var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"]));
 Console.WriteLine(result.StandardOutput);
 
-// The output has been consumed; reclaim the stdout/stderr files it left behind.
-await client.DeleteOperationAsync(sessionId, result.OperationId);
+try
+{
+    // Supplying an id keeps the record replayable — and makes reclaiming it yours to do.
+    var replayable = await client.ExecuteAsync(
+        sessionId,
+        new SandboxCommand(["git", "status"], operationId: id)
+    );
+    Console.WriteLine(replayable.StandardOutput);
+    await client.DeleteOperationAsync(sessionId, replayable.OperationId);
+}
+catch (SandboxException ex) when (ex.OperationId is { } failed)
+{
+    // A failure keeps its record on purpose, so the id stays a replay handle. Reclaim it explicitly
+    // once you have given up on re-reading that operation's output.
+    await client.DeleteOperationAsync(sessionId, failed);
+}
 ```
 
-**When to call it: once you have read a command's output, on any sandbox that outlives the commands it
-runs.** A long-lived sandbox executing many commands otherwise accumulates one artifact directory per
-command for its entire life. `DeleteAsync` remains the **bulk** cleanup — tearing down the whole sandbox
-removes every artifact with it — and nothing about it changes; `DeleteOperationAsync` is what lets you
-bound the footprint *without* reaching for that boundary.
+**When to call it: for the operations `ExecuteAsync` leaves behind** — a command you gave your own
+`OperationId`, or one that failed and whose output you no longer intend to re-read.
+`DeleteAsync` remains the **bulk** cleanup — tearing down the whole sandbox removes every artifact with
+it — and nothing about it changes; `DeleteOperationAsync` is what lets you bound the footprint *without*
+reaching for that boundary.
 
 Three behaviours to code against:
 
