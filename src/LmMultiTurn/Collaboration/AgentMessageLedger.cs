@@ -612,14 +612,49 @@ public sealed class AgentMessageLedger
         );
     }
 
+    /// <summary>
+    /// Everything a sender still has to act on, oldest first: what is still in flight, plus what ended
+    /// badly and is still remembered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately NOT <see cref="GetOpenOutbound"/> plus a filter. A delivery failure closes the
+    /// entry, so an open-only view drops a message at the exact moment the sender most needs to know
+    /// about it — the sender is told "accepted", the delivery fails, the entry closes, and every
+    /// subsequent look says it has nothing outstanding. Including the two bad terminal states is what
+    /// makes the view answer "is there anything I should do?" rather than only "what is pending?".
+    /// </para>
+    /// <para>
+    /// The two GOOD terminal states are excluded for the same reason they are terminal: an answered
+    /// question and a delivered message that wanted no reply both need nothing further from the sender,
+    /// and listing them would bury the ones that do behind the ones that do not. A failure leaves the
+    /// list on its own when retention forgets the entry.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<AgentMessageLedgerEntry> GetUnsettledOutbound(string fromAgentId)
+    {
+        return Snapshot(entry =>
+            string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal)
+            && (
+                !entry.IsClosed
+                || entry.State is AgentMessageDeliveryState.DeliveryFailed or AgentMessageDeliveryState.Abandoned
+            )
+        );
+    }
+
     private IReadOnlyList<AgentMessageLedgerEntry> SnapshotOpen(Func<AgentMessageLedgerEntry, bool> predicate)
+    {
+        return Snapshot(entry => !entry.IsClosed && predicate(entry));
+    }
+
+    private IReadOnlyList<AgentMessageLedgerEntry> Snapshot(Func<AgentMessageLedgerEntry, bool> predicate)
     {
         lock (_gate)
         {
             return
             [
                 .. _entries
-                    .Values.Where(entry => !entry.IsClosed && predicate(entry))
+                    .Values.Where(predicate)
                     .OrderBy(entry => entry.AdmittedAt)
                     .ThenBy(entry => entry.MessageId, StringComparer.Ordinal),
             ];

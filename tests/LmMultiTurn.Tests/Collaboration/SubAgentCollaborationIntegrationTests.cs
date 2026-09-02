@@ -1669,6 +1669,125 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         observed.GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Running);
     }
 
+    /// <summary>
+    /// The pull half of delivery observability: what the sender still has to act on, listed beside the
+    /// agents it is asking about.
+    /// </summary>
+    /// <remarks>
+    /// The push notice can be missed — a sender that was not running when its delivery failed is never
+    /// woken, and one that was running has to notice a message among its inputs. This is the view it can
+    /// ask for, which is why it has to carry the states an "open obligations" list would drop: a
+    /// delivery failure CLOSES the ledger entry, so the moment the sender most needs to see the message
+    /// is the moment an open-only view stops showing it.
+    /// </remarks>
+    [Fact]
+    public async Task CheckAgents_ListsWhatTheSenderStillOwes_IncludingDeliveriesThatFailedAfterAcceptance()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var messenger = new AgentCollaborationMessenger(root);
+
+        // Three targets covering the three things a sender can be left holding: a message that can
+        // never arrive, one that could arrive on a retry, and one that arrived and is awaiting a reply.
+        var gone = RegisterPeerWithEndpoint(root, "gone", endpoint: null);
+        var busy = RegisterPeerWithEndpoint(
+            root,
+            "busy",
+            new StubEndpoint(AgentDeliveryDisposition.Refused, "input_queue_full")
+        );
+        var (_, live) = RegisterPeer(root, "live");
+
+        var toGone = messenger.Send(gone.AgentId, "are you there?", AgentMessageType.Question);
+        var toBusy = messenger.Send(busy.AgentId, "take this", AgentMessageType.DelegateTask);
+        var toLive = messenger.Send(live.AgentId, "still working?", AgentMessageType.Question);
+        await Task.WhenAll(toGone.Delivery, toBusy.Delivery, toLive.Delivery).WaitAsync(TimeSpan.FromSeconds(10));
+
+        var payload = await InvokeAsync(
+            provider,
+            "CheckAgents",
+            new { agent_ids = $"{gone.AgentId},{busy.AgentId},{live.AgentId}" }
+        );
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        var outbound = doc.RootElement.GetProperty("outbound");
+        outbound.GetProperty("count").GetInt32().Should().Be(3);
+        var rows = outbound.GetProperty("messages").EnumerateArray().ToDictionary(r => Text(r, "message_id"));
+
+        var goneRow = rows[toGone.Result.MessageId!];
+        goneRow.GetProperty("state").GetString().Should().Be("delivery_failed");
+        goneRow.GetProperty("to_agent_id").GetString().Should().Be(gone.AgentId);
+        goneRow.GetProperty("msg_type").GetString().Should().Be("question");
+        goneRow.GetProperty("reason").GetString().Should().Be(AgentCollaborationMessenger.NoEndpointReasonCode);
+
+        // The one distinction the model acts on: this message is worth sending again and the other
+        // failure is not. Without it both read as "failed" and a sender either gives up on a
+        // recoverable message or retries a hopeless one forever.
+        goneRow.GetProperty("retryable").GetBoolean().Should().BeFalse();
+        var busyRow = rows[toBusy.Result.MessageId!];
+        busyRow.GetProperty("state").GetString().Should().Be("delivery_failed");
+        busyRow.GetProperty("reason").GetString().Should().Be(AgentCollaborationMessenger.TargetBusyRetryReasonCode);
+        busyRow.GetProperty("retryable").GetBoolean().Should().BeTrue();
+
+        var liveRow = rows[toLive.Result.MessageId!];
+        liveRow.GetProperty("state").GetString().Should().Be("delivered");
+        liveRow.GetProperty("reason").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task CheckAgents_DropsAQuestionOnceItHasBeenAnswered()
+    {
+        // The list exists to be acted on, so anything that needs nothing must leave it. A view that
+        // kept answered questions would grow for the whole session and bury the entries that matter.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var (_, live) = RegisterPeer(root, "live");
+
+        var question = new AgentCollaborationMessenger(root).Send(
+            live.AgentId,
+            "which branch?",
+            AgentMessageType.Question
+        );
+        await question.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var answer = new AgentCollaborationMessenger(live).Send(
+            root.AgentId,
+            "main",
+            AgentMessageType.Response,
+            question.Result.MessageId
+        );
+        await answer.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var payload = await InvokeAsync(provider, "CheckAgents", new { agent_ids = live.AgentId });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.TryGetProperty("outbound", out _).Should().BeFalse("nothing is outstanding toward 'live'");
+    }
+
+    [Fact]
+    public async Task CheckAgents_OnlyListsObligationsTowardTheAgentsItWasAskedAbout()
+    {
+        // CheckAgents is a question about named agents, and the answer stays proportional to it. An
+        // unscoped list would grow with the whole collaboration and put an unrelated agent's message in
+        // front of the model every time it checked on anything at all.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var gone = RegisterPeerWithEndpoint(root, "gone", endpoint: null);
+        var (_, live) = RegisterPeer(root, "live");
+
+        var toGone = new AgentCollaborationMessenger(root).Send(gone.AgentId, "hello?", AgentMessageType.Question);
+        await toGone.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var payload = await InvokeAsync(provider, "CheckAgents", new { agent_ids = live.AgentId });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.TryGetProperty("outbound", out _).Should().BeFalse();
+        root.Bundle.Ledger.GetUnsettledOutbound(root.AgentId)
+            .Should()
+            .ContainSingle("the obligation still exists — it is simply not what this call asked about");
+    }
+
+    private static string Text(JsonElement element, string property) => element.GetProperty(property).GetString()!;
+
     [Fact]
     public async Task WaitForAgents_ReturnsOnceTheListedChildrenFinish()
     {
@@ -2273,20 +2392,33 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         string name
     )
     {
+        var endpoint = new RecordingEndpoint();
+        return (endpoint, RegisterPeerWithEndpoint(root, name, endpoint));
+    }
+
+    /// <summary>
+    /// Registers a peer whose delivery behaviour the test chooses — including a peer with NO write
+    /// endpoint, which is how an addressable agent that nothing can be handed to is spelled.
+    /// </summary>
+    private static AgentCollaborationSetup RegisterPeerWithEndpoint(
+        AgentCollaborationSetup root,
+        string name,
+        IAgentWriteEndpoint? endpoint
+    )
+    {
         var context = root.Context.CreateChild(
             $"agent-{name}",
             AgentKind.SubAgent,
             $"{name} role",
             $"Stands in for {name}."
         );
-        var endpoint = new RecordingEndpoint();
 
         _ = root.Directory.TryAcquireCapacity(context.AgentId);
         root.Directory.TryRegister(context, name, AgentCollaborationStatuses.Running, endpoint)
             .Succeeded.Should()
             .BeTrue();
 
-        return (endpoint, root.ForChild(context, name));
+        return root.ForChild(context, name);
     }
 
     /// <summary>
@@ -2667,6 +2799,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>A stand-in for another agent's owner, so a delivery can be observed without a loop.</summary>
+    /// <summary>An endpoint whose answer to every hand-off is fixed by the test that built it.</summary>
+    private sealed class StubEndpoint(AgentDeliveryDisposition disposition, string? reasonCode = null)
+        : IAgentWriteEndpoint
+    {
+        public ValueTask<AgentDeliveryOutcome> DeliverAsync(
+            AgentMessage message,
+            CancellationToken cancellationToken = default
+        ) => ValueTask.FromResult(new AgentDeliveryOutcome(disposition, reasonCode));
+    }
+
     private sealed class RecordingEndpoint : IAgentWriteEndpoint
     {
         private readonly TaskCompletionSource<AgentMessage> _received = new(

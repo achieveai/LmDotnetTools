@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -1210,8 +1211,105 @@ public class SubAgentToolProvider : IFunctionProvider
             ?? throw new ArgumentException("The 'agent_ids' parameter is required.");
 
         var batch = WidenToCollaboration(_manager.CheckAgents(targets));
-        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(SerializeObservationBatch(batch)));
+
+        // Built as a node so the outbound view can be attached WITHOUT touching BuildObservationPayload,
+        // which WaitForAgents nests inside its own result: an obligations list belongs to a poll the
+        // agent chose to make, not to the tail of a wait it was already blocked in.
+        var payload = JsonSerializer.SerializeToNode(BuildObservationPayload(batch))!.AsObject();
+        if (BuildOutboundObligations(batch) is { } outbound)
+        {
+            payload["outbound"] = outbound;
+        }
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload.ToJsonString()));
     }
+
+    /// <summary>
+    /// Lists what this agent sent to the agents being checked and has still to act on, or null when
+    /// there is nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Scoped to the agents the call named. CheckAgents is a question about specific agents, and an
+    /// unscoped list would put an unrelated message in front of the model on every check — while the
+    /// obligation itself is not lost, only unlisted, because the next check that names that agent shows
+    /// it and a delivery failure also pushes a notice at the time it happens.
+    /// </para>
+    /// <para>
+    /// Absent rather than empty when there is nothing outstanding. This runs on every CheckAgents call,
+    /// and an empty container repeated on all of them is noise the model has to read past to find the
+    /// one call where it is not empty.
+    /// </para>
+    /// </remarks>
+    private JsonObject? BuildOutboundObligations(SubAgentObservationBatch batch)
+    {
+        if (_manager.Collaboration is not { } collaboration)
+        {
+            return null;
+        }
+
+        var scope = batch
+            .Entries.Select(entry => entry.AgentId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var rows = collaboration
+            .Bundle.Ledger.GetUnsettledOutbound(collaboration.AgentId)
+            .Where(entry => scope.Contains(entry.ToAgentId))
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            return null;
+        }
+
+        var listed = new JsonArray([
+            .. rows.Take(MaxListedAgentIds)
+                .Select(entry =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["message_id"] = entry.MessageId,
+                            ["to_agent_id"] = entry.ToAgentId,
+                            ["msg_type"] = ToWireName(entry.MessageType),
+                            ["state"] = ToWireName(entry.State),
+                            ["reason"] = entry.ReasonCode,
+                            // Stated per row rather than left to be inferred from the reason code: the
+                            // sender's next move is either "send it again" or "find someone else", and
+                            // that is the whole difference between the two failure classes.
+                            ["retryable"] = AgentCollaborationMessenger.IsRetryable(entry.ReasonCode),
+                            ["admitted_at"] = entry.AdmittedAt.ToString("o"),
+                        }
+                ),
+        ]);
+
+        // count is the true total while messages is capped, so a truncated list announces itself
+        // instead of quietly reading as "that is all of them".
+        return new JsonObject { ["count"] = rows.Count, ["messages"] = listed };
+    }
+
+    /// <summary>The wire spelling of a delivery state, matching the tool's snake_case vocabulary.</summary>
+    private static string ToWireName(AgentMessageDeliveryState state) =>
+        state switch
+        {
+            AgentMessageDeliveryState.Accepted => "accepted",
+            AgentMessageDeliveryState.Delivered => "delivered",
+            AgentMessageDeliveryState.Answered => "answered",
+            AgentMessageDeliveryState.DeliveryFailed => "delivery_failed",
+            _ => "abandoned",
+        };
+
+    /// <summary>The inverse of <see cref="TryParseMessageType"/>, so one vocabulary goes both ways.</summary>
+    private static string ToWireName(AgentMessageType messageType) =>
+        messageType switch
+        {
+            AgentMessageType.Question => "question",
+            AgentMessageType.DelegateTask => "delegate_task",
+            AgentMessageType.TaskUpdate => "task_update",
+            AgentMessageType.Steer => "steer",
+            AgentMessageType.Response => "response",
+            _ => "delivery_failure",
+        };
 
     /// <summary>
     /// Fills in the entries the manager could not resolve from the collaboration directory, so
@@ -1248,11 +1346,6 @@ public class SubAgentToolProvider : IFunctionProvider
                 ),
             ],
         };
-    }
-
-    private static string SerializeObservationBatch(SubAgentObservationBatch batch)
-    {
-        return JsonSerializer.Serialize(BuildObservationPayload(batch));
     }
 
     private static object BuildObservationPayload(SubAgentObservationBatch batch)
