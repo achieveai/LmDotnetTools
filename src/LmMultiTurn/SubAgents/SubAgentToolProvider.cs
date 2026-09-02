@@ -683,10 +683,19 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "a message to — that is not what this waits for, and two agents each waiting on "
                 + "the other is a deadlock. Do not wait when you still have work of your own; do it "
                 + "and check afterwards.\n\n"
-                + "The wait ends early if another agent asks YOU a question, so you are never the "
-                + "reason someone else is stuck: answer it with SendMessage, then wait again. Each "
-                + "question ends at most one wait, so a question you have chosen not to answer will "
-                + "not keep interrupting.\n\n"
+                + "The wait ends early if another agent asks YOU a question or delegates a task to "
+                + "YOU, so you are never the reason someone else is stuck: `interrupt.msg_type` says "
+                + "which it was, so answer it with SendMessage and then wait again. Each such message "
+                + "ends at most one wait, so one you have chosen not to answer will not keep "
+                + "interrupting.\n\n"
+                + "RESULT `status` is one of: 'completed' (the agents finished), 'timeout' (the cap "
+                + "expired; nothing was cancelled), 'question_received' or 'interrupted' (a question "
+                + "or a delegated task addressed to you ended the wait — see `interrupt`), "
+                + "'wait_cycle' (an agent you named is itself blocked on an answer from you, so this "
+                + "wait could only time out — answer the messages in `blocking` first), or "
+                + "'not_waitable' (nothing you named is one of your own children). Agents you named "
+                + "that are real but not yours to wait on come back in `not_waited`, each with the "
+                + "action that does apply.\n\n"
                 + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
@@ -1329,9 +1338,8 @@ public class SubAgentToolProvider : IFunctionProvider
         // Resolve every target before waiting on any of them: a typo in one id would otherwise leave
         // the caller blocked on the rest with no indication that part of its request was nonsense.
         var probe = _manager.CheckAgents(targets);
-        if (probe.NotFound > 0)
+        if (!TryPartitionWaitTargets(probe, out var waitable, out var notWaited, out var unknown))
         {
-            var unknown = probe.Entries.Where(e => !e.IsFound).Select(e => e.Target);
             return ToolHandlerResult.FromError(
                 $"You have no sub-agent matching: {string.Join(", ", unknown)}. "
                     + "WaitForAgents only covers agents you spawned yourself.",
@@ -1344,20 +1352,60 @@ public class SubAgentToolProvider : IFunctionProvider
             return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
         }
 
+        if (waitable.Count == 0)
+        {
+            // Every name resolved to a real agent, none of them ours to block on. Deliberately NOT an
+            // error: the caller made an addressable request with a valid next action, and refusing it
+            // would count as a failed retry in run-level analysis rather than as the observation it is.
+            return ToolHandlerResult.FromText(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        status = WaitStatus.NotWaitable,
+                        mode,
+                        not_waited = notWaited,
+                    }
+                )
+            );
+        }
+
+        var waitTargets = waitable.Select(e => e.Target).ToArray();
+
+        if (FindBlockingObligations(waitable) is { Count: > 0 } blocking)
+        {
+            // A target that is waiting on an answer from us cannot finish, so this wait could only
+            // ever expire. Reported rather than blocked on, and reported the same way every time:
+            // unlike an interrupt, nothing here is claimed or spent.
+            return ToolHandlerResult.FromText(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        status = WaitStatus.WaitCycle,
+                        cycle_kind = UnansweredInboundCycle,
+                        mode,
+                        blocking,
+                        next_action = DescribeCycleNextAction(blocking),
+                        not_waited = notWaited.Count == 0 ? null : notWaited,
+                        agents = BuildObservationPayload(_manager.CheckAgents(waitTargets)),
+                    }
+                )
+            );
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Every racer must complete rather than fault when the race is torn down: none of them is
         // awaited on the losing paths, so a cancellation fault here would surface as an unobserved
         // task exception long after this tool call is gone.
-        var waits = targets
+        var waits = waitTargets
             .Select(t => AwaitQuietlyAsync(_manager.ObserveTargetCompletionAsync(t, linked.Token)))
             .ToArray();
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
-        var question = WatchForQuestionAsync(linked.Token);
+        var watcher = WatchForInterruptAsync(linked.Token);
         var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        Task[] races = timeout is null ? [completion, question] : [completion, question, timeout];
+        Task[] races = timeout is null ? [completion, watcher] : [completion, watcher, timeout];
 
         var winner = await Task.WhenAny(races);
 
@@ -1365,25 +1413,25 @@ public class SubAgentToolProvider : IFunctionProvider
         // abandons the observation only — every agent listed keeps running either way.
         await linked.CancelAsync();
 
-        // Always observed, and always BEFORE this method can leave by any route: a question that
+        // Always observed, and always BEFORE this method can leave by any route: a message that
         // claimed its one interrupt but is not being reported has to give the claim back, or no later
         // wait would ever be woken by it. Being cancelled counts as not reporting it — the caller is
-        // about to receive an exception rather than the question, so the claim is just as lost as when
+        // about to receive an exception rather than the message, so the claim is just as lost as when
         // another racer won. (The await cannot hang: `linked` is already cancelled, which settles it.)
-        var reported = winner == question && !cancellationToken.IsCancellationRequested;
-        var asked = await question;
-        if (asked is not null && !reported)
+        var reported = winner == watcher && !cancellationToken.IsCancellationRequested;
+        var interrupted = await watcher;
+        if (interrupted is not null && !reported)
         {
-            _manager.Collaboration?.Bundle.Ledger.ReleaseWaitInterrupt(asked.MessageId);
-            asked = null;
+            _manager.Collaboration?.Bundle.Ledger.ReleaseWaitInterrupt(interrupted.MessageId);
+            interrupted = null;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
         var status =
-            asked is not null ? "question_received"
-            : winner == completion ? "completed"
-            : "timeout";
+            interrupted is null ? (winner == completion ? WaitStatus.Completed : WaitStatus.Timeout)
+            : interrupted.Kind == AgentMessageType.Question ? WaitStatus.QuestionReceived
+            : WaitStatus.Interrupted;
 
         return ToolHandlerResult.FromText(
             JsonSerializer.Serialize(
@@ -1391,11 +1439,151 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     status,
                     mode,
-                    question = asked,
-                    agents = BuildObservationPayload(_manager.CheckAgents(targets)),
+                    interrupt = interrupted,
+                    // The pre-rename name, kept filled for one release so a caller written against
+                    // the question-only wait keeps reading the field it knows.
+                    question = interrupted,
+                    not_waited = notWaited.Count == 0 ? null : notWaited,
+                    agents = BuildObservationPayload(_manager.CheckAgents(waitTargets)),
                 }
             )
         );
+    }
+
+    /// <summary>Every outcome a wait can report, as a closed vocabulary.</summary>
+    /// <remarks>
+    /// The status is what a coordinator branches on and what run-level analysis counts, so it is
+    /// named here rather than written as a literal at each return: a wait that can end in a new way
+    /// has to be given a name here first, and the tool description lists exactly this set.
+    /// </remarks>
+    private static class WaitStatus
+    {
+        /// <summary>The waited-on agents (in 'any' mode, the first of them) reached a terminal state.</summary>
+        public const string Completed = "completed";
+
+        /// <summary>The cap expired. Nothing was cancelled; every agent listed keeps running.</summary>
+        public const string Timeout = "timeout";
+
+        /// <summary>A question addressed to the waiter ended the wait.</summary>
+        public const string QuestionReceived = "question_received";
+
+        /// <summary>A delegated task addressed to the waiter ended the wait.</summary>
+        public const string Interrupted = "interrupted";
+
+        /// <summary>An agent named as a target is itself blocked on an answer from the waiter.</summary>
+        public const string WaitCycle = "wait_cycle";
+
+        /// <summary>Every named target resolved to a real agent, but none of them is a direct child.</summary>
+        public const string NotWaitable = "not_waitable";
+
+        /// <summary>The agent stopped being tracked before it could produce a result (WaitAgent only).</summary>
+        public const string Unavailable = "unavailable";
+    }
+
+    /// <summary>The only cycle shape a direct-child-only wait can form: an obligation the waiter owes back.</summary>
+    private const string UnansweredInboundCycle = "unanswered_inbound";
+
+    /// <summary>Why a named target was left out of the wait.</summary>
+    private const string PeerNotChildReason = "peer_not_child";
+
+    /// <summary>A named target that is a real agent this one cannot block on, and what to do instead.</summary>
+    private sealed record UnwaitableTarget(
+        [property: JsonPropertyName("target")] string Target,
+        [property: JsonPropertyName("agent_id")] string AgentId,
+        [property: JsonPropertyName("reason")] string Reason,
+        [property: JsonPropertyName("next_action")] string NextAction
+    );
+
+    /// <summary>
+    /// Splits the named targets into the ones this agent can actually block on and the ones it cannot,
+    /// failing the whole call only for a name that resolves nowhere.
+    /// </summary>
+    /// <remarks>
+    /// The two failures are not the same mistake. A name that resolves nowhere is a typo to correct,
+    /// and waiting on the rest would hide half the request — so it stays a whole-call refusal. A name
+    /// that resolves to a real agent which simply is not a child of this one is not a mistake about
+    /// what exists: that agent can be observed and messaged, so it is reported per target with the
+    /// action that does apply, inside a NON-error result. Widening the wait itself is deliberately
+    /// not on offer — this manager cannot observe a peer's completion, so blocking on one would be an
+    /// unbounded poll over something it has no way to influence.
+    /// </remarks>
+    private bool TryPartitionWaitTargets(
+        SubAgentObservationBatch probe,
+        out IReadOnlyList<SubAgentObservationEntry> waitable,
+        out IReadOnlyList<UnwaitableTarget> notWaited,
+        out IReadOnlyList<string> unknown
+    )
+    {
+        var directory = _manager.Collaboration?.Directory;
+        var children = new List<SubAgentObservationEntry>();
+        var peers = new List<UnwaitableTarget>();
+        var missing = new List<string>();
+
+        foreach (var entry in probe.Entries)
+        {
+            if (entry.IsFound)
+            {
+                children.Add(entry);
+            }
+            else if (directory?.Resolve(entry.Target).Entry is { } peer)
+            {
+                peers.Add(
+                    new UnwaitableTarget(
+                        entry.Target,
+                        peer.AgentId,
+                        PeerNotChildReason,
+                        $"'{entry.Target}' is not one of your sub-agents, so you cannot block on it. Check "
+                            + "it with CheckAgents, or send it a message and carry on with your own work."
+                    )
+                );
+            }
+            else
+            {
+                missing.Add(entry.Target);
+            }
+        }
+
+        waitable = children;
+        notWaited = peers;
+        unknown = missing;
+        return missing.Count == 0;
+    }
+
+    /// <summary>
+    /// Names the obligations that turn this wait into a deadlock: messages the waiter still owes an
+    /// answer on, sent by an agent it is about to block on. Empty when there are none.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately narrow — an obligation to somebody this wait is not blocked on is a reason to be
+    /// interrupted, not a cycle. And deliberately NOT claimed: the one-shot interrupt claim bounds a
+    /// message to waking a single wait, which is the wrong tool here, because after that one wakeup
+    /// the same unanswered obligation would silently block every later wait. Reporting instead of
+    /// claiming keeps the answer stable for as long as the deadlock lasts.
+    /// </remarks>
+    private IReadOnlyList<WaitInterrupt> FindBlockingObligations(IReadOnlyList<SubAgentObservationEntry> waitable)
+    {
+        if (_manager.Collaboration is not { } collaboration)
+        {
+            return [];
+        }
+
+        var waitTargetIds = waitable.Select(e => e.AgentId).ToHashSet(StringComparer.Ordinal);
+
+        return
+        [
+            .. collaboration
+                .Bundle.Ledger.GetOpenInbound(collaboration.AgentId)
+                .Where(e => IsWaitInterrupt(e.MessageType) && waitTargetIds.Contains(e.FromAgentId))
+                .Select(e => DescribeInterrupt(collaboration.Directory, e.MessageId, e.FromAgentId, e.MessageType)),
+        ];
+    }
+
+    /// <summary>Spells out the single move that breaks the cycle, naming the ids to answer.</summary>
+    private static string DescribeCycleNextAction(IReadOnlyList<WaitInterrupt> blocking)
+    {
+        return "Answer "
+            + string.Join(" and ", blocking.Select(b => $"'{b.MessageId}'"))
+            + " with SendMessage (msg_type 'response', in_response_to that message_id), then wait again.";
     }
 
     /// <summary>
@@ -1436,52 +1624,75 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Completes when someone asks THIS agent a question, so a waiting agent cannot become the reason
-    /// another one is blocked. Only Question interrupts: updates and steers carry no obligation, and
-    /// waking for them would make every wait unpredictable. Yields null when the race is torn down.
+    /// The message kinds that end a wait: exactly the ones whose SENDER stays blocked until this
+    /// agent answers.
+    /// </summary>
+    /// <remarks>
+    /// The same set as <see cref="AgentMessageLedgerEntry.ExpectsReply"/>, and for the same reason —
+    /// a steer or a progress update is closed by its own delivery and owes nothing back, so waking
+    /// for one would make every wait unpredictable without unblocking anybody. It is also the set the
+    /// interrupt claim can even be taken on: a closed entry cannot be claimed.
+    /// </remarks>
+    private static bool IsWaitInterrupt(AgentMessageType messageType)
+    {
+        return messageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
+    }
+
+    /// <summary>Describes an interrupting message the way the waiting agent is told about it.</summary>
+    private static WaitInterrupt DescribeInterrupt(
+        AgentCollaborationDirectory directory,
+        string messageId,
+        string fromAgentId,
+        AgentMessageType messageType
+    )
+    {
+        return new WaitInterrupt(messageId, fromAgentId, directory.FindById(fromAgentId)?.Name, messageType);
+    }
+
+    /// <summary>
+    /// Completes when someone hands THIS agent an obligation — a question or a delegated task — so a
+    /// waiting agent cannot become the reason another one is blocked. Yields null when the race is
+    /// torn down.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Fires on admission rather than delivery, so a wait can end for a question whose delivery later
+    /// Fires on admission rather than delivery, so a wait can end for a message whose delivery later
     /// fails. That asymmetry is deliberate: ending a wait early costs one turn, whereas missing the
-    /// question that the waiter alone can answer is a deadlock.
+    /// message that the waiter alone can answer is a deadlock.
     /// </para>
     /// <para>
-    /// A question is claimed before it is reported, and a claim is granted once. A question stays open
-    /// until it is answered, so without the claim the opening sweep would rediscover the same
-    /// still-unanswered question on every subsequent wait and return instantly — an agent that chose
-    /// not to answer could then never wait again. The claim bounds each question to one interruption
+    /// A message is claimed before it is reported, and a claim is granted once. An obligation stays
+    /// open until it is answered, so without the claim the opening sweep would rediscover the same
+    /// still-unanswered message on every subsequent wait and return instantly — an agent that chose
+    /// not to answer could then never wait again. The claim bounds each message to one interruption
     /// while leaving it open, and therefore still answerable whenever the agent gets to it.
     /// </para>
     /// </remarks>
-    private async Task<QuestionInterrupt?> WatchForQuestionAsync(CancellationToken cancellationToken)
+    private async Task<WaitInterrupt?> WatchForInterruptAsync(CancellationToken cancellationToken)
     {
-        var signal = new TaskCompletionSource<QuestionInterrupt?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var signal = new TaskCompletionSource<WaitInterrupt?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var registration = cancellationToken.Register(() => signal.TrySetResult(null));
 
         if (_manager.Collaboration is not { } collaboration)
         {
             // Unreachable through the advertised surface; kept so this never becomes a live race that
-            // completes instantly and reports a question nobody asked.
+            // completes instantly and reports a message nobody sent.
             return await signal.Task;
         }
 
         var ledger = collaboration.Bundle.Ledger;
 
-        QuestionInterrupt Describe(string messageId, string fromAgentId) =>
-            new(messageId, fromAgentId, collaboration.Directory.FindById(fromAgentId)?.Name);
-
         // Claim first, report second, and give the claim back if the report lost a race — a claim that
-        // was taken but never surfaced would silently spend the one interrupt the question gets.
-        bool TryReport(string messageId, string fromAgentId)
+        // was taken but never surfaced would silently spend the one interrupt the message gets.
+        bool TryReport(string messageId, string fromAgentId, AgentMessageType messageType)
         {
             if (!ledger.TryClaimWaitInterrupt(messageId))
             {
                 return false;
             }
 
-            if (signal.TrySetResult(Describe(messageId, fromAgentId)))
+            if (signal.TrySetResult(DescribeInterrupt(collaboration.Directory, messageId, fromAgentId, messageType)))
             {
                 return true;
             }
@@ -1493,22 +1704,22 @@ public class SubAgentToolProvider : IFunctionProvider
         void OnAdmitted(AgentMessageAdmittedNotice notice)
         {
             if (
-                notice.MessageType == AgentMessageType.Question
+                IsWaitInterrupt(notice.MessageType)
                 && string.Equals(notice.ToAgentId, collaboration.AgentId, StringComparison.Ordinal)
             )
             {
-                _ = TryReport(notice.MessageId, notice.FromAgentId);
+                _ = TryReport(notice.MessageId, notice.FromAgentId, notice.MessageType);
             }
         }
 
         ledger.MessageAdmitted += OnAdmitted;
         try
         {
-            // Subscribe-then-sweep, in that order: a question admitted before the handler attached
-            // would otherwise stay unnoticed until an unrelated second question arrived.
+            // Subscribe-then-sweep, in that order: a message admitted before the handler attached
+            // would otherwise stay unnoticed until an unrelated second one arrived.
             foreach (var open in ledger.GetOpenInbound(collaboration.AgentId))
             {
-                if (open.MessageType == AgentMessageType.Question && TryReport(open.MessageId, open.FromAgentId))
+                if (IsWaitInterrupt(open.MessageType) && TryReport(open.MessageId, open.FromAgentId, open.MessageType))
                 {
                     break;
                 }
@@ -1522,16 +1733,46 @@ public class SubAgentToolProvider : IFunctionProvider
         }
     }
 
-    /// <summary>The question that ended a wait, as the waiting agent is told about it.</summary>
+    /// <summary>The message that ended a wait, as the waiting agent is told about it.</summary>
     /// <remarks>
     /// A declared shape rather than an anonymous one because the wait handler has to read
-    /// <see cref="MessageId"/> back to release a claim it did not end up reporting.
+    /// <see cref="MessageId"/> back to release a claim it did not end up reporting, and
+    /// <see cref="Kind"/> back to name the outcome.
     /// </remarks>
-    private sealed record QuestionInterrupt(
+    private sealed record WaitInterrupt(
         [property: JsonPropertyName("message_id")] string MessageId,
         [property: JsonPropertyName("from_agent_id")] string FromAgentId,
-        [property: JsonPropertyName("from_name")] string? FromName
-    );
+        [property: JsonPropertyName("from_name")] string? FromName,
+        [property: JsonIgnore] AgentMessageType Kind
+    )
+    {
+        /// <summary>
+        /// The exact <c>msg_type</c> this message was sent as. Reported so the waiter can address its
+        /// reply without inferring the kind from the status — the two statuses that carry an interrupt
+        /// say that one arrived, not which SendMessage call answers it.
+        /// </summary>
+        [JsonPropertyName("msg_type")]
+        public string MessageType => DescribeMessageType(Kind);
+    }
+
+    /// <summary>
+    /// The wire name a message kind is sent as — the inverse of <see cref="TryParseMessageType"/>, so
+    /// a reported <c>msg_type</c> is a value SendMessage will accept back verbatim.
+    /// </summary>
+    private static string DescribeMessageType(AgentMessageType messageType)
+    {
+        return messageType switch
+        {
+            AgentMessageType.Question => "question",
+            AgentMessageType.DelegateTask => "delegate_task",
+            AgentMessageType.TaskUpdate => "task_update",
+            AgentMessageType.Steer => "steer",
+            AgentMessageType.Response => "response",
+            // Unreachable for the closed enum; a new member must be named above rather than leak an
+            // enum member name the tool contract does not accept.
+            _ => messageType.ToString(),
+        };
+    }
 
     private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
         string argsJson,
@@ -1619,9 +1860,9 @@ public class SubAgentToolProvider : IFunctionProvider
             JsonSerializer.Serialize(
                 new
                 {
-                    status = agent is null ? "unavailable"
-                    : winner == completion ? "completed"
-                    : "timeout",
+                    status = agent is null ? WaitStatus.Unavailable
+                    : winner == completion ? WaitStatus.Completed
+                    : WaitStatus.Timeout,
                     detail = agent is not null
                         ? null
                         : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
