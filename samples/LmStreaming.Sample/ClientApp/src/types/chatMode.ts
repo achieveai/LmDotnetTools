@@ -53,17 +53,31 @@ export interface ChatMode {
  */
 export interface ChatModeCreateUpdate {
   name: string;
-  description?: string;
+  /**
+   * The server is presence-aware on update: omitting this key preserves the stored description,
+   * while an explicit `null` clears it. Create treats omission and explicit null alike.
+   */
+  description?: string | null;
   systemPrompt: string;
-  enabledTools?: string[];
+  /**
+   * The server is presence-aware on update: omitting this key preserves the stored allowlist,
+   * while an explicit `null` enables all tools (including ones added to the catalog later).
+   */
+  enabledTools?: string[] | null;
   enabledBuiltInTools?: string[];
   enabledCapabilityTools?: string[];
-  /** Sub-agent prompt fragment; see {@link ChatMode.subAgentPrompt}. */
-  subAgentPrompt?: string;
+  /**
+   * Sub-agent prompt fragment; see {@link ChatMode.subAgentPrompt}. Omitting this key preserves
+   * the stored fragment on update; an explicit `null` clears it.
+   */
+  subAgentPrompt?: string | null;
   /** 'prepend' | 'append'; the server refuses anything else with 400. */
   subAgentPromptPlacement?: 'prepend' | 'append';
-  /** Guaranteed sub-agent tools; see {@link ChatMode.subAgentRequiredTools}. Omit for "not enforced". */
-  subAgentRequiredTools?: string[];
+  /**
+   * Guaranteed sub-agent tools; see {@link ChatMode.subAgentRequiredTools}. Omitting this key
+   * preserves the stored selection on update; an explicit `null` disables enforcement.
+   */
+  subAgentRequiredTools?: string[] | null;
   /** Provider-neutral reasoning effort requested for children in this mode. */
   subAgentReasoningEffort?: string;
   /** Authoritative child tier keyed by canonical registered sub-agent type. */

@@ -22,8 +22,9 @@ const description = ref('');
 const systemPrompt = ref('');
 /**
  * Per-mode sub-agent prompt fragment (#610): folded into every sub-agent's system prompt for
- * conversations in this mode. Empty means "no fragment" and both fields are omitted from the
- * save payload so an untouched mode keeps today's behavior exactly.
+ * conversations in this mode. Empty means "no fragment"; the save payload writes an explicit
+ * `null` for it (the server's presence-aware update contract reads an omitted key as "leave the
+ * stored fragment alone", not "clear it").
  */
 const subAgentPrompt = ref('');
 const subAgentPromptPlacement = ref<'prepend' | 'append'>('append');
@@ -35,9 +36,9 @@ const subAgentPromptPlacement = ref<'prepend' | 'append'>('append');
 const selectedToolIds = ref<string[]>([]);
 /**
  * Required sub-agent tools (#623): guaranteed to every sub-agent spawned in this mode, even when
- * an agent template restricts its own tool list. Empty means "not enforced" and the field is
- * omitted from the save payload — the same unset convention the server treats as today's
- * behavior byte-for-byte.
+ * an agent template restricts its own tool list. Empty means "not enforced"; the save payload
+ * writes an explicit `null` for it (the server's presence-aware update contract reads an omitted
+ * key as "leave the stored selection alone", not "disable enforcement").
  */
 const requiredToolIds = ref<string[]>([]);
 /**
@@ -148,11 +149,14 @@ function handleSave(): void {
   const trimmedSubAgentPrompt = subAgentPrompt.value.trim();
   const data: ChatModeCreateUpdate = {
     name: name.value.trim(),
-    description: description.value.trim() || undefined,
+    // Explicit null (not omission) when blank: the server's presence-aware update contract
+    // preserves the stored value for an omitted key, so clearing on save requires the literal.
+    description: description.value.trim() || null,
     systemPrompt: systemPrompt.value.trim(),
-    // Both omitted when the fragment is empty — an untouched mode must save exactly what it
-    // saved before these fields existed.
-    subAgentPrompt: trimmedSubAgentPrompt || undefined,
+    // subAgentPrompt writes an explicit null when blank, for the same reason as description.
+    // subAgentPromptPlacement is unaffected by this fix: it has no persisted "clear" meaning of
+    // its own and stays omitted whenever there is no fragment to place.
+    subAgentPrompt: trimmedSubAgentPrompt || null,
     subAgentPromptPlacement: trimmedSubAgentPrompt ? subAgentPromptPlacement.value : undefined,
     // These policy fields are not editable in this form. Preserve an existing mode's values rather
     // than silently clearing them on save.
@@ -163,13 +167,13 @@ function handleSave(): void {
     ...selectionToModeFields(selectedToolIds.value, props.tools, props.mode),
   };
 
-  // Empty saves as "not enforced": the field is omitted so an untouched mode round-trips exactly.
+  // Explicit null (not omission) disables enforcement: the server's presence-aware update
+  // contract preserves the stored selection for an omitted key, so an untouched mode's
+  // enforcement would otherwise survive a save that means "I unchecked everything".
   // Preserved (unrenderable) ids are appended after the picked ones — the catalog has no position
   // for them, so their stored order is the only stable one available.
   const requiredTools = [...requiredToolIds.value, ...preservedRequiredToolIds.value];
-  if (requiredTools.length > 0) {
-    data.subAgentRequiredTools = requiredTools;
-  }
+  data.subAgentRequiredTools = requiredTools.length > 0 ? requiredTools : null;
 
   emit('save', data);
 }
