@@ -240,7 +240,7 @@ public class ToolCallExecutorTests
     [Fact]
     public async Task ExecuteAsync_HonoursConfiguredLimit_AndBoundsResultsSeenByCallback()
     {
-        var limits = new ToolResultLimits { MaxResultBytes = 128 };
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
             ["dump"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, new string('y', 10_000))),
@@ -261,13 +261,13 @@ public class ToolCallExecutorTests
         var result = await ToolCallExecutor.ExecuteAsync(
             SingleCall("dump", "call_cfg"),
             functionMap,
-            callback.Object,
-            resultLimits: limits
+            limits,
+            callback.Object
         );
 
         var bounded = Assert.Single(result.ToolCallResults);
         Assert.True(bounded.IsTruncated);
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 128);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 256);
         Assert.EndsWith(" of 10,000 bytes]", bounded.Result, StringComparison.Ordinal);
         Assert.NotNull(seenByCallback);
         Assert.Equal(bounded.Result, seenByCallback.Value.Result);
@@ -276,22 +276,18 @@ public class ToolCallExecutorTests
     [Fact]
     public async Task ExecuteAsync_OversizedErrorResult_IsBoundedToo()
     {
-        var limits = new ToolResultLimits { MaxResultBytes = 128 };
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
             ["boom"] = (_, _, _) => throw new InvalidOperationException(new string('e', 10_000)),
         };
 
-        var result = await ToolCallExecutor.ExecuteAsync(
-            SingleCall("boom", "call_err"),
-            functionMap,
-            resultLimits: limits
-        );
+        var result = await ToolCallExecutor.ExecuteAsync(SingleCall("boom", "call_err"), functionMap, limits);
 
         var bounded = Assert.Single(result.ToolCallResults);
         Assert.True(bounded.IsError);
         Assert.True(bounded.IsTruncated);
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 128);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 256);
         Assert.Contains(ToolResultLimits.TruncationMarkerPrefix, bounded.Result, StringComparison.Ordinal);
     }
 }

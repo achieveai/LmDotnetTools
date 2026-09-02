@@ -1,3 +1,4 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
@@ -22,24 +23,62 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class ToolCallExecutor
 {
     /// <summary>
-    ///     Executes all tool calls in the provided message using the given function map.
+    ///     Executes all tool calls in the provided message using the given function map, bounding
+    ///     every result by <see cref="ToolResultLimits.Default"/>.
     /// </summary>
     public static Task<ToolsCallResultMessage> ExecuteAsync(
         ToolsCallMessage toolCallMessage,
         IDictionary<string, ToolCallResultHandler> functionMap,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
-        CancellationToken cancellationToken = default,
-        ToolResultLimits? resultLimits = null
+        CancellationToken cancellationToken = default
+    ) =>
+        ExecuteAsync(toolCallMessage, functionMap, ToolResultLimits.Default, resultCallback, logger, cancellationToken);
+
+    /// <summary>
+    ///     Executes all tool calls in the provided message using the given function map, bounding
+    ///     every result by <paramref name="resultLimits"/>.
+    /// </summary>
+    public static Task<ToolsCallResultMessage> ExecuteAsync(
+        ToolsCallMessage toolCallMessage,
+        IDictionary<string, ToolCallResultHandler> functionMap,
+        ToolResultLimits resultLimits,
+        IToolResultCallback? resultCallback = null,
+        ILogger? logger = null,
+        CancellationToken cancellationToken = default
     ) =>
         ExecuteAsync(
             toolCallMessage,
             functionMap,
             ToolInvocationPreparer.Disabled,
+            resultLimits,
             resultCallback,
             logger,
-            cancellationToken,
-            resultLimits
+            cancellationToken
+        );
+
+    /// <summary>
+    ///     Executes all tool calls in the provided message, gating each one through
+    ///     <paramref name="preparer"/> first and bounding every result by
+    ///     <see cref="ToolResultLimits.Default"/>. See the overload taking
+    ///     <see cref="ToolResultLimits"/> for the full contract.
+    /// </summary>
+    public static Task<ToolsCallResultMessage> ExecuteAsync(
+        ToolsCallMessage toolCallMessage,
+        IDictionary<string, ToolCallResultHandler> functionMap,
+        ToolInvocationPreparer preparer,
+        IToolResultCallback? resultCallback = null,
+        ILogger? logger = null,
+        CancellationToken cancellationToken = default
+    ) =>
+        ExecuteAsync(
+            toolCallMessage,
+            functionMap,
+            preparer,
+            ToolResultLimits.Default,
+            resultCallback,
+            logger,
+            cancellationToken
         );
 
     /// <summary>
@@ -53,26 +92,25 @@ public class ToolCallExecutor
     ///     A call the preparer refuses never reaches its handler; it comes back as an error result
     ///     carrying the outcome code, in the same shape as an unavailable function.
     ///     Every result — success, handler error, unavailable function, refusal — is bounded by
-    ///     <paramref name="resultLimits"/> (default <see cref="ToolResultLimits.Default"/>) before
-    ///     it is reported to the callback or returned, so history never carries a payload a
-    ///     provider would reject (#694).
+    ///     <paramref name="resultLimits"/> before it is reported to the callback or returned, so
+    ///     history never carries a payload a provider would reject (#694).
     /// </remarks>
     public static async Task<ToolsCallResultMessage> ExecuteAsync(
         ToolsCallMessage toolCallMessage,
         IDictionary<string, ToolCallResultHandler> functionMap,
         ToolInvocationPreparer preparer,
+        ToolResultLimits resultLimits,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
-        CancellationToken cancellationToken = default,
-        ToolResultLimits? resultLimits = null
+        CancellationToken cancellationToken = default
     )
     {
         ArgumentNullException.ThrowIfNull(toolCallMessage);
         ArgumentNullException.ThrowIfNull(functionMap);
         ArgumentNullException.ThrowIfNull(preparer);
+        ArgumentNullException.ThrowIfNull(resultLimits);
 
         var effectiveLogger = logger ?? NullLogger.Instance;
-        var effectiveLimits = resultLimits ?? ToolResultLimits.Default;
         var toolCalls = toolCallMessage.ToolCalls;
         var toolCallResults = new List<ToolCallResult>();
         var toolCallCount = toolCalls.Count;
@@ -94,7 +132,7 @@ public class ToolCallExecutor
                     prepared[i],
                     resultCallback,
                     effectiveLogger,
-                    effectiveLimits,
+                    resultLimits,
                     cancellationToken
                 );
                 toolCallResults.Add(result);
@@ -116,7 +154,7 @@ public class ToolCallExecutor
                             ExecutionTarget = toolCall.ExecutionTarget,
                             IsError = true,
                         },
-                        effectiveLimits,
+                        resultLimits,
                         effectiveLogger
                     )
                 );
@@ -212,10 +250,10 @@ public class ToolCallExecutor
         if (bounded.IsTruncated && !result.IsTruncated)
         {
             logger.LogWarning(
-                "Tool result truncated: ToolCallId={ToolCallId}, FunctionName={FunctionName}, OriginalLength={OriginalLength}, MaxResultBytes={MaxResultBytes}",
+                "Tool result truncated: ToolCallId={ToolCallId}, FunctionName={FunctionName}, OriginalBytes={OriginalBytes}, MaxResultBytes={MaxResultBytes}",
                 result.ToolCallId,
                 result.ToolName,
-                result.Result?.Length ?? 0,
+                Encoding.UTF8.GetByteCount(result.Result ?? string.Empty),
                 limits.MaxResultBytes
             );
         }

@@ -42,9 +42,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// <c>GenerateReplyAsync</c>). Use <c>MultiTurnAgentLoop</c> for built-in deferred
     /// bookkeeping with persistence and webhook-friendly idempotent resolution.
     /// <para>
-    /// <c>resultLimits</c> bounds every tool result before it is emitted. Defaults to
-    /// <see cref="ToolResultLimits.Default"/> (4 MiB of UTF-8); an oversized result keeps its
-    /// prefix, ends with a truncation marker, and is flagged <see cref="ToolCallResult.IsTruncated"/>.
+    /// Every tool result is bounded by <see cref="ToolResultLimits.Default"/> (4 MiB of UTF-8)
+    /// before it is emitted; an oversized result keeps its prefix, ends with a truncation marker,
+    /// and is flagged <see cref="ToolCallResult.IsTruncated"/>. Use the overload taking a
+    /// <see cref="ToolResultLimits"/> to change the bound.
     /// </para>
     /// </remarks>
     public FunctionCallMiddleware(
@@ -52,13 +53,28 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         IDictionary<string, ToolHandler> functionMap,
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
-        IToolResultCallback? resultCallback = null,
-        ToolResultLimits? resultLimits = null
+        IToolResultCallback? resultCallback = null
+    )
+        : this(functions, functionMap, ToolResultLimits.Default, name, logger, resultCallback) { }
+
+    /// <summary>
+    /// Constructs a FunctionCallMiddleware whose tool results are bounded by
+    /// <paramref name="resultLimits"/> instead of <see cref="ToolResultLimits.Default"/>. See
+    /// <see cref="FunctionCallMiddleware(IEnumerable{FunctionContract}, IDictionary{string, ToolHandler}, string?, ILogger{FunctionCallMiddleware}?, IToolResultCallback?)"/>
+    /// for the handler contract.
+    /// </summary>
+    public FunctionCallMiddleware(
+        IEnumerable<FunctionContract> functions,
+        IDictionary<string, ToolHandler> functionMap,
+        ToolResultLimits resultLimits,
+        string? name = null,
+        ILogger<FunctionCallMiddleware>? logger = null,
+        IToolResultCallback? resultCallback = null
     )
     {
         _functions = functions ?? throw new ArgumentNullException(nameof(functions));
         _logger = logger ?? NullLogger<FunctionCallMiddleware>.Instance;
-        _resultLimits = resultLimits ?? ToolResultLimits.Default;
+        _resultLimits = resultLimits ?? throw new ArgumentNullException(nameof(resultLimits));
 
         // Validate that each function has a corresponding entry in the function map
         if (functions.Any())
@@ -113,7 +129,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             wrapped[key] = async (args, ctx, ct) =>
             {
                 var result = await handler(args, ctx, ct);
-                return ToolCallResultBuilder.FromHandlerResult(result, ctx.ToolCallId, key, limits: resultLimits);
+                return ToolCallResultBuilder.FromHandlerResult(result, ctx.ToolCallId, resultLimits, key);
             };
         }
 
@@ -439,10 +455,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return await ToolCallExecutor.ExecuteAsync(
             toolsCallMessage,
             _functionMap,
+            _resultLimits,
             _resultCallback,
             _logger,
-            cancellationToken,
-            _resultLimits
+            cancellationToken
         );
     }
 
@@ -464,10 +480,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var result = await ToolCallExecutor.ExecuteAsync(
             toolsCallMessage,
             _functionMap,
+            _resultLimits,
             _resultCallback,
             _logger,
-            cancellationToken,
-            _resultLimits
+            cancellationToken
         );
 
         return result.ToolCallResults.First();

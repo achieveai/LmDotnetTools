@@ -30,7 +30,18 @@ public sealed record ToolResultLimits
     /// </summary>
     public const string TruncationMarkerPrefix = "[tool result truncated: kept ";
 
+    /// <summary>
+    ///     Smallest <see cref="MaxResultBytes"/> accepted. The bound must leave room for the
+    ///     truncation marker itself — at most 68 bytes when both counts are <see cref="int.MaxValue"/>
+    ///     (<c>"\n\n[tool result truncated: kept 2,147,483,647 of 2,147,483,647 bytes]"</c>) — plus a
+    ///     non-empty verbatim prefix, so that every accepted cap yields output of at most
+    ///     <see cref="MaxResultBytes"/> bytes. 256 keeps the marker under a third of the smallest result.
+    /// </summary>
+    public const int MinResultBytes = 256;
+
     private const string MarkerSeparator = "\n\n";
+
+    private readonly int _maxResultBytes = 4 * 1024 * 1024;
 
     /// <summary>
     ///     Default bound: 4 MiB. Well under the smallest known provider field limit
@@ -47,13 +58,43 @@ public sealed record ToolResultLimits
     ///     Maximum UTF-8 byte length of <see cref="ToolCallResult.Result"/> and of each
     ///     <see cref="TextToolResultBlock.Text"/>, including the truncation marker.
     /// </summary>
-    public int MaxResultBytes { get; init; } = 4 * 1024 * 1024;
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     The value is below <see cref="MinResultBytes"/>. A cap that small could not hold the
+    ///     marker, so the "at most <see cref="MaxResultBytes"/> bytes" guarantee would not hold.
+    /// </exception>
+    public int MaxResultBytes
+    {
+        get => _maxResultBytes;
+        init
+        {
+            if (value < MinResultBytes)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(MaxResultBytes),
+                    value,
+                    $"MaxResultBytes must be at least {MinResultBytes} bytes so the truncation marker always fits."
+                );
+            }
+
+            _maxResultBytes = value;
+        }
+    }
 
     /// <summary>
     ///     Bounds every text field of <paramref name="result"/>, flagging the returned struct when
     ///     anything was cut. Returns <paramref name="result"/> itself when nothing exceeds the limit.
     /// </summary>
-    public ToolCallResult Apply(ToolCallResult result)
+    public ToolCallResult Apply(ToolCallResult result) => TryApply(result, out var bounded) ? bounded : result;
+
+    /// <summary>
+    ///     Bounds every text field of <paramref name="result"/>.
+    /// </summary>
+    /// <returns>
+    ///     <c>true</c> when something was cut and <paramref name="bounded"/> holds the flagged copy;
+    ///     <c>false</c> when nothing exceeds the limit (and <paramref name="bounded"/> is
+    ///     <paramref name="result"/> unchanged, even if it was already flagged by an earlier pass).
+    /// </returns>
+    public bool TryApply(ToolCallResult result, out ToolCallResult bounded)
     {
         var truncated = false;
 
@@ -84,7 +125,8 @@ public sealed record ToolResultLimits
             }
         }
 
-        return truncated ? result with { Result = text!, ContentBlocks = blocks, IsTruncated = true } : result;
+        bounded = truncated ? result with { Result = text!, ContentBlocks = blocks, IsTruncated = true } : result;
+        return truncated;
     }
 
     /// <summary>
@@ -96,6 +138,13 @@ public sealed record ToolResultLimits
     /// <summary>
     ///     Bounds <paramref name="text"/> to <see cref="MaxResultBytes"/> UTF-8 bytes.
     /// </summary>
+    /// <remarks>
+    ///     Walks the input by <see cref="Rune"/> and stops before the first one that would overrun
+    ///     the budget, so the cut never lands inside a surrogate pair or a multi-byte sequence and
+    ///     the input is never re-encoded into a byte array. A lone surrogate enumerates as
+    ///     U+FFFD — three bytes, which is exactly what the UTF-8 encoder emits for it — so the byte
+    ///     accounting matches what a provider will receive.
+    /// </remarks>
     /// <returns><c>true</c> when the text was cut and <paramref name="bounded"/> holds the result.</returns>
     public bool TryBoundText(string text, out string bounded)
     {
@@ -109,20 +158,28 @@ public sealed record ToolResultLimits
             return false;
         }
 
-        var bytes = Encoding.UTF8.GetBytes(text);
-        var total = bytes.Length;
+        var total = Encoding.UTF8.GetByteCount(text);
 
         // Reserve room for the marker using the largest number it could carry (kept <= total).
+        // MinResultBytes guarantees the budget stays positive.
         var reserve = Encoding.UTF8.GetByteCount(FormatMarker(total, total));
-        var keep = Math.Max(0, Math.Min(total, MaxResultBytes - reserve));
+        var budget = MaxResultBytes - reserve;
 
-        // Never cut inside a multi-byte sequence: back up past UTF-8 continuation bytes (10xxxxxx).
-        while (keep > 0 && keep < total && (bytes[keep] & 0xC0) == 0x80)
+        var keptBytes = 0;
+        var keptChars = 0;
+        foreach (var rune in text.EnumerateRunes())
         {
-            keep--;
+            var runeBytes = rune.Utf8SequenceLength;
+            if (keptBytes + runeBytes > budget)
+            {
+                break;
+            }
+
+            keptBytes += runeBytes;
+            keptChars += rune.Utf16SequenceLength;
         }
 
-        bounded = Encoding.UTF8.GetString(bytes, 0, keep) + FormatMarker(keep, total);
+        bounded = string.Concat(text.AsSpan(0, keptChars), FormatMarker(keptBytes, total));
         return true;
     }
 

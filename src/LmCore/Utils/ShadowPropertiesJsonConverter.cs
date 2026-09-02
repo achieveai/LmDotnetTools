@@ -13,16 +13,19 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     where T : class
 {
     private readonly PropertyInfo? _extraPropertiesProperty;
-    private readonly PropertyInfo[]? _jsonProperties;
+    private readonly JsonPropertyEntry[] _jsonProperties;
 
     protected ShadowPropertiesJsonConverter()
     {
         var type = typeof(T);
-        // Get all properties with JsonPropertyName attribute
+
+        // Resolve every [JsonPropertyName] property once, together with the [JsonIgnore] condition
+        // and the default value it is compared against, so Read/Write do no attribute reflection.
         _jsonProperties =
         [
             .. type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null),
+                .Select(p => JsonPropertyEntry.Create(p, p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name))
+                .Where(entry => entry != null)!,
         ];
 
         // Find ImmutableDictionary property marked as extra properties storage
@@ -69,23 +72,17 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
             }
 
             // Try reflection-based handling
-            if (_jsonProperties != null)
+            var entry = Array.Find(_jsonProperties, p => p.Name == propertyName);
+            if (entry != null)
             {
-                var property = _jsonProperties.FirstOrDefault(p =>
-                    p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == propertyName
-                );
-
-                if (property != null)
+                var value = JsonSerializer.Deserialize(ref reader, entry.Property.PropertyType, options);
+                if (entry.Property.SetMethod != null)
                 {
-                    var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
-                    if (property.SetMethod != null)
-                    {
-                        // Readonly properties can't be set via reflection
-                        property.SetValue(instance, value);
-                    }
-
-                    continue;
+                    // Readonly properties can't be set via reflection
+                    entry.Property.SetValue(instance, value);
                 }
+
+                continue;
             }
 
             // If not handled, treat as extra property
@@ -107,24 +104,16 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
         WriteProperties(writer, value, options);
 
         // Write properties from reflection if any weren't handled
-        if (_jsonProperties != null)
+        foreach (var entry in _jsonProperties)
         {
-            foreach (var property in _jsonProperties)
+            var propertyValue = entry.Property.GetValue(value);
+            if (!entry.ShouldWrite(propertyValue))
             {
-                var attr = property.GetCustomAttribute<JsonPropertyNameAttribute>();
-                if (attr != null)
-                {
-                    var propertyValue = property.GetValue(value);
-                    if (
-                        propertyValue != null
-                        && !(propertyValue is JsonElement je && je.ValueKind == JsonValueKind.Undefined)
-                    )
-                    {
-                        writer.WritePropertyName(attr.Name);
-                        JsonSerializer.Serialize(writer, propertyValue, property.PropertyType, options);
-                    }
-                }
+                continue;
             }
+
+            writer.WritePropertyName(entry.Name);
+            JsonSerializer.Serialize(writer, propertyValue, entry.Property.PropertyType, options);
         }
 
         // Write extra properties inline
@@ -241,6 +230,57 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
             case JsonTokenType.Comment:
             default:
                 throw new JsonException($"Unexpected token type: {reader.TokenType}");
+        }
+    }
+
+    /// <summary>
+    ///     A <c>[JsonPropertyName]</c> property with its <c>[JsonIgnore]</c> condition resolved once.
+    /// </summary>
+    /// <param name="Property">The CLR property.</param>
+    /// <param name="Name">The JSON name from <see cref="JsonPropertyNameAttribute"/>.</param>
+    /// <param name="Condition">The <see cref="JsonIgnoreAttribute.Condition"/>, or <see cref="JsonIgnoreCondition.Never"/> without the attribute.</param>
+    /// <param name="DefaultValue">
+    ///     Boxed <c>default</c> of the property type — <c>false</c>, <c>0</c>, an enum's zero member —
+    ///     or null for reference and nullable types, which the null check already covers.
+    /// </param>
+    private sealed record JsonPropertyEntry(
+        PropertyInfo Property,
+        string Name,
+        JsonIgnoreCondition Condition,
+        object? DefaultValue
+    )
+    {
+        /// <summary>Resolves the entry for <paramref name="property"/>, or null when it carries no JSON name.</summary>
+        public static JsonPropertyEntry? Create(PropertyInfo property, string? jsonName) =>
+            jsonName == null
+                ? null
+                : new JsonPropertyEntry(
+                    property,
+                    jsonName,
+                    property.GetCustomAttribute<JsonIgnoreAttribute>()?.Condition ?? JsonIgnoreCondition.Never,
+                    property.PropertyType.IsValueType ? Activator.CreateInstance(property.PropertyType) : null
+                );
+
+        /// <summary>
+        ///     Mirrors what <see cref="JsonSerializer"/> itself would do with the attribute: nulls are
+        ///     never written (the converter has always behaved as if every property were
+        ///     <see cref="JsonIgnoreCondition.WhenWritingNull"/>), <see cref="JsonIgnoreCondition.Always"/>
+        ///     is skipped, and <see cref="JsonIgnoreCondition.WhenWritingDefault"/> also drops a value
+        ///     equal to the type's default.
+        /// </summary>
+        public bool ShouldWrite(object? value)
+        {
+            if (value == null || Condition == JsonIgnoreCondition.Always)
+            {
+                return false;
+            }
+
+            if (value is JsonElement je && je.ValueKind == JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            return Condition != JsonIgnoreCondition.WhenWritingDefault || !object.Equals(value, DefaultValue);
         }
     }
 }

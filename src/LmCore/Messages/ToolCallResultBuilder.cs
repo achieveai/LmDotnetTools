@@ -17,7 +17,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 public static class ToolCallResultBuilder
 {
     /// <summary>
-    /// Maps a handler return into a wire-shape <see cref="ToolCallResult"/>.
+    /// Maps a handler return into a wire-shape <see cref="ToolCallResult"/>, bounded by
+    /// <see cref="ToolResultLimits.Default"/>.
     /// </summary>
     /// <param name="result">The handler's return value.</param>
     /// <param name="toolCallId">Tool call id from <c>ToolCallContext.ToolCallId</c> (or the
@@ -26,20 +27,39 @@ public static class ToolCallResultBuilder
     /// that surface <c>tool_name</c> separately from <c>tool_call_id</c>.</param>
     /// <param name="executionTarget">Distinguishes local function tools from provider-executed
     /// server tools. Defaults to <see cref="ExecutionTarget.LocalFunction"/>.</param>
-    /// <param name="limits">Size bound applied to the resolved text (and text content blocks)
-    /// before it becomes history. Defaults to <see cref="ToolResultLimits.Default"/>; pass
-    /// <see cref="ToolResultLimits.Unbounded"/> to opt out.</param>
     public static ToolCallResult FromHandlerResult(
         ToolHandlerResult result,
         string? toolCallId,
         string? toolName = null,
-        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction,
-        ToolResultLimits? limits = null
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
+    ) => FromHandlerResult(result, toolCallId, ToolResultLimits.Default, toolName, executionTarget);
+
+    /// <summary>
+    /// Maps a handler return into a wire-shape <see cref="ToolCallResult"/>, bounded by
+    /// <paramref name="limits"/>.
+    /// </summary>
+    /// <param name="result">The handler's return value.</param>
+    /// <param name="toolCallId">Tool call id from <c>ToolCallContext.ToolCallId</c> (or the
+    /// originating <c>ToolCallMessage</c>). May be null on call paths that don't carry one.</param>
+    /// <param name="limits">Size bound applied to the resolved text (and text content blocks)
+    /// before it becomes history. Pass <see cref="ToolResultLimits.Unbounded"/> to opt out.</param>
+    /// <param name="toolName">Function name. Optional but recommended — used by providers
+    /// that surface <c>tool_name</c> separately from <c>tool_call_id</c>.</param>
+    /// <param name="executionTarget">Distinguishes local function tools from provider-executed
+    /// server tools. Defaults to <see cref="ExecutionTarget.LocalFunction"/>.</param>
+    public static ToolCallResult FromHandlerResult(
+        ToolHandlerResult result,
+        string? toolCallId,
+        ToolResultLimits limits,
+        string? toolName = null,
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
     )
     {
+        ArgumentNullException.ThrowIfNull(limits);
+
         return result switch
         {
-            ToolHandlerResult.Resolved r => (limits ?? ToolResultLimits.Default).Apply(
+            ToolHandlerResult.Resolved r => limits.Apply(
                 new ToolCallResult(toolCallId, r.Payload.Text, r.Payload.ContentBlocks, executionTarget)
                 {
                     ToolName = toolName,
