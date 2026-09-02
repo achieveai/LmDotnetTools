@@ -149,6 +149,16 @@ public readonly record struct ToolCallResult
     [JsonPropertyName("resolved_at")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? ResolvedAt { get; init; }
+
+    /// <summary>
+    /// True when <see cref="Result"/> (or a text content block) was cut down by
+    /// <see cref="ToolResultLimits"/> before entering history. The text itself ends with an
+    /// explicit <c>[tool result truncated: kept N of M bytes]</c> marker so the model and the
+    /// user can tell; this flag lets UIs and logs tell without parsing the text.
+    /// </summary>
+    [JsonPropertyName("is_truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsTruncated { get; init; }
 }
 
 /// <summary>
@@ -245,6 +255,14 @@ public record ToolCallResultMessage : IMessage
     public long? ResolvedAt { get; init; }
 
     /// <summary>
+    /// True when the result text was cut down by <see cref="ToolResultLimits"/> before entering
+    /// history. Mirrors <see cref="ToolCallResult.IsTruncated"/>.
+    /// </summary>
+    [JsonPropertyName("is_truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsTruncated { get; init; }
+
+    /// <summary>
     /// Converts this message to a ToolCallResult struct.
     /// </summary>
     public ToolCallResult ToToolCallResult()
@@ -258,6 +276,7 @@ public record ToolCallResultMessage : IMessage
             IsDeferred = IsDeferred,
             DeferredAt = DeferredAt,
             ResolvedAt = ResolvedAt,
+            IsTruncated = IsTruncated,
         };
     }
 
@@ -289,6 +308,7 @@ public record ToolCallResultMessage : IMessage
             IsDeferred = result.IsDeferred,
             DeferredAt = result.DeferredAt,
             ResolvedAt = result.ResolvedAt,
+            IsTruncated = result.IsTruncated,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,

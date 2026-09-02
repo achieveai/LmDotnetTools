@@ -26,26 +26,27 @@ public static class ToolCallResultBuilder
     /// that surface <c>tool_name</c> separately from <c>tool_call_id</c>.</param>
     /// <param name="executionTarget">Distinguishes local function tools from provider-executed
     /// server tools. Defaults to <see cref="ExecutionTarget.LocalFunction"/>.</param>
+    /// <param name="limits">Size bound applied to the resolved text (and text content blocks)
+    /// before it becomes history. Defaults to <see cref="ToolResultLimits.Default"/>; pass
+    /// <see cref="ToolResultLimits.Unbounded"/> to opt out.</param>
     public static ToolCallResult FromHandlerResult(
         ToolHandlerResult result,
         string? toolCallId,
         string? toolName = null,
-        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction,
+        ToolResultLimits? limits = null
     )
     {
         return result switch
         {
-            ToolHandlerResult.Resolved r => new ToolCallResult(
-                toolCallId,
-                r.Payload.Text,
-                r.Payload.ContentBlocks,
-                executionTarget
-            )
-            {
-                ToolName = toolName,
-                IsError = r.Payload.IsError,
-                ErrorCode = r.Payload.ErrorCode,
-            },
+            ToolHandlerResult.Resolved r => (limits ?? ToolResultLimits.Default).Apply(
+                new ToolCallResult(toolCallId, r.Payload.Text, r.Payload.ContentBlocks, executionTarget)
+                {
+                    ToolName = toolName,
+                    IsError = r.Payload.IsError,
+                    ErrorCode = r.Payload.ErrorCode,
+                }
+            ),
             ToolHandlerResult.Deferred => new ToolCallResult(toolCallId, string.Empty, executionTarget)
             {
                 ToolName = toolName,

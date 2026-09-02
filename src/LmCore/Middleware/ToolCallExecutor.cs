@@ -29,7 +29,8 @@ public class ToolCallExecutor
         IDictionary<string, ToolCallResultHandler> functionMap,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
-        CancellationToken cancellationToken = default
+        CancellationToken cancellationToken = default,
+        ToolResultLimits? resultLimits = null
     ) =>
         ExecuteAsync(
             toolCallMessage,
@@ -37,7 +38,8 @@ public class ToolCallExecutor
             ToolInvocationPreparer.Disabled,
             resultCallback,
             logger,
-            cancellationToken
+            cancellationToken,
+            resultLimits
         );
 
     /// <summary>
@@ -50,6 +52,10 @@ public class ToolCallExecutor
     ///     execution, and a batch of ten calls does not take ten approval waits end to end.
     ///     A call the preparer refuses never reaches its handler; it comes back as an error result
     ///     carrying the outcome code, in the same shape as an unavailable function.
+    ///     Every result — success, handler error, unavailable function, refusal — is bounded by
+    ///     <paramref name="resultLimits"/> (default <see cref="ToolResultLimits.Default"/>) before
+    ///     it is reported to the callback or returned, so history never carries a payload a
+    ///     provider would reject (#694).
     /// </remarks>
     public static async Task<ToolsCallResultMessage> ExecuteAsync(
         ToolsCallMessage toolCallMessage,
@@ -57,7 +63,8 @@ public class ToolCallExecutor
         ToolInvocationPreparer preparer,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
-        CancellationToken cancellationToken = default
+        CancellationToken cancellationToken = default,
+        ToolResultLimits? resultLimits = null
     )
     {
         ArgumentNullException.ThrowIfNull(toolCallMessage);
@@ -65,6 +72,7 @@ public class ToolCallExecutor
         ArgumentNullException.ThrowIfNull(preparer);
 
         var effectiveLogger = logger ?? NullLogger.Instance;
+        var effectiveLimits = resultLimits ?? ToolResultLimits.Default;
         var toolCalls = toolCallMessage.ToolCalls;
         var toolCallResults = new List<ToolCallResult>();
         var toolCallCount = toolCalls.Count;
@@ -86,6 +94,7 @@ public class ToolCallExecutor
                     prepared[i],
                     resultCallback,
                     effectiveLogger,
+                    effectiveLimits,
                     cancellationToken
                 );
                 toolCallResults.Add(result);
@@ -100,12 +109,16 @@ public class ToolCallExecutor
                 );
 
                 toolCallResults.Add(
-                    new ToolCallResult(toolCall.ToolCallId, $"Tool call execution error: {ex.Message}")
-                    {
-                        ToolName = toolCall.FunctionName,
-                        ExecutionTarget = toolCall.ExecutionTarget,
-                        IsError = true,
-                    }
+                    Bound(
+                        new ToolCallResult(toolCall.ToolCallId, $"Tool call execution error: {ex.Message}")
+                        {
+                            ToolName = toolCall.FunctionName,
+                            ExecutionTarget = toolCall.ExecutionTarget,
+                            IsError = true,
+                        },
+                        effectiveLimits,
+                        effectiveLogger
+                    )
                 );
             }
         }
@@ -190,6 +203,26 @@ public class ToolCallExecutor
         return prepared;
     }
 
+    /// <summary>
+    ///     Applies <paramref name="limits"/> to a result on its way out, logging when it had to cut.
+    /// </summary>
+    private static ToolCallResult Bound(ToolCallResult result, ToolResultLimits limits, ILogger logger)
+    {
+        var bounded = limits.Apply(result);
+        if (bounded.IsTruncated && !result.IsTruncated)
+        {
+            logger.LogWarning(
+                "Tool result truncated: ToolCallId={ToolCallId}, FunctionName={FunctionName}, OriginalLength={OriginalLength}, MaxResultBytes={MaxResultBytes}",
+                result.ToolCallId,
+                result.ToolName,
+                result.Result?.Length ?? 0,
+                limits.MaxResultBytes
+            );
+        }
+
+        return bounded;
+    }
+
     private static async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
         IDictionary<string, ToolCallResultHandler> functionMap,
@@ -197,6 +230,7 @@ public class ToolCallExecutor
         PreparedToolInvocation? prepared,
         IToolResultCallback? resultCallback,
         ILogger logger,
+        ToolResultLimits limits,
         CancellationToken cancellationToken
     )
     {
@@ -225,7 +259,7 @@ public class ToolCallExecutor
         {
             if (prepared is { IsApproved: false })
             {
-                return await ReportBlockedAsync(toolCall, prepared, resultCallback, logger, cancellationToken);
+                return await ReportBlockedAsync(toolCall, prepared, resultCallback, logger, limits, cancellationToken);
             }
 
             try
@@ -250,13 +284,18 @@ public class ToolCallExecutor
                     result.Result?.Length ?? 0
                 );
 
-                // Ensure tool call ID is set (handlers typically leave it null).
-                var stamped = result with
-                {
-                    ToolCallId = toolCall.ToolCallId,
-                    ToolName = string.IsNullOrEmpty(result.ToolName) ? functionName : result.ToolName,
-                    ExecutionTarget = toolCall.ExecutionTarget,
-                };
+                // Ensure tool call ID is set (handlers typically leave it null), then bound the
+                // payload before anyone (callback, history) sees it.
+                var stamped = Bound(
+                    result with
+                    {
+                        ToolCallId = toolCall.ToolCallId,
+                        ToolName = string.IsNullOrEmpty(result.ToolName) ? functionName : result.ToolName,
+                        ExecutionTarget = toolCall.ExecutionTarget,
+                    },
+                    limits,
+                    logger
+                );
 
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
@@ -290,12 +329,16 @@ public class ToolCallExecutor
                     );
                 }
 
-                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage)
-                {
-                    ToolName = functionName,
-                    ExecutionTarget = toolCall.ExecutionTarget,
-                    IsError = true,
-                };
+                var errorResult = Bound(
+                    new ToolCallResult(toolCall.ToolCallId, errorMessage)
+                    {
+                        ToolName = functionName,
+                        ExecutionTarget = toolCall.ExecutionTarget,
+                        IsError = true,
+                    },
+                    limits,
+                    logger
+                );
 
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
@@ -332,12 +375,16 @@ public class ToolCallExecutor
             );
         }
 
-        var unavailableResult = new ToolCallResult(toolCall.ToolCallId, unavailableMessage)
-        {
-            ToolName = functionName,
-            ExecutionTarget = toolCall.ExecutionTarget,
-            IsError = true,
-        };
+        var unavailableResult = Bound(
+            new ToolCallResult(toolCall.ToolCallId, unavailableMessage)
+            {
+                ToolName = functionName,
+                ExecutionTarget = toolCall.ExecutionTarget,
+                IsError = true,
+            },
+            limits,
+            logger
+        );
 
         if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
         {
@@ -357,10 +404,11 @@ public class ToolCallExecutor
         PreparedToolInvocation prepared,
         IToolResultCallback? resultCallback,
         ILogger logger,
+        ToolResultLimits limits,
         CancellationToken cancellationToken
     )
     {
-        var blockedResult = prepared.ToBlockedResult();
+        var blockedResult = Bound(prepared.ToBlockedResult(), limits, logger);
 
         logger.LogWarning(
             "Tool call not executed: FunctionName={FunctionName}, ToolCallId={ToolCallId}, Outcome={Outcome}, Reason={Reason}",

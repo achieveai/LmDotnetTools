@@ -176,4 +176,122 @@ public class ToolCallExecutorTests
         var successCount = result.ToolCallResults.Count(r => !r.IsError);
         Assert.Equal(1, successCount);
     }
+
+    // #694 — a 15,231,668-byte tool result was sent verbatim to a provider with a
+    // 10,485,760-byte field limit and 400'd the whole turn. The executor is the production
+    // boundary, so the bound must land here (persisted history is then bounded too).
+    private const int ReproducedOversizedLength = 15_231_668;
+
+    private static ToolsCallMessage SingleCall(string functionName, string toolCallId) =>
+        new()
+        {
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = functionName,
+                    FunctionArgs = "{}",
+                    ToolCallId = toolCallId,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                },
+            ],
+            Role = Role.Assistant,
+        };
+
+    [Fact]
+    public async Task ExecuteAsync_OversizedResult_IsBoundedToDefaultLimitWithPrefixAndMarker()
+    {
+        var original = new string('x', ReproducedOversizedLength);
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
+        {
+            ["dump"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, original)),
+        };
+
+        var result = await ToolCallExecutor.ExecuteAsync(SingleCall("dump", "call_big"), functionMap);
+
+        var bounded = Assert.Single(result.ToolCallResults);
+        Assert.True(bounded.IsTruncated);
+        Assert.Equal("call_big", bounded.ToolCallId);
+        Assert.True(
+            System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= ToolResultLimits.Default.MaxResultBytes,
+            $"bounded result is {bounded.Result.Length} chars"
+        );
+        Assert.StartsWith(original[..4096], bounded.Result, StringComparison.Ordinal);
+        Assert.EndsWith(" of 15,231,668 bytes]", bounded.Result, StringComparison.Ordinal);
+        Assert.Contains(ToolResultLimits.TruncationMarkerPrefix, bounded.Result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SmallResult_IsByteIdenticalWithoutMarker()
+    {
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
+        {
+            ["getWeather"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "Sunny, 72F")),
+        };
+
+        var result = await ToolCallExecutor.ExecuteAsync(SingleCall("getWeather", "call_small"), functionMap);
+
+        var untouched = Assert.Single(result.ToolCallResults);
+        Assert.False(untouched.IsTruncated);
+        Assert.Equal("Sunny, 72F", untouched.Result);
+        Assert.DoesNotContain(ToolResultLimits.TruncationMarkerPrefix, untouched.Result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_HonoursConfiguredLimit_AndBoundsResultsSeenByCallback()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 128 };
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
+        {
+            ["dump"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, new string('y', 10_000))),
+        };
+        var callback = new Mock<IToolResultCallback>();
+        ToolCallResult? seenByCallback = null;
+        _ = callback
+            .Setup(c =>
+                c.OnToolResultAvailableAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<ToolCallResult>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<string, ToolCallResult, CancellationToken>((_, r, _) => seenByCallback = r)
+            .Returns(Task.CompletedTask);
+
+        var result = await ToolCallExecutor.ExecuteAsync(
+            SingleCall("dump", "call_cfg"),
+            functionMap,
+            callback.Object,
+            resultLimits: limits
+        );
+
+        var bounded = Assert.Single(result.ToolCallResults);
+        Assert.True(bounded.IsTruncated);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 128);
+        Assert.EndsWith(" of 10,000 bytes]", bounded.Result, StringComparison.Ordinal);
+        Assert.NotNull(seenByCallback);
+        Assert.Equal(bounded.Result, seenByCallback.Value.Result);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_OversizedErrorResult_IsBoundedToo()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 128 };
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
+        {
+            ["boom"] = (_, _, _) => throw new InvalidOperationException(new string('e', 10_000)),
+        };
+
+        var result = await ToolCallExecutor.ExecuteAsync(
+            SingleCall("boom", "call_err"),
+            functionMap,
+            resultLimits: limits
+        );
+
+        var bounded = Assert.Single(result.ToolCallResults);
+        Assert.True(bounded.IsError);
+        Assert.True(bounded.IsTruncated);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 128);
+        Assert.Contains(ToolResultLimits.TruncationMarkerPrefix, bounded.Result, StringComparison.Ordinal);
+    }
 }

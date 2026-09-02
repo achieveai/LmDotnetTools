@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -313,5 +314,59 @@ public sealed class MessageMapperTests
 
         request.Input.Should().HaveCount(1);
         request.Input[0].Role.Should().Be("user");
+    }
+
+    // #694 — history persisted before the LmCore bound existed can still carry a 15,231,668-byte
+    // result. The Responses API rejects function_call_output.output above 10,485,760, so the
+    // mapper clamps at that hard limit as a last line of defence.
+    [Fact]
+    public void Oversized_persisted_tool_results_are_clamped_to_the_responses_output_limit()
+    {
+        const int hardLimit = 10_485_760;
+        var oversized = new string('q', 15_231_668);
+        var messages = new IMessage[]
+        {
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call-1", oversized)],
+                Role = Role.Tool,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call-2",
+                Result = oversized,
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Should().HaveCount(2);
+        foreach (var item in request.Input)
+        {
+            item.Type.Should().Be("function_call_output");
+            item.Output.Should().NotBeNull();
+            Encoding.UTF8.GetByteCount(item.Output!).Should().BeLessThanOrEqualTo(hardLimit);
+            item.Output.Should().StartWith(oversized[..4096]);
+            item.Output.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+            item.Output.Should().EndWith(" of 15,231,668 bytes]");
+        }
+    }
+
+    [Fact]
+    public void Tool_results_under_the_responses_output_limit_pass_through_untouched()
+    {
+        var messages = new IMessage[]
+        {
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call-1", "result-A")],
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input[0].Output.Should().Be("result-A");
     }
 }

@@ -24,6 +24,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     private IToolResultCallback? _resultCallback;
 
+    private readonly ToolResultLimits _resultLimits;
+
     /// <summary>
     /// Constructs a FunctionCallMiddleware. Handler dictionary uses the unified
     /// <see cref="ToolHandlerResult"/> shape; multi-modal payloads are carried by the wrapped
@@ -39,17 +41,24 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// wait for an external signal, splice the resolved result into history, and re-call
     /// <c>GenerateReplyAsync</c>). Use <c>MultiTurnAgentLoop</c> for built-in deferred
     /// bookkeeping with persistence and webhook-friendly idempotent resolution.
+    /// <para>
+    /// <c>resultLimits</c> bounds every tool result before it is emitted. Defaults to
+    /// <see cref="ToolResultLimits.Default"/> (4 MiB of UTF-8); an oversized result keeps its
+    /// prefix, ends with a truncation marker, and is flagged <see cref="ToolCallResult.IsTruncated"/>.
+    /// </para>
     /// </remarks>
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
         IDictionary<string, ToolHandler> functionMap,
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
-        IToolResultCallback? resultCallback = null
+        IToolResultCallback? resultCallback = null,
+        ToolResultLimits? resultLimits = null
     )
     {
         _functions = functions ?? throw new ArgumentNullException(nameof(functions));
         _logger = logger ?? NullLogger<FunctionCallMiddleware>.Instance;
+        _resultLimits = resultLimits ?? ToolResultLimits.Default;
 
         // Validate that each function has a corresponding entry in the function map
         if (functions.Any())
@@ -84,12 +93,16 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Adapt unified handlers into ToolCallResult-returning handlers for the executor.
         // Deferred returns surface as ToolCallResult.IsDeferred=true so callers can detect
         // and resolve them via their own loop. This middleware does not wait for resolution.
-        _functionMap = AdaptToToolCallResultHandlers(functionMap ?? new Dictionary<string, ToolHandler>());
+        _functionMap = AdaptToToolCallResultHandlers(
+            functionMap ?? new Dictionary<string, ToolHandler>(),
+            _resultLimits
+        );
         _resultCallback = resultCallback;
     }
 
     private static IDictionary<string, ToolCallResultHandler> AdaptToToolCallResultHandlers(
-        IDictionary<string, ToolHandler> source
+        IDictionary<string, ToolHandler> source,
+        ToolResultLimits resultLimits
     )
     {
         var wrapped = new Dictionary<string, ToolCallResultHandler>(source.Count);
@@ -100,7 +113,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             wrapped[key] = async (args, ctx, ct) =>
             {
                 var result = await handler(args, ctx, ct);
-                return ToolCallResultBuilder.FromHandlerResult(result, ctx.ToolCallId, key);
+                return ToolCallResultBuilder.FromHandlerResult(result, ctx.ToolCallId, key, limits: resultLimits);
             };
         }
 
@@ -428,7 +441,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             _functionMap,
             _resultCallback,
             _logger,
-            cancellationToken
+            cancellationToken,
+            _resultLimits
         );
     }
 
@@ -452,7 +466,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             _functionMap,
             _resultCallback,
             _logger,
-            cancellationToken
+            cancellationToken,
+            _resultLimits
         );
 
         return result.ToolCallResults.First();
