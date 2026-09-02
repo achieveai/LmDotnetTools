@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
-using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 // The record publishes an AgentKind *property* (the wire name the client reads), which would shadow
 // the same-named enum in every expression below. The alias keeps both usable without renaming either.
 using CollaborationAgentKind = AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.AgentKind;

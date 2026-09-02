@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 /// <summary>
 /// The thread-id convention for a sub-agent's own transcript: <c>subagent-{scope}-{agentId}</c>.
@@ -20,6 +20,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <para>
 /// Pre-#705 threads were <c>subagent-{12-hex guid}-{8-hex tag}</c> with the agent id being everything
 /// after the prefix. <see cref="TryGetAgentId"/> still reads those so persisted rosters keep loading.
+/// </para>
+/// <para>
+/// #730. This lives in LmCore, not with the SubAgentManager that mints the ids, because
+/// <see cref="AgentExecutionRef.AgentIdFromThreadId"/> — the rule every per-agent usage rollup groups
+/// by — must read the same shape. One writer, one reader, one regex.
 /// </para>
 /// </remarks>
 public static class SubAgentThreadIds

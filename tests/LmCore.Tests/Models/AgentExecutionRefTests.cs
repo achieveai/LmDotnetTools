@@ -51,11 +51,28 @@ public class AgentExecutionRefTests
     }
 
     [Theory]
+    // #705 production shape: subagent-{12 hex scope}-{ordinal agent id}.
+    [InlineData("subagent-a1b2c3d4e5f6-agent-3", "agent-3")]
+    [InlineData("subagent-000000000000-agent-12", "agent-12")]
+    // Unscoped and pre-#705 ids: everything after the prefix is the agent id.
     [InlineData("subagent-agent-3", "agent-3")]
+    [InlineData("subagent-custom", "custom")]
     [InlineData("subagent-1a2b3c4d-agent-7", "1a2b3c4d-agent-7")]
+    // Not a scope: 12 characters but not all hex, so the whole tail is the agent id.
+    [InlineData("subagent-a1b2c3d4e5fg-agent-3", "a1b2c3d4e5fg-agent-3")]
+    // Not a sub-agent thread at all.
     [InlineData("plain-thread", "plain-thread")]
-    public void AgentIdFromThreadId_StripsTheSubAgentPrefix_ElseKeepsTheThreadId(string threadId, string expected)
+    [InlineData("root-1", "root-1")]
+    public void AgentIdFromThreadId_ReadsTheScopedAgentId_ElseKeepsTheThreadId(string threadId, string expected)
     {
         AgentExecutionRef.AgentIdFromThreadId(threadId).Should().Be(expected);
+    }
+
+    [Fact]
+    public void AgentIdFromThreadId_RoundTripsTheIdSubAgentThreadIdsMints()
+    {
+        var agentId = SubAgentThreadIds.AgentIdFor(3);
+
+        AgentExecutionRef.AgentIdFromThreadId(SubAgentThreadIds.For("root-1", agentId)).Should().Be(agentId);
     }
 }

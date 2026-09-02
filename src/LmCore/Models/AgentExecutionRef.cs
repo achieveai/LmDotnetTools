@@ -23,9 +23,6 @@ public sealed record AgentExecutionRef(
     /// <summary>The agent id of the root loop.</summary>
     public const string RootAgentId = "root";
 
-    /// <summary>The thread-id prefix a spawned sub-agent's own loop runs under.</summary>
-    public const string SubAgentThreadIdPrefix = "subagent-";
-
     /// <summary>The identity of a conversation's root loop.</summary>
     public static AgentExecutionRef Root(string rootThreadId)
     {
@@ -46,14 +43,15 @@ public sealed record AgentExecutionRef(
     }
 
     /// <summary>
-    ///     The agent id a sub-agent thread id encodes (<c>subagent-{agentId}</c>), or the thread id itself
-    ///     when it carries no such prefix.
+    ///     The agent id a sub-agent thread id encodes, or the thread id itself when it is not a sub-agent
+    ///     thread. Delegates to <see cref="SubAgentThreadIds.TryGetAgentId" /> — the same rule that mints
+    ///     the ids — so a scoped ordinal thread (<c>subagent-{scope}-agent-N</c>, #705) yields
+    ///     <c>agent-N</c> and not <c>{scope}-agent-N</c> (#730), while a pre-#705 <c>subagent-{id}</c>
+    ///     still yields everything after the prefix.
     /// </summary>
     public static string AgentIdFromThreadId(string threadId)
     {
         ArgumentNullException.ThrowIfNull(threadId);
-        return threadId.StartsWith(SubAgentThreadIdPrefix, StringComparison.Ordinal)
-            ? threadId[SubAgentThreadIdPrefix.Length..]
-            : threadId;
+        return SubAgentThreadIds.TryGetAgentId(threadId, out var agentId) ? agentId : threadId;
     }
 }

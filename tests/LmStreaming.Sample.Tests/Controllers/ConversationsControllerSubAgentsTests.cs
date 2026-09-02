@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
