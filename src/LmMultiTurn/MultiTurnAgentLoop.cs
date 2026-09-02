@@ -138,6 +138,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // why this is a collaborator rather than fields here.
     private readonly DelayedResultCoordinator _delayed = new();
 
+    // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
+    // no CompactionSetup, in which case nothing on the request path changes.
+    private readonly CompactionRuntime? _compaction;
+
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
     // The sentinel carries nothing — it exists only to break RunLoopAsync out of its wait so it can
     // drain the coordinator, which is where the actual work is.
@@ -252,7 +256,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// constructor ever had. Callers that need to control tool registration or supply a custom
     /// descendant-question sink (e.g. a spawned sub-agent, or a workflow controller loop with no
     /// browser socket of its own) must use the
-    /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?)"/>
+    /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?, CompactionSetup?)"/>
     /// overload instead. Both route through the same implementation.
     /// </remarks>
     public MultiTurnAgentLoop(
@@ -365,6 +369,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional root-conversation delivery target for a descendant's parked <c>AskUserQuestion</c>.
     ///     Null resolves to this loop's own persist-and-publish path.
     /// </param>
+    /// <param name="compaction">
+    ///     Optional just-in-time compaction setup (#684, spec 679 §5). Null leaves the request path
+    ///     exactly as it was: no policy pass, no recall tool, no observation. Spawned sub-agents
+    ///     inherit it through <see cref="SubAgentOptions.Compaction"/>.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -388,7 +397,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
+        CompactionSetup? compaction = null
     )
         : base(
             threadId,
@@ -437,6 +447,34 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
+
+        // Just-in-time compaction (#684). The runtime holds no reference to this loop — every fact it
+        // needs is a delegate — and it is built before the inheritable-tool snapshot below so the recall
+        // tool it names can be registered after that snapshot (a child registers its own instance).
+        _compaction = compaction is null
+            ? null
+            : new CompactionRuntime(
+                compaction,
+                new CompactionRuntimeHost
+                {
+                    ThreadId = threadId,
+                    SystemPrompt = systemPrompt,
+                    Store = store,
+                    RunLedgerStore = RunLedgerStore,
+                    DefaultOptions = DefaultOptions,
+                    Pricing = pricingResolver,
+                    AgentId = LifecycleServices.Lineage.SubAgentId ?? "root",
+                    HistorySnapshot = GetHistorySnapshot,
+                    OwedContinuations = () => _delayed.PendingCauseCount,
+                    LiveDeferredCount = () => _delayed.IsEmpty ? 0 : 1,
+                    Roster = RosterForCompaction,
+                    AppendInMemory = message => RestoreHistory([message]),
+                    RecordSummaryUsage = RecordCompactionUsage,
+                    Lifecycle = Lifecycle,
+                    Logger = Logger,
+                },
+                providerAgent
+            );
 
         // Client-facing tools register before the sub-agent inheritable-tool snapshot. Each descendant
         // constructs its own correctly-scoped provider instances when the owning host enables them.
@@ -530,7 +568,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 parentAgent: this,
                 parentContracts: [.. inheritableContracts],
                 parentHandlers: handlers,
-                options: subAgentOptions,
+                // A root that compacts hands the same setup down so every level of the hierarchy runs
+                // the policy over its own thread with its own summarizer (see CompactionSetup).
+                options: subAgentOptions.Compaction is null && compaction is not null
+                    ? subAgentOptions with
+                    {
+                        Compaction = compaction,
+                    }
+                    : subAgentOptions,
                 source: source,
                 logger: logger,
                 // Sub-agents whose template/override sets no model inherit the parent's model, so a
@@ -1124,6 +1169,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // new turn, and it is cleared as soon as that turn consumes it.
         var recoveryCount = TakeCarriedRecoveryBudget(runId);
         ResumeSentinel? pendingResume = null;
+        _compaction?.OnRunStarted();
 
         while (turnCount < MaxTurnsPerRun)
         {
@@ -1215,6 +1261,38 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             BeginTurn(runId, turnGenerationId);
             var turn = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, pendingResume?.InterruptedTurn, ct);
             pendingResume = null;
+
+            if (turn.Overflow is { } overflow)
+            {
+                // The provider refused the request as too large. The generation produced nothing: report
+                // it and drop its partials exactly as an interruption is handled, then compact once and
+                // retry the same input once (spec 679 §5.1). A second overflow — or a compaction that
+                // could not activate — fails the run with the typed reason (§5.6).
+                await CompleteTurnAsync(runId, turnGenerationId, LifecycleTurnOutcomes.Interrupted, ct);
+                await PublishToAllAsync(new GenerationAbandonedMessage(ThreadId, runId, turnGenerationId), ct);
+
+                if (_compaction is not null && await _compaction.TryReactiveAsync(runId, turnGenerationId, ct))
+                {
+                    Logger.LogWarning(
+                        overflow,
+                        "Run {RunId} overflowed the context window at generation {GenerationId}; compacted, retrying once",
+                        runId,
+                        turnGenerationId
+                    );
+                    continue;
+                }
+
+                if (_compaction is not null)
+                {
+                    await _compaction.ReportOverflowAfterCompactionAsync(runId, turnGenerationId, ct);
+                }
+
+                throw new ContextOverflowException(
+                    CompactionFailureReasons.OverflowAfterCompaction,
+                    overflow.Message,
+                    overflow
+                );
+            }
 
             if (turn.RetryableInterruption is { } interruption)
             {
@@ -1368,7 +1446,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 Role = Role.User,
             };
 
-            var messagesToSend = GetMessagesWithSystemPrompt().Concat([wrapUpInstruction]);
+            // The wrap-up reads the same view a turn would (an active checkpoint stays in force) but
+            // never runs the policy: it is not a place a compaction may start (spec 679 §5.1).
+            var messagesToSend = (_compaction?.BuildView() ?? GetMessagesWithSystemPrompt()).Concat([
+                wrapUpInstruction,
+            ]);
 
             IAsyncEnumerable<IMessage> stream;
             try
@@ -1740,7 +1822,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // list IS the request, and the deferral precondition below, the context report, and the
         // provider all have to be reading the same snapshot rather than three enumerations of a
         // history that a concurrent send could have moved on between them.
-        List<IMessage> messagesToSend = [.. GetMessagesWithSystemPrompt()];
+        List<IMessage> messagesToSend = [.. _compaction?.BuildView() ?? GetMessagesWithSystemPrompt()];
 
         // Precondition: never send a request while any deferred tool result is unresolved.
         // The provider would reject an empty tool_result.content, but the real bug is sending
@@ -1774,6 +1856,30 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         }
                     }
                 }
+            }
+        }
+
+        // The compaction policy runs here and only here: immediately before the provider call, on the
+        // request that is about to go out (spec 679 §5.1). A compaction replaces the request with the
+        // view over the new checkpoint; a refusal is the harness declining to knowingly send beyond the
+        // reserve after compaction failed (#678 AC 7).
+        if (_compaction is { IsEnabled: true })
+        {
+            var pass = await _compaction.EvaluateAsync(
+                runId,
+                generationId,
+                messagesToSend,
+                continuation is not null,
+                ct
+            );
+            if (pass.Refusal is { } refusal)
+            {
+                throw refusal;
+            }
+
+            if (pass.View is { } view)
+            {
+                messagesToSend = [.. view];
             }
         }
 
@@ -1871,6 +1977,30 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     attempt.TrackToolTask(toolCall.ToolCallId, executionTask);
                 }
             }
+        }
+        catch (Exception ex)
+            when (!ct.IsCancellationRequested
+                && _compaction is { Mode: CompactionMode.Compact }
+                && _compaction.IsContextOverflow(ex, CompactionRuntime.EstimateTokens(messagesToSend))
+            )
+        {
+            // The request itself was refused as too large. Nothing streamed, but the same settling
+            // discipline as an interruption applies in case a tool did start before the failure surfaced.
+            try
+            {
+                await attempt.SettleToolTasksAsync();
+            }
+            catch (Exception toolFailure)
+            {
+                Logger.LogWarning(
+                    toolFailure,
+                    "Tool execution dispatched by overflowed generation {GenerationId} of run {RunId} failed while settling",
+                    generationId,
+                    runId
+                );
+            }
+
+            return new TurnExecutionResult(attempt) { Overflow = ex };
         }
         catch (Exception ex) when (!ct.IsCancellationRequested && IsRetryableStreamInterruption(ex))
         {
@@ -3208,8 +3338,88 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     }
 
     /// <inheritdoc />
+    /// <summary>
+    ///     Persists a row and tells the compaction runtime the id it got, so the runtime can place the
+    ///     in-memory row against the store's <c>Seq</c> when it reconciles before a cut.
+    /// </summary>
+    protected override Task PersistMessageAsync(IMessage message, string runId, CancellationToken ct)
+    {
+        if (_compaction is null || Store is null)
+        {
+            return base.PersistMessageAsync(message, runId, ct);
+        }
+
+        PersistedMessage persisted;
+        try
+        {
+            persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist message");
+            return Task.CompletedTask;
+        }
+
+        var append = AppendPersistedAsync(persisted, ct);
+        _compaction.TrackPersisted(message, persisted.Id, append);
+        return append;
+    }
+
+    private async Task AppendPersistedAsync(PersistedMessage persisted, CancellationToken ct)
+    {
+        try
+        {
+            await Store!.AppendMessagesAsync(ThreadId, [persisted], ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist message");
+        }
+    }
+
+    private IReadOnlyList<AgentRef> RosterForCompaction() =>
+        SubAgentManager is null
+            ? []
+            :
+            [
+                .. SubAgentManager
+                    .ListAgents()
+                    .Select(a => new AgentRef
+                    {
+                        AgentId = a.AgentId,
+                        Template = a.TemplateName,
+                        Task = a.Task,
+                        Status = a.Status.ToString().ToLowerInvariant(),
+                        ThreadId = a.ThreadId,
+                    }),
+            ];
+
+    /// <summary>The summary pass's usage lands in the conversation ledger under its own execution kind.</summary>
+    private void RecordCompactionUsage(UsageMessage usage, string checkpointId, string? model)
+    {
+        if (UsageLedger is null)
+        {
+            return;
+        }
+
+        UsageLedger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(usage, ThreadId, UsageExecutionKind.Compaction, model) with
+            {
+                CompactionCheckpointId = checkpointId,
+            }
+        );
+        _ = PersistCurrentUsageAsync();
+    }
+
     protected override async Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
     {
+        // Pair the restored rows with the store's and reconcile compaction state before anything
+        // else reads the history: the view the first turn builds depends on it.
+        if (_compaction is not null)
+        {
+            await _compaction.TrackRestoredAsync(messages ?? [], ct);
+        }
+
         // Rebuild the deferred registry from persisted history. Each ToolCallResultMessage
         // with IsDeferred=true gets re-registered so GetDeferredToolCallsAsync surfaces it
         // and ResolveToolCallAsync can complete it after restart.

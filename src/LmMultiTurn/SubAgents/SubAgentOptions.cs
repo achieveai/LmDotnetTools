@@ -1,7 +1,8 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -332,6 +333,14 @@ public record SubAgentOptions
     /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.
     /// </summary>
     internal SubAgentOrdinalAllocator? OrdinalAllocator { get; init; }
+
+    /// <summary>
+    /// The just-in-time compaction setup every spawned child loop runs with (#684). A root loop given a
+    /// <see cref="CompactionSetup"/> fills this in when it is null, so one host setting reaches the whole
+    /// hierarchy; each child evaluates the policy over its own thread and builds its own summarizer.
+    /// Inherited verbatim through <see cref="ForChildLoop"/>. Null = children do not compact.
+    /// </summary>
+    public CompactionSetup? Compaction { get; init; }
 
     /// <summary>
     /// The options a spawned child's OWN loop runs on. Everything the host configured — templates,
