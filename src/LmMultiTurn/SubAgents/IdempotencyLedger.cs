@@ -1,9 +1,26 @@
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
+/// <summary>What a claimed call produced, recorded so its repeats do not redo the work.</summary>
+/// <param name="Receipt">Exactly what the call returned.</param>
+/// <param name="ErrorCode">
+/// The code the call refused with, or null when it succeeded. A recorded outcome is not always a happy
+/// one: a run that failed after the agent already ran must be replayed AS a failure, because handing its
+/// repeat a plain result would tell the caller the retry it just made had worked.
+/// </param>
+/// <remarks>Reference type, so a null completion stays available as the "abandoned" marker.</remarks>
+internal sealed record IdempotentOutcome(string Receipt, string? ErrorCode);
+
 /// <summary>A result produced by an earlier call under the same key.</summary>
-/// <param name="Receipt">Exactly what the first call returned.</param>
+/// <param name="Outcome">Exactly what the first call returned, and how it ended.</param>
 /// <param name="OriginalAt">When the first call claimed the key.</param>
-internal readonly record struct IdempotentReplay(string Receipt, DateTimeOffset OriginalAt);
+internal readonly record struct IdempotentReplay(IdempotentOutcome Outcome, DateTimeOffset OriginalAt)
+{
+    /// <summary>What the first call returned.</summary>
+    internal string Receipt => Outcome.Receipt;
+
+    /// <summary>The code the first call refused with, or null when it succeeded.</summary>
+    internal string? ErrorCode => Outcome.ErrorCode;
+}
 
 /// <summary>
 /// One caller's exclusive right to do the work behind a key, and to record what it produced.
@@ -26,7 +43,7 @@ internal sealed class IdempotencyClaim
 
     internal DateTimeOffset ClaimedAt { get; }
 
-    internal TaskCompletionSource<string?> Completion { get; } =
+    internal TaskCompletionSource<IdempotentOutcome?> Completion { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
@@ -47,9 +64,12 @@ internal sealed class IdempotencyClaim
 /// open — and two identical tool calls in ONE model turn are the concurrent case.
 /// </para>
 /// <para>
-/// A call that FAILED records nothing and releases the key. It created no agent and no obligation, so
-/// there is nothing to protect from a repeat, and remembering it would turn a transient failure into a
-/// permanent one for that key.
+/// What decides whether a key is remembered is not success but whether the call CREATED anything. A
+/// refusal that happened before there was an agent or an obligation releases the key: it left nothing to
+/// protect from a repeat, and remembering it would turn a transient failure into a permanent one. A run
+/// that failed after the agent had already run is remembered, and remembered as the failure it was —
+/// releasing that one would let the repeat start a second agent, which is exactly what the key was
+/// given to prevent.
 /// </para>
 /// <para>
 /// Memory-only and bounded by count, not by time. A key's usefulness is exhausted by the calls that
@@ -127,10 +147,10 @@ internal sealed class IdempotencyLedger
 
             // Outside the lock: the holder's work is a whole spawn or send, and blocking every other
             // key's caller behind it would make this ledger a global tool-call serializer.
-            var receipt = await holder.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            if (receipt is not null)
+            var outcome = await holder.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (outcome is not null)
             {
-                return (null, new IdempotentReplay(receipt, holder.ClaimedAt));
+                return (null, new IdempotentReplay(outcome, holder.ClaimedAt));
             }
 
             // The holder failed and released the key, so there is nothing to replay. Loop round and
@@ -139,14 +159,21 @@ internal sealed class IdempotencyLedger
     }
 
     /// <summary>Records what the claimed work produced, so later callers replay it instead of repeating it.</summary>
-    internal void Complete(IdempotencyClaim claim, string receipt)
+    /// <param name="claim">The claim taken for this work.</param>
+    /// <param name="receipt">What the work returned.</param>
+    /// <param name="errorCode">
+    /// The code the work refused with, or null when it succeeded. Passed rather than defaulted so that
+    /// recording a failed outcome is a deliberate act at the call site: the caller is the only party that
+    /// knows whether the failure happened before or after something irreversible was created.
+    /// </param>
+    internal void Complete(IdempotencyClaim claim, string receipt, string? errorCode)
     {
         ArgumentNullException.ThrowIfNull(claim);
 
         // Set through the claim the caller holds rather than through a fresh lookup: eviction may
         // already have forgotten the key, and a waiter holding this same instance must still be
         // released. Nothing else can complete it, so the result is the first caller's either way.
-        _ = claim.Completion.TrySetResult(receipt);
+        _ = claim.Completion.TrySetResult(new IdempotentOutcome(receipt, errorCode));
     }
 
     /// <summary>Releases a claim whose work produced nothing, leaving the key free to be tried again.</summary>

@@ -96,6 +96,16 @@ public class SubAgentToolProvider : IFunctionProvider
     /// <summary>The code stamped on a result that is a replay rather than a fresh outcome.</summary>
     internal const string IdempotentReplayCode = "idempotent_replay";
 
+    /// <summary>
+    /// The code for a sub-agent whose RUN failed, on both the spawn and the legacy send.
+    /// </summary>
+    /// <remarks>
+    /// Named because it is the one error on these tools that happens AFTER something irreversible: the
+    /// agent was created and executed, or the follow-up was delivered and acted on. Every other error
+    /// refuses before anything exists.
+    /// </remarks>
+    internal const string SubAgentFailedCode = "subagent_failed";
+
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly IReadOnlySet<string>? _exposedToolNames;
@@ -897,8 +907,12 @@ public class SubAgentToolProvider : IFunctionProvider
     /// spelled — the caller is the only party that knows which of its calls are the same call.
     /// </para>
     /// <para>
-    /// Only a SUCCESSFUL result is recorded. An error created nothing to protect, and a deferral has no
-    /// result yet; remembering either would turn one bad call into a permanently poisoned key.
+    /// A result is recorded when the call CREATED something, not when it succeeded. Every refusal but one
+    /// happens before there is an agent or an obligation, so it releases the key rather than poisoning it
+    /// for a retry that would have worked. The exception is
+    /// <see cref="SubAgentFailedCode"/>: that error is raised at the END of the child's run, so the agent
+    /// exists and the follow-up was delivered, and freeing the key there would let the retry start a
+    /// second one. A deferral has no result yet and is never recorded.
     /// </para>
     /// </remarks>
     private async Task<ToolHandlerResult> WithIdempotencyAsync(
@@ -917,15 +931,21 @@ public class SubAgentToolProvider : IFunctionProvider
         var (claim, replay) = await _idempotency.ReserveAsync(toolName, key.Trim(), cancellationToken);
         if (replay is { } previous)
         {
-            return ToolHandlerResult.FromText(WithReplayMetadata(previous));
+            var receipt = WithReplayMetadata(previous);
+
+            // A replayed failure is returned AS a failure, carrying the first call's own code. Handing
+            // it back as a plain result would read to the model as "the retry worked".
+            return previous.ErrorCode is { } previousCode
+                ? ToolHandlerResult.FromError(receipt, previousCode)
+                : ToolHandlerResult.FromText(receipt);
         }
 
         try
         {
             var result = await work();
-            if (result is ToolHandlerResult.Resolved { Payload.IsError: false } resolved)
+            if (result is ToolHandlerResult.Resolved resolved && IsRecordableOutcome(resolved.Payload))
             {
-                _idempotency.Complete(claim!, resolved.Payload.Text);
+                _idempotency.Complete(claim!, resolved.Payload.Text, resolved.Payload.ErrorCode);
             }
             else
             {
@@ -942,6 +962,17 @@ public class SubAgentToolProvider : IFunctionProvider
             throw;
         }
     }
+
+    /// <summary>
+    /// Whether a result is one the key must remember, rather than one a retry may repeat.
+    /// </summary>
+    /// <remarks>
+    /// The question is not "did it work" but "does repeating it create a second agent or a second
+    /// obligation". Only <see cref="SubAgentFailedCode"/> answers yes among the errors, because it is the
+    /// only one raised after the child has already run.
+    /// </remarks>
+    private static bool IsRecordableOutcome(ToolHandlerResultPayload payload) =>
+        !payload.IsError || payload.ErrorCode == SubAgentFailedCode;
 
     /// <summary>
     /// Reads the caller's idempotency key, or null when there is not one to read.
@@ -1103,7 +1134,7 @@ public class SubAgentToolProvider : IFunctionProvider
         }
         catch (SubAgentExecutionException ex)
         {
-            return ToolHandlerResult.FromError(ex.Message, "subagent_failed");
+            return ToolHandlerResult.FromError(ex.Message, SubAgentFailedCode);
         }
     }
 
@@ -1144,7 +1175,7 @@ public class SubAgentToolProvider : IFunctionProvider
         }
         catch (SubAgentExecutionException ex)
         {
-            return ToolHandlerResult.FromError(ex.Message, "subagent_failed");
+            return ToolHandlerResult.FromError(ex.Message, SubAgentFailedCode);
         }
         catch (SubAgentNotStartedException ex)
         {

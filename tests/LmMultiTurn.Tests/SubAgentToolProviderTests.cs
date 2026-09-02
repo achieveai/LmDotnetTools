@@ -1018,6 +1018,65 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         _manager!.ListAgents().Should().ContainSingle();
     }
 
+    /// <summary>
+    /// A key is NOT freed by a child whose run failed, because that child already existed and ran.
+    /// </summary>
+    /// <remarks>
+    /// <c>subagent_failed</c> is raised when the run ENDS in error, so the agent was created, executed,
+    /// and may already have called a tool, written a file, or messaged a peer. Treating it like the
+    /// refusals — unknown type, full queue, suppressed spawn, rejected name — would free the key and let
+    /// a repeat run the whole thing again, which is the duplication the key exists to prevent. Those
+    /// refusals genuinely create nothing and do still free it.
+    /// </remarks>
+    [Fact]
+    public async Task HandleAgentToolAsync_AfterTheChildsRunFailed_DoesNotRunASecondChild()
+    {
+        _ = _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("API call failed"));
+
+        var handler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "investigate",
+                idempotency_key = "spawn-that-fails",
+            }
+        );
+
+        var first = await handler(args, new ToolCallContext(), CancellationToken.None);
+        first
+            .Should()
+            .BeOfType<ToolHandlerResult.Resolved>()
+            .Subject.Payload.ErrorCode.Should()
+            .Be(SubAgentToolProvider.SubAgentFailedCode);
+
+        var second = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        // The replay is still a failure carrying the same code. Returning it as a plain result would
+        // tell the model its retry succeeded.
+        var replayed = second.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
+        replayed.IsError.Should().BeTrue();
+        replayed.ErrorCode.Should().Be(SubAgentToolProvider.SubAgentFailedCode);
+
+        _subAgentMock.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once()
+        );
+    }
+
     private static string? AgentIdOf(ToolHandlerResult result)
     {
         using var doc = JsonDocument.Parse(result.ResultText);

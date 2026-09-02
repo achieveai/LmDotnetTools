@@ -1609,6 +1609,55 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessage_TaskUpdate_AgainstAnAnsweredDelegation_ListsTheStillOpenDelegationIds()
+    {
+        // The "wrong id" case is not only an id that never existed. An agent holding several delegations
+        // reports on the one it just finished far more readily than on one that never existed, and that
+        // refusal has to name the delegations still open just as the unknown-id one does — otherwise the
+        // agent whose mistake was picking the wrong one of ITS OWN ids is told nothing it did not know.
+        var root = CreateRegisteredRoot();
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        var answeredId = await DelegateAsync(helperSetup, root.AgentId);
+        var stillOpenId = await DelegateAsync(helperSetup, root.AgentId);
+        var (_, provider) = CreateManager(root);
+
+        // Answered through the messenger with its delivery awaited, because the correlation is settled
+        // when the reply LANDS. Sending it through the tool returns as soon as it is admitted, and the
+        // classifier then still reads a reply in flight rather than an answered delegation.
+        var answer = new AgentCollaborationMessenger(root).Send(
+            helperSetup.AgentId,
+            "the first one is done",
+            AgentMessageType.Response,
+            answeredId
+        );
+        answer.Result.Succeeded.Should().BeTrue(answer.Result.FailureCode);
+        await answer.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+        root.Bundle.Ledger.GetOpenInboundDelegations(root.AgentId)
+            .Select(e => e.MessageId)
+            .Should()
+            .BeEquivalentTo([stillOpenId], "the answered delegation must be closed before the refusal is exercised");
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "still working on it",
+                msg_type = "task_update",
+                in_response_to = answeredId,
+            }
+        );
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.CorrelationAnswered);
+        payload.Text.Should().Contain(stillOpenId);
+
+        // The id it wrongly named must NOT be offered back as a thing it may report on.
+        payload.Text.Should().NotContain($"'{answeredId}'");
+    }
+
+    [Fact]
     public async Task SendMessage_TaskUpdate_WithoutCorrelationButWithAnOpenDelegation_ListsTheOpenDelegationIds()
     {
         var root = CreateRegisteredRoot();
