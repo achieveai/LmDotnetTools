@@ -111,12 +111,12 @@ public sealed class SubAgentFocusEndpointTests
             parentFrames.ConcatText().Should().Contain("Parent ready");
         }
 
-        // Seed a COMPLETED sub-agent transcript under "subagent-{agentId}" in the SAME IConversationStore
+        // Seed a COMPLETED sub-agent transcript under the child thread id the handler forms in the SAME IConversationStore
         // singleton the handler reads. The agentId is NEVER spawned as a live child of this parent, so the
         // handler's live-stream resolution (parent loop → SubAgentManager → TryGetAgent) fails and
         // `stream` is null — the exact "parent loop evicted / completed tab" state the replay fix targets.
         var completedAgentId = $"completed-{Guid.NewGuid():N}";
-        var persistedThreadId = $"subagent-{completedAgentId}";
+        var persistedThreadId = SubAgentThreadIds.For(parentThreadId, completedAgentId);
         var store = factory.Services.GetRequiredService<IConversationStore>();
         var persisted = MessagePersistenceConverter.ToPersistedMessage(
             new TextMessage { Role = Role.Assistant, Text = "persisted-child-answer" },

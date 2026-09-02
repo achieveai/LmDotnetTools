@@ -29,13 +29,20 @@ namespace LmStreaming.Sample.Persistence;
 public static class SubAgentProvenance
 {
     /// <summary>
-    /// Reserved thread-id prefix for sub-agent conversations (<c>subagent-{agentId}</c>), the
-    /// convention <c>SubAgentManager</c> mints child threads under.
+    /// Reserved thread-id prefix for sub-agent conversations (<c>subagent-{scope}-{agentId}</c>, see
+    /// <see cref="SubAgentThreadIds"/>), the convention <c>SubAgentManager</c> mints child threads under.
     /// </summary>
-    public const string ThreadIdPrefix = "subagent-";
+    public const string ThreadIdPrefix = SubAgentThreadIds.Prefix;
 
     /// <summary>Thread id of the parent conversation that spawned the sub-agent.</summary>
     public const string ParentThreadIdKey = "sample.subAgentOf";
+
+    /// <summary>
+    /// The sub-agent's own id (<c>agent-N</c>, #705). Stamped so the roster never has to be reverse-engineered
+    /// from the thread id; a row without it (pre-#705, or a child that only wrote metadata after leaving
+    /// the manager) is read back through <see cref="SubAgentThreadIds.TryGetAgentId"/> instead.
+    /// </summary>
+    public const string AgentIdKey = "sample.subAgentId";
 
     /// <summary>Caller-supplied display name of the sub-agent, when the spawn provided one.</summary>
     public const string NameKey = "sample.subAgentName";
@@ -152,6 +159,11 @@ public static class SubAgentProvenance
 
         if (snapshot is not null)
         {
+            if (!string.IsNullOrWhiteSpace(snapshot.AgentId))
+            {
+                builder[AgentIdKey] = snapshot.AgentId;
+            }
+
             if (!string.IsNullOrWhiteSpace(snapshot.Name))
             {
                 builder[NameKey] = snapshot.Name;
@@ -237,16 +249,17 @@ public static class SubAgentProvenance
             return null;
         }
 
-        // The agent id is the thread id minus the reserved prefix; the client keys the sub-agent
-        // WebSocket route by agentId, so a thread that does not follow the convention is not
-        // addressable as a child and is skipped rather than surfaced as an unopenable entry.
+        // The agent id is stamped (#705); a row without the stamp is read back out of the thread id, which
+        // also covers pre-#705 threads. The client keys the sub-agent WebSocket route by agentId, so a
+        // thread that follows neither convention is not addressable as a child and is skipped rather than
+        // surfaced as an unopenable entry.
         if (!metadata.ThreadId.StartsWith(ThreadIdPrefix, StringComparison.Ordinal))
         {
             return null;
         }
 
-        var agentId = metadata.ThreadId[ThreadIdPrefix.Length..];
-        if (agentId.Length == 0)
+        var agentId = ReadString(metadata, AgentIdKey);
+        if (string.IsNullOrWhiteSpace(agentId) && !SubAgentThreadIds.TryGetAgentId(metadata.ThreadId, out agentId))
         {
             return null;
         }

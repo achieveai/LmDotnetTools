@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 // The record publishes an AgentKind *property* (the wire name the client reads), which would shadow
 // the same-named enum in every expression below. The alias keeps both usable without renaming either.
 using CollaborationAgentKind = AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.AgentKind;
@@ -344,10 +345,20 @@ public sealed record SubAgentSummary
 
     /// <summary>
     ///     The thread a hierarchy node's transcript lives under, following the ids the rest of the sample
-    ///     already forms (<c>subagent-{id}</c> for agents, <c>workflow-*</c> for controllers).
+    ///     already forms: the root's own id for the root, <c>subagent-{scope}-{agent-N}</c> for agents
+    ///     (#705, scope = the root conversation's digest — the root is the first ancestor, or the parent
+    ///     itself one level down), <c>workflow-*</c> for controllers.
     /// </summary>
-    private static string ThreadIdFor(AgentDirectoryEntry entry) =>
-        entry.Kind == CollaborationAgentKind.Root ? entry.AgentId : $"{SubAgentThreadPrefix}{entry.AgentId}";
+    private static string ThreadIdFor(AgentDirectoryEntry entry)
+    {
+        if (entry.Kind == CollaborationAgentKind.Root)
+        {
+            return entry.AgentId;
+        }
+
+        var rootThreadId = entry.AncestorAgentIds.Length > 0 ? entry.AncestorAgentIds[0] : entry.ParentAgentId;
+        return SubAgentThreadIds.For(rootThreadId, entry.AgentId);
+    }
 }
 
 /// <summary>Versioned recursive descendant graph response.</summary>

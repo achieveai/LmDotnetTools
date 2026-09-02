@@ -594,7 +594,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     let doneSeenDuringFocus = false;
 
     try {
-      const connection = await connectSubAgent(parent, agentId, {
+      const connection = await connectSubAgent(parent, agentId, summary.threadId, {
         onMessage: (m: Message) => {
           // Ignore late frames for a superseded focus.
           if (focusSeq !== token) return;

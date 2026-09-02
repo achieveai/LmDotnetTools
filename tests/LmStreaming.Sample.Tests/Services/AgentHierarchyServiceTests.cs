@@ -74,10 +74,10 @@ public sealed class AgentHierarchyServiceTests
         const string childId = "evicted-child";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
-            $"subagent-{childId}",
+            SubAgentThreadIds.For(RootThread, childId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{childId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, childId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -87,7 +87,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: "alpha's task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{childId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, childId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -130,13 +130,13 @@ public sealed class AgentHierarchyServiceTests
         const int childCount = 250;
         // A child that a paged scan has NOT read yet when the touch happens (it sorts into page 2).
         const string touchedAgentId = "child-010";
-        var touchedThreadId = $"subagent-{touchedAgentId}";
+        var touchedThreadId = SubAgentThreadIds.For(RootThread, touchedAgentId);
 
         var store = new InMemoryConversationStore();
         for (var i = 0; i < childCount; i++)
         {
             var agentId = $"child-{i:D3}";
-            var childThreadId = $"subagent-{agentId}";
+            var childThreadId = SubAgentThreadIds.For(RootThread, agentId);
             await store.SaveMetadataAsync(
                 childThreadId,
                 new ThreadMetadata
@@ -194,10 +194,10 @@ public sealed class AgentHierarchyServiceTests
         const string childId = "cli-sibling-child";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
-            $"subagent-{childId}",
+            SubAgentThreadIds.For(RootThread, childId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{childId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, childId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -207,7 +207,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: "cli child's task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{childId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, childId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -252,10 +252,10 @@ public sealed class AgentHierarchyServiceTests
         const string childId = "rehydrated-child";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
-            $"subagent-{childId}",
+            SubAgentThreadIds.For(RootThread, childId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{childId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, childId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -265,7 +265,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: "beta's task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{childId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, childId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -638,10 +638,10 @@ public sealed class AgentHierarchyServiceTests
         const string oldChildId = "old-recovered-child";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
-            $"subagent-{oldChildId}",
+            SubAgentThreadIds.For(RootThread, oldChildId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{oldChildId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, oldChildId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -651,7 +651,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: "old child's task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{oldChildId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, oldChildId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -744,6 +744,12 @@ public sealed class AgentHierarchyServiceTests
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var subAgentOptions = new SubAgentOptions
         {
+            // #705: each generation's manager numbers its children agent-1, agent-2, … under the root, and a
+            // REBUILT manager continues from the transcripts already in the store (the root has no metadata
+            // row here, so there is no persisted counter to read). Production hands the manager the shared
+            // store through this factory (Program.ApplyDefaultSubAgentStore); without it every generation
+            // would re-mint agent-1 and the roster union below would collapse two children into one id.
+            DefaultConversationStoreFactory = _ => store,
             Templates = new Dictionary<string, SubAgentTemplate>
             {
                 ["worker"] = new SubAgentTemplate
@@ -889,10 +895,10 @@ public sealed class AgentHierarchyServiceTests
         const string childId = "recovered-after-retry";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
-            $"subagent-{childId}",
+            SubAgentThreadIds.For(RootThread, childId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{childId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, childId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -902,7 +908,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: "task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{childId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, childId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -1092,10 +1098,10 @@ public sealed class AgentHierarchyServiceTests
     /// </summary>
     private static Task PersistProvenanceAsync(IConversationStore store, string agentId, string name) =>
         store.SaveMetadataAsync(
-            $"subagent-{agentId}",
+            SubAgentThreadIds.For(RootThread, agentId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{agentId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, agentId),
                 LastUpdated = 0,
                 Properties = SubAgentProvenance.Build(
                     RootThread,
@@ -1105,7 +1111,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: $"{name}'s task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{agentId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, agentId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )
@@ -1242,10 +1248,10 @@ public sealed class AgentHierarchyServiceTests
     /// <summary>Seeds one persisted sub-agent row stamped as <see cref="RootThread"/>'s child.</summary>
     private static Task SeedProvenanceChildAsync(IConversationStore store, string childId, string? tenantId) =>
         store.SaveMetadataAsync(
-            $"subagent-{childId}",
+            SubAgentThreadIds.For(RootThread, childId),
             new ThreadMetadata
             {
-                ThreadId = $"subagent-{childId}",
+                ThreadId = SubAgentThreadIds.For(RootThread, childId),
                 LastUpdated = 0,
                 TenantId = tenantId,
                 Properties = SubAgentProvenance.Build(
@@ -1256,7 +1262,7 @@ public sealed class AgentHierarchyServiceTests
                         TemplateName: "worker",
                         Task: $"{childId}'s task",
                         Status: SubAgentStatus.Completed,
-                        ThreadId: $"subagent-{childId}",
+                        ThreadId: SubAgentThreadIds.For(RootThread, childId),
                         LastActivityUtc: DateTimeOffset.UtcNow,
                         TerminalAtUtc: DateTimeOffset.UtcNow
                     )

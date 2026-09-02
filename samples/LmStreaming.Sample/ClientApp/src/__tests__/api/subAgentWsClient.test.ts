@@ -38,7 +38,7 @@ afterEach(() => {
 /** Open a child connection with the given optional callbacks and return its (opened) socket. */
 async function connect(callbacks: Partial<SubAgentWsCallbacks>) {
   vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
-  const promise = connectSubAgent('parent-1', 'child-1', {
+  const promise = connectSubAgent('parent-1', 'child-1', 'subagent-child-1', {
     onMessage: () => {},
     onDone: () => {},
     onError: () => {},

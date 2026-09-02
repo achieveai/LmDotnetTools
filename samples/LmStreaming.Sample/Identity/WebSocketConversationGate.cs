@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Persistence;
 
 namespace LmStreaming.Sample.Identity;
@@ -217,7 +218,7 @@ public sealed class WebSocketConversationGate
             return new SubAgentSocketAdmission(false, false);
         }
 
-        var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
+        var childThreadId = SubAgentThreadIds.For(parentThreadId, agentId);
         var childMetadata = await _store.LoadMetadataAsync(childThreadId, ct).ConfigureAwait(false);
         if (childMetadata is null)
         {

@@ -156,7 +156,7 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
     {
         // The parent-relay record and the sub-agent's OWN-loop usage capture describe the SAME provider
         // call, so they must share one ProviderAttemptId. The own loop keys usage under its thread id
-        // ("subagent-{agentId}"); the relay must key it identically (not the bare agent id) or the same
+        // ("subagent-{scope}-{agentId}"); the relay must key it identically (not the bare agent id) or the same
         // call is recorded under two ids — a cross-conversation dedup landmine (#196, BUG 3).
         UsageRecord? captured = null;
         var sink = new Mock<IUsageSink>();
@@ -175,7 +175,9 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         _ = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None);
 
         captured.Should().NotBeNull();
-        captured!.ProviderAttemptId.Should().Be($"subagent-{agentId}:gen-1");
+        captured!
+            .ProviderAttemptId.Should()
+            .Be(SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId) + ":gen-1");
     }
 
     [Fact]

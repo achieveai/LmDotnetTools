@@ -17,18 +17,21 @@ using Xunit;
 namespace LmMultiTurn.Tests.SubAgents;
 
 /// <summary>
-/// A spawned sub-agent's id must carry the same two-part identity the user asked for on every agent:
-/// a human-friendly NAME plus a UNIQUE id whose uniqueness is derived from the LAUNCHING CONVERSATION,
-/// so an agent is never mistaken for one born in a different conversation. The id is
-/// <c>{guid}-{conversationTag}</c>: the guid keeps per-spawn uniqueness (unchanged), and the
-/// conversation tag is a deterministic function of the parent agent's thread id — same conversation
-/// reconstructs the SAME tag, different conversations get DIFFERENT tags. This is the sub-agent
-/// counterpart to the workflow-controller conversation-scoping guard (WorkflowManagerConversationScopeTests
-/// in the LmWorkflow test suite); the HITL decision was to apply the identity change to controller AND sub-agents.
+/// #705. A spawned sub-agent's id is an ORDINAL — <c>agent-1</c>, <c>agent-2</c>, … — numbered in strict
+/// spawn order under the ROOT conversation, so a human can read it, the model can reference it, and it
+/// survives a restart because the counter is persisted with the root conversation. Uniqueness across
+/// conversations is the THREAD id's job: <c>subagent-{rootTag}-agent-N</c>, where the tag is a
+/// deterministic digest of the root thread id (same conversation → same tag, so nested spawns land in
+/// the same scope; different conversations → different tags, so two <c>agent-1</c>s never share a
+/// transcript). The guid the id used to carry is gone.
 /// </summary>
 public class SubAgentConversationScopeTests : IAsyncLifetime
 {
-    private static readonly Regex GuidThenTag = new(@"^[0-9a-f]{12}-[0-9a-f]{8}$", RegexOptions.Compiled);
+    private static readonly Regex OrdinalId = new(@"^agent-[1-9][0-9]*$", RegexOptions.Compiled);
+    private static readonly Regex ScopedThreadId = new(
+        @"^subagent-[0-9a-f]{12}-agent-[1-9][0-9]*$",
+        RegexOptions.Compiled
+    );
 
     private readonly List<SubAgentManager> _managers = [];
 
@@ -64,49 +67,189 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SpawnAsync_DerivesAgentId_FromLaunchingConversation()
+    public async Task SpawnAsync_NumbersAgentsInSpawnOrder_StartingAtOne()
     {
-        // Two DIFFERENT conversations (distinct parent thread ids) must yield sub-agent ids whose
-        // conversation-tag suffix differs, so ids from separate conversations are never confused.
-        var managerA = CreateManager("thread-conversation-alpha");
-        var managerB = CreateManager("thread-conversation-beta");
+        // The ordinal is the id. Template, explicit name, and background/foreground make no difference:
+        // the third spawn in this conversation is agent-3, full stop.
+        var store = await StoreWithRootAsync("thread-ordinal-basic");
+        var manager = CreateManager("thread-ordinal-basic", store);
 
-        var idA = ParseAgentId(await managerA.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
-        var idB = ParseAgentId(await managerB.SpawnAsync("worker", "do work", name: "b", runInBackground: true));
+        var id1 = ParseAgentId(await manager.SpawnAsync("worker", "first", runInBackground: true));
+        var id2 = ParseAgentId(await manager.SpawnAsync("reviewer", "second", name: "named", runInBackground: true));
+        var id3 = ParseAgentId(await manager.SpawnAsync("worker", "third", runInBackground: true));
 
-        idA.Should().MatchRegex(GuidThenTag, "the id is a 12-hex guid plus an 8-hex conversation tag");
-        idB.Should().MatchRegex(GuidThenTag, "the id is a 12-hex guid plus an 8-hex conversation tag");
+        id1.Should().Be("agent-1");
+        id2.Should().Be("agent-2");
+        id3.Should().Be("agent-3");
+        id1.Should().MatchRegex(OrdinalId);
 
-        TagOf(idA)
-            .Should()
-            .NotBe(
-                TagOf(idB),
-                "sub-agents launched from different conversations must carry different conversation tags"
-            );
-        GuidOf(idA).Should().NotBe(GuidOf(idB), "the guid component is unique per spawn");
+        // The ordinal is what the tools resolve — SendMessage/CheckAgents go through TryGetAgent.
+        manager.TryGetAgent("agent-2", out var second).Should().BeTrue();
+        second!.ThreadId.Should().MatchRegex(ScopedThreadId);
     }
 
     [Fact]
-    public async Task SpawnAsync_SameConversation_SharesConversationTag_ButUniqueGuidPrefix()
+    public async Task SpawnAsync_DerivesTheReadableName_FromTheOrdinal_WhenNoNameIsGiven()
     {
-        // Within ONE conversation, the two-part identity is proven: every sub-agent shares the same
-        // conversation tag (deterministic, derived from the conversation) while each keeps its own guid.
-        var manager = CreateManager("thread-conversation-shared");
+        // The fallback name used to be `{role}-{first six hex of the guid}`; with the ordinal as the id
+        // the readable name is `{role}-{N}`, so telemetry and SendMessage targets read as e.g. worker-2.
+        var manager = CreateManager("thread-ordinal-names");
 
-        var id1 = ParseAgentId(await manager.SpawnAsync("worker", "first", name: "one", runInBackground: true));
-        var id2 = ParseAgentId(await manager.SpawnAsync("worker", "second", name: "two", runInBackground: true));
+        _ = await manager.SpawnAsync("worker", "first", runInBackground: true);
+        _ = await manager.SpawnAsync("plugin:reviewer", "second", runInBackground: true);
+        _ = await manager.SpawnAsync("worker", "third", name: "explicit", runInBackground: true);
 
-        TagOf(id1)
-            .Should()
-            .Be(
-                TagOf(id2),
-                "the conversation tag is deterministic from the launching conversation, so it is stable within it"
-            );
-        GuidOf(id1).Should().NotBe(GuidOf(id2), "each spawn still gets its own unique guid");
+        var names = manager.ListAgents().OrderBy(s => s.AgentId, StringComparer.Ordinal).Select(s => s.Name).ToList();
+        names.Should().Equal("worker-1", "reviewer-2", "explicit");
+    }
 
-        // The subagent-{id} thread reconstruction must stay intact so persistence/live-subscribe keep working.
-        manager.TryGetAgent(id1, out var agent).Should().BeTrue();
-        agent!.ThreadId.Should().Be($"subagent-{id1}");
+    [Fact]
+    public async Task SpawnAsync_ChildThreadId_IsScopedToTheRootConversation()
+    {
+        // Two conversations both mint agent-1. Their TRANSCRIPTS must not collide: the thread id
+        // carries a digest of the root thread id, and the digest is the same for every spawn within one
+        // conversation so the whole family shares one scope.
+        var store = new InMemoryConversationStore();
+        var managerA = CreateManager("thread-conversation-alpha", store);
+        var managerB = CreateManager("thread-conversation-beta", store);
+
+        var idA = ParseAgentId(await managerA.SpawnAsync("worker", "do work", runInBackground: true));
+        var idB = ParseAgentId(await managerB.SpawnAsync("worker", "do work", runInBackground: true));
+        var idA2 = ParseAgentId(await managerA.SpawnAsync("worker", "more work", runInBackground: true));
+
+        idA.Should().Be("agent-1");
+        idB.Should().Be("agent-1", "numbering is per root conversation, not per process");
+
+        managerA.TryGetAgent(idA, out var agentA).Should().BeTrue();
+        managerB.TryGetAgent(idB, out var agentB).Should().BeTrue();
+        managerA.TryGetAgent(idA2, out var agentA2).Should().BeTrue();
+
+        agentA!.ThreadId.Should().MatchRegex(ScopedThreadId);
+        agentB!.ThreadId.Should().MatchRegex(ScopedThreadId);
+        agentA.ThreadId.Should().NotBe(agentB.ThreadId, "same ordinal, different conversations, different transcripts");
+        TagOf(agentA.ThreadId).Should().NotBe(TagOf(agentB.ThreadId));
+        TagOf(agentA2!.ThreadId).Should().Be(TagOf(agentA.ThreadId), "one conversation, one scope");
+
+        agentA.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId("thread-conversation-alpha", "agent-1"));
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ContinuesNumbering_WhenTheManagerIsRebuiltOverTheSameStore()
+    {
+        // Restart. The manager is in-memory state that dies with the host; the counter is not. A new
+        // manager over the same store (same root conversation) must hand out agent-3, never agent-1 again.
+        const string root = "thread-ordinal-restart";
+        var store = await StoreWithRootAsync(root);
+
+        var before = CreateManager(root, store);
+        _ = await before.SpawnAsync("worker", "first", runInBackground: true);
+        _ = await before.SpawnAsync("worker", "second", runInBackground: true);
+        await Wait.ForTeardownAsync(before, "the pre-restart manager");
+        _ = _managers.Remove(before);
+
+        var after = CreateManager(root, store);
+        var id = ParseAgentId(await after.SpawnAsync("worker", "third", runInBackground: true));
+
+        id.Should().Be("agent-3");
+
+        // The counter lives in the ROOT conversation's metadata, under a library-owned key.
+        var rootMetadata = await store.LoadMetadataAsync(root);
+        rootMetadata!.Properties.Should().ContainKey(SubAgentManager.NextOrdinalProperty);
+        Convert.ToInt32(rootMetadata.Properties![SubAgentManager.NextOrdinalProperty]).Should().Be(4);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_WithoutAStore_StillNumbersSequentially_InProcess()
+    {
+        // No store means nothing to persist, not nothing to number: the allocator falls back to an
+        // in-process counter per root so the ids still read agent-1, agent-2.
+        var manager = CreateManager("thread-ordinal-no-store");
+
+        var id1 = ParseAgentId(await manager.SpawnAsync("worker", "first", runInBackground: true));
+        var id2 = ParseAgentId(await manager.SpawnAsync("worker", "second", runInBackground: true));
+
+        id1.Should().Be("agent-1");
+        id2.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ContinuesNumbering_FromPersistedTranscripts_WhenTheRootHasNoRow()
+    {
+        // A host that never minted a metadata row for the root (a CLI, or a conversation that only
+        // exists as messages) has no counter to continue from after a restart. The child transcripts
+        // already in the store are the record of the numbers handed out, so numbering resumes above the
+        // highest one under THIS root's scope — another conversation's agent-9 and a legacy-shaped
+        // thread are not in the sequence.
+        const string root = "thread-ordinal-rowless";
+        var store = new InMemoryConversationStore();
+        await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(root, "agent-1"));
+        await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(root, "agent-2"));
+        await SaveRowAsync(store, SubAgentManager.SubAgentThreadId("thread-somebody-else", "agent-9"));
+        await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(root, "0123456789ab-deadbeef"));
+
+        var manager = CreateManager(root, store);
+        var id = ParseAgentId(await manager.SpawnAsync("worker", "third", runInBackground: true));
+
+        id.Should().Be("agent-3");
+        (await store.LoadMetadataAsync(root)).Should().BeNull("a spawn must not invent the root's row");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ContinuesNumbering_FromPersistedTranscripts_WhenTheRootRowHasNoCounter()
+    {
+        // The root row exists but has never carried the counter (it predates #705, or a store dropped
+        // the property). The scan supplies the floor once; from then on the row's counter is the record.
+        const string root = "thread-ordinal-counterless";
+        var store = await StoreWithRootAsync(root);
+        await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(root, "agent-4"));
+
+        var manager = CreateManager(root, store);
+        var id = ParseAgentId(await manager.SpawnAsync("worker", "fifth", runInBackground: true));
+
+        id.Should().Be("agent-5");
+        var rootMetadata = await store.LoadMetadataAsync(root);
+        Convert.ToInt32(rootMetadata!.Properties![SubAgentManager.NextOrdinalProperty]).Should().Be(6);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_NestedSpawn_NumbersUnderTheRootConversation_AndSharesItsScope()
+    {
+        // A child's own manager is built from the parent's ChildOptions — exactly what the child loop
+        // receives — so a grandchild draws from the ROOT's counter and lands in the root's thread
+        // scope. Numbering is one sequence for the whole family: root spawns agent-1, agent-1 spawns
+        // agent-2, root then spawns agent-3.
+        const string root = "thread-ordinal-nested";
+        var store = await StoreWithRootAsync(root);
+        var rootManager = CreateManager(root, store);
+
+        var childId = ParseAgentId(await rootManager.SpawnAsync("worker", "child", runInBackground: true));
+        rootManager.TryGetAgent(childId, out var child).Should().BeTrue();
+
+        var nestedManager = CreateManager(child!.ThreadId, store, options: rootManager.ChildOptions);
+        var grandchildId = ParseAgentId(await nestedManager.SpawnAsync("worker", "grandchild", runInBackground: true));
+        var siblingId = ParseAgentId(await rootManager.SpawnAsync("worker", "sibling", runInBackground: true));
+
+        childId.Should().Be("agent-1");
+        grandchildId.Should().Be("agent-2");
+        siblingId.Should().Be("agent-3");
+
+        nestedManager.TryGetAgent(grandchildId, out var grandchild).Should().BeTrue();
+        TagOf(grandchild!.ThreadId).Should().Be(TagOf(child.ThreadId), "the grandchild lives in the root's scope");
+        grandchild.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(root, "agent-2"));
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ARejectedTemplate_DoesNotConsumeAnOrdinal()
+    {
+        // Numbers are never reused, so anything that fails BEFORE allocation must not allocate — or the
+        // user's first visible agent would be agent-2.
+        var manager = CreateManager("thread-ordinal-rejected");
+
+        var act = () => manager.SpawnAsync("no-such-template", "task", runInBackground: true);
+        await act.Should().ThrowAsync<ArgumentException>();
+
+        var id = ParseAgentId(await manager.SpawnAsync("worker", "task", runInBackground: true));
+        id.Should().Be("agent-1");
     }
 
     [Fact]
@@ -134,8 +277,9 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
 
         var manager = CreateManager(parent, store);
         var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        manager.TryGetAgent(agentId, out var agent).Should().BeTrue();
 
-        var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
+        var metadata = await store.LoadMetadataAsync(agent!.ThreadId);
 
         metadata.Should().NotBeNull();
         metadata!.TenantId.Should().Be("tnt_acme");
@@ -146,6 +290,11 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         // identity; "Shared" is a publication decision about the PARENT that nobody made about this
         // transcript.
         metadata.Visibility.Should().Be(Visibility.Private);
+
+        // Allocating the ordinal must not disturb the root's identity columns either.
+        var rootMetadata = await store.LoadMetadataAsync(parent);
+        rootMetadata!.TenantId.Should().Be("tnt_acme");
+        rootMetadata.Visibility.Should().Be(Visibility.Shared);
     }
 
     [Fact]
@@ -158,8 +307,9 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         var manager = CreateManager("thread-conversation-untenanted", store);
 
         var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        manager.TryGetAgent(agentId, out var agent).Should().BeTrue();
 
-        var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
+        var metadata = await store.LoadMetadataAsync(agent!.ThreadId);
 
         metadata?.TenantId.Should().BeNull();
         metadata?.OwnerUserId.Should().BeNull();
@@ -173,7 +323,7 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         // the exact shape a grandchild's spawning manager has — must attribute the children IT spawns to
         // ITS OWN parent thread and resolve their snapshots from ITS OWN roster. A root-captured factory
         // would ignore both, which is why grandchildren were misattributed to the root and never resolved.
-        const string nestedParentThread = "subagent-child-not-root";
+        const string nestedParentThread = "subagent-0123456789ab-agent-1";
         string? capturedChildThread = null;
         string? capturedParentThread = null;
         Func<string, SubAgentSnapshot?>? capturedDescribe = null;
@@ -191,6 +341,7 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         );
 
         var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        manager.TryGetAgent(agentId, out var agent).Should().BeTrue();
 
         capturedParentThread
             .Should()
@@ -198,10 +349,10 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                 nestedParentThread,
                 "the child is attributed to THIS manager's own parent thread, not a root captured elsewhere"
             );
-        capturedChildThread.Should().Be($"subagent-{agentId}");
+        capturedChildThread.Should().Be(agent!.ThreadId);
 
         capturedDescribe.Should().NotBeNull("the manager must hand the factory a live describe callback");
-        var resolved = capturedDescribe!($"subagent-{agentId}");
+        var resolved = capturedDescribe!(agent.ThreadId);
         resolved
             .Should()
             .NotBeNull(
@@ -211,14 +362,42 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         resolved!.AgentId.Should().Be(agentId);
     }
 
-    private static string GuidOf(string agentId) => agentId.Split('-')[0];
+    [Fact]
+    public void SubAgentThreadId_ReusesTheScopeOfANestedParent_AndDigestsARoot()
+    {
+        // The scope tag travels textually: a parent that is itself `subagent-{tag}-agent-N` hands the
+        // SAME tag to its children, so the host can rebuild a grandchild's thread id from its parent's
+        // without knowing the root. A root (any other id) is digested.
+        var fromRoot = SubAgentManager.SubAgentThreadId("thread-root", "agent-1");
+        var fromChild = SubAgentManager.SubAgentThreadId(fromRoot, "agent-2");
 
-    private static string TagOf(string agentId) => agentId.Split('-')[1];
+        fromRoot.Should().MatchRegex(ScopedThreadId);
+        fromChild.Should().Be($"subagent-{TagOf(fromRoot)}-agent-2");
+        SubAgentManager.SubAgentThreadId("thread-root", "agent-1").Should().Be(fromRoot, "the digest is deterministic");
+        TagOf(SubAgentManager.SubAgentThreadId("thread-other", "agent-1")).Should().NotBe(TagOf(fromRoot));
+    }
+
+    /// <summary>The 12-hex scope segment of a <c>subagent-{tag}-agent-N</c> thread id.</summary>
+    private static string TagOf(string threadId) => threadId.Split('-')[1];
+
+    private static Task SaveRowAsync(IConversationStore store, string threadId) =>
+        store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+
+    private static async Task<InMemoryConversationStore> StoreWithRootAsync(string rootThreadId)
+    {
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 }
+        );
+        return store;
+    }
 
     private SubAgentManager CreateManager(
         string parentThreadId,
         IConversationStore? store = null,
-        Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>? provenanceFactory = null
+        Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>? provenanceFactory = null,
+        SubAgentOptions? options = null
     )
     {
         var parentMock = new Mock<IMultiTurnAgent>();
@@ -248,13 +427,23 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                     Task.FromResult(SingleMessage(new TextMessage { Text = "done", Role = Role.Assistant }))
             );
 
-        var options = new SubAgentOptions
+        options ??= new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
             {
                 ["worker"] = new SubAgentTemplate
                 {
                     SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => provider.Object,
+                },
+                ["reviewer"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You review.",
+                    AgentFactory = () => provider.Object,
+                },
+                ["plugin:reviewer"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You review.",
                     AgentFactory = () => provider.Object,
                 },
             },
