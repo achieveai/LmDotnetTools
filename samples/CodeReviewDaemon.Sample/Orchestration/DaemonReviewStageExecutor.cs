@@ -365,6 +365,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// still names the template in the log, it just leaves no durable row.
     /// </summary>
     private readonly IPolicyRefusalRecorder? _refusals;
+    private readonly TimeProvider _timeProvider;
 
     /// <summary>
     /// Reads what the PR under review was ASKED to do — its linked work items and their chain up to the Epic.
@@ -399,7 +400,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IReviewAgentTranscriptSource? transcriptSource = null,
         IEnumerable<IPrProvider>? prProviders = null,
         IPolicyRefusalRecorder? refusals = null,
-        AdoWorkItemContextReader? workItemContextReader = null
+        AdoWorkItemContextReader? workItemContextReader = null,
+        TimeProvider? timeProvider = null
     )
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -424,6 +426,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _prProviders = prProviders is null ? [] : [.. prProviders];
         _refusals = refusals;
         _workItemContextReader = workItemContextReader;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -4311,7 +4314,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </exception>
     private ReviewCheckpoint LoadOrStartCheckpoint(ReviewRun run, ReviewLifecycleIdentity identity)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         var budget = TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes);
         var fresh = new ReviewCheckpoint(now, now + budget, null, null, ProvisionalComplete: false);
         if (!_options.UseS2SReviewAgent)
@@ -4518,6 +4521,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             source,
             TimeSpan.FromSeconds(_options.ReviewSubAgentBarrierQuietSeconds),
             _loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(),
+            _timeProvider,
             unknownQuiescence: TimeSpan.FromSeconds(_options.ReviewSubAgentUnknownQuiescenceSeconds)
         );
         var settled = await barrier
@@ -5244,7 +5248,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // than no stamp at all.
         if (postOutcome is { } delivered && IsDeliveryProven(delivered))
         {
-            _store.MarkReviewPosted(run.Id, DateTimeOffset.UtcNow);
+            _store.MarkReviewPosted(run.Id, _timeProvider.GetUtcNow());
         }
 
         // The third condition is the #225-item-2 sibling of the second, and it is required for the same reason.

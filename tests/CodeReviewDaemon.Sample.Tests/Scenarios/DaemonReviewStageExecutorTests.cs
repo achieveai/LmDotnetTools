@@ -13,6 +13,7 @@ using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -2285,14 +2286,29 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // The dedicated exception type matters beyond this stage: it is what tells the orchestrator that the
         // tree never settled inside a whole budget — a stuck review to be parked, not a transient to retry.
+        //
+        // The budget runs out on a VIRTUAL clock (#723). This test once seeded a checkpoint 300 ms out on the
+        // wall clock, and the stage's own work before LoadOrStartCheckpoint could eat that under load: the
+        // checkpoint then read as SPENT and was discarded — correctly — and a fresh 30-minute lifecycle
+        // started against a source that never settles, holding the test host until CI's hang detector shot
+        // it. Here nothing moves the clock but the source itself: its one round trip outlives the whole
+        // resumed budget, which is exactly the overrun #280 bounded, so the barrier ends at its deadline
+        // without a single real wait.
+        //
+        // The clock deliberately starts at FakeTimeProvider's default epoch rather than at the real now, and
+        // the stage budget is one minute: if the executor ever reads the wall clock again, the checkpoint is
+        // discarded as expired and the assertion on the synthesis turn fails after ONE minute, instead of the
+        // test passing slowly (a checkpoint anchored to real time would still resume) or hanging for thirty.
+        var clock = new FakeTimeProvider();
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            S2SResumeOptions(),
-            completionSource: new NeverSettlingCompletionSource()
+            S2SResumeOptions(reviewStageDeadlineMinutes: 1),
+            completionSource: new NeverSettlingCompletionSource(clock, roundTrip: TimeSpan.FromMinutes(2)),
+            timeProvider: clock
         );
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMilliseconds(300));
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", clock.GetUtcNow().AddSeconds(30));
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
@@ -2309,15 +2325,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     /// <summary>A source whose roster never reaches a terminal status, so the barrier can only end at the
-    /// caller's deadline — the stuck-tree case <see cref="ReviewBarrierDeadlineException"/> exists for.</summary>
-    private sealed class NeverSettlingCompletionSource : IReviewSubAgentCompletionSource
+    /// caller's deadline — the stuck-tree case <see cref="ReviewBarrierDeadlineException"/> exists for. Every
+    /// round trip costs <paramref name="roundTrip"/> of virtual time on <paramref name="clock"/>, the way a
+    /// review host that answers slower than the budget has left would; sized past the budget, one poll is
+    /// enough to reach the deadline, and the barrier never parks on a timer nothing would advance.</summary>
+    private sealed class NeverSettlingCompletionSource(FakeTimeProvider clock, TimeSpan roundTrip)
+        : IReviewSubAgentCompletionSource
     {
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
             ReviewRun run,
             string parentThreadId,
             CancellationToken ct
-        ) =>
-            Task.FromResult(
+        )
+        {
+            clock.Advance(roundTrip);
+            return Task.FromResult(
                 new ReviewSubAgentTreeSnapshot([
                     new ReviewSubAgentNode
                     {
@@ -2330,6 +2352,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                     },
                 ])
             );
+        }
     }
 
     [Fact]
@@ -3595,8 +3618,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
     /// <summary>Options for the restart tests: the resumable (hosted) review path, with the settlement barrier's
     /// quiet period shortened so an already-settled tree costs one second rather than the production default.</summary>
-    private static CodeReviewDaemonOptions S2SResumeOptions() =>
-        new() { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 };
+    private static CodeReviewDaemonOptions S2SResumeOptions(int reviewStageDeadlineMinutes = 30) =>
+        new()
+        {
+            UseS2SReviewAgent = true,
+            ReviewSubAgentBarrierQuietSeconds = 1,
+            ReviewStageDeadlineMinutes = reviewStageDeadlineMinutes,
+        };
 
     /// <summary>
     /// The lifecycle identity the fixture's own Reviewed stage would build for the BASE attempt — the one a
@@ -3711,7 +3739,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             SandboxCommandResult? diffResult,
             IReviewCommentPublisher[]? publishersOverride,
             IReviewSubAgentCompletionSource? completionSource,
-            AdoWorkItemContextReader? workItemContextReader = null
+            AdoWorkItemContextReader? workItemContextReader = null,
+            TimeProvider? timeProvider = null
         )
         {
             _db = new TempSqliteDatabase();
@@ -3745,7 +3774,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 publishers,
                 loggerFactory,
                 completionSource: completionSource,
-                workItemContextReader: workItemContextReader
+                workItemContextReader: workItemContextReader,
+                timeProvider: timeProvider
             );
         }
 
@@ -3762,8 +3792,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             CodeReviewDaemonOptions? options = null,
             SandboxCommandResult? diffResult = null,
             IReviewCommentPublisher[]? publishersOverride = null,
-            IReviewSubAgentCompletionSource? completionSource = null
-        ) => new(loggerFactory, "github", options, diffResult, publishersOverride, completionSource);
+            IReviewSubAgentCompletionSource? completionSource = null,
+            TimeProvider? timeProvider = null
+        ) =>
+            new(
+                loggerFactory,
+                "github",
+                options,
+                diffResult,
+                publishersOverride,
+                completionSource,
+                timeProvider: timeProvider
+            );
 
         public static Fixture Ado(
             ILoggerFactory loggerFactory,
