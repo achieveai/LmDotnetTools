@@ -76,6 +76,34 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly int? _parentMaxToken;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
+
+    /// <summary>
+    /// Every tool name the parent exposes, in contract order. This is the roster an <c>add_tools</c>
+    /// <c>"*"</c> expands to, and the roster the remove-tools diagnostic re-runs its resolution
+    /// against — both of which must see the IDENTICAL list or the two resolutions could disagree
+    /// about what "before removal" contained.
+    /// </summary>
+    private readonly string[] _parentToolNames;
+
+    /// <summary>
+    /// <see cref="_parentToolNames"/> as an ordinal set, so deciding whether an <c>add_tools</c> or
+    /// <c>remove_tools</c> entry names a real parent tool is a lookup rather than a scan of the whole
+    /// contract list per requested tool.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the FULL surface, not the inheritable half: an entry naming <c>AskUserQuestion</c>
+    /// matched a tool the parent really has, so it is not the typo that
+    /// <see cref="SpawnCapabilityRecord.UnmatchedAddTools"/> reports, even though the child never
+    /// inherits the parent's copy. <see cref="_inheritableToolCount"/> is the other, narrower count.
+    /// </remarks>
+    private readonly HashSet<string> _parentToolNameSet;
+
+    /// <summary>
+    /// The inheritable half of the parent's surface. #638 F-002: AskUserQuestion/NotifyClient can
+    /// never be inherited, so counting them both overstated the loss and let the empty-toolset signal
+    /// fire on a parent from which nothing was inheritable in the first place.
+    /// </summary>
+    private readonly int _inheritableToolCount;
     private readonly SubAgentOptions _options;
 
     /// <summary>
@@ -439,6 +467,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentAgent = parentAgent;
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
+        // The parent's surface is fixed for this manager's lifetime, so its three derived views are
+        // taken once here rather than rebuilt on every spawn. See the field docs for what each is for.
+        _parentToolNames = [.. parentContracts.Select(c => c.Name)];
+        _parentToolNameSet = new HashSet<string>(_parentToolNames, StringComparer.Ordinal);
+        _inheritableToolCount = parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
         _options = options;
         _source = source;
         _logger = logger ?? NullLogger.Instance;
@@ -3092,17 +3125,16 @@ public sealed class SubAgentManager : IAsyncDisposable
         // mode itself does not expose.
         //
         // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed rather
-        // than looked up inside so BuildEnabledToolSet stays a pure function of its inputs. Hoisted to
-        // a local because the remove_tools diagnostic (#638) re-runs the same builder with the removals
-        // omitted, and it must be handed the IDENTICAL roster or the two resolutions could disagree
-        // about what "before removal" contained.
-        string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
+        // than looked up inside so BuildEnabledToolSet stays a pure function of its inputs, and taken
+        // from the manager-lifetime field (#675) because the remove_tools diagnostic (#638) re-runs the
+        // same builder with the removals omitted and must be handed the IDENTICAL roster, or the two
+        // resolutions could disagree about what "before removal" contained.
         var enabledSet = BuildEnabledToolSet(
             template.EnabledTools,
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            inheritableToolNames
+            _parentToolNames
         );
 
         IStreamingAgent providerAgent;
@@ -3347,7 +3379,6 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template,
                 addTools,
                 removeTools,
-                inheritableToolNames,
                 enabledSet,
                 inheritedToolNames,
                 childLoop.RegisteredToolNames
@@ -3766,21 +3797,19 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentTemplate template,
         string[]? addTools,
         string[]? removeTools,
-        IReadOnlyCollection<string> inheritableToolNames,
         HashSet<string>? enabledSet,
         IReadOnlyCollection<string> inheritedToolNames,
         IReadOnlyCollection<string>? effectiveToolNames
     )
     {
         string[] unmatchedAddTools = addTools is { Length: > 0 }
-            ? [.. addTools.Where(tool => !IsAllToolsWildcard(tool) && !_parentContracts.Any(c => c.Name == tool))]
+            ? [.. addTools.Where(tool => !IsAllToolsWildcard(tool) && !_parentToolNameSet.Contains(tool))]
             : [];
 
         var (unremovable, withheldNothing, restored) = ClassifyRemoveTools(
             template,
             addTools,
             removeTools,
-            inheritableToolNames,
             inheritedToolNames,
             effectiveToolNames
         );
@@ -3803,7 +3832,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             RestoredByRequiredTools: restored,
             EmptyInheritedToolset: enabledSet is not null
                 && inheritedToolNames.Count == 0
-                && InheritableToolCount > 0
+                && _inheritableToolCount > 0
                 && !deliberateDenyAll
         );
     }
@@ -3825,37 +3854,25 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? removeTools
     )
     {
-        string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
         var enabledSet = BuildEnabledToolSet(
             template.EnabledTools,
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            inheritableToolNames
+            _parentToolNames
         );
 
-        string[] projected =
-        [
-            .. _parentContracts.Select(c => c.Name).Where(name => InheritsParentTool(name, enabledSet, out _)),
-        ];
+        string[] projected = [.. _parentToolNames.Where(name => InheritsParentTool(name, enabledSet, out _))];
 
         return BuildSpawnCapabilityRecord(
             template,
             addTools,
             removeTools,
-            inheritableToolNames,
             enabledSet,
             projected,
             effectiveToolNames: null
         );
     }
-
-    /// <summary>
-    /// The inheritable half of the parent's surface. #638 F-002: AskUserQuestion/NotifyClient can
-    /// never be inherited, so counting them both overstated the loss and let the empty-toolset signal
-    /// fire on a parent from which nothing was inheritable in the first place.
-    /// </summary>
-    private int InheritableToolCount => _parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
 
     /// <summary>
     /// Emits the operator log lines for a resolved <see cref="SpawnCapabilityRecord"/>. Purely a
@@ -3928,7 +3945,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     + "call no inherited tool at all.",
                 agentId,
                 template.Name,
-                InheritableToolCount
+                _inheritableToolCount
             );
         }
     }
@@ -3965,7 +3982,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentTemplate template,
         string[]? addTools,
         string[]? removeTools,
-        IReadOnlyCollection<string> inheritableToolNames,
         IReadOnlyCollection<string> inheritedToolNames,
         IReadOnlyCollection<string>? effectiveToolNames
     )
@@ -3984,7 +4000,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools: null,
             requiredTools: null,
-            inheritableToolNames
+            _parentToolNames
         );
 
         if (beforeRemoval is null)
@@ -4009,10 +4025,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         // work: the dispatcher concludes the delegate LACKS a capability it has. Generic set
         // membership, so it holds for any host tool. A queued spawn has no registered surface yet and
         // therefore cannot claim this either way - it reports none.
-        var inheritable = new HashSet<string>(inheritableToolNames, StringComparer.Ordinal);
         string[] unremovable = effectiveToolNames is null
             ? []
-            : [.. removeTools.Where(tool => effectiveToolNames.Contains(tool) && !inheritable.Contains(tool))];
+            : [.. removeTools.Where(tool => effectiveToolNames.Contains(tool) && !_parentToolNameSet.Contains(tool))];
 
         // Removed, then restored by the mode's required-tools union (#623) AND actually materialized
         // in the child. Intentional precedence, but from the caller's seat the request was defeated,

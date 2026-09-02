@@ -163,23 +163,94 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </summary>
     public IDisposable SuppressSpawning() => new SpawnSuppressionScope(this);
 
+    /// <summary>
+    /// This provider's tools, rebuilt only when an input to that surface has changed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>ToolCallInjectionMiddleware</c> re-invokes the function-set factory on every LLM call, so
+    /// this ran once per turn — rebuilding every descriptor, including the template catalog text the
+    /// spawn tool embeds — from inputs that change perhaps twice in a whole session. The middleware
+    /// contract is unchanged (the factory IS still invoked per call); the memo lives here, where the
+    /// inputs are, rather than in the registry, which cannot see a provider's internal state.
+    /// </para>
+    /// <para>
+    /// Exactly two things can vary under one provider instance, and both are the key:
+    /// <see cref="MutableSubAgentTemplateSource.Templates"/>, whose snapshot REFERENCE is an exact
+    /// freshness token because <c>TryRegister</c>/<c>Upsert</c> publish a new immutable dictionary,
+    /// and <see cref="IsSpawningSuppressed"/>. The other inputs to the shape —
+    /// <see cref="SubAgentManager.Collaboration"/> (hence <c>CanDelegate</c>),
+    /// <see cref="SubAgentManager.AvailableModelIds"/>, and <c>_exposedToolNames</c> — are fixed for
+    /// the lifetime of the manager and of this provider, so they cannot distinguish two builds by the
+    /// same instance. Anything that later makes one of them mutable must join the key here.
+    /// </para>
+    /// </remarks>
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
-        var shape = EmitShape();
-        return _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name));
+        // Captured once and threaded through the build so the descriptors published below are a pure
+        // function of the key they are stored under. Re-reading suppression inside the build instead
+        // would let a scope that opens and closes mid-build file a spawn-less surface under
+        // "not suppressed" — the one way a memo of this shape can under-grant a later turn.
+        var templates = _source.Templates;
+        var spawningSuppressed = IsSpawningSuppressed;
+
+        var memo = Volatile.Read(ref _descriptorMemo);
+        if (
+            memo is not null
+            && ReferenceEquals(memo.Templates, templates)
+            && memo.SpawningSuppressed == spawningSuppressed
+        )
+        {
+            return memo.Descriptors;
+        }
+
+        var shape = EmitShape(templates, spawningSuppressed);
+        IReadOnlyList<FunctionDescriptor> descriptors =
+        [
+            .. _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name)),
+        ];
+
+        // Last writer wins: two threads that miss together each build a surface that is correct for
+        // its own key, so whichever publishes second simply replaces an equally valid entry.
+        Volatile.Write(ref _descriptorMemo, new DescriptorMemo(templates, spawningSuppressed, descriptors));
+        return descriptors;
     }
+
+    /// <summary>
+    /// One published build of this provider's surface together with the inputs it was built from.
+    /// </summary>
+    /// <remarks>
+    /// A reference type rather than a tuple field because the slot is published with
+    /// <see cref="Volatile"/>: a multi-field struct cannot be written atomically, and a torn read
+    /// would pair one build's key with another build's descriptors.
+    /// </remarks>
+    private sealed record DescriptorMemo(
+        IReadOnlyDictionary<string, SubAgentTemplate> Templates,
+        bool SpawningSuppressed,
+        IReadOnlyList<FunctionDescriptor> Descriptors
+    );
+
+    private DescriptorMemo? _descriptorMemo;
 
     /// <summary>
     /// The tools this provider's collaboration shape emits, before any allow-list narrowing.
     /// </summary>
-    private IEnumerable<FunctionDescriptor> EmitShape()
+    /// <param name="templates">
+    /// The template snapshot the spawn descriptor's catalog is built from, passed in rather than
+    /// re-read so the emitted shape matches the key <see cref="GetFunctions"/> memoizes it under.
+    /// </param>
+    /// <param name="spawningSuppressed">The suppression state captured for the same reason.</param>
+    private IEnumerable<FunctionDescriptor> EmitShape(
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        bool spawningSuppressed
+    )
     {
         var collaboration = _manager.Collaboration;
         if (collaboration is null)
         {
-            if (!IsSpawningSuppressed)
+            if (!spawningSuppressed)
             {
-                yield return CreateAgentDescriptor(collaborationEnabled: false);
+                yield return CreateAgentDescriptor(templates, collaborationEnabled: false);
             }
 
             yield return CreateSendMessageDescriptor(collaborationEnabled: false);
@@ -192,9 +263,9 @@ public class SubAgentToolProvider : IFunctionProvider
         // it is the only one whose whole purpose is to delegate. Observation and messaging are how an
         // agent that cannot currently delegate still coordinates — withdrawing those would leave it
         // able to be asked questions it had no tool to answer.
-        if (collaboration.CanDelegate && !IsSpawningSuppressed)
+        if (collaboration.CanDelegate && !spawningSuppressed)
         {
-            yield return CreateAgentDescriptor(collaborationEnabled: true);
+            yield return CreateAgentDescriptor(templates, collaborationEnabled: true);
         }
 
         yield return CreateCheckAgentsDescriptor();
@@ -289,12 +360,17 @@ public class SubAgentToolProvider : IFunctionProvider
         }
     }
 
-    private FunctionDescriptor CreateAgentDescriptor(bool collaborationEnabled)
+    /// <param name="templates">
+    /// The live templates view, snapshotted once by <see cref="GetFunctions"/> so the catalog text and
+    /// the <c>subagent_type</c> enum list are consistent within this descriptor — and with the memo key
+    /// it is filed under — even when a <c>TryRegister</c> lands concurrently.
+    /// </param>
+    /// <param name="collaborationEnabled">Whether the collaboration shape's extra fields apply.</param>
+    private FunctionDescriptor CreateAgentDescriptor(
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        bool collaborationEnabled
+    )
     {
-        // Snapshot the live templates view once per descriptor build so the catalog text
-        // and the subagent_type enum list are consistent within this descriptor even when
-        // TryRegister lands concurrently.
-        var templates = _source.Templates;
         var typeList = string.Join(", ", templates.Keys);
 
         var contract = new FunctionContract
@@ -1618,43 +1694,106 @@ public class SubAgentToolProvider : IFunctionProvider
             );
         }
 
+        var snapshot = collaboration.Directory.Snapshot();
+        var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
+        var truncated = listed.Count < snapshot.Count;
+
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
-        var payload = JsonSerializer.Serialize(
-            new
-            {
-                collaboration_id = collaboration.Bundle.CollaborationId,
-                your_agent_id = collaboration.AgentId,
-                agents = collaboration
-                    .Directory.Snapshot()
-                    .Select(e => new
-                    {
-                        agent_id = e.AgentId,
-                        name = e.Name,
-                        role = e.Role,
-                        description = e.Description,
-                        kind = e.Kind.ToString(),
-                        agent_type = e.AgentType,
-                        parent_agent_id = e.ParentAgentId,
-                        depth = e.StructuralDepth,
-                        // Both depths, because they answer different questions and diverge: structural depth is
-                        // where an agent sits, delegation depth is how much spawning budget reaching it spent,
-                        // and a workflow controller hop advances one without the other.
-                        structural_depth = e.StructuralDepth,
-                        delegation_depth = e.DelegationDepth,
-                        status = e.Status,
-                        is_live = e.IsLive,
-                        is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
-                        // Stated up front so the reader does not have to discover by refusal which transcripts
-                        // it may read; the policy is evaluated here rather than assumed from the hierarchy.
-                        transcript_readable = collaboration
-                            .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
-                            .IsAllowed,
-                    }),
-            }
-        );
+        // A dictionary rather than an anonymous type because the truncation note is present only when
+        // the cap actually bit — an untruncated listing must not pay for wording it does not need.
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["collaboration_id"] = collaboration.Bundle.CollaborationId,
+            ["your_agent_id"] = collaboration.AgentId,
+            // Unconditional, so completeness is stated rather than inferred from the array length.
+            ["returned"] = listed.Count,
+            ["total"] = snapshot.Count,
+            ["truncated"] = truncated,
+        };
 
-        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload));
+        if (truncated)
+        {
+            payload["truncation_note"] =
+                $"Showing {listed.Count} of {snapshot.Count} agents. Every LIVE agent is listed; the "
+                + "omitted ones are finished agents kept only for history, so nothing you can still "
+                + "address is missing from this list.";
+        }
+
+        payload["agents"] = listed.Select(e => new
+        {
+            agent_id = e.AgentId,
+            name = e.Name,
+            role = e.Role,
+            description = e.Description,
+            kind = e.Kind.ToString(),
+            agent_type = e.AgentType,
+            parent_agent_id = e.ParentAgentId,
+            depth = e.StructuralDepth,
+            // Both depths, because they answer different questions and diverge: structural depth is
+            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+            // and a workflow controller hop advances one without the other.
+            structural_depth = e.StructuralDepth,
+            delegation_depth = e.DelegationDepth,
+            status = e.Status,
+            is_live = e.IsLive,
+            is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
+            // Stated up front so the reader does not have to discover by refusal which transcripts
+            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+            transcript_readable = collaboration
+                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                .IsAllowed,
+        });
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(JsonSerializer.Serialize(payload)));
+    }
+
+    /// <summary>
+    /// The rows a <c>GetAgents</c> result carries: every live agent, then as much of the retained tail
+    /// as <paramref name="maxTotalAgents"/> leaves room for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The directory never removes an entry — a finished agent is marked retained so a sender holding
+    /// an open question can still learn its target is gone — so the listing grows for the whole life of
+    /// a conversation and every turn that calls this tool pays for the entire history in input tokens.
+    /// The live half cannot grow: it is bounded by the root-wide capacity permit
+    /// (<see cref="AgentCollaborationOptions.MaxTotalAgents"/>), which is why that same bound is the
+    /// cap here rather than a second number to keep in step with it. It is a bound on the tail, not a
+    /// routine saving: a row is roughly 340 bytes, so at the default permit of 32 the cap starts
+    /// trimming only past 32 total agents and holds the result near 11 KB from there on, while a
+    /// conversation that never exceeds 32 pays about 40 bytes MORE for the three count fields.
+    /// </para>
+    /// <para>
+    /// The cap trims the RETAINED tail only. Dropping a live agent would be the one failure mode worth
+    /// avoiding at any token price: the caller would spawn a duplicate of an agent it could already
+    /// address. So a collaboration with more live agents than the cap returns all of them and reports
+    /// the overrun honestly rather than silently hiding one.
+    /// </para>
+    /// <para>
+    /// Both halves keep the order <see cref="AgentCollaborationDirectory.Snapshot"/> already imposes:
+    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. That is LEXICOGRAPHIC, not numeric —
+    /// <c>agent-10</c> sorts before <c>agent-9</c> — so which retained rows survive the cap is stable
+    /// but unrelated to recency. Determinism is the property being relied on here (repeated calls at an
+    /// unchanged directory read identically instead of shuffling), and it is enough, because the
+    /// omitted rows are finished agents the caller cannot address either way. Preferring the most
+    /// recently retired rows would be a better listing; it needs a retirement order the directory does
+    /// not currently carry.
+    /// </para>
+    /// </remarks>
+    private static List<AgentDirectoryEntry> SelectListedAgents(
+        IReadOnlyList<AgentDirectoryEntry> snapshot,
+        int maxTotalAgents
+    )
+    {
+        var listed = snapshot.Where(e => e.IsLive).ToList();
+        var retainedBudget = Math.Max(0, maxTotalAgents - listed.Count);
+        if (retainedBudget > 0)
+        {
+            listed.AddRange(snapshot.Where(e => !e.IsLive).Take(retainedBudget));
+        }
+
+        return listed;
     }
 
     private async Task<ToolHandlerResult> HandleWaitForAgentsToolAsync(

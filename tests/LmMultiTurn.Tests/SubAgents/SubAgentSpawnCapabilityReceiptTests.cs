@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -108,6 +109,24 @@ public sealed class SubAgentSpawnCapabilityReceiptTests : IAsyncLifetime
             .Should()
             .BeEquivalentTo(["tasks:*"], "the entry that DID match is not a mismatch");
         receipt.GetProperty("next_action").GetString().Should().Contain("add_tools");
+    }
+
+    [Fact]
+    public async Task Receipt_AddToolsNamingAToolTheParentHoldsButNeverShares_IsNotUnmatched()
+    {
+        // AskUserQuestion/NotifyClient sit on the parent's contract list yet can never be inherited,
+        // because every child loop registers its own. So an add_tools entry naming one MATCHED a real
+        // parent tool and is not the typo "unmatched_add_tools" reports. Two different sets are in play
+        // here — "every name the parent exposes" decides unmatched, "the inheritable ones" decides the
+        // empty-toolset signal — and collapsing them into one would turn this into a false mismatch.
+        var (manager, _) = CreateManager(
+            InheritAllTemplate(),
+            parentTools: [TaskTool, AskUserQuestionToolProvider.ToolName]
+        );
+
+        var receipt = await SpawnReceiptAsync(manager, addTools: [AskUserQuestionToolProvider.ToolName]);
+
+        receipt.TryGetProperty("unmatched_add_tools", out _).Should().BeFalse();
     }
 
     [Fact]
@@ -390,7 +409,8 @@ public sealed class SubAgentSpawnCapabilityReceiptTests : IAsyncLifetime
         SubAgentTemplate template,
         Func<SubAgentOptions, SubAgentOptions>? configure = null,
         AgentCollaborationSetup? collaboration = null,
-        int maxConcurrent = 5
+        int maxConcurrent = 5,
+        string[]? parentTools = null
     )
     {
         var options = new SubAgentOptions
@@ -400,7 +420,7 @@ public sealed class SubAgentSpawnCapabilityReceiptTests : IAsyncLifetime
         };
         options = configure?.Invoke(options) ?? options;
 
-        string[] toolNames = [TaskTool, SecondTaskTool, DomainTool];
+        string[] toolNames = parentTools ?? [TaskTool, SecondTaskTool, DomainTool];
         var source = new MutableSubAgentTemplateSource(options.Templates);
         var manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
