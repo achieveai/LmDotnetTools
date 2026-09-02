@@ -164,6 +164,13 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             systemPrompt: profile.SystemPrompt,
             title: title,
             logger: _loggerFactory.CreateLogger<S2SReviewAgent>(),
+            // The operator's configured stage budget, rather than the agent's constructor default. The agent
+            // clips each turn to the MINIMUM of this window and the caller's absolute deadline, so leaving the
+            // default in place made it a ceiling no configuration could raise: ReviewStageDeadlineMinutes could
+            // only ever lower the effective bound. A daemon configured for 60 minutes still gave up at 30,
+            // leaving the run RetryPending while the review host went on to finish the review. Same default
+            // (30) as the option, so an unconfigured daemon is unchanged.
+            overallTimeout: TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes),
             onConversationMinted: recorder is null ? null : minted => recorder(minted, title),
             // A resumed review rejoins the conversation it already minted: no second provision, no second
             // retention row, no second deep-link. Null (the common case) provisions lazily as before.

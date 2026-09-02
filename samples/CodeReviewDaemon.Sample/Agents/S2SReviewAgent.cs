@@ -147,6 +147,15 @@ internal sealed class S2SReviewAgent
     /// <summary>Always false — this adapter has no background loop; it is driven collect-only.</summary>
     public bool IsRunning => false;
 
+    /// <summary>
+    /// The window one hosted turn may wait for a terminal status, before <c>ClampToBudget</c> clips it to the
+    /// caller's shared absolute deadline. Exposed so the factory's wiring test can pin that the operator's
+    /// configured stage budget actually reaches this field. That wiring is otherwise invisible from outside:
+    /// the clip only ever takes the MINIMUM of the two, so a constructor default left in place is a ceiling no
+    /// configuration can raise, and the first symptom is a real review abandoned mid-flight.
+    /// </summary>
+    internal TimeSpan OverallTimeout => _overallTimeout;
+
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 

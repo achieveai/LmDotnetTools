@@ -40,7 +40,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         string subAgentModelId = "",
         ILoggerFactory? loggerFactory = null,
         string providerId = "openai",
-        string reviewModelId = "openai"
+        string reviewModelId = "openai",
+        int reviewStageDeadlineMinutes = 30
     ) =>
         new(
             new LmStreamingS2SClient(http, "s", "id", "key"),
@@ -51,6 +52,7 @@ public sealed class S2SReviewAgentLoopFactoryTests
                 LmStreamingModeId = "workspace-agent",
                 ReviewModelId = reviewModelId,
                 SubAgentModelId = subAgentModelId,
+                ReviewStageDeadlineMinutes = reviewStageDeadlineMinutes,
             },
             loggerFactory ?? NullLoggerFactory.Instance
         );
@@ -290,6 +292,44 @@ public sealed class S2SReviewAgentLoopFactoryTests
     /// this one.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The operator's <see cref="CodeReviewDaemonOptions.ReviewStageDeadlineMinutes"/> must reach the agent's
+    /// own per-turn window, because it is the only knob there is for the review budget and
+    /// <c>S2SReviewAgent.ClampToBudget</c> takes the MINIMUM of that window and the caller's absolute
+    /// deadline. A constructor default left in place is therefore a ceiling no configuration can raise: the
+    /// option could lower the effective bound and never lift it. Shipped that way, a daemon configured for 60
+    /// minutes still abandoned every review past 30 with <c>TimeoutException</c> — leaving the run
+    /// <c>RetryPending</c> while the review host went on to finish the review nobody collected.
+    /// <para>
+    /// Both arms are pinned. The configured arm is the one a factory that forwards nothing fails; the default
+    /// arm records that forwarding is a no-op for an unconfigured daemon, since the option's default and the
+    /// constructor's fallback are the same 30 minutes.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(60)]
+    [InlineData(30)]
+    public async Task Create_gives_the_agent_the_configured_stage_deadline_as_its_overall_timeout(int configuredMinutes)
+    {
+        // No handler script: Create only constructs the agent — provisioning is lazy — so this turn issues
+        // no HTTP at all.
+        var handler = new FakeHttpMessageHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http, reviewStageDeadlineMinutes: configuredMinutes)
+            .Create(Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+
+        agent
+            .Should()
+            .BeOfType<S2SReviewAgent>()
+            .Subject.OverallTimeout.Should()
+            .Be(
+                TimeSpan.FromMinutes(configuredMinutes),
+                "ReviewStageDeadlineMinutes is the only configured review budget, and the agent's own window "
+                    + "can only lower the effective deadline, never raise it"
+            );
+    }
+
     [Fact]
     public async Task Create_puts_the_requested_reasoning_effort_on_the_provision_wire()
     {
