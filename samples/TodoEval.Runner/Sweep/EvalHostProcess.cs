@@ -22,6 +22,15 @@ internal sealed class EvalHostProcess : IAsyncDisposable
     public int Port { get; }
     public Uri BaseAddress { get; }
 
+    /// <summary>
+    /// What standing this host up cost, in wall-clock milliseconds: publishing (or copying) the
+    /// binaries, then launching and waiting for the API to answer. Recorded so a sweep's numbers can
+    /// be read against the fixed cost of producing them (#670); measuring it pre-judges nothing.
+    /// </summary>
+    public long PublishMs { get; private set; }
+
+    public long ReadyMs { get; private set; }
+
     /// <summary>The conversation store the metrics extractor reads after the sweep.</summary>
     public string ConversationsDir => Path.Combine(InstanceDir, "conversations");
 
@@ -46,6 +55,7 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         Directory.CreateDirectory(instanceDir);
         Directory.CreateDirectory(logDir);
 
+        var publishWatch = System.Diagnostics.Stopwatch.StartNew();
         if (config.PublishDir is { } publishDir)
         {
             log.WriteLine($"[host] copying pre-published binaries from {publishDir} ...");
@@ -60,6 +70,8 @@ internal sealed class EvalHostProcess : IAsyncDisposable
             await PublishAsync(projectPath, config.Configuration, instanceDir, logDir, ct);
         }
 
+        publishWatch.Stop();
+
         var port = config.Port > 0 ? config.Port : GetFreeTcpPort();
         // F-001: the readiness probe answers whatever listens on 127.0.0.1:{port}. If something is
         // ALREADY listening there (a live deployment, typically), our child dies on the bind while
@@ -67,7 +79,11 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         // into the live store. Occupied port = hard failure, before anything is launched.
         EnsurePortIsFree(port);
         var process = Launch(config, instanceDir, logDir, port, log);
-        var host = new EvalHostProcess(process, config, instanceDir, port);
+        var host = new EvalHostProcess(process, config, instanceDir, port)
+        {
+            PublishMs = publishWatch.ElapsedMilliseconds,
+        };
+        var readyWatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await host.WaitForReadyAsync(logDir, ct);
@@ -77,6 +93,8 @@ internal sealed class EvalHostProcess : IAsyncDisposable
             await host.DisposeAsync();
             throw;
         }
+
+        host.ReadyMs = readyWatch.ElapsedMilliseconds;
 
         log.WriteLine($"[host] ready at {host.BaseAddress}");
         return host;
