@@ -12,7 +12,7 @@ import { MessageType, type ReasoningMessage } from '@/types';
  * already-persisted history still carries them, so the client must not render them either way.
  */
 describe('buildDisplayItems reasoning pills', () => {
-  function reasoningMessage(reasoning: string, visibility: 0 | 2): DisplayableMessage {
+  function reasoningMessage(reasoning: string, visibility: 0 | 1 | 2): DisplayableMessage {
     const content: ReasoningMessage = {
       $type: MessageType.Reasoning,
       role: 'assistant',
@@ -45,6 +45,16 @@ describe('buildDisplayItems reasoning pills', () => {
     const items = buildDisplayItems([reasoningMessage('   \n  ', 0)]);
 
     expect(items).toHaveLength(0);
+  });
+
+  it('renders no pill for empty summary reasoning', () => {
+    // The blank-reasoning guard sits after the Encrypted skip, so it covers Summary too — a GPT
+    // reasoning summary that came back empty buys no pill either.
+    expect(buildDisplayItems([reasoningMessage('', 1)])).toHaveLength(0);
+  });
+
+  it('renders a pill for summary reasoning that has text', () => {
+    expect(buildDisplayItems([reasoningMessage('Considering the options.', 1)])).toHaveLength(1);
   });
 
   it('renders no pill for encrypted reasoning', () => {

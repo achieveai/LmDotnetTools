@@ -59,11 +59,13 @@ internal sealed class CharacteristicsAgentFactory
                 ? new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null)
                 : ShapeReasoning(_parentCopilotModel, characteristics.Effort);
             var extraProperties = shaped.ExtraProperties;
-            // Copilot shaping is empty for a classic Copilot Anthropic parent (advertises no efforts) and for a
-            // non-Copilot parent (_parentCopilotModel is null). In both cases the sub-agent reuses the parent
-            // model/transport, so it should inherit the parent's OWN reasoning metadata (e.g. a classic
-            // Thinking budget) rather than think with no nudge at all.
-            if (extraProperties.IsEmpty)
+            // Copilot shaping carries no effort for a classic Copilot Anthropic parent (advertises no efforts),
+            // a non-Copilot parent (_parentCopilotModel is null), and a template that requests none. The
+            // sub-agent reuses the parent model/transport here, so it should inherit the parent's OWN reasoning
+            // metadata (e.g. a classic Thinking budget, or the parent's own effort) rather than think with no
+            // nudge at all. Testing the effort as well as emptiness matters since shaping an adaptive parent
+            // yields the display opt-in alone (#709), which must not shadow the parent's richer metadata.
+            if ((extraProperties.IsEmpty || shaped.Effort is null) && !_parentReasoningExtraProperties.IsEmpty)
             {
                 extraProperties = _parentReasoningExtraProperties;
             }
@@ -109,9 +111,12 @@ internal sealed class CharacteristicsAgentFactory
 
     private ShapedReasoning ShapeReasoning(CopilotModelInfo model, ReasoningEffort? requestedEffort)
     {
+        // No effort to shape still shapes something on an adaptive-thinking Anthropic model: its
+        // display opt-in is independent of effort, and withholding it returns empty thinking text
+        // (#709). Shape decides that; for every other model/transport it returns Empty as before.
         if (requestedEffort is null)
         {
-            return new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null);
+            return new ShapedReasoning(CopilotReasoningShaper.Shape(model, requestedEffort: null), null);
         }
 
         var selectedEffort = CopilotReasoningShaper.SelectEffort(model, requestedEffort);
@@ -127,7 +132,7 @@ internal sealed class CharacteristicsAgentFactory
                 );
             }
 
-            return new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null);
+            return new ShapedReasoning(CopilotReasoningShaper.Shape(model, requestedEffort), null);
         }
 
         if (

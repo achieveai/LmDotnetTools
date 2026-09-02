@@ -1704,10 +1704,10 @@ try
                     // inherited-model sub-agent reasons like the launching conversation instead of running
                     // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
                     // overrides the floor (SubAgentManager). The parent "can think" when it has reasoning
-                    // metadata OR is an adaptive Copilot model — those reason via output_config.effort, so a
-                    // conversation that explicitly opts out of an effort request still carries none.
-                    // Workflow plain-path delegates use the
-                    // controller's characteristics factory, which shapes the final selected model separately.
+                    // metadata OR is an adaptive Copilot model — an adaptive model reasons on its own via
+                    // output_config.effort, and a conversation that explicitly opts out of an effort request
+                    // can still carry no metadata for it. Workflow plain-path delegates use the controller's
+                    // characteristics factory, which shapes the final selected model separately.
                     var parentCanThink =
                         !extraProperties.IsEmpty || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
                     if (subAgentOptions is not null && parentCanThink)
@@ -2675,9 +2675,10 @@ public partial class Program
     ///     REJECT the classic <c>thinking.type.enabled</c> budget request with HTTP 400, and default
     ///     <c>thinking.display</c> to <c>"omitted"</c> — which returns thinking blocks with an empty text
     ///     field and only a signature, so their thinking pills render blank. They get the adaptive shape
-    ///     asking for a summarized display instead (#709). Effort is orthogonal and is shaped separately
-    ///     by <see cref="BuildConversationReasoningExtraProperties" />: a summarized display returns
-    ///     thinking text with or without <c>output_config.effort</c>.
+    ///     asking for a summarized display instead (#709). Effort is orthogonal, and this helper never
+    ///     supplies one: a summarized display returns thinking text with or without
+    ///     <c>output_config.effort</c>. An effort reaches the request only when the caller asked for a
+    ///     specific one, via <see cref="CopilotReasoningShaper" /> on the paths that shape it.
     ///     </para>
     /// </summary>
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
@@ -2752,7 +2753,15 @@ public partial class Program
 
         if (requestedEffort.Length == 0)
         {
-            return ImmutableDictionary<string, object?>.Empty;
+            // Opting out of an EFFORT request is not opting out of thinking DISPLAY: an adaptive model
+            // left at Anthropic's "omitted" default returns empty thinking text either way (#709).
+            // Shaping with no effort yields exactly the display opt-in for those models, Empty for the
+            // rest — which is what "explicitly omits the request" has always meant here.
+            return
+                !string.IsNullOrWhiteSpace(copilotModelKey)
+                && providerRegistry.TryGetCopilotModel(copilotModelKey, out var effortlessModel)
+                ? CopilotReasoningShaper.Shape(effortlessModel, requestedEffort: null)
+                : ImmutableDictionary<string, object?>.Empty;
         }
 
         if (!ConversationRootReasoningEffort.TryParse(requestedEffort, out var parsedEffort))
@@ -2802,11 +2811,12 @@ public partial class Program
     ///     model whose transport differs from the conversation's.
     ///     <para>
     ///     Resolution mirrors <see cref="BuildReasoningExtraProperties"/> but keyed off the CONTROLLER model:
-    ///     an adaptive Copilot Claude model reasons via <c>output_config.effort</c> (Shape emits it); a
-    ///     classic Copilot Claude model advertises no efforts, so Shape is empty and we fall back to the
-    ///     classic thinking budget for its transport; a non-Copilot controller model uses the provider-id
-    ///     mapping. Returns <see cref="ImmutableDictionary{TKey,TValue}.Empty"/> only when the resolved
-    ///     model/provider genuinely carries no reasoning surface.
+    ///     an adaptive Copilot Claude model reasons via <c>output_config.effort</c> and returns readable
+    ///     thinking only with the summarized display opt-in — Shape emits both; a classic Copilot Claude
+    ///     model advertises no efforts, so Shape is empty and we fall back to the classic thinking budget
+    ///     for its transport; a non-Copilot controller model uses the provider-id mapping. Returns
+    ///     <see cref="ImmutableDictionary{TKey,TValue}.Empty"/> only when the resolved model/provider
+    ///     genuinely carries no reasoning surface.
     ///     </para>
     /// </summary>
     internal static ImmutableDictionary<string, object?> BuildControllerReasoningExtraProperties(
@@ -2830,7 +2840,8 @@ public partial class Program
             }
 
             // Classic Copilot Claude advertises no efforts (Shape empty); fall back to the classic
-            // thinking budget shaped for its transport (adaptive short-circuits to Empty inside).
+            // thinking budget shaped for its transport. An adaptive model never reaches here — Shape
+            // always returns at least its display opt-in — so this is the classic path only.
             return BuildReasoningExtraProperties(
                 fallbackProviderId,
                 copilotModel.Transport,

@@ -74,6 +74,45 @@ public sealed class CopilotReasoningShaperTests
     }
 
     [Fact]
+    public void Shape_requests_summarized_thinking_for_adaptive_models_even_without_an_effort()
+    {
+        // #709 gap: the display opt-in is not an effort knob. When no effort is requested — a template
+        // that sets none, or a root that explicitly opts out — the effort gate returned Empty before the
+        // thinking shape was ever decided, so a Claude sub-agent reached the model with no `display` and
+        // went back to blank pills. Effort is optional here; the display opt-in is not.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: true, "low", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, requestedEffort: null);
+
+        var thinking = result["Thinking"].Should().BeOfType<AnthropicThinking>().Which;
+        thinking.Type.Should().Be("adaptive");
+        thinking.Display.Should().Be("summarized");
+        result.Should().NotContainKey("OutputConfig", "no effort was requested, so none may be invented");
+    }
+
+    [Fact]
+    public void Shape_requests_summarized_thinking_for_adaptive_models_advertising_no_effort()
+    {
+        // The same hole reached the other way: an effort IS requested but the model advertises none, so
+        // SelectEffort returns null and the effort gate bailed out before the thinking shape.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: true);
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
+
+        result["Thinking"].Should().BeOfType<AnthropicThinking>().Which.Display.Should().Be("summarized");
+        result.Should().NotContainKey("OutputConfig");
+    }
+
+    [Fact]
+    public void Shape_stays_empty_without_an_effort_for_classic_anthropic_models()
+    {
+        // Classic models reject thinking.type.adaptive, so an effort-less request still shapes nothing.
+        var model = CreateModel(CopilotModelTransport.Anthropic, supportsAdaptiveThinking: false, "low", "high");
+
+        CopilotReasoningShaper.Shape(model, requestedEffort: null).Should().BeEmpty();
+    }
+
+    [Fact]
     public void Shape_omits_thinking_for_classic_anthropic_models()
     {
         // Classic Claude models reject thinking.type.adaptive; their budget-based thinking is wired

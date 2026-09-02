@@ -16,15 +16,16 @@ public static class CopilotReasoningShaper
     /// <summary>
     /// Selects an advertised effort and returns request extra properties for the model's transport.
     /// </summary>
+    /// <remarks>
+    /// An unselectable effort — none requested, or none advertised — is NOT a reason to shape nothing:
+    /// an adaptive-thinking Anthropic model still needs its display opt-in, which is independent of
+    /// effort (#709). Only the effort-carrying metadata is gated on a selected effort.
+    /// </remarks>
     public static ImmutableDictionary<string, object?> Shape(CopilotModelInfo model, ReasoningEffort? requestedEffort)
     {
         ArgumentNullException.ThrowIfNull(model);
 
         var effort = SelectEffort(model, requestedEffort);
-        if (effort is null)
-        {
-            return ImmutableDictionary<string, object?>.Empty;
-        }
 
         return model.Transport switch
         {
@@ -33,7 +34,7 @@ public static class CopilotReasoningShaper
             // reasoning summary only when asked, otherwise it emits an encrypted-only reasoning item
             // (ReasoningVisibility.Encrypted, GetDisplayText() == null) and thinking never renders — the
             // reason workflow-controller and sub-agent thinking was invisible while the main chat's showed.
-            CopilotModelTransport.Responses => ImmutableDictionary<string, object?>.Empty.Add(
+            CopilotModelTransport.Responses when effort is not null => ImmutableDictionary<string, object?>.Empty.Add(
                 "Reasoning",
                 new ResponseReasoningOptions { Effort = effort, Summary = "auto" }
             ),
@@ -42,23 +43,26 @@ public static class CopilotReasoningShaper
     }
 
     /// <summary>
-    /// Builds the Anthropic-transport request metadata: the selected effort, plus — on an
-    /// adaptive-thinking model — the thinking shape that makes the reasoning readable.
+    /// Builds the Anthropic-transport request metadata: the selected effort when there is one, plus —
+    /// on an adaptive-thinking model — the thinking shape that makes the reasoning readable.
     /// </summary>
     /// <remarks>
-    /// Effort bounds how long the model reasons; it does NOT make the reasoning visible. That takes
-    /// <c>thinking.display = "summarized"</c>, because Anthropic defaults <c>display</c> to
-    /// <c>"omitted"</c> on adaptive-thinking models and returns a thinking block with an empty text
-    /// field and only a signature — why every Claude thinking pill rendered blank (#709). Classic
-    /// Claude models reject <c>thinking.type.adaptive</c>, so they stay effort-only and keep the
-    /// budget-based thinking the host's provider defaults supply.
+    /// The two are independent. Effort bounds how long the model reasons; it does NOT make the
+    /// reasoning visible. That takes <c>thinking.display = "summarized"</c>, because Anthropic defaults
+    /// <c>display</c> to <c>"omitted"</c> on adaptive-thinking models and returns a thinking block with
+    /// an empty text field and only a signature — why every Claude thinking pill rendered blank (#709).
+    /// So the display opt-in is emitted even when no effort could be selected; inventing an effort in
+    /// that case would override a caller that deliberately requested none. Classic Claude models reject
+    /// <c>thinking.type.adaptive</c>, so they stay effort-only and keep the budget-based thinking the
+    /// host's provider defaults supply.
     /// </remarks>
-    private static ImmutableDictionary<string, object?> ShapeAnthropic(CopilotModelInfo model, string effort)
+    private static ImmutableDictionary<string, object?> ShapeAnthropic(CopilotModelInfo model, string? effort)
     {
-        var properties = ImmutableDictionary<string, object?>.Empty.Add(
-            "OutputConfig",
-            new AnthropicOutputConfig { Effort = effort }
-        );
+        var properties = ImmutableDictionary<string, object?>.Empty;
+        if (effort is not null)
+        {
+            properties = properties.Add("OutputConfig", new AnthropicOutputConfig { Effort = effort });
+        }
 
         return model.SupportsAdaptiveThinking ? properties.Add("Thinking", AnthropicThinking.Adaptive()) : properties;
     }

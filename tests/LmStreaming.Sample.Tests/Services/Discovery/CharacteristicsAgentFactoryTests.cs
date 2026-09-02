@@ -83,6 +83,42 @@ public sealed class CharacteristicsAgentFactoryTests
     }
 
     [Fact]
+    public void Create_AdaptiveClaudeTemplateWithoutEffortStillRequestsSummarizedThinking()
+    {
+        // #709 reachable case: a root on openai/codex spawning a Claude sub-agent from a template that
+        // sets no Effort. This path takes the explicitly-selected model branch, which uses the shaped
+        // metadata with NO parent fallback — so an effort gate that returned Empty left the sub-agent
+        // with no `display` at all, and its thinking pills stayed blank exactly as before the fix.
+        var adaptiveClaude = new CopilotModelInfo(
+            "claude-sonnet-5",
+            "Claude Sonnet 5",
+            CopilotModelVendor.Anthropic,
+            CopilotModelTransport.Anthropic,
+            SupportsAdaptiveThinking: true
+        )
+        {
+            ReasoningEfforts = ["low", "medium", "high"],
+        };
+        var factory = CreateFactory(
+            [adaptiveClaude],
+            new Mock<IStreamingAgent>().Object,
+            _ => new Mock<IStreamingAgent>().Object
+        );
+
+        var result = factory.Create(
+            new SubAgentCharacteristics(adaptiveClaude.Id, Effort: null) { IsModelExplicitlySelected = true }
+        );
+
+        result
+            .ExtraProperties["Thinking"]
+            .Should()
+            .BeOfType<AnthropicThinking>()
+            .Which.Display.Should()
+            .Be("summarized");
+        result.ShapedEffort.Should().BeNull("the template requested no effort");
+    }
+
+    [Fact]
     public void Create_InheritedCopilotModelWithEffortShapesMetadataAndReturnsExactParentAgent()
     {
         var inheritedModel = Model("shared-model", CopilotModelTransport.Responses, ["low", "medium", "high"]);

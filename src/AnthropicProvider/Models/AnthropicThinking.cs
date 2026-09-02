@@ -57,12 +57,7 @@ public record AnthropicThinking
     /// </summary>
     /// <param name="display">Always <c>"summarized"</c> in practice — never raw chain-of-thought.</param>
     public static AnthropicThinking Adaptive(string display = "summarized") =>
-        new()
-        {
-            Type = "adaptive",
-            BudgetTokens = null,
-            Display = display,
-        };
+        new() { Type = "adaptive", Display = display };
 
     /// <summary>
     ///     The type of thinking: <c>"enabled"</c> (classic, budget-based) or <c>"adaptive"</c>
@@ -75,9 +70,15 @@ public record AnthropicThinking
     ///     The budget for thinking tokens. Should be at least 1024 for models that support thinking.
     ///     Omitted from the request when null — adaptive-thinking models reject this field entirely.
     /// </summary>
+    /// <remarks>
+    ///     Deliberately has NO property initializer: a record built through an object initializer skips
+    ///     the constructors and factories below, and a defaulted 1024 would then ride along on an
+    ///     adaptive request that the model rejects with HTTP 400. The budget-taking constructors and
+    ///     <see cref="Enabled" /> set it explicitly instead.
+    /// </remarks>
     [JsonPropertyName("budget_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? BudgetTokens { get; init; } = 1024;
+    public int? BudgetTokens { get; init; }
 
     /// <summary>
     ///     How much of the model's thinking an adaptive-thinking model returns: <c>"summarized"</c>

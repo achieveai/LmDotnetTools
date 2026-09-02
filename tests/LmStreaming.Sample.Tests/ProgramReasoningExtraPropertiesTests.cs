@@ -208,6 +208,31 @@ public sealed class ProgramReasoningExtraPropertiesTests
     }
 
     [Fact]
+    public void Conversation_root_explicit_empty_still_requests_summarized_display_on_adaptive_models()
+    {
+        // Opting out of an EFFORT request must not also opt out of thinking DISPLAY (#709): an adaptive
+        // model left at display="omitted" returns thinking blocks with empty text either way, so the
+        // conversation would render blank pills while the user only asked not to nudge the effort.
+        var registry = RegistryWith(
+            new CopilotModelInfo(
+                "claude-sonnet-5",
+                "Claude Sonnet 5",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic,
+                SupportsAdaptiveThinking: true
+            )
+            {
+                ReasoningEfforts = ["low", "medium", "high"],
+            }
+        );
+
+        var props = BuildConversationRoot(registry, "claude-sonnet-5", "claude-sonnet-5", string.Empty);
+
+        props["Thinking"].Should().BeOfType<AnthropicThinking>().Which.Display.Should().Be("summarized");
+        props.Should().NotContainKey("OutputConfig", "the conversation explicitly opted out of an effort");
+    }
+
+    [Fact]
     public void Conversation_root_invalid_persisted_effort_preserves_the_provider_default_shape()
     {
         var registry = RegistryWith(
