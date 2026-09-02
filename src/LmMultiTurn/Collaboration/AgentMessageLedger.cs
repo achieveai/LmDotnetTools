@@ -60,6 +60,13 @@ public static class AgentMessageFailureCodes
     /// </summary>
     public const string CorrelationNotADelegation = "correlation_not_a_delegation";
 
+    /// <summary>
+    /// A progress update from an agent that holds no open inbound delegation at all. Not recoverable by
+    /// supplying a different id: there is nothing to correlate to. The sender should answer with
+    /// <see cref="AgentMessageType.Response"/> or open a new exchange instead.
+    /// </summary>
+    public const string NoOpenDelegation = "no_open_delegation";
+
     /// <summary>A message addressed to its own sender.</summary>
     public const string SelfDelivery = "self_delivery";
 
@@ -563,6 +570,25 @@ public sealed class AgentMessageLedger
     public IReadOnlyList<AgentMessageLedgerEntry> GetOpenInbound(string toAgentId)
     {
         return SnapshotOpen(entry => string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The delegations an agent may currently report progress on, oldest first: open inbound
+    /// <see cref="AgentMessageType.DelegateTask"/> entries with no answer already in flight.
+    /// </summary>
+    /// <remarks>
+    /// Kept in step with <c>ValidateCorrelation</c> on purpose — this is the set a refused
+    /// <see cref="AgentMessageType.TaskUpdate"/> echoes back to its sender as "valid ids", so it must
+    /// contain exactly the ids an update would then be admitted against. A delegation whose response
+    /// is pending is excluded for that reason: the ledger treats it as closed.
+    /// </remarks>
+    public IReadOnlyList<AgentMessageLedgerEntry> GetOpenInboundDelegations(string toAgentId)
+    {
+        return SnapshotOpen(entry =>
+            entry.MessageType == AgentMessageType.DelegateTask
+            && entry.PendingResponseMessageId is null
+            && string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal)
+        );
     }
 
     private IReadOnlyList<AgentMessageLedgerEntry> SnapshotOpen(Func<AgentMessageLedgerEntry, bool> predicate)

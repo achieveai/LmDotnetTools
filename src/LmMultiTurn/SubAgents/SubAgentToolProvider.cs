@@ -454,7 +454,8 @@ public class SubAgentToolProvider : IFunctionProvider
                         "What kind of message this is. One of: "
                         + "'question' (you need an answer back), "
                         + "'delegate_task' (you are handing over work and expect a result), "
-                        + "'task_update' (progress on a task delegated to you — set in_response_to), "
+                        + "'task_update' (progress on a task delegated to you — ONLY valid while you "
+                        + "hold an open delegated task; set in_response_to to its message-id), "
                         + "'steer' (a correction to work already in flight, no reply needed; the "
                         + "recipient must currently be running), "
                         + "'response' (an answer to a message you received — set in_response_to).",
@@ -474,7 +475,10 @@ public class SubAgentToolProvider : IFunctionProvider
                     Description =
                         "REQUIRED when msg_type is 'response' or 'task_update': the message_id you "
                         + "are answering or reporting progress on, taken from the message you "
-                        + "received. Omit otherwise.",
+                        + "received. For 'task_update' it is the message-id attribute of the "
+                        + "<agent-message ... type=\"DelegateTask\" message-id=\"...\"> envelope that "
+                        + "delegated the task to you; if you never received one, you cannot send a "
+                        + "task_update — do not guess an id. Omit otherwise.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -940,16 +944,41 @@ public class SubAgentToolProvider : IFunctionProvider
         // not exist and refused it as unknown_correlation instead of sending the message as a fresh one.
         var inResponseTo = NormalizeCorrelationId(GetOptionalString(root, "in_response_to"));
 
+        // task_update is offered to every agent by the schema — it is built once per loop, before any
+        // delegation can have arrived — but it is only usable by an agent that currently holds an open
+        // inbound delegation. Gated here, before the correlation is even looked at: an agent with no
+        // delegation cannot fix the call by supplying a different id, and telling it only that the id
+        // was "not received" is what sent it guessing ('none', 'TODO', ...) on every retry.
+        var openDelegationIds =
+            messageType == AgentMessageType.TaskUpdate
+                ? collaboration
+                    .Bundle.Ledger.GetOpenInboundDelegations(collaboration.AgentId)
+                    .Select(e => e.MessageId)
+                    .ToList()
+                : [];
+
+        if (messageType == AgentMessageType.TaskUpdate && openDelegationIds.Count == 0)
+        {
+            return ToolHandlerResult.FromError(
+                "You have no open delegated task, so 'task_update' is not available to you. Use "
+                    + "'response' to answer a message you received, or 'question'/'delegate_task' to "
+                    + "start a new exchange.",
+                AgentMessageFailureCodes.NoOpenDelegation
+            );
+        }
+
         // Both reply-shaped types are checked here, not just Response. The ledger refuses either one
         // without a correlation, but doing it at the tool boundary is what turns that refusal into a
-        // sentence naming the parameter the model left out.
+        // sentence naming the parameter the model left out — and, for a task_update, the ids that
+        // would have been accepted.
         if (messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate && inResponseTo is null)
         {
             return ToolHandlerResult.FromError(
                 messageType == AgentMessageType.Response
                     ? "A 'response' must set 'in_response_to' to the message_id it answers."
                     : "A 'task_update' must set 'in_response_to' to the message_id of the task that "
-                        + "was delegated to you.",
+                        + "was delegated to you. "
+                        + DescribeOpenDelegations(openDelegationIds),
                 AgentMessageFailureCodes.MissingCorrelation
             );
         }
@@ -958,10 +987,16 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (!dispatch.Result.Succeeded)
         {
-            return ToolHandlerResult.FromError(
-                DescribeSendFailure(dispatch.Result.FailureCode, target),
-                dispatch.Result.FailureCode ?? "send_refused"
-            );
+            var description = DescribeSendFailure(dispatch.Result.FailureCode, target);
+
+            // The ledger's correlation codes stay authoritative (closed, unknown, wrong recipient, not a
+            // delegation); what a refused task_update was missing is the set it could have named.
+            if (messageType == AgentMessageType.TaskUpdate && IsCorrelationFailure(dispatch.Result.FailureCode))
+            {
+                description = description + " " + DescribeOpenDelegations(openDelegationIds);
+            }
+
+            return ToolHandlerResult.FromError(description, dispatch.Result.FailureCode ?? "send_refused");
         }
 
         return ToolHandlerResult.FromText(
@@ -1005,6 +1040,30 @@ public class SubAgentToolProvider : IFunctionProvider
                 messageType = default;
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Names the delegations the sender may report progress on. Ids only, never bodies: an id is a
+    /// correlation key the sender was already handed in an envelope, so echoing it leaks nothing.
+    /// </summary>
+    private static string DescribeOpenDelegations(IReadOnlyList<string> openDelegationIds)
+    {
+        return openDelegationIds.Count == 1
+            ? $"The open delegated task you can report on is '{openDelegationIds[0]}'."
+            : "The open delegated tasks you can report on are: "
+                + string.Join(", ", openDelegationIds.Select(id => $"'{id}'"))
+                + ".";
+    }
+
+    /// <summary>Whether a refusal is about the correlation the sender named rather than the target or sender.</summary>
+    private static bool IsCorrelationFailure(string? failureCode)
+    {
+        return failureCode
+            is AgentMessageFailureCodes.UnknownCorrelation
+                or AgentMessageFailureCodes.CorrelationClosed
+                or AgentMessageFailureCodes.CorrelationNotAddressedToSender
+                or AgentMessageFailureCodes.CorrelationDoesNotExpectReply
+                or AgentMessageFailureCodes.CorrelationNotADelegation;
     }
 
     /// <summary>

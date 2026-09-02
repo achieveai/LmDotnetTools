@@ -270,6 +270,29 @@ public class AgentMessageLedgerTests
     }
 
     [Fact]
+    public void GetOpenInboundDelegations_ReturnsOnlyOpenDelegationsAddressedToTheAgent()
+    {
+        // The set an agent may report progress on is narrower than "everything it owes a reply on": a
+        // question owed an answer is not a task, and a delegation whose answer is already in flight is
+        // no longer open to a progress report. This is the list a refused task_update echoes back, so
+        // it must contain exactly the ids the ledger would then accept.
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(AgentMessageType.Question), new AgentInbox(8)).MessageId!;
+        var delegation = ledger.TryAdmit(Request(AgentMessageType.DelegateTask), new AgentInbox(8)).MessageId!;
+        var answered = ledger.TryAdmit(Request(AgentMessageType.DelegateTask), new AgentInbox(8)).MessageId!;
+        var elsewhere = ledger
+            .TryAdmit(Request(AgentMessageType.DelegateTask, to: "agent-c"), new AgentInbox(8))
+            .MessageId!;
+        _ = ledger.TryAdmit(Request(AgentMessageType.Response, Target, Sender, answered), new AgentInbox(8));
+
+        var open = ledger.GetOpenInboundDelegations(Target).Select(entry => entry.MessageId);
+
+        open.Should().Equal(delegation);
+        open.Should().NotContain([question, answered, elsewhere]);
+        ledger.GetOpenInboundDelegations(Sender).Should().BeEmpty();
+    }
+
+    [Fact]
     public void TryAdmit_RefusesProgressReportedAgainstAQuestion()
     {
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
