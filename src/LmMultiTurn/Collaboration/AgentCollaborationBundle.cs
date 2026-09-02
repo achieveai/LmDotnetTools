@@ -395,13 +395,20 @@ public sealed class AgentCollaborationBundle
     /// Tells the senders of the obligations an agent took to its grave, after it has been retired.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Filtered to the messages addressed TO the agent that left, and it has to be:
     /// <see cref="RetireAgent"/> also closes the messages that agent SENT, and notifying those would
     /// deliver to — and so restart — the very agent being retired.
+    /// </para>
+    /// <para>
+    /// Public because it is the other half of <see cref="RetireAgent"/>, which is public: a host that
+    /// retires an agent from OUTSIDE this assembly — the workflow runtime does — leaves exactly the
+    /// same senders waiting on obligations the retirement just closed.
+    /// </para>
     /// </remarks>
     /// <param name="messageIds">What <see cref="RetireAgent"/> closed.</param>
     /// <param name="retiredAgentId">The agent that left.</param>
-    internal async Task NotifyAbandonedObligationsAsync(IReadOnlyList<string> messageIds, string retiredAgentId)
+    public async Task NotifyAbandonedObligationsAsync(IReadOnlyList<string> messageIds, string retiredAgentId)
     {
         ArgumentNullException.ThrowIfNull(messageIds);
 

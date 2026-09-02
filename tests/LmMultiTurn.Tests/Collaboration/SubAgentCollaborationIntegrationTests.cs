@@ -101,7 +101,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .First(f => f.Contract.Name == "SendMessage")
             .Contract.Parameters!.Select(p => p.Name)
             .Should()
-            .BeEquivalentTo(["target", "prompt", "run_in_background"]);
+            .BeEquivalentTo(["target", "prompt", "run_in_background", "idempotency_key"]);
     }
 
     [Fact]
@@ -1787,6 +1787,69 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     private static string Text(JsonElement element, string property) => element.GetProperty(property).GetString()!;
+
+    /// <summary>
+    /// A question repeated under one idempotency key leaves the recipient owing ONE answer.
+    /// </summary>
+    /// <remarks>
+    /// A duplicate send is not a wasted call: every admitted question is an obligation somebody now has
+    /// to answer, and the second copy makes the recipient answer twice while the sender waits for two
+    /// replies to a question it asked once. Neither can be withdrawn once admitted, which is why the
+    /// guard has to sit in front of admission rather than after it.
+    /// </remarks>
+    [Fact]
+    public async Task SendMessage_ReplayedUnderTheSameIdempotencyKey_CreatesOneObligation()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var (_, live) = RegisterPeer(root, "live");
+        var args = new
+        {
+            target = live.AgentId,
+            content = "which branch?",
+            msg_type = "question",
+            idempotency_key = "ask-1",
+        };
+
+        var first = await InvokeAsync(provider, "SendMessage", args);
+        var second = await InvokeAsync(provider, "SendMessage", args);
+
+        root.Bundle.Ledger.GetOpenInbound(live.AgentId).Should().ContainSingle();
+
+        using var firstDoc = JsonDocument.Parse(first.Text);
+        using var secondDoc = JsonDocument.Parse(second.Text);
+        var messageId = Text(firstDoc.RootElement, "message_id");
+        Text(secondDoc.RootElement, "message_id").Should().Be(messageId);
+        Text(secondDoc.RootElement.GetProperty("replay"), "code")
+            .Should()
+            .Be(SubAgentToolProvider.IdempotentReplayCode);
+
+        // The replayed receipt is still a receipt: a caller reading only the fields it read the first
+        // time round must not find them missing or changed.
+        Text(secondDoc.RootElement, "status").Should().Be("accepted");
+        secondDoc.RootElement.GetProperty("expects_reply").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SendMessage_RepeatedWithoutAKey_CreatesTwoObligations()
+    {
+        // The half that keeps the key honest as an opt-in: asking the same thing twice on purpose is a
+        // legitimate act, and nothing may quietly collapse it into one.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var (_, live) = RegisterPeer(root, "live");
+        var args = new
+        {
+            target = live.AgentId,
+            content = "which branch?",
+            msg_type = "question",
+        };
+
+        _ = await InvokeAsync(provider, "SendMessage", args);
+        _ = await InvokeAsync(provider, "SendMessage", args);
+
+        root.Bundle.Ledger.GetOpenInbound(live.AgentId).Should().HaveCount(2);
+    }
 
     [Fact]
     public async Task WaitForAgents_ReturnsOnceTheListedChildrenFinish()

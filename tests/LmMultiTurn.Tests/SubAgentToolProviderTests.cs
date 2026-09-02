@@ -338,17 +338,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         );
         var provider = new SubAgentToolProvider(manager, source);
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
-        _subAgentMock
-            .Setup(a =>
-                a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()
-                )
-            )
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, _, ct) => Task.FromResult(BlockingStream(ct))
-            );
+        SetupBlockingSubAgent();
         _ = await manager.SpawnAsync("researcher", "first", runInBackground: true);
 
         var result = await handler(
@@ -482,17 +472,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             source
         );
         var provider = new SubAgentToolProvider(manager, source);
-        _subAgentMock
-            .Setup(a =>
-                a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()
-                )
-            )
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, _, ct) => Task.FromResult(BlockingStream(ct))
-            );
+        SetupBlockingSubAgent();
 
         // The single permit is taken by the first child, so the second one is admitted to the queue and
         // handed back an id the model can address — which is exactly what makes this reachable.
@@ -875,6 +855,166 @@ public class SubAgentToolProviderTests : IAsyncLifetime
 
         outer.Dispose();
         provider.GetFunctions().Select(f => f.Contract.Name).Should().Contain("Agent");
+    }
+
+    /// <summary>
+    /// A spawn repeated under one idempotency key produces ONE sub-agent and hands the second caller
+    /// the first one's receipt.
+    /// </summary>
+    /// <remarks>
+    /// A model retries the call whose outcome it could not see — a timeout, a dropped result, a
+    /// truncated turn. Without a key that retry is indistinguishable from a genuine second delegation,
+    /// so it spawns a second agent that costs a full run, may act on the world twice, and reports back
+    /// as an answer nobody asked for. The key is the only thing that can tell the two apart, because
+    /// only the caller knows which of its calls are the same call.
+    /// </remarks>
+    [Fact]
+    public async Task HandleAgentToolAsync_ReplayedUnderTheSameIdempotencyKey_SpawnsOnce()
+    {
+        SetupBlockingSubAgent();
+        var handler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "investigate",
+                run_in_background = true,
+                idempotency_key = "spawn-1",
+            }
+        );
+
+        var first = await handler(args, new ToolCallContext(), CancellationToken.None);
+        var second = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        _manager!.ListAgents().Should().ContainSingle("the second call was the same call, not a second one");
+
+        // The replay is the FIRST receipt, so the id the model already holds stays the right one.
+        using var firstDoc = JsonDocument.Parse(first.ResultText);
+        using var secondDoc = JsonDocument.Parse(second.ResultText);
+        var agentId = firstDoc.RootElement.GetProperty("agent_id").GetString();
+        secondDoc.RootElement.GetProperty("agent_id").GetString().Should().Be(agentId);
+
+        // Said in a nested object, never as a top-level field: the receipt has to keep reading as the
+        // receipt it is replaying, and a sibling 'code' would collide with the result's own vocabulary.
+        var replay = secondDoc.RootElement.GetProperty("replay");
+        replay.GetProperty("code").GetString().Should().Be("idempotent_replay");
+        replay.GetProperty("original_at").GetString().Should().NotBeNullOrEmpty();
+        firstDoc.RootElement.TryGetProperty("replay", out _).Should().BeFalse("the first call replayed nothing");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_TwoConcurrentCallsUnderOneKey_SpawnOnce()
+    {
+        // The retry a model makes after an unclear outcome is the sequential case; two identical tool
+        // calls in ONE turn are the concurrent one, and they are the harder half. A ledger consulted
+        // only AFTER the work would let both spawns through — both look unseen while both are running.
+        SetupBlockingSubAgent();
+        var handler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "investigate",
+                run_in_background = true,
+                idempotency_key = "spawn-race",
+            }
+        );
+
+        var results = await Task.WhenAll(
+            Task.Run(() => handler(args, new ToolCallContext(), CancellationToken.None)),
+            Task.Run(() => handler(args, new ToolCallContext(), CancellationToken.None))
+        );
+
+        _manager!.ListAgents().Should().ContainSingle();
+        results.Select(AgentIdOf).Distinct().Should().ContainSingle("both callers must hold the same agent");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_WithoutAKey_SpawnsEveryTime()
+    {
+        // The opposite half, and the reason the key is opt-in: two identical delegations with no key
+        // are two delegations. Deduplicating on the arguments would silently collapse a deliberate
+        // fan-out of identical workers into one.
+        SetupBlockingSubAgent();
+        var handler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "investigate",
+                run_in_background = true,
+            }
+        );
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        _manager!.ListAgents().Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_AfterAFailedSpawn_TheKeyCanBeUsedAgain()
+    {
+        // A refused call created nothing, so there is nothing for the key to protect. Remembering the
+        // failure would make one bad call poison that key for the rest of the session — and the
+        // recovery the error text asks for (fix the name, call again) impossible to carry out.
+        SetupBlockingSubAgent();
+        var handler = GetHandler("Agent");
+        var key = "spawn-after-failure";
+
+        var failed = await handler(
+            JsonSerializer.Serialize(
+                new
+                {
+                    subagent_type = "no-such-agent",
+                    prompt = "investigate",
+                    run_in_background = true,
+                    idempotency_key = key,
+                }
+            ),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+        failed.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload.IsError.Should().BeTrue();
+
+        var retried = await handler(
+            JsonSerializer.Serialize(
+                new
+                {
+                    subagent_type = "researcher",
+                    prompt = "investigate",
+                    run_in_background = true,
+                    idempotency_key = key,
+                }
+            ),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        retried.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload.IsError.Should().BeFalse();
+        _manager!.ListAgents().Should().ContainSingle();
+    }
+
+    private static string? AgentIdOf(ToolHandlerResult result)
+    {
+        using var doc = JsonDocument.Parse(result.ResultText);
+        return doc.RootElement.GetProperty("agent_id").GetString();
+    }
+
+    /// <summary>Keeps every spawned child alive for the whole test, so it can be counted.</summary>
+    private void SetupBlockingSubAgent()
+    {
+        _ = _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, _, ct) => Task.FromResult(BlockingStream(ct))
+            );
     }
 
     private ToolHandler GetHandler(string name)

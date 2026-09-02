@@ -93,6 +93,9 @@ public class SubAgentToolProvider : IFunctionProvider
         " A workflow started with StartWorkflowAgent is followed with CheckWorkflow/WaitWorkflow, "
         + "never with a wait on agents.";
 
+    /// <summary>The code stamped on a result that is a replay rather than a fresh outcome.</summary>
+    internal const string IdempotentReplayCode = "idempotent_replay";
+
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly IReadOnlySet<string>? _exposedToolNames;
@@ -104,6 +107,14 @@ public class SubAgentToolProvider : IFunctionProvider
     /// tool dispatch can happen on different threads than the scope owner.
     /// </summary>
     private int _spawnSuppressionDepth;
+
+    /// <summary>
+    /// Remembers what each idempotency key already produced. One ledger for the whole surface, and one
+    /// surface per agent, so a key means the same thing to a spawn and to a send made by the same agent
+    /// — and it exists whether or not collaboration is on, because a duplicate SPAWN is a duplicate
+    /// agent either way.
+    /// </summary>
+    private readonly IdempotencyLedger _idempotency = new();
 
     /// <param name="manager">The manager whose sub-agents these tools drive.</param>
     /// <param name="source">The mutable template source backing the spawn tool's catalog.</param>
@@ -409,6 +420,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("spawn a second sub-agent"),
             ],
         };
 
@@ -419,6 +431,27 @@ public class SubAgentToolProvider : IFunctionProvider
             ProviderName = ProviderName,
         };
     }
+
+    /// <summary>
+    /// The opt-in key that makes one call safe to repeat, worded for the duplicate it prevents.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every tool that can create something it cannot take back, so the three descriptions
+    /// cannot drift into meaning three different things. Only the consequence differs, because that is
+    /// the part the model weighs when deciding whether to bother.
+    /// </remarks>
+    private static FunctionParameterContract IdempotencyKeyParameter(string duplicateConsequence) =>
+        new()
+        {
+            Name = "idempotency_key",
+            Description =
+                "Optional. A short key you choose that makes this call safe to repeat: a later call "
+                + $"with the SAME key returns this call's result instead of doing it again ({duplicateConsequence}). "
+                + "Use one whenever you might retry after an unclear outcome. Use a NEW key for work "
+                + "you genuinely want done again.",
+            ParameterType = new JsonSchemaObject { Type = new("string") },
+            IsRequired = false,
+        };
 
     private FunctionDescriptor CreateSendMessageDescriptor(bool collaborationEnabled)
     {
@@ -472,6 +505,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("boolean") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("send the follow-up a second time"),
             ],
         };
     }
@@ -543,6 +577,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("send the message a second time, which the recipient owes a second answer on"),
             ],
         };
     }
@@ -834,7 +869,123 @@ public class SubAgentToolProvider : IFunctionProvider
         return null;
     }
 
-    private async Task<ToolHandlerResult> HandleAgentToolAsync(
+    private Task<ToolHandlerResult> HandleAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken
+    ) =>
+        WithIdempotencyAsync(
+            SpawnToolName,
+            argsJson,
+            () => SpawnFromToolAsync(argsJson, context, cancellationToken),
+            cancellationToken
+        );
+
+    /// <summary>
+    /// Runs one tool call at most once per <c>idempotency_key</c>, returning the first call's result to
+    /// every repeat of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Wraps the handler rather than living inside it so the two tools that can create something
+    /// irreversible — an agent, an obligation — are protected by ONE implementation, and so the
+    /// handlers stay readable as what they do rather than as what they guard against.
+    /// </para>
+    /// <para>
+    /// A call with no key runs exactly as it always did. Deduplicating without one would have to key on
+    /// the arguments, and identical arguments are how a deliberate fan-out of identical workers is
+    /// spelled — the caller is the only party that knows which of its calls are the same call.
+    /// </para>
+    /// <para>
+    /// Only a SUCCESSFUL result is recorded. An error created nothing to protect, and a deferral has no
+    /// result yet; remembering either would turn one bad call into a permanently poisoned key.
+    /// </para>
+    /// </remarks>
+    private async Task<ToolHandlerResult> WithIdempotencyAsync(
+        string toolName,
+        string argsJson,
+        Func<Task<ToolHandlerResult>> work,
+        CancellationToken cancellationToken
+    )
+    {
+        string? key;
+        using (var doc = JsonDocument.Parse(argsJson))
+        {
+            key = GetOptionalString(doc.RootElement, "idempotency_key");
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return await work();
+        }
+
+        var (claim, replay) = await _idempotency.ReserveAsync(toolName, key.Trim(), cancellationToken);
+        if (replay is { } previous)
+        {
+            return ToolHandlerResult.FromText(WithReplayMetadata(previous));
+        }
+
+        try
+        {
+            var result = await work();
+            if (result is ToolHandlerResult.Resolved { Payload.IsError: false } resolved)
+            {
+                _idempotency.Complete(claim!, resolved.Payload.Text);
+            }
+            else
+            {
+                _idempotency.Abandon(claim!);
+            }
+
+            return result;
+        }
+        catch (Exception)
+        {
+            // Including cancellation. A claim left un-released would make every later caller of this
+            // key wait on work that has already stopped.
+            _idempotency.Abandon(claim!);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Marks a replayed receipt as a replay, without disturbing what it says.
+    /// </summary>
+    /// <remarks>
+    /// Nested under <c>replay</c> rather than added as a top-level <c>code</c>: the receipt still has to
+    /// read as the receipt it is replaying, and these tools already give top-level fields meanings of
+    /// their own that a sibling <c>code</c> would collide with. A receipt that is not a JSON object —
+    /// the blocking spawn and the legacy send both return the child's own answer — is replayed
+    /// verbatim, because the alternative is wrapping an answer in a shape the caller never saw the
+    /// first time round.
+    /// </remarks>
+    private static string WithReplayMetadata(IdempotentReplay replay)
+    {
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(replay.Receipt);
+        }
+        catch (JsonException)
+        {
+            return replay.Receipt;
+        }
+
+        if (node is not JsonObject receipt)
+        {
+            return replay.Receipt;
+        }
+
+        receipt["replay"] = new JsonObject
+        {
+            ["code"] = IdempotentReplayCode,
+            ["original_at"] = replay.OriginalAt.ToString("o"),
+        };
+
+        return receipt.ToJsonString();
+    }
+
+    private async Task<ToolHandlerResult> SpawnFromToolAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
@@ -938,11 +1089,19 @@ public class SubAgentToolProvider : IFunctionProvider
         }
     }
 
-    private async Task<ToolHandlerResult> HandleSendMessageToolAsync(
+    private Task<ToolHandlerResult> HandleSendMessageToolAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
-    )
+    ) =>
+        WithIdempotencyAsync(
+            SendMessageToolName,
+            argsJson,
+            () => SendFromToolAsync(argsJson, cancellationToken),
+            cancellationToken
+        );
+
+    private async Task<ToolHandlerResult> SendFromToolAsync(string argsJson, CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
@@ -1074,22 +1233,31 @@ public class SubAgentToolProvider : IFunctionProvider
             return ToolHandlerResult.FromError(description, dispatch.Result.FailureCode ?? "send_refused");
         }
 
-        return ToolHandlerResult.FromText(
-            JsonSerializer.Serialize(
-                new
-                {
-                    status = "accepted",
-                    message_id = dispatch.Result.MessageId,
-                    to_agent_id = dispatch.Result.Target?.AgentId,
-                    to_name = dispatch.Result.Target?.Name,
-                    msg_type = rawType,
-                    // Restated rather than inferred by the caller: only these two types leave a correlation
-                    // open, and a sender that waits for an answer that is never coming is a deadlock.
-                    expects_reply = messageType is AgentMessageType.Question or AgentMessageType.DelegateTask,
-                }
-            )
-        );
+        return ToolHandlerResult.FromText(BuildAcceptedReceipt(dispatch.Result, rawType, messageType));
     }
+
+    /// <summary>
+    /// The receipt for an admitted message: what was accepted, for whom, and whether an answer is owed.
+    /// </summary>
+    /// <remarks>
+    /// One place rather than an inline literal because everything downstream keys off this shape — the
+    /// replay of a duplicate send re-serves it verbatim, and a field added here has to appear on the
+    /// replay too or the two calls would disagree about what happened.
+    /// </remarks>
+    private static string BuildAcceptedReceipt(AgentSendResult result, string rawType, AgentMessageType messageType) =>
+        JsonSerializer.Serialize(
+            new
+            {
+                status = "accepted",
+                message_id = result.MessageId,
+                to_agent_id = result.Target?.AgentId,
+                to_name = result.Target?.Name,
+                msg_type = rawType,
+                // Restated rather than inferred by the caller: only these two types leave a correlation
+                // open, and a sender that waits for an answer that is never coming is a deadlock.
+                expects_reply = messageType is AgentMessageType.Question or AgentMessageType.DelegateTask,
+            }
+        );
 
     /// <summary>Maps the tool's snake_case wire vocabulary onto the closed message-type set.</summary>
     private static bool TryParseMessageType(string raw, out AgentMessageType messageType)
