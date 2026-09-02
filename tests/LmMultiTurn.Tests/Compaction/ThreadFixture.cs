@@ -139,6 +139,22 @@ internal sealed class ThreadFixture
         return this;
     }
 
+    /// <summary>
+    /// One call row with no result: the stream ended between the call and the tool running. The next row
+    /// belongs to a later generation, so only R1's pairing half can refuse a cut here.
+    /// </summary>
+    public ThreadFixture ToolCall(string tool = "Bash") =>
+        Add(
+            new ToolCallMessage
+            {
+                ToolCallId = $"call-{_rows.Count + 1}",
+                FunctionName = tool,
+                FunctionArgs = $$"""{"row":{{_rows.Count + 1}}}""",
+                RunId = _runId,
+                GenerationId = NextGeneration(),
+            }
+        );
+
     public ThreadFixture Notify(string kind = "subagent-completion", string label = "agent-1 finished") =>
         Add(
             new NotifyMessage

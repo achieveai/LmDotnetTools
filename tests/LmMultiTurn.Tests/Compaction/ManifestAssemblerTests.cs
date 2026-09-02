@@ -63,6 +63,26 @@ public sealed class ManifestAssemblerTests
         );
 
     [Fact]
+    public void Recovery_IsCopiedFromTheCut_NotRecomputedAsClean()
+    {
+        // Select() only ever returns a clean recovery, so the copy is pinned on a cut built by hand.
+        var thread = new ThreadFixture().Human("go").ToolTurns(3);
+        var recovery = new RecoveryStateAtCut
+        {
+            DeferredToolCalls = 2,
+            ParkedWaits = 1,
+            OwedContinuations = 3,
+            InterruptedTurns = 1,
+        };
+        var cut = CutAt(thread, thread.LastSeq) with { Recovery = recovery };
+
+        var manifest = Assemble(thread, cut);
+
+        manifest.Recovery.Should().Be(recovery);
+        manifest.Recovery.IsClean.Should().BeFalse();
+    }
+
+    [Fact]
     public void CurrentInstruction_IsTheCutsHumanRows_QuotedWhole()
     {
         var thread = new ThreadFixture().Human("fix the flaky test").ToolTurns(3).Human("and lint").ToolTurns(3);
