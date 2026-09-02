@@ -693,9 +693,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "or a delegated task addressed to you ended the wait — see `interrupt`), "
                 + "'wait_cycle' (an agent you named is itself blocked on an answer from you, so this "
                 + "wait could only time out — answer the messages in `blocking` first), or "
-                + "'not_waitable' (nothing you named is one of your own children). Agents you named "
-                + "that are real but not yours to wait on come back in `not_waited`, each with the "
-                + "action that does apply.\n\n"
+                + "'not_waitable' (every agent you named is real but none of them is one of your own "
+                + "children — a name that matches no agent at all is refused instead). Agents you "
+                + "named that are real but not yours to wait on come back in `not_waited`, each with "
+                + "the action that does apply.\n\n"
                 + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
@@ -1373,9 +1374,10 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (FindBlockingObligations(waitable) is { Count: > 0 } blocking)
         {
-            // A target that is waiting on an answer from us cannot finish, so this wait could only
-            // ever expire. Reported rather than blocked on, and reported the same way every time:
-            // unlike an interrupt, nothing here is claimed or spent.
+            // A target that is still running and is owed an answer from us may be unable to finish
+            // without it, so this wait would expire with nothing to show for it. Reported rather than
+            // blocked on, and reported the same way every time: unlike an interrupt, nothing here is
+            // claimed or spent.
             return ToolHandlerResult.FromText(
                 JsonSerializer.Serialize(
                     new
@@ -1514,7 +1516,7 @@ public class SubAgentToolProvider : IFunctionProvider
         out IReadOnlyList<string> unknown
     )
     {
-        var directory = _manager.Collaboration?.Directory;
+        var collaboration = _manager.Collaboration;
         var children = new List<SubAgentObservationEntry>();
         var peers = new List<UnwaitableTarget>();
         var missing = new List<string>();
@@ -1525,7 +1527,13 @@ public class SubAgentToolProvider : IFunctionProvider
             {
                 children.Add(entry);
             }
-            else if (directory?.Resolve(entry.Target).Entry is { } peer)
+            // The directory resolves this agent's OWN id and name, so a self-wait would otherwise land
+            // here and be answered with "send it a message" — not a next action, and a non-error where
+            // the refusal is the signal that an agent is going in circles. Kept as unknown instead.
+            else if (
+                collaboration?.Directory.Resolve(entry.Target).Entry is { } peer
+                && !string.Equals(peer.AgentId, collaboration.AgentId, StringComparison.Ordinal)
+            )
             {
                 peers.Add(
                     new UnwaitableTarget(
@@ -1554,11 +1562,24 @@ public class SubAgentToolProvider : IFunctionProvider
     /// answer on, sent by an agent it is about to block on. Empty when there are none.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Deliberately narrow — an obligation to somebody this wait is not blocked on is a reason to be
     /// interrupted, not a cycle. And deliberately NOT claimed: the one-shot interrupt claim bounds a
     /// message to waking a single wait, which is the wrong tool here, because after that one wakeup
     /// the same unanswered obligation would silently block every later wait. Reporting instead of
     /// claiming keeps the answer stable for as long as the deadlock lasts.
+    /// </para>
+    /// <para>
+    /// What is checked is "the sender is a target this wait would block on, and has not already
+    /// finished" — NOT "the sender cannot finish", which does not follow. SendMessage returns on
+    /// admission, so a sender need not be blocked on its own message, and a child that asks its
+    /// parent something and then ends its turn leaves that obligation open for good: a run that
+    /// merely finishes is not retired, so nothing abandons it. Excluding terminal targets is what
+    /// keeps that ordinary shape from being reported as a deadlock — and, in 'all' mode, from
+    /// suppressing the outcome of every healthy sibling. For a target that is still running the
+    /// check stays deliberately conservative: it may well be able to finish without the answer, but
+    /// reporting a cycle it can act on costs one turn, whereas missing a real one costs the wait.
+    /// </para>
     /// </remarks>
     private IReadOnlyList<WaitInterrupt> FindBlockingObligations(IReadOnlyList<SubAgentObservationEntry> waitable)
     {
@@ -1567,13 +1588,13 @@ public class SubAgentToolProvider : IFunctionProvider
             return [];
         }
 
-        var waitTargetIds = waitable.Select(e => e.AgentId).ToHashSet(StringComparer.Ordinal);
+        var waitTargetIds = waitable.Where(e => !e.IsTerminal).Select(e => e.AgentId).ToHashSet(StringComparer.Ordinal);
 
         return
         [
             .. collaboration
                 .Bundle.Ledger.GetOpenInbound(collaboration.AgentId)
-                .Where(e => IsWaitInterrupt(e.MessageType) && waitTargetIds.Contains(e.FromAgentId))
+                .Where(e => IsOpenObligation(e) && waitTargetIds.Contains(e.FromAgentId))
                 .Select(e => DescribeInterrupt(collaboration.Directory, e.MessageId, e.FromAgentId, e.MessageType)),
         ];
     }
@@ -1636,6 +1657,24 @@ public class SubAgentToolProvider : IFunctionProvider
     private static bool IsWaitInterrupt(AgentMessageType messageType)
     {
         return messageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
+    }
+
+    /// <summary>
+    /// Whether an open ledger entry is an obligation this agent can still act on: an interrupting
+    /// kind with no answer already in flight.
+    /// </summary>
+    /// <remarks>
+    /// The second half is the one <c>GetOpenInbound</c> does not apply and
+    /// <c>GetOpenInboundDelegations</c> does. Between a reply's admission and its delivery the message
+    /// it answers is still open but already spoken for, and a second reply to it is refused with
+    /// <c>correlation_closed</c> — so pointing the waiter at it, whether as a cycle to break or as an
+    /// interrupt to answer, names a message it cannot act on. Both readers of the open-inbound set go
+    /// through here so they cannot drift apart. The admission handler needs no such check: a message
+    /// cannot already be answered at the moment it is admitted.
+    /// </remarks>
+    private static bool IsOpenObligation(AgentMessageLedgerEntry entry)
+    {
+        return IsWaitInterrupt(entry.MessageType) && entry.PendingResponseMessageId is null;
     }
 
     /// <summary>Describes an interrupting message the way the waiting agent is told about it.</summary>
@@ -1719,7 +1758,7 @@ public class SubAgentToolProvider : IFunctionProvider
             // would otherwise stay unnoticed until an unrelated second one arrived.
             foreach (var open in ledger.GetOpenInbound(collaboration.AgentId))
             {
-                if (IsWaitInterrupt(open.MessageType) && TryReport(open.MessageId, open.FromAgentId, open.MessageType))
+                if (IsOpenObligation(open) && TryReport(open.MessageId, open.FromAgentId, open.MessageType))
                 {
                     break;
                 }

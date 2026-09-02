@@ -2113,6 +2113,122 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         finished.GetProperty("last_result").GetString().Should().Contain("the result that predates the barrier");
     }
 
+    [Fact]
+    public async Task WaitForAgents_OnAChildThatAskedAndThenFinished_ReportsItCompleted()
+    {
+        // The normal shape, not an edge case: SendMessage returns on admission, so a child that asks
+        // its parent something and then ends its turn leaves that question open forever — a run that
+        // merely finishes is deliberately not retired, so nothing abandons its outbound obligation.
+        // Reading the cycle off the sender alone therefore turned every later wait on that terminal
+        // child into wait_cycle, and told the coordinator to answer an agent that had already finished
+        // — which restarts it. In 'all' mode one such target would suppress the outcome for every
+        // healthy sibling.
+        var root = CreateRegisteredRoot();
+        var (manager, provider) = CreateManager(root, MessagingTemplate(root.AgentId));
+        var childId = await SpawnAndResolveIdAsync(provider);
+
+        _ = await manager
+            .ObserveTargetCompletionAsync(childId, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Non-vacuity: the child really is terminal AND really does still owe an answer, so the wait
+        // below runs against the exact state that used to report a cycle.
+        root.Bundle.Ledger.GetOpenInbound(root.AgentId)
+            .Should()
+            .ContainSingle()
+            .Which.FromAgentId.Should()
+            .Be(childId);
+
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId, timeout_seconds = 5 });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("completed", "an agent that has already finished cannot be the far end of a deadlock");
+
+        doc.RootElement.GetProperty("agents")
+            .GetProperty("agents")
+            .EnumerateArray()
+            .Single()
+            .GetProperty("last_result")
+            .GetString()
+            .Should()
+            .Be("done", "the result the coordinator waited for has to survive the cycle check");
+    }
+
+    [Fact]
+    public async Task WaitForAgents_WithAnInboundQuestionAlreadyBeingAnswered_NeitherReportsACycleNorInterrupts()
+    {
+        // Between a response's admission and its delivery the question it answers is still open, but
+        // it is spoken for: ValidateCorrelation refuses a second reply with correlation_closed. Both
+        // readers of the open-inbound set have to honour that claim, or the wait advises answering a
+        // message that would be refused — as wait_cycle from the cycle check, or as question_received
+        // from the watcher's opening sweep.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, template: BlockingTemplate());
+        var childId = await SpawnAndResolveIdAsync(provider);
+
+        // TrySend admits without delivering, which is the whole window: a delivered response would
+        // close the question instead of leaving it open with a claim on it.
+        var question = root.Bundle.TrySend(childId, root.AgentId, AgentMessageType.Question);
+        question.Succeeded.Should().BeTrue(question.FailureCode);
+
+        var answer = root.Bundle.TrySend(root.AgentId, childId, AgentMessageType.Response, question.MessageId);
+        answer.Succeeded.Should().BeTrue(answer.FailureCode);
+
+        root.Bundle.Ledger.GetOpenInbound(root.AgentId)
+            .Should()
+            .ContainSingle()
+            .Which.PendingResponseMessageId.Should()
+            .Be(answer.MessageId, "the window this pins only exists while the reply is in flight");
+
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId, timeout_seconds = 1 });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("timeout", "an obligation that is already being answered is neither a cycle nor an interrupt");
+    }
+
+    [Fact]
+    public async Task WaitForAgents_OnItself_IsRefusedAsUnknown()
+    {
+        // The directory resolves the caller's own id, so without a guard an agent naming itself lands
+        // in the peer partition and is told to send itself a message. That is not a valid next action,
+        // and answering a self-wait with a non-error erases the storm signal the refusal carries.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = root.AgentId });
+
+        payload.IsError.Should().BeTrue(payload.Text);
+        payload.ErrorCode.Should().Be("unknown_agent");
+        payload.Text.Should().Contain(root.AgentId);
+    }
+
+    [Fact]
+    public void WaitForAgentsDescriptor_SaysNotWaitableMeansRealAgentsThatAreNotYourChildren()
+    {
+        // not_waitable is reached only when every name resolved to a real agent. A set of typos still
+        // refuses the whole call with unknown_agent, so a description that says "nothing you named is
+        // one of your own children" describes an outcome the model will never see for that input.
+        var (_, provider) = CreateManager(CreateRegisteredRoot());
+
+        var description = Description(provider, "WaitForAgents");
+
+        description.Should().NotContain("nothing you named is one of your own children");
+        description
+            .Should()
+            .Contain(
+                "every agent you named is real but none of them is one of your own children",
+                "the status has to be told apart from the refusal a name that matches nothing gets"
+            );
+    }
+
     #endregion
 
     #region Helpers
