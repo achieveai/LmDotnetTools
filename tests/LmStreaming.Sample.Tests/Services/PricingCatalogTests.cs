@@ -509,4 +509,68 @@ public class PricingCatalogTests
         resolver.Resolve("model-a").Should().NotBeNull();
         resolver.Resolve("model-b").Should().NotBeNull();
     }
+
+    // --- #681: the same entries carry the model's window, so a per-generation context observation can
+    // read a utilization on this host. ---
+
+    private static IModelCapacityResolver CapacityFrom(IConfiguration configuration)
+    {
+        var services = new ServiceCollection();
+        _ = services.AddLogging();
+        _ = services.AddConfiguredPricing(configuration);
+        return services.BuildServiceProvider().GetRequiredService<IModelCapacityResolver>();
+    }
+
+    [Fact]
+    public void AConfiguredWindow_ResolvesUnderTheModelAndEveryAlias()
+    {
+        var resolver = CapacityFrom(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5-20250929:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5-20250929:CompletionPerMillion", "15"),
+                ("Pricing:Models:claude-sonnet-4-5-20250929:MaxContextTokens", "200000"),
+                ("Pricing:Models:claude-sonnet-4-5-20250929:MaxOutputTokens", "64000"),
+                ("Pricing:Models:claude-sonnet-4-5-20250929:Aliases:0", "claude-sonnet-4-5")
+            )
+        );
+
+        foreach (var name in new[] { "claude-sonnet-4-5-20250929", "claude-sonnet-4-5" })
+        {
+            var capacity = resolver.Resolve(name);
+            capacity.Should().NotBeNull(name);
+            capacity!.WindowTokens.Should().Be(200_000);
+            capacity.MaxOutputTokens.Should().Be(64_000);
+        }
+    }
+
+    [Fact]
+    public void AnEntryWithoutAWindow_StillPrices_ButResolvesNoCapacity()
+    {
+        var configuration = Config(
+            ("Pricing:Models:gpt-4o:PromptPerMillion", "2.5"),
+            ("Pricing:Models:gpt-4o:CompletionPerMillion", "10")
+        );
+
+        ResolverFrom(configuration).Resolve("gpt-4o").Should().NotBeNull();
+        CapacityFrom(configuration).Resolve("gpt-4o").Should().BeNull("an unknown window is unknown, not zero");
+    }
+
+    [Fact]
+    public void AnUnusableWindow_RejectsTheWholeEntry()
+    {
+        // Same policy as an unusable category rate: a present-but-bad key is an operator typo, and dropping
+        // only that key would leave a priced model whose missing gauge looks like a provider gap.
+        var configuration = Config(
+            ("Pricing:Models:gpt-4o:PromptPerMillion", "2.5"),
+            ("Pricing:Models:gpt-4o:CompletionPerMillion", "10"),
+            ("Pricing:Models:gpt-4o:MaxContextTokens", "-1")
+        );
+
+        var rejected = new List<string>();
+        var catalog = PricingCatalog.BuildCatalog(configuration, rejected);
+
+        catalog.Models.Should().BeEmpty();
+        rejected.Should().ContainSingle().Which.Should().Contain("MaxContextTokens");
+        ResolverFrom(configuration).Resolve("gpt-4o").Should().BeNull();
+    }
 }
