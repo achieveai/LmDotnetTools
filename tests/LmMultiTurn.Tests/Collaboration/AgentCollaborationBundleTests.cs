@@ -364,7 +364,7 @@ public class AgentCollaborationBundleTests
                 new AgentInbox(8)
             )
             .FailureCode.Should()
-            .Be(AgentMessageFailureCodes.CorrelationClosed);
+            .Be(AgentMessageFailureCodes.CorrelationAbandoned);
     }
 
     [Fact]

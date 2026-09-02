@@ -45,8 +45,29 @@ public static class AgentMessageFailureCodes
     /// </summary>
     public const string MissingCorrelation = "missing_correlation";
 
-    /// <summary>The message this one replies to has already been answered, failed, or abandoned.</summary>
-    public const string CorrelationClosed = "correlation_closed";
+    /// <summary>
+    /// The message this one replies to has already been answered. Terminal: the asker has its answer,
+    /// so there is nothing to recover — a sender with more to say must open a new exchange.
+    /// </summary>
+    public const string CorrelationAnswered = "correlation_answered";
+
+    /// <summary>
+    /// Another reply to the same message has been admitted and is still being delivered. Recoverable:
+    /// if that delivery fails the claim is released and this sender may try again.
+    /// </summary>
+    public const string CorrelationReplyInFlight = "correlation_reply_in_flight";
+
+    /// <summary>
+    /// The message this one replies to never reached its target. Nobody read it, so answering it is
+    /// meaningless; the content belongs in a fresh message instead.
+    /// </summary>
+    public const string CorrelationDeliveryFailed = "correlation_delivery_failed";
+
+    /// <summary>
+    /// The message this one replies to was closed because an agent it was between left. Nothing this
+    /// sender writes can reach the other party, whatever id it names.
+    /// </summary>
+    public const string CorrelationAbandoned = "correlation_abandoned";
 
     /// <summary>The sender is not the agent the original message was addressed to.</summary>
     public const string CorrelationNotAddressedToSender = "correlation_not_addressed_to_sender";
@@ -591,14 +612,49 @@ public sealed class AgentMessageLedger
         );
     }
 
+    /// <summary>
+    /// Everything a sender still has to act on, oldest first: what is still in flight, plus what ended
+    /// badly and is still remembered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately NOT <see cref="GetOpenOutbound"/> plus a filter. A delivery failure closes the
+    /// entry, so an open-only view drops a message at the exact moment the sender most needs to know
+    /// about it — the sender is told "accepted", the delivery fails, the entry closes, and every
+    /// subsequent look says it has nothing outstanding. Including the two bad terminal states is what
+    /// makes the view answer "is there anything I should do?" rather than only "what is pending?".
+    /// </para>
+    /// <para>
+    /// The two GOOD terminal states are excluded for the same reason they are terminal: an answered
+    /// question and a delivered message that wanted no reply both need nothing further from the sender,
+    /// and listing them would bury the ones that do behind the ones that do not. A failure leaves the
+    /// list on its own when retention forgets the entry.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<AgentMessageLedgerEntry> GetUnsettledOutbound(string fromAgentId)
+    {
+        return Snapshot(entry =>
+            string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal)
+            && (
+                !entry.IsClosed
+                || entry.State is AgentMessageDeliveryState.DeliveryFailed or AgentMessageDeliveryState.Abandoned
+            )
+        );
+    }
+
     private IReadOnlyList<AgentMessageLedgerEntry> SnapshotOpen(Func<AgentMessageLedgerEntry, bool> predicate)
+    {
+        return Snapshot(entry => !entry.IsClosed && predicate(entry));
+    }
+
+    private IReadOnlyList<AgentMessageLedgerEntry> Snapshot(Func<AgentMessageLedgerEntry, bool> predicate)
     {
         lock (_gate)
         {
             return
             [
                 .. _entries
-                    .Values.Where(entry => !entry.IsClosed && predicate(entry))
+                    .Values.Where(predicate)
                     .OrderBy(entry => entry.AdmittedAt)
                     .ThenBy(entry => entry.MessageId, StringComparer.Ordinal),
             ];
@@ -628,7 +684,7 @@ public sealed class AgentMessageLedger
         // fails to be delivered.
         if (entry.IsClosed || entry.PendingResponseMessageId is not null)
         {
-            return AgentMessageFailureCodes.CorrelationClosed;
+            return ClassifyClosedCorrelation(entry);
         }
 
         // Only the agent a message was addressed to may answer it. Otherwise a third party could close
@@ -654,6 +710,36 @@ public sealed class AgentMessageLedger
         }
 
         return entry.ExpectsReply ? null : AgentMessageFailureCodes.CorrelationDoesNotExpectReply;
+    }
+
+    /// <summary>
+    /// Says which kind of "no longer answerable" a correlation is, because the recoveries differ.
+    /// </summary>
+    /// <remarks>
+    /// One code for all of these is what left a sender guessing. Answered is finished; a reply in
+    /// flight may yet release its claim; a question that was never delivered wants its content resent
+    /// as a new message; an abandoned one wants a different counterpart entirely. The closed
+    /// <see cref="AgentMessageDeliveryState.Delivered"/> case is not a fifth code: a delivered message
+    /// closes only when it expected no reply, which is exactly what the still-open path already
+    /// reports, so it reuses that sentence rather than inventing a second way to say it.
+    /// </remarks>
+    private static string ClassifyClosedCorrelation(AgentMessageLedgerEntry entry)
+    {
+        // Closed is asked first, not the claim. Closing an answered message leaves the id of the reply
+        // that closed it on the entry, so a claim-first test would report a landed answer as still in
+        // flight and invite the responder to answer all over again.
+        if (!entry.IsClosed && entry.PendingResponseMessageId is not null)
+        {
+            return AgentMessageFailureCodes.CorrelationReplyInFlight;
+        }
+
+        return entry.State switch
+        {
+            AgentMessageDeliveryState.DeliveryFailed => AgentMessageFailureCodes.CorrelationDeliveryFailed,
+            AgentMessageDeliveryState.Abandoned => AgentMessageFailureCodes.CorrelationAbandoned,
+            AgentMessageDeliveryState.Delivered => AgentMessageFailureCodes.CorrelationDoesNotExpectReply,
+            _ => AgentMessageFailureCodes.CorrelationAnswered,
+        };
     }
 
     private bool TryGetOpen(string messageId, out AgentMessageLedgerEntry entry)

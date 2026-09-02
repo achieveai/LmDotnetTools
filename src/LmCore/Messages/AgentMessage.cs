@@ -33,6 +33,19 @@ public enum AgentMessageType
 
     /// <summary>Answers, and closes, an open <see cref="Question"/> or <see cref="DelegateTask"/>.</summary>
     Response,
+
+    /// <summary>
+    ///     Tells a sender that a message it was already told had been accepted will not arrive. Expects
+    ///     no reply.
+    /// </summary>
+    /// <remarks>
+    ///     The one member no agent can send: it is minted by the collaboration itself, so the tool's
+    ///     <c>msg_type</c> vocabulary does not offer it and nothing parses it back from the wire. It is a
+    ///     member rather than a repurposed <see cref="TaskUpdate"/> because the receiver, the UI, and the
+    ///     transcript all have to be able to tell a peer's progress report apart from the system telling
+    ///     them their own message died.
+    /// </remarks>
+    DeliveryFailure,
 }
 
 /// <summary>

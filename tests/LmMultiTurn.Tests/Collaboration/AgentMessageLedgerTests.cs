@@ -247,8 +247,74 @@ public class AgentMessageLedgerTests
         _ = ledger.TryAdmit(reply, new AgentInbox(8));
 
         // This is the idempotency guarantee. A retried reply must not deliver a second answer to a
-        // sender that already resumed on the first one.
-        ledger.TryAdmit(reply, new AgentInbox(8)).FailureCode.Should().Be(AgentMessageFailureCodes.CorrelationClosed);
+        // sender that already resumed on the first one. The code says WHICH kind of closed it is: the
+        // first answer is admitted but not yet delivered, so this one is recoverable if that one fails.
+        ledger
+            .TryAdmit(reply, new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationReplyInFlight);
+    }
+
+    [Fact]
+    public void TryAdmit_AfterTheAnswerLanded_SaysTheQuestionIsAnswered()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        var reply = Request(AgentMessageType.Response, Target, Sender, question);
+        _ = ledger.MarkDelivered(ledger.TryAdmit(reply, new AgentInbox(8)).MessageId!);
+
+        // Answered is terminal and needs no recovery: the sender already has its answer, so a retry
+        // must be told to open a NEW exchange rather than to wait or resend.
+        ledger
+            .TryAdmit(reply, new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationAnswered);
+    }
+
+    [Fact]
+    public void TryAdmit_AfterTheQuestionCouldNotBeDelivered_SaysSo()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        _ = ledger.MarkDeliveryFailed(question, "target_gone");
+
+        // The recovery differs from every other closed state: nobody ever read the question, so the
+        // right move is to send the content again as a fresh message rather than to answer this id.
+        ledger
+            .TryAdmit(Request(AgentMessageType.Response, Target, Sender, question), new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationDeliveryFailed);
+    }
+
+    [Fact]
+    public void TryAdmit_AfterTheAskerLeft_SaysTheCorrelationWasAbandoned()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        _ = ledger.AbandonMessagesFrom(Sender, "sender_left");
+
+        // Nothing the responder writes can reach the asker, so it must be told to find a live
+        // counterpart rather than to retry this correlation at all.
+        ledger
+            .TryAdmit(Request(AgentMessageType.Response, Target, Sender, question), new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationAbandoned);
+    }
+
+    [Fact]
+    public void TryAdmit_AgainstADeliveredMessageThatWantedNoAnswer_SaysItExpectedNoReply()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var steer = ledger.TryAdmit(Request(AgentMessageType.Steer), new AgentInbox(8)).MessageId!;
+        ledger.MarkDelivered(steer).Should().BeTrue();
+
+        // A message that expects no reply closes on delivery, so it reaches the closed branch — but
+        // "already closed" is the wrong story for it. The reason it cannot be answered is the one the
+        // still-open case already reports.
+        ledger
+            .TryAdmit(Request(AgentMessageType.Response, Target, Sender, steer), new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationDoesNotExpectReply);
     }
 
     [Fact]

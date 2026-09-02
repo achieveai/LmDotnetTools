@@ -392,7 +392,13 @@ export interface NotifyMessage extends IMessage {
  * the enum member names verbatim (`JsonStringEnumConverter` with no naming policy), so they arrive
  * PascalCase on the wire, unlike the lower-case `msg_type` the model writes when calling SendMessage.
  */
-export type AgentMessageType = 'Question' | 'DelegateTask' | 'TaskUpdate' | 'Steer' | 'Response';
+export type AgentMessageType =
+  | 'Question'
+  | 'DelegateTask'
+  | 'TaskUpdate'
+  | 'Steer'
+  | 'Response'
+  | 'DeliveryFailure';
 
 /**
  * AgentMessage matching C# AgentMessage.cs (#244).

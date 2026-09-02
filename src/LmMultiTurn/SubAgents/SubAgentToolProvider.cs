@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -92,6 +93,19 @@ public class SubAgentToolProvider : IFunctionProvider
         " A workflow started with StartWorkflowAgent is followed with CheckWorkflow/WaitWorkflow, "
         + "never with a wait on agents.";
 
+    /// <summary>The code stamped on a result that is a replay rather than a fresh outcome.</summary>
+    internal const string IdempotentReplayCode = "idempotent_replay";
+
+    /// <summary>
+    /// The code for a sub-agent whose RUN failed, on both the spawn and the legacy send.
+    /// </summary>
+    /// <remarks>
+    /// Named because it is the one error on these tools that happens AFTER something irreversible: the
+    /// agent was created and executed, or the follow-up was delivered and acted on. Every other error
+    /// refuses before anything exists.
+    /// </remarks>
+    internal const string SubAgentFailedCode = "subagent_failed";
+
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly IReadOnlySet<string>? _exposedToolNames;
@@ -103,6 +117,14 @@ public class SubAgentToolProvider : IFunctionProvider
     /// tool dispatch can happen on different threads than the scope owner.
     /// </summary>
     private int _spawnSuppressionDepth;
+
+    /// <summary>
+    /// Remembers what each idempotency key already produced. One ledger for the whole surface, and one
+    /// surface per agent, so a key means the same thing to a spawn and to a send made by the same agent
+    /// — and it exists whether or not collaboration is on, because a duplicate SPAWN is a duplicate
+    /// agent either way.
+    /// </summary>
+    private readonly IdempotencyLedger _idempotency = new();
 
     /// <param name="manager">The manager whose sub-agents these tools drive.</param>
     /// <param name="source">The mutable template source backing the spawn tool's catalog.</param>
@@ -408,6 +430,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("spawn a second sub-agent"),
             ],
         };
 
@@ -418,6 +441,27 @@ public class SubAgentToolProvider : IFunctionProvider
             ProviderName = ProviderName,
         };
     }
+
+    /// <summary>
+    /// The opt-in key that makes one call safe to repeat, worded for the duplicate it prevents.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every tool that can create something it cannot take back, so the three descriptions
+    /// cannot drift into meaning three different things. Only the consequence differs, because that is
+    /// the part the model weighs when deciding whether to bother.
+    /// </remarks>
+    private static FunctionParameterContract IdempotencyKeyParameter(string duplicateConsequence) =>
+        new()
+        {
+            Name = "idempotency_key",
+            Description =
+                "Optional. A short key you choose that makes this call safe to repeat: a later call "
+                + $"with the SAME key returns this call's result instead of doing it again ({duplicateConsequence}). "
+                + "Use one whenever you might retry after an unclear outcome. Use a NEW key for work "
+                + "you genuinely want done again.",
+            ParameterType = new JsonSchemaObject { Type = new("string") },
+            IsRequired = false,
+        };
 
     private FunctionDescriptor CreateSendMessageDescriptor(bool collaborationEnabled)
     {
@@ -471,6 +515,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("boolean") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("send the follow-up a second time"),
             ],
         };
     }
@@ -542,6 +587,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
+                IdempotencyKeyParameter("send the message a second time, which the recipient owes a second answer on"),
             ],
         };
     }
@@ -833,7 +879,162 @@ public class SubAgentToolProvider : IFunctionProvider
         return null;
     }
 
-    private async Task<ToolHandlerResult> HandleAgentToolAsync(
+    private Task<ToolHandlerResult> HandleAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken
+    ) =>
+        WithIdempotencyAsync(
+            SpawnToolName,
+            argsJson,
+            () => SpawnFromToolAsync(argsJson, context, cancellationToken),
+            cancellationToken
+        );
+
+    /// <summary>
+    /// Runs one tool call at most once per <c>idempotency_key</c>, returning the first call's result to
+    /// every repeat of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Wraps the handler rather than living inside it so the two tools that can create something
+    /// irreversible — an agent, an obligation — are protected by ONE implementation, and so the
+    /// handlers stay readable as what they do rather than as what they guard against.
+    /// </para>
+    /// <para>
+    /// A call with no key runs exactly as it always did. Deduplicating without one would have to key on
+    /// the arguments, and identical arguments are how a deliberate fan-out of identical workers is
+    /// spelled — the caller is the only party that knows which of its calls are the same call.
+    /// </para>
+    /// <para>
+    /// A result is recorded when the call CREATED something, not when it succeeded. Every refusal but one
+    /// happens before there is an agent or an obligation, so it releases the key rather than poisoning it
+    /// for a retry that would have worked. The exception is
+    /// <see cref="SubAgentFailedCode"/>: that error is raised at the END of the child's run, so the agent
+    /// exists and the follow-up was delivered, and freeing the key there would let the retry start a
+    /// second one. A deferral has no result yet and is never recorded.
+    /// </para>
+    /// </remarks>
+    private async Task<ToolHandlerResult> WithIdempotencyAsync(
+        string toolName,
+        string argsJson,
+        Func<Task<ToolHandlerResult>> work,
+        CancellationToken cancellationToken
+    )
+    {
+        var key = ReadIdempotencyKey(argsJson);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return await work();
+        }
+
+        var (claim, replay) = await _idempotency.ReserveAsync(toolName, key.Trim(), cancellationToken);
+        if (replay is { } previous)
+        {
+            var receipt = WithReplayMetadata(previous);
+
+            // A replayed failure is returned AS a failure, carrying the first call's own code. Handing
+            // it back as a plain result would read to the model as "the retry worked".
+            return previous.ErrorCode is { } previousCode
+                ? ToolHandlerResult.FromError(receipt, previousCode)
+                : ToolHandlerResult.FromText(receipt);
+        }
+
+        try
+        {
+            var result = await work();
+            if (result is ToolHandlerResult.Resolved resolved && IsRecordableOutcome(resolved.Payload))
+            {
+                _idempotency.Complete(claim!, resolved.Payload.Text, resolved.Payload.ErrorCode);
+            }
+            else
+            {
+                _idempotency.Abandon(claim!);
+            }
+
+            return result;
+        }
+        catch (Exception)
+        {
+            // Including cancellation. A claim left un-released would make every later caller of this
+            // key wait on work that has already stopped.
+            _idempotency.Abandon(claim!);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Whether a result is one the key must remember, rather than one a retry may repeat.
+    /// </summary>
+    /// <remarks>
+    /// The question is not "did it work" but "does repeating it create a second agent or a second
+    /// obligation". Only <see cref="SubAgentFailedCode"/> answers yes among the errors, because it is the
+    /// only one raised after the child has already run.
+    /// </remarks>
+    private static bool IsRecordableOutcome(ToolHandlerResultPayload payload) =>
+        !payload.IsError || payload.ErrorCode == SubAgentFailedCode;
+
+    /// <summary>
+    /// Reads the caller's idempotency key, or null when there is not one to read.
+    /// </summary>
+    /// <remarks>
+    /// Unparseable arguments are treated as "no key" rather than as an error. This guard runs in front
+    /// of every handler, so a parse exception thrown HERE would pre-empt the refusals the handler owns
+    /// — a suppressed spawn, an unknown subagent type — and turn a coded result the model can act on
+    /// into an unhandled fault. The handler parses the arguments itself and is the right place for that
+    /// complaint.
+    /// </remarks>
+    private static string? ReadIdempotencyKey(string argsJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(argsJson);
+            return GetOptionalString(doc.RootElement, "idempotency_key");
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Marks a replayed receipt as a replay, without disturbing what it says.
+    /// </summary>
+    /// <remarks>
+    /// Nested under <c>replay</c> rather than added as a top-level <c>code</c>: the receipt still has to
+    /// read as the receipt it is replaying, and these tools already give top-level fields meanings of
+    /// their own that a sibling <c>code</c> would collide with. A receipt that is not a JSON object —
+    /// the blocking spawn and the legacy send both return the child's own answer — is replayed
+    /// verbatim, because the alternative is wrapping an answer in a shape the caller never saw the
+    /// first time round.
+    /// </remarks>
+    private static string WithReplayMetadata(IdempotentReplay replay)
+    {
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(replay.Receipt);
+        }
+        catch (JsonException)
+        {
+            return replay.Receipt;
+        }
+
+        if (node is not JsonObject receipt)
+        {
+            return replay.Receipt;
+        }
+
+        receipt["replay"] = new JsonObject
+        {
+            ["code"] = IdempotentReplayCode,
+            ["original_at"] = replay.OriginalAt.ToString("o"),
+        };
+
+        return receipt.ToJsonString();
+    }
+
+    private async Task<ToolHandlerResult> SpawnFromToolAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
@@ -933,15 +1134,23 @@ public class SubAgentToolProvider : IFunctionProvider
         }
         catch (SubAgentExecutionException ex)
         {
-            return ToolHandlerResult.FromError(ex.Message, "subagent_failed");
+            return ToolHandlerResult.FromError(ex.Message, SubAgentFailedCode);
         }
     }
 
-    private async Task<ToolHandlerResult> HandleSendMessageToolAsync(
+    private Task<ToolHandlerResult> HandleSendMessageToolAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
-    )
+    ) =>
+        WithIdempotencyAsync(
+            SendMessageToolName,
+            argsJson,
+            () => SendFromToolAsync(argsJson, cancellationToken),
+            cancellationToken
+        );
+
+    private async Task<ToolHandlerResult> SendFromToolAsync(string argsJson, CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
@@ -966,7 +1175,15 @@ public class SubAgentToolProvider : IFunctionProvider
         }
         catch (SubAgentExecutionException ex)
         {
-            return ToolHandlerResult.FromError(ex.Message, "subagent_failed");
+            return ToolHandlerResult.FromError(ex.Message, SubAgentFailedCode);
+        }
+        catch (SubAgentNotStartedException ex)
+        {
+            // The model was handed this id by a spawn receipt that said "queued", so messaging it is a
+            // reasonable move that simply came too early. It gets the same code the collaboration
+            // surface uses for the same condition, and the exception's own text already says how to
+            // recover, so the two surfaces stay one vocabulary rather than two.
+            return ToolHandlerResult.FromError(ex.Message, AgentMessageFailureCodes.TargetNotStarted);
         }
     }
 
@@ -1065,22 +1282,31 @@ public class SubAgentToolProvider : IFunctionProvider
             return ToolHandlerResult.FromError(description, dispatch.Result.FailureCode ?? "send_refused");
         }
 
-        return ToolHandlerResult.FromText(
-            JsonSerializer.Serialize(
-                new
-                {
-                    status = "accepted",
-                    message_id = dispatch.Result.MessageId,
-                    to_agent_id = dispatch.Result.Target?.AgentId,
-                    to_name = dispatch.Result.Target?.Name,
-                    msg_type = rawType,
-                    // Restated rather than inferred by the caller: only these two types leave a correlation
-                    // open, and a sender that waits for an answer that is never coming is a deadlock.
-                    expects_reply = messageType is AgentMessageType.Question or AgentMessageType.DelegateTask,
-                }
-            )
-        );
+        return ToolHandlerResult.FromText(BuildAcceptedReceipt(dispatch.Result, rawType, messageType));
     }
+
+    /// <summary>
+    /// The receipt for an admitted message: what was accepted, for whom, and whether an answer is owed.
+    /// </summary>
+    /// <remarks>
+    /// One place rather than an inline literal because everything downstream keys off this shape — the
+    /// replay of a duplicate send re-serves it verbatim, and a field added here has to appear on the
+    /// replay too or the two calls would disagree about what happened.
+    /// </remarks>
+    private static string BuildAcceptedReceipt(AgentSendResult result, string rawType, AgentMessageType messageType) =>
+        JsonSerializer.Serialize(
+            new
+            {
+                status = "accepted",
+                message_id = result.MessageId,
+                to_agent_id = result.Target?.AgentId,
+                to_name = result.Target?.Name,
+                msg_type = rawType,
+                // Restated rather than inferred by the caller: only these two types leave a correlation
+                // open, and a sender that waits for an answer that is never coming is a deadlock.
+                expects_reply = messageType is AgentMessageType.Question or AgentMessageType.DelegateTask,
+            }
+        );
 
     /// <summary>Maps the tool's snake_case wire vocabulary onto the closed message-type set.</summary>
     private static bool TryParseMessageType(string raw, out AgentMessageType messageType)
@@ -1126,7 +1352,10 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return failureCode
             is AgentMessageFailureCodes.UnknownCorrelation
-                or AgentMessageFailureCodes.CorrelationClosed
+                or AgentMessageFailureCodes.CorrelationAnswered
+                or AgentMessageFailureCodes.CorrelationReplyInFlight
+                or AgentMessageFailureCodes.CorrelationDeliveryFailed
+                or AgentMessageFailureCodes.CorrelationAbandoned
                 or AgentMessageFailureCodes.CorrelationNotAddressedToSender
                 or AgentMessageFailureCodes.CorrelationDoesNotExpectReply
                 or AgentMessageFailureCodes.CorrelationNotADelegation;
@@ -1154,7 +1383,19 @@ public class SubAgentToolProvider : IFunctionProvider
             AgentMessageFailureCodes.SelfDelivery => "You cannot send a message to yourself.",
             AgentMessageFailureCodes.InvalidSender => "Your agent is no longer active, so it cannot send new messages.",
             AgentMessageFailureCodes.UnknownCorrelation => "The 'in_response_to' message_id is not one you received.",
-            AgentMessageFailureCodes.CorrelationClosed => "That message has already been answered.",
+            // Four ways to be closed, four different next moves. Collapsing them is what sent a model
+            // retrying an id that could never be admitted again.
+            AgentMessageFailureCodes.CorrelationAnswered =>
+                "That message has already been answered. Send a new 'question' if you have more to say.",
+            AgentMessageFailureCodes.CorrelationReplyInFlight =>
+                "Another answer to that message is already on its way. Wait for it, or check with "
+                    + "CheckAgents before answering again.",
+            AgentMessageFailureCodes.CorrelationDeliveryFailed =>
+                "That message never reached its target, so answering it changes nothing. Send what you "
+                    + "have to say as a new message instead.",
+            AgentMessageFailureCodes.CorrelationAbandoned =>
+                "That exchange ended when the agent on the other side left. Call GetAgents and pick an "
+                    + "agent that is still live.",
             AgentMessageFailureCodes.CorrelationNotAddressedToSender =>
                 "That message was not addressed to you, so you cannot answer it.",
             AgentMessageFailureCodes.CorrelationDoesNotExpectReply =>
@@ -1187,8 +1428,112 @@ public class SubAgentToolProvider : IFunctionProvider
             ?? throw new ArgumentException("The 'agent_ids' parameter is required.");
 
         var batch = WidenToCollaboration(_manager.CheckAgents(targets));
-        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(SerializeObservationBatch(batch)));
+
+        // Built as a node so the outbound view can be attached WITHOUT touching BuildObservationPayload,
+        // which WaitForAgents nests inside its own result: an obligations list belongs to a poll the
+        // agent chose to make, not to the tail of a wait it was already blocked in.
+        var payload = JsonSerializer.SerializeToNode(BuildObservationPayload(batch))!.AsObject();
+        if (BuildOutboundObligations(batch) is { } outbound)
+        {
+            payload["outbound"] = outbound;
+        }
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload.ToJsonString()));
     }
+
+    /// <summary>
+    /// Lists what this agent sent to the agents being checked and has still to act on, or null when
+    /// there is nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Scoped to the agents the call named. CheckAgents is a question about specific agents, and an
+    /// unscoped list would put an unrelated message in front of the model on every check — while the
+    /// obligation itself is not lost, only unlisted, because the next check that names that agent shows
+    /// it and a delivery failure also pushes a notice at the time it happens.
+    /// </para>
+    /// <para>
+    /// Absent rather than empty when there is nothing outstanding. This runs on every CheckAgents call,
+    /// and an empty container repeated on all of them is noise the model has to read past to find the
+    /// one call where it is not empty.
+    /// </para>
+    /// </remarks>
+    private JsonObject? BuildOutboundObligations(SubAgentObservationBatch batch)
+    {
+        if (_manager.Collaboration is not { } collaboration)
+        {
+            return null;
+        }
+
+        var scope = batch
+            .Entries.Select(entry => entry.AgentId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var rows = collaboration
+            .Bundle.Ledger.GetUnsettledOutbound(collaboration.AgentId)
+            .Where(entry => scope.Contains(entry.ToAgentId))
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            return null;
+        }
+
+        var listed = new JsonArray([
+            .. rows.Take(MaxListedAgentIds)
+                .Select(entry =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["message_id"] = entry.MessageId,
+                            ["to_agent_id"] = entry.ToAgentId,
+                            ["msg_type"] = ToWireName(entry.MessageType),
+                            ["state"] = ToWireName(entry.State),
+                            ["reason"] = entry.ReasonCode,
+                            // Stated per row rather than left to be inferred from the reason code: the
+                            // sender's next move is either "send it again" or "find someone else", and
+                            // that is the whole difference between the two failure classes.
+                            //
+                            // Null, NOT false, for a message that has not failed. A row still in flight
+                            // has no retry question to answer, and 'false' beside it is read by anyone
+                            // skimming past 'state' as "this one can never be sent again" — the exact
+                            // opposite of "wait, it is still going".
+                            ["retryable"] = entry.ReasonCode is null
+                                ? null
+                                : AgentCollaborationMessenger.IsRetryable(entry.ReasonCode),
+                            ["admitted_at"] = entry.AdmittedAt.ToString("o"),
+                        }
+                ),
+        ]);
+
+        // count is the true total while messages is capped, so a truncated list announces itself
+        // instead of quietly reading as "that is all of them".
+        return new JsonObject { ["count"] = rows.Count, ["messages"] = listed };
+    }
+
+    /// <summary>The wire spelling of a delivery state, matching the tool's snake_case vocabulary.</summary>
+    private static string ToWireName(AgentMessageDeliveryState state) =>
+        state switch
+        {
+            AgentMessageDeliveryState.Accepted => "accepted",
+            AgentMessageDeliveryState.Delivered => "delivered",
+            AgentMessageDeliveryState.Answered => "answered",
+            AgentMessageDeliveryState.DeliveryFailed => "delivery_failed",
+            _ => "abandoned",
+        };
+
+    /// <summary>The inverse of <see cref="TryParseMessageType"/>, so one vocabulary goes both ways.</summary>
+    private static string ToWireName(AgentMessageType messageType) =>
+        messageType switch
+        {
+            AgentMessageType.Question => "question",
+            AgentMessageType.DelegateTask => "delegate_task",
+            AgentMessageType.TaskUpdate => "task_update",
+            AgentMessageType.Steer => "steer",
+            AgentMessageType.Response => "response",
+            _ => "delivery_failure",
+        };
 
     /// <summary>
     /// Fills in the entries the manager could not resolve from the collaboration directory, so
@@ -1225,11 +1570,6 @@ public class SubAgentToolProvider : IFunctionProvider
                 ),
             ],
         };
-    }
-
-    private static string SerializeObservationBatch(SubAgentObservationBatch batch)
-    {
-        return JsonSerializer.Serialize(BuildObservationPayload(batch));
     }
 
     private static object BuildObservationPayload(SubAgentObservationBatch batch)
