@@ -97,12 +97,20 @@ internal static class ReadmeUsageSample
     /// </summary>
     public static async Task ReclaimCommandArtifactsAsync(SandboxClient client, string sessionId, string id)
     {
+        // An SDK-minted id needs no cleanup: ExecuteAsync released the record and its artifacts, and
+        // result.OperationRecordReleased says whether that succeeded.
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"]));
+        Console.WriteLine(result.StandardOutput);
+
         try
         {
-            var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"], operationId: id));
-            Console.WriteLine(result.StandardOutput);
-            // Nothing to clean up here: ExecuteAsync already released the record and its artifacts, and
-            // result.OperationRecordReleased says whether that succeeded.
+            // Supplying an id keeps the record replayable — and makes reclaiming it yours to do.
+            var replayable = await client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["git", "status"], operationId: id)
+            );
+            Console.WriteLine(replayable.StandardOutput);
+            await client.DeleteOperationAsync(sessionId, replayable.OperationId);
         }
         catch (SandboxException ex) when (ex.OperationId is { } failed)
         {

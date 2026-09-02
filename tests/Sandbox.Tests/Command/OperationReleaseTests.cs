@@ -13,6 +13,12 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 /// prunes terminal ones only after <c>OPERATION_TERMINAL_TTL_SECS</c> (default 3600), so a session that
 /// never deletes its records is refused with <c>503 operation_capacity_exhausted</c> long before the TTL
 /// frees them. ADR 0031 §5 makes <c>DELETE .../operations/{operation_id}</c> the explicit lifecycle exit.
+/// <para>
+/// The release is scoped to the ids the SDK MINTS. A caller-supplied
+/// <see cref="SandboxCommand.OperationId"/> is the caller's statement that it owns the record's
+/// lifecycle — replaying it, reading its artifacts, and deleting it — so the SDK must leave that record
+/// alone. Both branches are pinned below; they are the same line of code read two ways.
+/// </para>
 /// </summary>
 public sealed class OperationReleaseTests
 {
@@ -34,12 +40,17 @@ public sealed class OperationReleaseTests
                 )
         );
 
-    private static void RegisterTerminalSubmit(FakeGatewayHandler handler, string operationId, long mountId) =>
+    /// <summary>
+    /// Answers every submit with a terminal snapshot ECHOING the submitted operation id. Most tests here
+    /// exercise the SDK-minted branch, where the id is a fresh GUID the test cannot know up front, so the
+    /// fake reads it back off the request exactly as the real gateway does.
+    /// </summary>
+    private static void RegisterTerminalSubmit(FakeGatewayHandler handler, long mountId) =>
         handler.On(
             req =>
                 req.Method == HttpMethod.Post
                 && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            _ => Json(TerminalSnapshot(operationId, mountId), HttpStatusCode.OK)
+            _ => Json(TerminalSnapshot(OperationIdFromBody(handler.Requests[^1].Body!), mountId), HttpStatusCode.OK)
         );
 
     private static void RegisterDownloads(FakeGatewayHandler handler, string stdout = "", string stderr = "")
@@ -70,23 +81,24 @@ public sealed class OperationReleaseTests
         new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8) };
 
     [Fact]
-    public async Task ExecuteAsync_AfterTheResultIsRead_DeletesTheOperationRecord()
+    public async Task ExecuteAsync_WithAnSdkMintedOperationId_DeletesTheRecordAfterTheResultIsRead()
     {
         const string sessionId = "sess-rel";
-        const string operationId = "op-rel";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;
         RegisterWorkspaceMount(handler, sessionId, mountId: 4);
-        RegisterTerminalSubmit(handler, operationId, mountId: 4);
+        RegisterTerminalSubmit(handler, mountId: 4);
         RegisterDownloads(handler, stdout: "done");
         handler.On(IsDelete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+        // No operationId: the SDK mints one, so nothing outside this call can ever name that record and
+        // the SDK is the only party left that could reclaim it.
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"]));
 
         result.StandardOutput.Should().Be("done");
         result.OperationRecordReleased.Should().BeTrue();
         var delete = handler.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Delete).Subject;
-        delete.Uri.AbsolutePath.Should().Be($"/api/v1/sandboxes/{sessionId}/operations/{operationId}");
+        delete.Uri.AbsolutePath.Should().Be($"/api/v1/sandboxes/{sessionId}/operations/{result.OperationId}");
         // Ordering is load-bearing, not incidental: the gateway's DELETE also removes the operation's
         // generation-scoped stdout/stderr artifact directory, so releasing before both downloads have
         // completed would destroy the very output this call returns.
@@ -98,14 +110,39 @@ public sealed class OperationReleaseTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WithACallerSuppliedOperationId_LeavesTheRecordAloneForItsOwner()
+    {
+        const string sessionId = "sess-owned";
+        const string operationId = "op-owned";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        using var _ = client;
+        RegisterWorkspaceMount(handler, sessionId, mountId: 5);
+        RegisterTerminalSubmit(handler, mountId: 5);
+        RegisterDownloads(handler, stdout: "replayable");
+        // A DELETE route that WOULD succeed. The assertion below is therefore about the SDK declining to
+        // send one, not about a route that could not have answered.
+        handler.On(IsDelete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        // Supplying the id is the caller's claim on the record's lifecycle: re-submitting the id must
+        // replay this operation instead of re-running a side-effecting command, its artifacts must stay
+        // readable under .mcp-gateway/operations/<id>/, and the caller decides when the delete happens.
+        // Reclaiming it here would silently break all three.
+        result.StandardOutput.Should().Be("replayable");
+        result.OperationId.Should().Be(operationId);
+        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Delete);
+        result.OperationRecordReleased.Should().BeFalse("the caller owns this record, so the SDK released nothing");
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ReleaseRejectedByGateway_StillReturnsTheResult_AndReportsTheRetainedRecord()
     {
         const string sessionId = "sess-relfail";
-        const string operationId = "op-relfail";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;
         RegisterWorkspaceMount(handler, sessionId, mountId: 2);
-        RegisterTerminalSubmit(handler, operationId, mountId: 2);
+        RegisterTerminalSubmit(handler, mountId: 2);
         RegisterDownloads(handler, stdout: "kept");
         handler.On(
             IsDelete,
@@ -116,7 +153,7 @@ public sealed class OperationReleaseTests
                 )
         );
 
-        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"]));
 
         // The command SUCCEEDED and its output is already downloaded; a failed cleanup must never be
         // promoted into the caller's failure. The caller learns about it from the result instead.
@@ -129,11 +166,10 @@ public sealed class OperationReleaseTests
     public async Task ExecuteAsync_ReleaseAnswered404_CountsAsReleased_BecauseThereIsNothingLeftToReclaim()
     {
         const string sessionId = "sess-rel404";
-        const string operationId = "op-rel404";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;
         RegisterWorkspaceMount(handler, sessionId, mountId: 6);
-        RegisterTerminalSubmit(handler, operationId, mountId: 6);
+        RegisterTerminalSubmit(handler, mountId: 6);
         RegisterDownloads(handler);
         // ADR 0031 §6's no-existence-oracle boundary: one uniform 404 covers an already-deleted record, a
         // TTL-pruned one, and one dropped by a gateway restart alike. None of those is a retained record.
@@ -146,7 +182,7 @@ public sealed class OperationReleaseTests
                 )
         );
 
-        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"]));
 
         // Both halves matter: the delete really was attempted (otherwise "released" would be a claim about
         // a request nobody sent), and the 404 answer counts as released rather than as a retained record.
@@ -158,12 +194,11 @@ public sealed class OperationReleaseTests
     public async Task ExecuteAsync_CancelledWhileTheReleaseIsInFlight_ReturnsTheResultInsteadOfThrowing()
     {
         const string sessionId = "sess-relcancel";
-        const string operationId = "op-relcancel";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;
         using var cts = new CancellationTokenSource();
         RegisterWorkspaceMount(handler, sessionId, mountId: 8);
-        RegisterTerminalSubmit(handler, operationId, mountId: 8);
+        RegisterTerminalSubmit(handler, mountId: 8);
         RegisterDownloads(handler, stdout: "survived");
         // Deliberately side-effecting predicate: it fires while the release DELETE is in flight and
         // nothing earlier, so the cancellation lands squarely inside the release rather than before it
@@ -180,11 +215,7 @@ public sealed class OperationReleaseTests
             return true;
         });
 
-        var result = await client.ExecuteAsync(
-            sessionId,
-            new SandboxCommand(["echo", "hi"], operationId: operationId),
-            cts.Token
-        );
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"]), cts.Token);
 
         result.StandardOutput.Should().Be("survived");
         result.OperationRecordReleased.Should().BeFalse();
@@ -233,12 +264,11 @@ public sealed class OperationReleaseTests
             )
         );
 
+        // SDK-minted ids throughout — this is the shape ConversationTranscriptWriter and every other
+        // fire-and-forget caller runs, and the only shape the automatic release applies to.
         for (var i = 0; i < commandCount; i++)
         {
-            var result = await client.ExecuteAsync(
-                sessionId,
-                new SandboxCommand(["sh", "-c", "true"], operationId: $"op-cap-{i}")
-            );
+            var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["sh", "-c", "true"]));
             result.OperationRecordReleased.Should().BeTrue($"command {i} must release its record");
         }
 

@@ -47,22 +47,28 @@ public sealed partial class SandboxClient
     /// API and decoded as strict UTF-8.
     /// </para>
     /// <para>
-    /// <b>The operation record is released on the success path.</b> Once both artifacts have been
-    /// downloaded, this call issues <c>DELETE .../operations/{operation_id}</c> (ADR 0031 §5) so the
-    /// gateway stops holding a record — and the artifact files — for a command whose output is already in
-    /// hand. That is what keeps a long-lived session under the gateway's per-session record cap
+    /// <b>The operation record is released only when this SDK minted the operation id.</b> Once both
+    /// artifacts have been downloaded, a successful command whose <see cref="SandboxCommand.OperationId"/>
+    /// was left <c>null</c> — so no caller can name that record afterwards — is followed by
+    /// <c>DELETE .../operations/{operation_id}</c> (ADR 0031 §5), releasing the gateway's record and its
+    /// artifact files. That is what keeps a long-lived session under the gateway's per-session record cap
     /// (<c>OPERATION_MAX_RECORDS_PER_SESSION</c>, default 256), whose terminal-TTL reaper would otherwise
-    /// take an hour to free each slot. The release is best-effort: it never throws and never changes the
-    /// command's outcome, and <see cref="SandboxCommandResult.OperationRecordReleased"/> reports whether
-    /// it happened. A FAILING call releases nothing — the operation id stays a usable replay handle.
+    /// take an hour to free each slot. A CALLER-SUPPLIED operation id is the caller's statement that it
+    /// owns that record's lifecycle — replay, artifact reclamation, and the eventual
+    /// <see cref="DeleteOperationAsync"/> — so this call leaves such a record strictly alone and reports
+    /// <see cref="SandboxCommandResult.OperationRecordReleased"/> as <c>false</c>. The release is otherwise
+    /// best-effort: it never throws and never changes the command's outcome, and a FAILING call releases
+    /// nothing, so the operation id stays a usable replay handle either way.
     /// </para>
     /// <para>
     /// <b>Idempotency is gateway-scoped, not durable.</b> Reusing the same
     /// <see cref="SandboxCommand.OperationId"/> re-submits the same request, and the gateway answers
-    /// with the existing operation's current (or terminal) status rather than running it again — but
-    /// only while the gateway retains that operation's state. A gateway restart drops it, so reusing
-    /// an operation id after a restart may start a genuinely new execution. This SDK keeps no local
-    /// manifest, digest, or lease bookkeeping of its own; the gateway is the sole source of truth.
+    /// with the existing operation's current (or terminal) status rather than running it again — which is
+    /// exactly why supplying an id suppresses the automatic release above: the record has to outlive the
+    /// first call for the replay to find it. That holds only while the gateway retains the operation's
+    /// state. A gateway restart drops it, so reusing an operation id after a restart may start a genuinely
+    /// new execution. This SDK keeps no local manifest, digest, or lease bookkeeping of its own; the
+    /// gateway is the sole source of truth.
     /// </para>
     /// <para>
     /// <b>Outcomes.</b> A gateway execution timeout, or the SDK's own poll deadline elapsing while the
@@ -116,24 +122,33 @@ public sealed partial class SandboxClient
 
         var result = await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
 
-        // The terminal result is fully consumed here — both artifacts are downloaded and decoded — so the
-        // gateway's record has nothing left to serve and is released (ADR 0031 §5's explicit lifecycle
-        // exit). Doing it in the SDK is what keeps a long-lived session under the gateway's
+        // The terminal result is fully consumed here — both artifacts are downloaded and decoded — so a
+        // record this call alone can name has nothing left to serve and is released (ADR 0031 §5's explicit
+        // lifecycle exit). Doing it in the SDK is what keeps a long-lived session under the gateway's
         // OPERATION_MAX_RECORDS_PER_SESSION cap (default 256): the reaper prunes a terminal record only
         // after OPERATION_TERMINAL_TTL_SECS (default 3600), so a session running more than 256 commands
         // within that hour would otherwise have every later submit refused with
         // 503 operation_capacity_exhausted (issue #725). The release happens AFTER the downloads because
         // the same DELETE also removes the operation's generation-scoped artifact directory.
         //
-        // Only the SUCCESS path releases. A failure exit deliberately leaves the record alone: the
-        // operation id is this SDK's documented recovery handle (re-submitting it replays the existing
-        // operation instead of running the command again), and deleting the record plus its artifacts
-        // under, say, a lost artifact download would turn a recoverable failure into a forced re-run of a
-        // side-effecting command.
+        // Two exits deliberately release NOTHING, and for the same reason — the operation id is still a
+        // live handle someone may re-address:
+        //
+        //   * A CALLER-SUPPLIED command.OperationId. Passing an id is the caller's statement that it owns
+        //     this record's lifecycle: re-submitting the id replays the existing operation instead of
+        //     re-running a side-effecting command, its artifacts stay readable under
+        //     .mcp-gateway/operations/<id>/, and the caller decides when DeleteOperationAsync runs.
+        //     Reclaiming it here would silently break all three. Only an id minted by
+        //     CommandOperation.ResolveOperationId — which no caller can name — is ours to release.
+        //   * A FAILURE exit (this line is not reached). Deleting the record plus its artifacts under, say,
+        //     a lost artifact download would turn a recoverable failure into a forced re-run.
+        var callerOwnsOperationRecord = command.OperationId is not null;
+
         return result with
         {
-            OperationRecordReleased = await ReleaseOperationRecordAsync(sessionId, operationId, ct)
-                .ConfigureAwait(false),
+            OperationRecordReleased =
+                !callerOwnsOperationRecord
+                && await ReleaseOperationRecordAsync(sessionId, operationId, ct).ConfigureAwait(false),
         };
     }
 
@@ -176,12 +191,12 @@ public sealed partial class SandboxClient
     /// <c>.mcp-gateway/operations/&lt;operation_id&gt;/&lt;generation&gt;/{stdout,stderr}</c> on disk in
     /// the caller's writable workspace, and ADR 0031 §5's reaper prunes the terminal <b>in-memory record
     /// only</b> — it never deletes those files. They persist for the sandbox's lifetime unless this call
-    /// removes them. <see cref="ExecuteAsync"/> already issues it for you on its success path, once the
-    /// command's output has been consumed; this public entry point is for the cases it deliberately leaves
-    /// alone — a command that FAILED (whose operation id stays a replay handle) that the caller has since
-    /// given up on, or an operation the caller submitted and tracked itself.
-    /// <see cref="DeleteAsync"/> (tearing down the whole sandbox) remains the bulk cleanup and is
-    /// unaffected.
+    /// removes them. <see cref="ExecuteAsync"/> already issues it for you when it minted the operation id
+    /// itself and the command succeeded; this public entry point is for every record it deliberately leaves
+    /// alone — one whose <see cref="SandboxCommand.OperationId"/> the CALLER supplied (and therefore owns),
+    /// and one left behind by a command that FAILED, whose operation id stays a replay handle until the
+    /// caller gives up on it. <see cref="DeleteAsync"/> (tearing down the whole sandbox) remains the bulk
+    /// cleanup and is unaffected.
     /// </para>
     /// <para>
     /// <b>This is not cancellation.</b> ADR 0031 puts cancellation explicitly out of scope: a still-RUNNING
