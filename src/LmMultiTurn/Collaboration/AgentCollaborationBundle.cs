@@ -351,6 +351,14 @@ public sealed class AgentCollaborationBundle
     /// that has already delivered its answer about a message it can no longer act on buys nothing. The
     /// ledger keeps the record either way.
     /// </para>
+    /// <para>
+    /// That status test narrows the window; it does not close it. A sender that finishes between the
+    /// test and the delivery is still handed the notice. Closing it properly means refusing delivery to
+    /// a non-running agent inside the endpoint, where the status and the write are the same act — and
+    /// that would cover ordinary messages too, which take the endpoint with no status test at all (see
+    /// <c>AgentCollaborationMessenger.DeliverAsync</c>). This method is deliberately the stricter of the
+    /// two, not the authority.
+    /// </para>
     /// </remarks>
     /// <param name="messageId">The message that will not arrive.</param>
     /// <param name="reasonCode">The content-free code recorded against it.</param>

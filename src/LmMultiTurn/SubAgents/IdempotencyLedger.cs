@@ -192,18 +192,39 @@ internal sealed class IdempotencyLedger
         claim.Completion.Task is { IsCompletedSuccessfully: true, Result: null };
 
     /// <summary>
-    /// Forgets the oldest keys once the bound is passed.
+    /// Forgets the oldest FINISHED keys once the bound is passed.
     /// </summary>
     /// <remarks>
-    /// An in-flight claim can be evicted, and that is deliberate: eviction only removes the ability to
-    /// replay, never the ability to finish. The evicted holder still completes, and its waiters still
-    /// get its result, because both hold the claim itself rather than a lookup.
+    /// <para>
+    /// A running claim is skipped and kept. Forgetting a finished one costs only a replay — a stale
+    /// answer to a retry that has run out of time to be useful. Forgetting a RUNNING one costs the
+    /// guarantee: the next caller of that key would find nothing, claim it, and do the work a second
+    /// time, which is the duplicate the key was supplied to prevent.
+    /// </para>
+    /// <para>
+    /// A skipped key goes to the back of the order rather than staying at the front, so the next call
+    /// looks past it instead of stopping on it forever. It is dequeued before it is re-enqueued, so it
+    /// still appears in the order exactly once — a second copy would later evict a LIVE claim of the
+    /// same key and undo the same guarantee by the other route.
+    /// </para>
+    /// <para>
+    /// So the map is bounded by the count of keys that are DONE, plus however many are running at once.
+    /// The latter is bounded by the caller's own concurrency, which is a handful of tool calls in one
+    /// model turn.
+    /// </para>
     /// </remarks>
     private void Evict()
     {
-        while (_order.Count > MaxRemembered)
+        for (var remaining = _order.Count; _order.Count > MaxRemembered && remaining > 0; remaining--)
         {
-            _ = _claims.Remove(_order.Dequeue());
+            var oldest = _order.Dequeue();
+            if (_claims.TryGetValue(oldest, out var claim) && !claim.Completion.Task.IsCompleted)
+            {
+                _order.Enqueue(oldest);
+                continue;
+            }
+
+            _ = _claims.Remove(oldest);
         }
     }
 }

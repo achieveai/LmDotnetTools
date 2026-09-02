@@ -301,9 +301,18 @@ internal sealed class WorkflowControllerRegistration
         );
 
         // Closing the obligations is only half of leaving: an asker that is never told stays blocked on
-        // an answer this node can no longer give. Not awaited — teardown is synchronous by contract and
-        // the notification swallows its own failures.
-        _ = Setup.Bundle.NotifyAbandonedObligationsAsync(abandoned, Setup.AgentId);
+        // an answer this node can no longer give. Not awaited, because teardown is synchronous by
+        // contract — but a discarded task still has to have its fault observed, or a fault it carries
+        // resurfaces at GC as an UnobservedTaskException with no way back to this line. Same treatment
+        // as the other caller of this method (SubAgentManager.RetireFromCollaboration).
+        _ = Setup
+            .Bundle.NotifyAbandonedObligationsAsync(abandoned, Setup.AgentId)
+            .ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
         _endpoint.Detach();
         _ = _lease.Release();
     }
