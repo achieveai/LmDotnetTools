@@ -968,6 +968,14 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             return ToolHandlerResult.FromError(ex.Message, "subagent_failed");
         }
+        catch (SubAgentNotStartedException ex)
+        {
+            // The model was handed this id by a spawn receipt that said "queued", so messaging it is a
+            // reasonable move that simply came too early. It gets the same code the collaboration
+            // surface uses for the same condition, and the exception's own text already says how to
+            // recover, so the two surfaces stay one vocabulary rather than two.
+            return ToolHandlerResult.FromError(ex.Message, AgentMessageFailureCodes.TargetNotStarted);
+        }
     }
 
     /// <summary>

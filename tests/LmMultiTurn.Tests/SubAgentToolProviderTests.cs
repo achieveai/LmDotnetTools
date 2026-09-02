@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -443,6 +444,74 @@ public class SubAgentToolProviderTests : IAsyncLifetime
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>().WithMessage("*prompt*required*");
+    }
+
+    /// <summary>
+    /// A follow-up addressed to a child that is spawned but still waiting for a concurrency permit is a
+    /// recoverable tool error, not an exception out of the handler.
+    /// </summary>
+    /// <remarks>
+    /// The queued state is entirely normal — the model is told "queued" by the very spawn receipt that
+    /// gave it the id — so a model that then messages that id has done nothing wrong. Letting the
+    /// manager's exception escape turns that into whatever the host does with an unhandled tool
+    /// exception, which at best is a stack trace and at worst ends the turn; the model gets no code to
+    /// branch on and no instruction to wait. Returning the same <c>target_not_started</c> the
+    /// collaboration surface returns keeps ONE vocabulary across both surfaces for one condition.
+    /// </remarks>
+    [Fact]
+    public async Task HandleSendMessageToolAsync_QueuedTarget_ReturnsRecoverableTargetNotStartedError()
+    {
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 1,
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source
+        );
+        var provider = new SubAgentToolProvider(manager, source);
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, _, ct) => Task.FromResult(BlockingStream(ct))
+            );
+
+        // The single permit is taken by the first child, so the second one is admitted to the queue and
+        // handed back an id the model can address — which is exactly what makes this reachable.
+        _ = await manager.SpawnAsync("researcher", "first", runInBackground: true);
+        _ = await manager.SpawnAsync("researcher", "queued", name: "queued-worker", runInBackground: true);
+
+        var result = await provider
+            .GetFunctions()
+            .First(f => f.Contract.Name == "SendMessage")
+            .Handler(
+                JsonSerializer.Serialize(new { target = "queued-worker", prompt = "follow up" }),
+                new ToolCallContext(),
+                CancellationToken.None
+            );
+
+        var payload = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.TargetNotStarted);
+        payload.Text.Should().Contain("queued").And.Contain("CheckAgent");
     }
 
     [Fact]

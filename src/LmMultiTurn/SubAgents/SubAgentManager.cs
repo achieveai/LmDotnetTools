@@ -1420,10 +1420,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         var agentId = ResolveAgentId(target);
         if (_queuedSpawns.TryGetValue(agentId, out _))
         {
-            throw new InvalidOperationException(
-                $"Sub-agent '{target}' is queued and cannot receive messages until it starts. "
-                    + "Poll it with CheckAgent/CheckAgents and retry when status is running."
-            );
+            // Typed rather than a bare InvalidOperationException so a tool handler can turn this one
+            // recoverable condition into a coded result for the model without matching on the message.
+            throw new SubAgentNotStartedException(target, agentId);
         }
 
         var state = _agents[agentId];
