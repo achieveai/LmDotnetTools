@@ -182,11 +182,16 @@ async (page) => {
   };
   const expectedCost = (usage) => {
     if (!usage) return 'No usage recorded';
+    if (usage.usageCompleteness === null) return 'No usage recorded'; // a total nothing was persisted for
     if (usage.preferredCostMicros == null || usage.costProvenance === 'Unavailable') return 'Unavailable';
     if (usage.costProvenance === 'ProviderReported') return `${usd(usage.preferredCostMicros)} (provider-reported)`;
     const completeness = usage.estimatedCostCompleteness === 'Partial' ? 'partial — lower bound' : 'complete';
     return `${usd(usage.preferredCostMicros)} (public estimate, ${completeness})`;
   };
+  /** The footer total is priced by the same rule as a row, with `usageCompleteness` deciding "no usage". */
+  const totalAsUsage = (t) =>
+    t ? { preferredCostMicros: t.preferredCostMicros, costProvenance: t.costProvenance,
+          estimatedCostCompleteness: t.costCompleteness, usageCompleteness: t.usageCompleteness ?? null } : null;
   const shot = async (name) => {
     const path = `${SHOT_DIR}/pw685-${name}.png`;
     await page.screenshot({ path, fullPage: false }).catch(() => {});
@@ -234,8 +239,7 @@ async (page) => {
     record('A: rendered capacity/cost equal the endpoint report (live == authoritative)',
       Array.isArray(ctxA.agents) && ctxA.agents.length === 1 &&
       expectedCapacity(ctxA.agents[0]) === rowA.capacity && expectedCost(ctxA.agents[0].usage) === rowA.cost &&
-      expectedCost({ preferredCostMicros: ctxA.total?.preferredCostMicros, costProvenance: ctxA.total?.costProvenance,
-        estimatedCostCompleteness: ctxA.total?.costCompleteness }) === viewA.total.cost,
+      expectedCost(totalAsUsage(ctxA.total)) === viewA.total.cost,
       { expected: ctxA.agents?.map(expectedCapacity), rendered: rowA.capacity, expectedCost: ctxA.agents?.map((a) => expectedCost(a.usage)), renderedCost: rowA.cost, totalCost: viewA.total.cost, endpointTotal: ctxA.total });
     // Zero-vs-unknown, negative side: nothing on a priced, observed row may read as unknown.
     record('A: no "Unknown"/"No observation" wording on an observed row', !/Unknown|No observation|Unsupported/.test(`${rowA.capacity} ${rowA.cost} ${rowA.tokens}`), rowA);
@@ -282,8 +286,7 @@ async (page) => {
       const r = byAgent[a.agentId];
       return r && r.capacity === expectedCapacity(a) && r.cost === expectedCost(a.usage) && r.provisional === null;
     });
-    const expectedTotalCost = expectedCost({ preferredCostMicros: ctxB.total?.preferredCostMicros,
-      costProvenance: ctxB.total?.costProvenance, estimatedCostCompleteness: ctxB.total?.costCompleteness });
+    const expectedTotalCost = expectedCost(totalAsUsage(ctxB.total));
     record('D: after reload every row equals the endpoint report, and no row is provisional', parity && viewD.total.cost === expectedTotalCost,
       { rendered: viewD.rows.map((r) => [r.agentId, r.capacity, r.cost]), expected: ctxB.agents?.map((a) => [a.agentId, expectedCapacity(a), expectedCost(a.usage)]), totalCost: viewD.total.cost, expectedTotalCost });
     record('D: total tokens == endpoint total', viewD.total.tokens === `${fmt(ctxB.total?.totalTokens ?? -1)} tokens`,

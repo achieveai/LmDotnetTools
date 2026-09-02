@@ -211,12 +211,27 @@ describe('viewFromReport — rows plus the descendant-wide total', () => {
     expect(view.generatedAtUtc).toBe('2026-09-02T10:00:05Z');
   });
 
-  it('reports a total that was never persisted as such, not as complete', () => {
+  it('reports a total that was never persisted as "no usage" — not as 0 tokens, not as complete', () => {
     const r = report();
-    r.total = { ...r.total, preferredCostMicros: null, costProvenance: 'Unavailable', usageCompleteness: null };
+    r.total = {
+      ...r.total,
+      totalTokens: 0,
+      preferredCostMicros: null,
+      costProvenance: 'Unavailable',
+      usageCompleteness: null,
+    };
     const view = viewFromReport(r);
-    expect(view.total.cost).toEqual({ kind: 'unavailable' });
+    expect(view.total.tokens).toEqual({ kind: 'none' });
+    expect(view.total.cost).toEqual({ kind: 'none' });
     expect(view.total.usageCompleteness).toBeNull();
+  });
+
+  it('reports a persisted total with no priceable attempt as unavailable, keeping its tokens', () => {
+    const r = report();
+    r.total = { ...r.total, preferredCostMicros: null, costProvenance: 'Unavailable', usageCompleteness: 'Complete' };
+    const view = viewFromReport(r);
+    expect(view.total.tokens).toMatchObject({ kind: 'value', total: 140 });
+    expect(view.total.cost).toEqual({ kind: 'unavailable' });
   });
 });
 

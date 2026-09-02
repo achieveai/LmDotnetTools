@@ -204,20 +204,27 @@ export function rowFromWire(row: AgentContextRow): ContextRowView {
 /** Normalizes the whole report: rows in report order (root first) plus the total from the same fold. */
 export function viewFromReport(report: ConversationContextReport): ContextView {
   const t = report.total;
+  // A null usageCompleteness means no usage aggregate was ever persisted for this conversation. The
+  // server's sums are then structurally zero, not measured zero, so the total says "no usage" — the
+  // same word the rows use — rather than "0 tokens" (§7.1: zero is never a stand-in for unknown).
+  const persisted = t.usageCompleteness != null;
   return {
     rows: report.agents.map(rowFromWire),
     total: {
-      tokens: {
-        kind: 'value',
-        input: t.inputTokens,
-        output: t.outputTokens,
-        cacheRead: t.cacheReadTokens,
-        cacheWrite: t.cacheWriteTokens,
-        reasoning: t.reasoningTokens,
-        total: t.totalTokens,
-      },
-      cost:
-        t.preferredCostMicros == null
+      tokens: persisted
+        ? {
+            kind: 'value',
+            input: t.inputTokens,
+            output: t.outputTokens,
+            cacheRead: t.cacheReadTokens,
+            cacheWrite: t.cacheWriteTokens,
+            reasoning: t.reasoningTokens,
+            total: t.totalTokens,
+          }
+        : { kind: 'none' },
+      cost: !persisted
+        ? { kind: 'none' }
+        : t.preferredCostMicros == null
           ? { kind: 'unavailable' }
           : {
               kind: 'value',
