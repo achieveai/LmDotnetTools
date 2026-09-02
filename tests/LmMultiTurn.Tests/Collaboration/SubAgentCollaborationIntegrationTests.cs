@@ -686,6 +686,26 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         doc.RootElement.TryGetProperty("code", out _).Should().BeFalse();
     }
 
+    /// <summary>
+    /// Both withdrawal reasons can hold at once, and they are not interchangeable: suppression lifts
+    /// at the end of the turn, the depth limit never does. Reporting the temporary one here would
+    /// promise a retry that is guaranteed to fail forever, so the PERMANENT reason wins.
+    /// </summary>
+    [Fact]
+    public async Task AgentCall_SuppressedAndAtTheDepthLimit_ReportsTheDepthLimit_NotAThisTurnPause()
+    {
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 });
+        var result = await DriveOneToolCallAsync(root, "Agent", suppressSpawning: true);
+
+        result.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+
+        using var doc = JsonDocument.Parse(result.Result);
+        doc.RootElement.GetProperty("error")
+            .GetString()
+            .Should()
+            .NotContain("for this turn", "waiting out the turn cannot clear a limit that outlives it");
+    }
+
     #endregion
 
     #region Recursive delegation
@@ -2127,7 +2147,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// </summary>
     private async Task<ToolCallResultMessage> DriveOneToolCallAsync(
         AgentCollaborationSetup collaboration,
-        string functionName
+        string functionName,
+        bool suppressSpawning = false
     )
     {
         // The provider asks for the tool ONCE and then settles, so the run produces exactly one
@@ -2184,6 +2205,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .Select(f => f.Contract.Name)
             .Should()
             .NotContain("Agent", "the withdrawal this test is about has to have happened");
+
+        using var suppression = suppressSpawning ? loop.SubAgentTools!.SuppressSpawning() : null;
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         _ = loop.RunAsync(cts.Token);

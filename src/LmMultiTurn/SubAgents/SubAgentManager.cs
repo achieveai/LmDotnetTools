@@ -619,26 +619,31 @@ public sealed class SubAgentManager : IAsyncDisposable
         // waits for the pump to create+start the agent (StateReady) and then awaits its completion.
         // Registration and enqueue are serialized with disposal so a successful receipt can never name
         // work accepted after shutdown began.
-        var queued = new QueuedSpawn
-        {
-            AgentId = agentId,
-            EffectiveName = effectiveName,
-            TemplateName = templateName,
-            Template = template,
-            Task = task,
-            Model = model,
-            AddTools = addTools,
-            RemoveTools = removeTools,
-            ModelIntelligence = modelIntelligence,
-            ModelSelectionSource = modelSelectionSource,
-            Lineage = lineage,
-            RunInBackground = runInBackground,
-            CallerCancellation = runInBackground ? CancellationToken.None : ct,
-            SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools),
-        };
-
+        // Construction happens INSIDE the retire-on-error guard because it is not merely field
+        // assignment: projecting the spawn capability REJECTS an impossible tool request (remove_tools
+        // with no base set to remove from). Outside the guard that rejection would keep the
+        // collaboration slot this spawn was just admitted to, shrinking the root-wide cap for good.
+        QueuedSpawn queued;
         try
         {
+            queued = new QueuedSpawn
+            {
+                AgentId = agentId,
+                EffectiveName = effectiveName,
+                TemplateName = templateName,
+                Template = template,
+                Task = task,
+                Model = model,
+                AddTools = addTools,
+                RemoveTools = removeTools,
+                ModelIntelligence = modelIntelligence,
+                ModelSelectionSource = modelSelectionSource,
+                Lineage = lineage,
+                RunInBackground = runInBackground,
+                CallerCancellation = runInBackground ? CancellationToken.None : ct,
+                SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools),
+            };
+
             lock (_spawnQueue)
             {
                 ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
@@ -3549,19 +3554,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Whether <paramref name="name"/> is a tool that is STRUCTURALLY never inherited by a sub-agent,
-    /// no matter what the template or the spawn asks for: <c>AskUserQuestion</c> and
-    /// <c>NotifyClient</c> (#246), which every <see cref="MultiTurnAgentLoop"/> — including the child
-    /// built here — registers its own correctly-scoped instance of unconditionally.
-    /// </summary>
-    /// <remarks>
-    /// Used by the parent-contract intersection to skip them, and by
-    /// <see cref="BuildSpawnCapabilityRecord"/> to count only what could actually have been
-    /// inherited. Counting them was wrong twice over (#638): the empty-toolset warning reported a
-    /// parent tool count larger than the number of tools any child could ever receive, and on a parent
-    /// exposing ONLY these two it fired on a spawn whose empty toolset was structurally unavoidable.
-    /// </remarks>
-    /// <summary>
     /// Whether a child resolved to <paramref name="enabledSet"/> inherits the parent tool
     /// <paramref name="name"/>, and the handler it inherits with it.
     /// </summary>
@@ -3584,6 +3576,19 @@ public sealed class SubAgentManager : IAsyncDisposable
             && _parentHandlers.TryGetValue(name, out handler!);
     }
 
+    /// <summary>
+    /// Whether <paramref name="name"/> is a tool that is STRUCTURALLY never inherited by a sub-agent,
+    /// no matter what the template or the spawn asks for: <c>AskUserQuestion</c> and
+    /// <c>NotifyClient</c> (#246), which every <see cref="MultiTurnAgentLoop"/> — including the child
+    /// built here — registers its own correctly-scoped instance of unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// Used by the parent-contract intersection to skip them, and by
+    /// <see cref="BuildSpawnCapabilityRecord"/> to count only what could actually have been
+    /// inherited. Counting them was wrong twice over (#638): the empty-toolset warning reported a
+    /// parent tool count larger than the number of tools any child could ever receive, and on a parent
+    /// exposing ONLY these two it fired on a spawn whose empty toolset was structurally unavoidable.
+    /// </remarks>
     internal static bool IsNeverInheritedTool(string name) =>
         name is AskUserQuestionToolProvider.ToolName or NotifyClientToolProvider.ToolName;
 

@@ -273,6 +273,41 @@ public sealed class SubAgentSpawnCapabilityReceiptTests : IAsyncLifetime
             .BeFalse("a non-collaborating child gets no Agent tool");
     }
 
+    /// <summary>
+    /// The projected receipt is built for a QUEUED spawn, and building it can reject the request
+    /// (remove_tools with nothing to remove from). That rejection happens after the spawn has already
+    /// been admitted to the collaboration, so it has to give the slot back: otherwise every such spawn
+    /// permanently shrinks the root-wide cap and the pool eventually admits nobody.
+    /// </summary>
+    [Fact]
+    public async Task QueuedSpawn_RejectedWhileProjectingItsCapability_ReturnsItsCollaborationSlot()
+    {
+        var root = CreateRegisteredRoot();
+
+        // A pool of one, already full, so the next spawn takes the defer-queue path.
+        var (manager, _) = CreateManager(InheritAllTemplate(), collaboration: root, maxConcurrent: 1);
+        _ = await manager.SpawnAsync("worker", "work", runInBackground: true, role: "worker", description: "works");
+        var admittedBefore = root.Directory.Capacity.InUse;
+
+        // remove_tools with no base set: the template carries no tools list and no add_tools is given.
+        var rejected = async () =>
+            await manager.SpawnAsync(
+                "worker",
+                "work",
+                runInBackground: true,
+                removeTools: [TaskTool],
+                role: "worker",
+                description: "works"
+            );
+
+        // Pin the MESSAGE: SubAgentCollaborationException also derives from InvalidOperationException,
+        // so a bare type assertion would pass on an admission failure that never reaches the queue.
+        _ = await rejected.Should().ThrowAsync<InvalidOperationException>().WithMessage("*removeTools*");
+
+        root.Directory.Capacity.InUse.Should()
+            .Be(admittedBefore, "a spawn that was rejected must not keep the capacity slot it was admitted to");
+    }
+
     #endregion
 
     #region Harness

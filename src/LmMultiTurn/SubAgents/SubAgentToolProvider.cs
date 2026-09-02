@@ -219,15 +219,10 @@ public class SubAgentToolProvider : IFunctionProvider
             return false;
         }
 
-        // Precedence matches EmitShape's: suppression is the narrower, this-turn-only reason, so it is
-        // the one to report when both hold — waiting out the turn is actionable; the depth limit is not.
-        if (IsSpawningSuppressed)
-        {
-            code = SpawnSuppressedCode;
-            text = SpawnSuppressedText;
-            return true;
-        }
-
+        // Both reasons can hold at once, and EmitShape - a plain conjunction - expresses no order, so
+        // the choice is made here on what the caller can DO about it. The depth limit is PERMANENT for
+        // this agent; suppression lifts at the end of the turn. Reporting the temporary reason when the
+        // permanent one also holds promises a retry that is guaranteed to fail forever, so it loses.
         if (_manager.Collaboration is { CanDelegate: false } collaboration)
         {
             code = SubAgentCollaborationFailureCodes.DepthLimit;
@@ -235,6 +230,13 @@ public class SubAgentToolProvider : IFunctionProvider
                 $"Maximum delegation depth ({collaboration.Options.MaxDelegationDepth}) reached, so "
                 + $"{SpawnToolName} is not available to this agent. Do the work yourself, or use "
                 + $"{GetAgentsToolName} and {SendMessageToolName} to ask an agent that already exists.";
+            return true;
+        }
+
+        if (IsSpawningSuppressed)
+        {
+            code = SpawnSuppressedCode;
+            text = SpawnSuppressedText;
             return true;
         }
 

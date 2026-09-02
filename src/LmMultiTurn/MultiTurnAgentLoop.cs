@@ -2327,12 +2327,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Builds the error result the model gets back for a call that never ran (unknown function,
     /// malformed arguments) or that threw. Goes through the same <see cref="ToolResultLimits"/>
     /// as a successful result, so an exception message of arbitrary size cannot enter history
-    /// unbounded (#694).
-    /// </summary>
-    /// <summary>
-    /// Renders a tool failure as an ordinary error result. <c>errorCode</c> is the machine-readable
-    /// reason, persisted alongside <c>is_error</c> so a consumer can act on the refusal without
-    /// parsing prose; null for errors that carry no stable code.
+    /// unbounded (#694). <c>errorCode</c> is the machine-readable reason, persisted alongside
+    /// <c>is_error</c> so a consumer can act on the refusal without parsing prose; it is null for
+    /// errors that carry no stable code.
     /// </summary>
     private ToolCallResultMessage BuildErrorResultMessage(
         ToolCallMessage toolCall,
