@@ -30,10 +30,12 @@ internal enum ContextOverflowVerdict
 /// <para>
 /// History size used to be the only gate (#693): every failure on a 100k+ token conversation was labelled an
 /// overflow, so 26 disposed-client failures and a deferred-tool programming error told operators to reduce
-/// scope. Size is now only a tie-breaker for the one ambiguous shape — a transport abort — where the endpoint
-/// gives no other signal. Lifecycle and programming faults (<see cref="ObjectDisposedException"/>,
-/// <see cref="InvalidOperationException"/>, <see cref="ArgumentException"/>, serialization errors, …) are never
-/// overflow, however large the history.
+/// scope. Size is now only a tie-breaker for the one ambiguous shape — an aborted response — where the
+/// endpoint gives no other signal. The abort must be evidenced (a typed <see cref="HttpIOException"/>, a
+/// reset-family socket code, or an abort signature in the message): a transport-layer base type or an
+/// availability status on its own says nothing about request size, and neither do lifecycle and programming
+/// faults (<see cref="ObjectDisposedException"/>, <see cref="InvalidOperationException"/>,
+/// <see cref="ArgumentException"/>, serialization errors, …), however large the history.
 /// </para>
 /// <para>
 /// The provider error is often wrapped (retry helper, middleware, <see cref="AggregateException"/>), so every
@@ -118,28 +120,26 @@ internal static class ProviderErrorClassifier
     }
 
     /// <summary>
-    /// A response that ended at the transport layer — typed where .NET types it, message-matched where a
-    /// provider or proxy re-throws it as plain text. Programming and lifecycle exceptions never match.
+    /// Evidence that the RESPONSE was aborted mid-flight: a typed abort where .NET types it, a reset-family
+    /// socket code, or an abort signature where a provider or proxy re-throws it as plain text. An exception's
+    /// base type is not evidence — a bare <see cref="IOException"/> may be a storage fault, a
+    /// <see cref="SocketException"/> an unreachable host, and a status-only 502/503/504/408 an availability
+    /// answer — so those shapes only match if their message carries a signature. Programming and lifecycle
+    /// exceptions never match.
     /// </summary>
     private static bool IsTransportAbort(Exception candidate)
     {
-        // A status-bearing HttpRequestException is a real answer from the server: only the gateway
-        // family (the proxy gave up on a huge request) keeps the transport shape; 4xx is not overflow.
         return candidate switch
         {
-            HttpIOException or SocketException or IOException => true,
-            HttpRequestException
+            HttpIOException => true,
+            // The code, not the message: Windows and Linux render different text for the same reset.
+            SocketException
             {
-                HttpRequestError: HttpRequestError.ResponseEnded or HttpRequestError.ConnectionError,
+                SocketErrorCode: SocketError.ConnectionReset or SocketError.ConnectionAborted or SocketError.Shutdown,
             } => true,
-            HttpRequestException
-            {
-                StatusCode: HttpStatusCode.BadGateway
-                    or HttpStatusCode.ServiceUnavailable
-                    or HttpStatusCode.GatewayTimeout
-                    or HttpStatusCode.RequestTimeout,
-            } => true,
-            HttpRequestException { StatusCode: not null } => false,
+            // ConnectionError is deliberately absent: the connection could not be established at all,
+            // which is availability, not an aborted response.
+            HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded } => true,
             _ => ContainsAny(candidate.Message, s_transportAbortSignatures),
         };
     }

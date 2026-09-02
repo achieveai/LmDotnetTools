@@ -89,17 +89,14 @@ public class ProviderErrorClassifierTests
         [
             new HttpIOException(HttpRequestError.ResponseEnded, "The response ended prematurely."),
             new HttpRequestException(HttpRequestError.ResponseEnded, "The response ended prematurely."),
-            new HttpRequestException(HttpRequestError.ConnectionError, "An error occurred while sending the request."),
             new HttpRequestException("The response ended prematurely."),
             new IOException(
                 "Unable to read data from the transport connection: An existing connection was forcibly closed by the remote host."
             ),
+            // Reset-family socket codes are evidence on their own: Windows and Linux render different
+            // messages for the same code, so the code — not the text — is what is matched.
             new SocketException((int)SocketError.ConnectionReset),
-            new HttpRequestException(
-                "HTTP request failed with status BadGateway (Bad Gateway)",
-                null,
-                HttpStatusCode.BadGateway
-            ),
+            new SocketException((int)SocketError.ConnectionAborted),
             // Wrapped by the retry helper.
             new HttpRequestException(
                 "An error occurred while sending the request.",
@@ -125,6 +122,53 @@ public class ProviderErrorClassifierTests
             .ClassifyContextOverflow(abort, estimatedTokens: Large - 1)
             .Should()
             .Be(ContextOverflowVerdict.NotOverflow, "a network blip on a small conversation is just a network blip");
+    }
+
+    /// <summary>
+    /// Transport-layer faults that carry no evidence the RESPONSE was aborted: a storage fault, an unreachable
+    /// host, a connection that never opened, or an availability status with a bare body. Nothing about these
+    /// says "the request was too big", so the history size must not promote them to an overflow verdict.
+    /// </summary>
+    public static TheoryData<Exception> AmbiguousTransportFaults =>
+        [
+            new IOException("The device is not ready."),
+            new SocketException((int)SocketError.HostUnreachable),
+            // ConnectionError means the connection could not be established at all — availability, not an
+            // aborted response.
+            new HttpRequestException(HttpRequestError.ConnectionError, "An error occurred while sending the request."),
+            new HttpRequestException(
+                "HTTP request failed with status BadGateway (Bad Gateway)",
+                null,
+                HttpStatusCode.BadGateway
+            ),
+            new HttpRequestException(
+                "HTTP request failed with status ServiceUnavailable (Service Unavailable)",
+                null,
+                HttpStatusCode.ServiceUnavailable
+            ),
+            new HttpRequestException(
+                "HTTP request failed with status GatewayTimeout (Gateway Timeout)",
+                null,
+                HttpStatusCode.GatewayTimeout
+            ),
+            new HttpRequestException(
+                "HTTP request failed with status RequestTimeout (Request Timeout)",
+                null,
+                HttpStatusCode.RequestTimeout
+            ),
+        ];
+
+    [Theory]
+    [MemberData(nameof(AmbiguousTransportFaults))]
+    public void AmbiguousTransportFault_OnLargeHistory_IsNotOverflow(Exception fault)
+    {
+        ProviderErrorClassifier
+            .ClassifyContextOverflow(fault, estimatedTokens: Large * 2)
+            .Should()
+            .Be(
+                ContextOverflowVerdict.NotOverflow,
+                "there is no evidence the response was aborted for size, however large the history"
+            );
     }
 
     [Theory]
