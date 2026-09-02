@@ -316,6 +316,47 @@ endpoint, not `preview`. `preview` refuses any dot-directory outright
 so a transcript fetched through `preview` returns `{"previewable":false,"reason":"excluded"}` — which
 is indistinguishable from a transcript that was never written, and reads as a false regression.
 
+### Sub-agent lifecycle bugs — #688 / #689 / #690 / #691 (collaboration on)
+
+Used by `playwright-scripts/subagent-lifecycle-bugs.mjs`. Needs `test-anthropic` **and** agent
+collaboration switched on for the mode (`AgentCollaboration__Enabled=true`), because only the typed
+`SendMessage` (`content` / `msg_type`) exercises #688 and #689. With collaboration on every `Agent`
+spawn must carry `role` and `description` or the manager refuses it before anything else.
+
+Two mock-fixture rules shape these prompts; break either and the run is wrong for reasons that have
+nothing to do with the bugs:
+
+1. **The child's task is plain text, never a chain.** The child's completion notification embeds
+   `Task: <task>` in the parent's history, and the mock picks the NEWEST chain in the conversation —
+   so a chain in the child's task gets re-run *in the parent* after the notification lands, and the
+   parent's own remaining steps are abandoned.
+2. **A chain cannot ride inside `SendMessage` content.** An agent-to-agent message reaches the
+   provider inside the escaped `<agent-message …>` envelope, so the mock never sees its markers. The
+   worker therefore answers every delivered message with the lorem fallback; the assertion is
+   "the `agent-message` pill is followed by a new reply", not the reply's text.
+
+Turn 1 (substitute a run stamp for `<STAMP>`):
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-worker","id_message":"Spawn worker in the background","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"worker","role":"lane 678 probe worker","description":"Stands by for a question from the root conversation.","run_in_background":true,"prompt":"Worker <STAMP>: stand by for instructions."}}]}]},{"id":"seed-board","id_message":"Seed one task","messages":[{"tool_call":[{"name":"bulk-initialize","args":{"tasks":[{"task":"Lane 678 nudge probe","subTasks":[],"notes":[]}]}}]}]},{"id":"spawn-ghost","id_message":"Attempt a remove_tools-only spawn","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"ghost","role":"ghost that must be rejected","description":"Must never be created: remove_tools without an allow-list.","run_in_background":true,"remove_tools":"calculate","prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"g1\",\"messages\":[{\"text\":\"ghost should never run\"}]}]}<|instruction_end|>"}}]}]},{"id":"turn1-done","id_message":"Wrap up","messages":[{"text":"Turn 1 done <STAMP>."}]}]}<|instruction_end|>
+
+Turn 2, after the worker's `Sub-agent completed` pill has landed in the parent:
+
+<|instruction_start|>{"instruction_chain":[{"id":"assign","id_message":"Assign the task to the finished worker","messages":[{"tool_call":[{"name":"assign-task","args":{"taskId":"1","assignee":"worker"}}]}]},{"id":"ask","id_message":"Ask the worker a question","messages":[{"tool_call":[{"name":"SendMessage","args":{"target":"worker","msg_type":"question","content":"Question <STAMP>: report your status."}}]}]},{"id":"update","id_message":"Send a task_update without holding a delegation","messages":[{"tool_call":[{"name":"SendMessage","args":{"target":"worker","msg_type":"task_update","content":"progress: 50%"}}]}]},{"id":"turn2-done","id_message":"Wrap up","messages":[{"text":"Turn 2 done <STAMP>."}]}]}<|instruction_end|>
+
+Expected:
+- **#691** — the `ghost` Agent pill carries `Cannot specify removeTools without enabledTools or
+  addTools`; `/api/conversations/{threadId}/subagents` lists `worker` as the only live row. The
+  directory keeps a retired `ghost` row (`status: error`, `isLive: false`) for its retention window
+  and the sample persists it as a tab, but `/api/conversations/{ghost.threadId}/messages` is `[]`:
+  no conversation was created for it.
+- **#690** — the worker's tab shows a `todo-nudge` pill (the assignment notice) followed by a new
+  assistant reply and no `subagent-error`: the notice restarted the finished child through the
+  manager on a fresh provider instead of hitting its disposed one.
+- **#688** — the worker's tab shows the `agent-message` pill ("Agent asked conversation") followed
+  by a new assistant reply: the typed message was mapped into the Anthropic request as a user turn.
+- **#689** — the root's second `SendMessage` pill (the `task_update`) is an error whose result says
+  `You have no open delegated task` and names the next valid action.
+
 ---
 
 ## Wait / Trigger (Park-and-Wake)

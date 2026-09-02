@@ -1290,13 +1290,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Continues a sub-agent with an already-formed message rather than plain text.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The collaboration delivery path uses this so an <see cref="AgentMessage"/> reaches the target as
     /// itself. Flattening it to text would strip the structured sender, type, and correlation that the
     /// UI and the persisted history read, leaving only the rendered envelope — and a rehydrated
     /// conversation would then have no way to tell an agent-to-agent message from anything else a user
     /// might have typed.
+    /// </para>
+    /// <para>
+    /// Public because a host's out-of-band notifications (a todo-board nudge or digest, #690) must take
+    /// THIS path too: a child that finished keeps a live loop that still accepts input, but its owned
+    /// provider was disposed at completion, so a direct <c>TrySendAsync</c> at the loop starts a run that
+    /// dies on its first provider call. Only this method restarts a finished child with a fresh provider
+    /// (or refuses observably), and <see cref="TryGetAgent"/> alone cannot tell a finished child apart.
+    /// </para>
     /// </remarks>
-    internal async Task<string> SendMessageAsync(
+    public async Task<string> SendMessageAsync(
         string target,
         IMessage message,
         bool runInBackground,
@@ -2940,6 +2949,30 @@ public sealed class SubAgentManager : IAsyncDisposable
             _parentModelId,
             _parentMaxToken
         );
+        // Validate the tool-set request BEFORE anything with a side effect: the owned provider below is
+        // allocated for disposal, and AgentThreadOwnership.InheritAsync is a durable write that creates
+        // the child's thread directory. BuildEnabledToolSet is a pure function of its inputs and throws
+        // for a remove_tools-only request with no base set — when that throw happened after the
+        // metadata stamp, the failure path had no store to delete and every rejected spawn left a
+        // metadata.json-only ghost conversation behind (#691). The mode-level required tools (#623)
+        // are unioned in here AFTER the template filter and the per-spawn overrides; the
+        // parent-contract intersection further down is what stops the union from granting a tool the
+        // mode itself does not expose.
+        //
+        // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed rather
+        // than looked up inside so BuildEnabledToolSet stays a pure function of its inputs. Hoisted to
+        // a local because the remove_tools diagnostic (#638) re-runs the same builder with the removals
+        // omitted, and it must be handed the IDENTICAL roster or the two resolutions could disagree
+        // about what "before removal" contained.
+        string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
+        var enabledSet = BuildEnabledToolSet(
+            template.EnabledTools,
+            addTools,
+            removeTools,
+            _options.RequiredToolNames,
+            inheritableToolNames
+        );
+
         IStreamingAgent providerAgent;
         IStreamingAgent? ownedProviderAgent = null;
         IConversationStore? store = null;
@@ -3088,24 +3121,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 .InheritAsync(store, lineage.ParentThreadId, SubAgentThreadId(agentId), CancellationToken.None)
                 .ConfigureAwait(false);
 
-            // Build a fresh FunctionRegistry with filtered parent tools. The mode-level required
-            // tools (#623) are unioned into the set AFTER the template filter and the per-spawn
-            // overrides; the parent-contract intersection below is what stops the union from
-            // granting a tool the mode itself does not expose.
+            // Build a fresh FunctionRegistry with filtered parent tools. `enabledSet` was resolved (and
+            // validated) above, before the provider was allocated and before the metadata stamp, so a
+            // rejected request never reaches this point (#691).
             var registry = new FunctionRegistry();
-            // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed
-            // rather than looked up inside so BuildEnabledToolSet stays a pure function of its inputs.
-            // Hoisted to a local because the remove_tools diagnostic (#638) re-runs the same builder
-            // with the removals omitted, and it must be handed the IDENTICAL roster or the two
-            // resolutions could disagree about what "before removal" contained.
-            string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
-            var enabledSet = BuildEnabledToolSet(
-                template.EnabledTools,
-                addTools,
-                removeTools,
-                _options.RequiredToolNames,
-                inheritableToolNames
-            );
             var inheritedToolNames = new List<string>();
 
             foreach (var contract in _parentContracts)

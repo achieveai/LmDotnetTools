@@ -644,6 +644,15 @@ public sealed class CharacteristicsAgentFactoryTests
             .As<IAsyncDisposable>()
             .Setup(disposable => disposable.DisposeAsync())
             .Throws(new InvalidOperationException("store dispose boom"));
+        // The construction failure is injected at the tenant/owner stamp (AgentThreadOwnership.InheritAsync
+        // reads the parent's metadata), which runs AFTER both the owned provider and the store are
+        // constructed. A remove_tools-only request used to be the vehicle here, but #691 moved that
+        // validation ahead of every allocation, so it no longer reaches the rollback at all.
+        store
+            .Setup(s => s.LoadMetadataAsync("parent-thread", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("metadata boom"));
+        var parent = new Mock<IMultiTurnAgent>();
+        _ = parent.SetupGet(p => p.ThreadId).Returns("parent-thread");
         var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
@@ -659,20 +668,20 @@ public sealed class CharacteristicsAgentFactoryTests
             Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
         };
         await using var manager = new SubAgentManager(
-            new Mock<IMultiTurnAgent>().Object,
+            parent.Object,
             [],
             new Dictionary<string, ToolHandler>(),
             options,
             new MutableSubAgentTemplateSource(options.Templates)
         );
 
-        // removeTools without a base set makes BuildEnabledToolSet throw AFTER both the owned provider
-        // and the store are constructed, exercising the construction rollback with a throwing store.
-        var act = () => manager.SpawnAsync("test-agent", "test task", removeTools: ["missing-tool"]);
+        // The metadata stamp throws AFTER both the owned provider and the store are constructed,
+        // exercising the construction rollback with a throwing store.
+        var act = () => manager.SpawnAsync("test-agent", "test task");
 
         // The ORIGINAL construction error surfaces, not the store-disposal failure that masks it.
         var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
-        thrown.Which.Message.Should().Contain("removeTools");
+        thrown.Which.Message.Should().Contain("metadata boom");
         // Provider disposal is attempted independently even though store disposal threw first.
         ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
         store.As<IAsyncDisposable>().Verify(disposable => disposable.DisposeAsync(), Times.Once);

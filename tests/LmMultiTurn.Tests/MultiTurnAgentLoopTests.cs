@@ -1,3 +1,4 @@
+using System.Net;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -875,6 +876,98 @@ public class MultiTurnAgentLoopTests
         toolExecutions.Should().Be(2);
 
         await cts.CancelAsync();
+    }
+
+    // #693 — the context-window remediation suffix must be earned by the EXCEPTION, not by the size of
+    // the history alone. A large history used to turn every failure (a disposed HttpClient, a deferred-
+    // tool programming error) into "reduce scope or use a bigger-window model".
+    private const string OverflowAdvice = "bigger-window model";
+
+    // ~600k serialized chars → ~150k tokens est: comfortably past the 100k "large conversation" bar.
+    private const int LargeHistoryChars = 600_000;
+
+    [Fact]
+    public async Task ExecuteRunAsync_LargeHistory_ObjectDisposedException_GetsNoOverflowAdvice()
+    {
+        var error = await RunFailingProviderAsync(new ObjectDisposedException("HttpClient"), LargeHistoryChars);
+
+        error.Should().NotBeNull();
+        error!.Message.Should().Contain("HttpClient", "the real failure must still be reported");
+        error.Message.Should().NotContain(OverflowAdvice, "a disposed client is a lifecycle defect, not an overflow");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_LargeHistory_TransportAbort_KeepsLikelyOverflowAdvice()
+    {
+        // Message-only shape (HttpRequestError left Unknown) so the in-turn ResponseEnded retry does not
+        // absorb it and it reaches the run-level classification.
+        var error = await RunFailingProviderAsync(
+            new HttpRequestException("The response ended prematurely."),
+            LargeHistoryChars
+        );
+
+        error.Should().NotBeNull();
+        error!.Message.Should().Contain(OverflowAdvice, "a stream abort on a huge history is the overflow shape");
+        error.Message.Should().Contain("likely exceeded");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_SmallHistory_ProviderOverflow400_GetsOverflowAdvice()
+    {
+        // The exact message HttpRetryHelper builds for a non-retryable status, with Anthropic's overflow body.
+        var overflow = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+                + "\"message\":\"prompt is too long: 213462 tokens > 200000 maximum\"}}",
+            null,
+            HttpStatusCode.BadRequest
+        );
+
+        var error = await RunFailingProviderAsync(overflow, inputChars: 10);
+
+        error.Should().NotBeNull();
+        error!
+            .Message.Should()
+            .Contain(OverflowAdvice, "a provider that SAYS it overflowed does not need a big history");
+    }
+
+    /// <summary>
+    /// Drives one run whose provider call throws <paramref name="providerFailure"/> after a user message of
+    /// <paramref name="inputChars"/> characters has entered history, and returns the run_completed error.
+    /// </summary>
+    private async Task<LifecycleError?> RunFailingProviderAsync(Exception providerFailure, int inputChars)
+    {
+        _mockAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(providerFailure);
+
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            "overflow-classification-thread",
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher }
+        );
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([new TextMessage { Text = new string('x', inputChars), Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
+
+        var completed = publisher
+            .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
+            .Should()
+            .ContainSingle()
+            .Which;
+        completed.Outcome.Should().Be(LifecycleRunOutcomes.Error);
+        await cts.CancelAsync();
+        return completed.Error;
     }
 
     private void SetupMockAgentResponse(List<IMessage> messages)

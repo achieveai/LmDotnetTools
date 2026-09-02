@@ -989,7 +989,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // Progress on nothing is not progress. Admitted bare, it would reach the receiver with no way
         // to tell which delegation it was about.
         var root = CreateRegisteredRoot();
-        _ = RegisterPeer(root, "helper");
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        // Seeded so the refusal under test is the missing correlation, not the absence of any
+        // delegation to correlate to (#689 gates task_update on that first).
+        _ = await DelegateAsync(helperSetup, root.AgentId);
         var (_, provider) = CreateManager(root);
 
         var payload = await InvokeAsync(
@@ -1289,7 +1292,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     public async Task SendMessage_ReplyType_WithJsonNullCorrelation_ReturnsMissingCorrelation(string msgType)
     {
         var root = CreateRegisteredRoot();
-        _ = RegisterPeer(root, "helper");
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        // Seeded so the refusal under test is the missing correlation, not the absence of any
+        // delegation to correlate to (#689 gates task_update on that first).
+        _ = await DelegateAsync(helperSetup, root.AgentId);
         var (_, provider) = CreateManager(root);
 
         var payload = await InvokeAsync(
@@ -1314,7 +1320,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     public async Task SendMessage_ReplyType_WithEmptyStringCorrelation_ReturnsMissingCorrelation(string msgType)
     {
         var root = CreateRegisteredRoot();
-        _ = RegisterPeer(root, "helper");
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        // Seeded so the refusal under test is the missing correlation, not the absence of any
+        // delegation to correlate to (#689 gates task_update on that first).
+        _ = await DelegateAsync(helperSetup, root.AgentId);
         var (_, provider) = CreateManager(root);
 
         var payload = await InvokeAsync(
@@ -1339,7 +1348,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     public async Task SendMessage_ReplyType_WithWhitespaceCorrelation_ReturnsMissingCorrelation(string msgType)
     {
         var root = CreateRegisteredRoot();
-        _ = RegisterPeer(root, "helper");
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        // Seeded so the refusal under test is the missing correlation, not the absence of any
+        // delegation to correlate to (#689 gates task_update on that first).
+        _ = await DelegateAsync(helperSetup, root.AgentId);
         var (_, provider) = CreateManager(root);
 
         var payload = await InvokeAsync(
@@ -1406,6 +1418,147 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownCorrelation);
+    }
+
+    #endregion
+
+    #region task_update is gated on an open inbound delegation (#689)
+
+    [Fact]
+    public void SendMessageDescriptor_SaysTaskUpdateNeedsAnOpenDelegationAndWhereItsIdComesFrom()
+    {
+        // The schema is built once per loop, before any delegation can have arrived, so the enum cannot
+        // be narrowed per turn. The prose is therefore the only place the model can learn that
+        // task_update is conditional, and that its id is minted by the envelope it received — not
+        // something to guess.
+        var (_, provider) = CreateManager(CreateRegisteredRoot());
+
+        var parameters = provider.GetFunctions().First(f => f.Contract.Name == "SendMessage").Contract.Parameters!;
+
+        parameters.First(p => p.Name == "msg_type").Description.Should().Contain("open delegated task");
+        parameters
+            .First(p => p.Name == "in_response_to")
+            .Description.Should()
+            .Contain("DelegateTask")
+            .And.Contain("message-id");
+    }
+
+    [Fact]
+    public async Task SendMessage_TaskUpdate_AgainstAnOpenDelegation_IsAcceptedAndDelivered()
+    {
+        var root = CreateRegisteredRoot();
+        var (helperEndpoint, helperSetup) = RegisterPeer(root, "helper");
+        var delegationId = await DelegateAsync(helperSetup, root.AgentId);
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "half done",
+                msg_type = "task_update",
+                in_response_to = delegationId,
+            }
+        );
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("accepted");
+
+        var received = await helperEndpoint.Received.WaitAsync(TimeSpan.FromSeconds(10));
+        received.AgentMessageType.Should().Be(AgentMessageType.TaskUpdate);
+        received.InResponseTo.Should().Be(delegationId);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("none")]
+    [InlineData("agentmsg-does-not-exist")]
+    public async Task SendMessage_TaskUpdate_WithNoOpenDelegation_IsRefusedWithTheNextValidAction(string? inResponseTo)
+    {
+        // A freshly spawned agent was never delegated to through the ledger, so it cannot hold the
+        // correlation task_update needs. Telling it only that the id was "not received" invited guesses
+        // like 'none' or 'TODO'; the refusal has to say the type is unavailable and name what to send
+        // instead.
+        var root = CreateRegisteredRoot();
+        var (helperEndpoint, _) = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+        var ledgerCountBefore = root.Bundle.Ledger.Count;
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new Dictionary<string, object?>
+            {
+                ["target"] = "helper",
+                ["content"] = "half done",
+                ["msg_type"] = "task_update",
+                ["in_response_to"] = inResponseTo,
+            }
+        );
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.NoOpenDelegation);
+        payload.Text.Should().Contain("no open delegated task").And.Contain("'response'").And.Contain("'question'");
+
+        // Non-vacuity: refused means nothing was admitted and nothing reached the target.
+        root.Bundle.Ledger.Count.Should().Be(ledgerCountBefore);
+        root.Bundle.Ledger.GetOpenOutbound(root.AgentId).Should().BeEmpty();
+        helperEndpoint.Received.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendMessage_TaskUpdate_WithAWrongCorrelation_ListsTheOpenDelegationIds()
+    {
+        // Ids are not content: echoing the ones the sender may report on turns a dead end into the
+        // next call.
+        var root = CreateRegisteredRoot();
+        var (helperEndpoint, helperSetup) = RegisterPeer(root, "helper");
+        var delegationId = await DelegateAsync(helperSetup, root.AgentId);
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "half done",
+                msg_type = "task_update",
+                in_response_to = "agentmsg-does-not-exist",
+            }
+        );
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownCorrelation);
+        payload.Text.Should().Contain(delegationId);
+        helperEndpoint.Received.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendMessage_TaskUpdate_WithoutCorrelationButWithAnOpenDelegation_ListsTheOpenDelegationIds()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, helperSetup) = RegisterPeer(root, "helper");
+        var delegationId = await DelegateAsync(helperSetup, root.AgentId);
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "half done",
+                msg_type = "task_update",
+            }
+        );
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.MissingCorrelation);
+        payload.Text.Should().Contain(delegationId);
     }
 
     #endregion
@@ -1700,6 +1853,23 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .BeTrue();
 
         return (endpoint, root.ForChild(context, name));
+    }
+
+    /// <summary>
+    /// Delegates a task from one agent to another through the real messenger and settles its delivery,
+    /// so the delegation is unambiguously open — and the recipient may report progress on it — by the
+    /// time the test acts.
+    /// </summary>
+    private static async Task<string> DelegateAsync(AgentCollaborationSetup from, string toAgentId)
+    {
+        var dispatch = new AgentCollaborationMessenger(from).Send(
+            toAgentId,
+            "do the thing",
+            AgentMessageType.DelegateTask
+        );
+        dispatch.Result.Succeeded.Should().BeTrue(dispatch.Result.FailureCode);
+        await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+        return dispatch.Result.MessageId!;
     }
 
     private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(

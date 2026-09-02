@@ -128,8 +128,28 @@ public sealed class AgentCollaborationMessenger
 /// Delivers into an agent loop's own non-blocking input path.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Uses <see cref="IMultiTurnAgent.TrySendAsync"/> rather than the blocking send so a full input
 /// channel becomes a visible, recoverable refusal instead of a stalled delivery task.
+/// </para>
+/// <para>
+/// This is the direct-at-the-loop shape that #690 removed from sub-agent delivery, and it is safe HERE
+/// only because of who registers it: exclusively an unregistered ROOT loop (see the self-registration in
+/// <c>MultiTurnAgentLoop</c>'s constructor); every sub-agent is registered by its parent's manager with a
+/// <c>SubAgentWriteEndpoint</c>, which routes through the manager's restart-or-refuse path. A root loop
+/// cannot reach the sub-agent failure mode — "alive loop, disposed provider" — because (1) nothing
+/// disposes a root loop's provider while the loop lives: <c>MultiTurnAgentBase</c> never disposes the
+/// provider it was handed, and the pool that owns both disposes the provider only as an owned resource
+/// AFTER <c>Agent.DisposeAsync()</c>; (2) <c>DisposeAsync</c> sets the disposed flag under the admission
+/// lock BEFORE any teardown step, so a send that arrives afterwards throws
+/// <see cref="ObjectDisposedException"/> from <see cref="IMultiTurnAgent.TrySendAsync"/> rather than
+/// queueing, and the messenger's delivery task records that as a failed delivery in the ledger; and (3) a
+/// pool recreate cannot leave a stale entry for a dead loop, because the host builds one collaboration
+/// bundle (directory + ledger) per root-loop creation, so the replacement loop registers in a fresh
+/// directory and the old one dies with the old loop. If a host ever registers a NON-root loop with this
+/// endpoint, or a root loop whose provider is scoped to a single run, the #690 analysis no longer holds
+/// and delivery must go through the owning manager instead.
+/// </para>
 /// </remarks>
 internal sealed class AgentLoopWriteEndpoint : IAgentWriteEndpoint
 {
