@@ -44,11 +44,47 @@ public sealed class InMemoryConversationStore
 
         lock (_messagesLock)
         {
+            // The store owns Seq: a caller-supplied value is overwritten, never honoured, so two
+            // writers can never hand the thread the same position.
             var threadMessages = _messages.GetOrAdd(threadId, _ => []);
-            threadMessages.AddRange(messages);
+            var appended = MessageSequence.Append(threadMessages, messages);
+            threadMessages.Clear();
+            threadMessages.AddRange(appended);
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
+    {
+        lock (_messagesLock)
+        {
+            return Task.FromResult(
+                _messages.TryGetValue(threadId, out var messages) && messages.Count > 0
+                    ? MessageSequence.Watermark(messages)
+                    : 0
+            );
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct = default
+    )
+    {
+        lock (_messagesLock)
+        {
+            return Task.FromResult<IReadOnlyList<PersistedMessage>>(
+                _messages.TryGetValue(threadId, out var messages)
+                    ? MessageSequence.Range(messages, fromSeq, toSeq, limit)
+                    : []
+            );
+        }
     }
 
     /// <inheritdoc />
@@ -72,10 +108,13 @@ public sealed class InMemoryConversationStore
                 throw new InvalidOperationException($"Message '{replacement.Id}' not found in thread '{threadId}'.");
             }
 
-            // Preserve the original timestamp so load ordering remains stable across replacement.
+            // Preserve the original timestamp and Seq so load ordering remains stable across
+            // replacement: a replacement is a mutation in place, not an append, and must not move
+            // the watermark.
             threadMessages[idx] = replacement with
             {
                 Timestamp = threadMessages[idx].Timestamp,
+                Seq = threadMessages[idx].Seq,
             };
         }
 
@@ -89,9 +128,8 @@ public sealed class InMemoryConversationStore
         {
             if (_messages.TryGetValue(threadId, out var messages))
             {
-                // Return a copy ordered by timestamp
-                var result = messages.OrderBy(m => m.Timestamp).ThenBy(m => m.MessageOrderIdx ?? 0).ToList();
-                return Task.FromResult<IReadOnlyList<PersistedMessage>>(result);
+                // Return a copy in append order.
+                return Task.FromResult<IReadOnlyList<PersistedMessage>>(MessageSequence.Order(messages));
             }
         }
 

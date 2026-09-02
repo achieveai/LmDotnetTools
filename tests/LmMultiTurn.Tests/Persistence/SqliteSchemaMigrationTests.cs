@@ -84,9 +84,9 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         SqliteSchemaInitializer
             .LatestSchemaVersion.Should()
             .Be(
-                4,
+                5,
                 "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
-                    + "slice 1's two steps"
+                    + "slice 1's two steps, and #680 adds the messages seq column and index (5)"
             );
     }
 
@@ -196,10 +196,11 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         // the loop, skip step 1 because 1 <= 1, and apply the rest. A runner that dropped the
         // per-step guard would re-run step 1 as well, which `messages` below detects.
         //
-        // The fixture creates thread_metadata by hand rather than leaving the database empty.
-        // Slice 2's step 3 ALTERs that table, so an empty database stamped at 1 is not a state the
-        // runner can migrate - and it is not a state that exists: user_version 1 asserts step 1
-        // ran. Before slice 2 the distinction did not matter, because every step was a CREATE.
+        // The fixture creates thread_metadata and messages by hand rather than leaving the database
+        // empty. Slice 2's step 3 ALTERs the first and #680's step 5 ALTERs the second, so an empty
+        // database stamped at 1 is not a state the runner can migrate - and it is not a state that
+        // exists: user_version 1 asserts step 1 ran. Before slice 2 the distinction did not matter,
+        // because every step was a CREATE.
         await using (var stamp = await OpenAsync())
         {
             using var command = stamp.CreateCommand();
@@ -209,6 +210,10 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
                     current_run_id TEXT,
                     last_updated   INTEGER NOT NULL,
                     metadata_json  TEXT
+                );
+                CREATE TABLE messages (
+                    id        TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL
                 );
                 PRAGMA user_version = 1;
                 """;
@@ -220,7 +225,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         (await TableExistsAsync(connection, "tenants")).Should().BeTrue("step 2 had not been applied");
         (await TableExistsAsync(connection, "resource_grants")).Should().BeTrue("step 4 had not been applied");
-        (await TableExistsAsync(connection, "messages"))
+        (await TableExistsAsync(connection, "notify_waits"))
             .Should()
             .BeFalse("step 1 was already recorded as applied, so it must be skipped");
         (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
@@ -316,7 +321,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         //
         // A customer's database is not empty. This one is stamped at version 2 - the last version
         // before the owner columns existed - with rows already in thread_metadata, which is the
-        // exact state a deployment upgrading into slice 2 is in.
+        // exact state a deployment upgrading into slice 2 is in. The messages table is present too:
+        // step 1 created it, and #680's step 5 ALTERs it.
         await using (var stamp = await OpenAsync())
         {
             using var command = stamp.CreateCommand();
@@ -326,6 +332,10 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
                     current_run_id TEXT,
                     last_updated   INTEGER NOT NULL,
                     metadata_json  TEXT
+                );
+                CREATE TABLE messages (
+                    id        TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL
                 );
                 INSERT INTO thread_metadata (thread_id, current_run_id, last_updated, metadata_json)
                 VALUES ('thread-kept-1', 'run-a', 111, '{"title":"first"}'),

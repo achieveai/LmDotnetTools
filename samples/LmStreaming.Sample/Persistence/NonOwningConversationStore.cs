@@ -97,6 +97,19 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         _conversation.ReplaceMessageAsync(threadId, replacement, ct);
 
     /// <inheritdoc />
+    public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+        _conversation.GetMessageWatermarkAsync(threadId, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct = default
+    ) => _conversation.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+    /// <inheritdoc />
     public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(metadata);

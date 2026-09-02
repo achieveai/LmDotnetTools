@@ -498,4 +498,45 @@ public sealed class WorkspaceTranscriptLineTests
     {
         WorkspaceTranscriptLine.FormatTimestamp(0).Should().Be("1970-01-01T00:00:00.0000000Z");
     }
+
+    // ---- #680: a compaction checkpoint row mirrors with no line-schema change -------------------
+
+    /// <summary>
+    /// The mirror carries <c>message_type</c> and <c>message_json</c> verbatim, so a new message kind
+    /// flows through with the SAME line schema version: a reader that already tolerates unknown
+    /// <c>$type</c> values in the opaque string needs nothing new. This pins that a checkpoint row's
+    /// type name, its <c>$type</c> and its manifest all survive the line, and that the version did not
+    /// move.
+    /// </summary>
+    [Fact]
+    public void MessageLine_CarriesACompactionCheckpointRow_UnderTheSameSchemaVersion()
+    {
+        var checkpoint = new CompactionCheckpointMessage
+        {
+            CheckpointId = "cp-1",
+            Boundary = new CheckpointBoundary { Seq = 3, MessageId = "m3" },
+            Trigger = CompactionTrigger.Preemptive,
+            Manifest = new ContextManifest { CurrentInstruction = [new QuotedItem { Seq = 2, Quote = "ship it" }] },
+            Narrative = "n",
+            ThreadId = ThreadId,
+            RunId = RunId,
+        };
+        var row = MessagePersistenceConverter.ToPersistedMessage(checkpoint, ThreadId, RunId);
+
+        var json = Parse(WorkspaceTranscriptLine.ForMessage(row));
+
+        json.GetProperty("schema_version").GetInt32().Should().Be(WorkspaceTranscriptLine.CurrentSchemaVersion);
+        json.GetProperty("message_type").GetString().Should().Be(nameof(CompactionCheckpointMessage));
+        json.GetProperty("role").GetString().Should().Be("User");
+        var inner = JsonDocument.Parse(json.GetProperty("message_json").GetString()!).RootElement;
+        inner.GetProperty("$type").GetString().Should().Be(CompactionCheckpointMessage.TypeDiscriminator);
+        inner.GetProperty("checkpoint_id").GetString().Should().Be("cp-1");
+        inner
+            .GetProperty("manifest")
+            .GetProperty("current_instruction")[0]
+            .GetProperty("quote")
+            .GetString()
+            .Should()
+            .Be("ship it");
+    }
 }

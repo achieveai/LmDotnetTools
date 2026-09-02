@@ -394,4 +394,59 @@ public class MessagePersistenceConverterTests
     }
 
     #endregion
+
+    #region Resilient rehydration (#680)
+
+    /// <summary>
+    /// A checkpoint is a message type this build knows; a row written by a NEWER build with a
+    /// discriminator this build does not know must still be skipped rather than abort the load, and
+    /// the skip must not disturb the tool call/result pairing around it.
+    /// </summary>
+    [Fact]
+    public void FromPersistedMessagesResilient_SkipsAnUnknownDiscriminator_AndKeepsThePairAroundIt()
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "f",
+            FunctionArgs = "{}",
+            ToolCallId = "call-1",
+            Role = Role.Assistant,
+        };
+        var toolResult = new ToolCallResultMessage
+        {
+            ToolCallId = "call-1",
+            Result = "ok",
+            Role = Role.Tool,
+        };
+        var rows = new List<PersistedMessage>
+        {
+            MessagePersistenceConverter.ToPersistedMessage(toolCall, "thread-1", "run-1", _jsonOptions),
+            new()
+            {
+                Id = "future-row",
+                ThreadId = "thread-1",
+                RunId = "run-1",
+                Timestamp = 5,
+                MessageType = "CompactionCheckpointV9Message",
+                Role = "User",
+                MessageJson = """{"$type":"compaction_checkpoint_v9","checkpoint_id":"cp-9","text":"..."}""",
+            },
+            MessagePersistenceConverter.ToPersistedMessage(toolResult, "thread-1", "run-1", _jsonOptions),
+        };
+        var skipped = new List<(PersistedMessage Row, Exception Error)>();
+
+        var restored = MessagePersistenceConverter.FromPersistedMessagesResilient(
+            rows,
+            (row, error) => skipped.Add((row, error)),
+            _jsonOptions
+        );
+
+        skipped.Should().ContainSingle().Which.Row.Id.Should().Be("future-row");
+        skipped[0].Error.Should().BeOfType<UnknownMessageTypeDiscriminatorException>();
+        restored.Should().HaveCount(2);
+        restored[0].Should().BeOfType<ToolCallMessage>();
+        restored[1].Should().BeOfType<ToolCallResultMessage>();
+    }
+
+    #endregion
 }

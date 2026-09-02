@@ -93,8 +93,53 @@ public sealed class FileConversationStore
             var messagesFile = Path.Combine(threadDir, MessagesFileName);
             var existingMessages = await LoadMessagesFromFileAsync(messagesFile, ct);
 
-            var allMessages = existingMessages.Concat(messages).ToList();
+            // The store owns Seq. A file written before the column existed has rows without one;
+            // the first append numbers them in load order and writes them back, so the thread reads
+            // the same before and after and the watermark becomes meaningful from here on.
+            var allMessages = MessageSequence.Append(existingMessages, messages);
             await WriteJsonFileAsync(messagesFile, allMessages, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
+            var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
+            return messages.Count == 0 ? 0 : MessageSequence.Watermark(messages);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
+            var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
+            return MessageSequence.Range(messages, fromSeq, toSeq, limit);
         }
         finally
         {
@@ -119,10 +164,13 @@ public sealed class FileConversationStore
                 throw new InvalidOperationException($"Message '{replacement.Id}' not found in thread '{threadId}'.");
             }
 
-            // Preserve original timestamp so load ordering remains stable across replacement.
+            // Preserve the original timestamp and Seq so load ordering remains stable across
+            // replacement: a replacement is a mutation in place, not an append, and must not move
+            // the watermark.
             existing[idx] = replacement with
             {
                 Timestamp = existing[idx].Timestamp,
+                Seq = existing[idx].Seq,
             };
             await WriteJsonFileAsync(messagesFile, existing, ct);
         }
@@ -146,7 +194,7 @@ public sealed class FileConversationStore
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
             var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
 
-            return [.. messages.OrderBy(m => m.Timestamp).ThenBy(m => m.MessageOrderIdx ?? 0)];
+            return MessageSequence.Order(messages);
         }
         finally
         {

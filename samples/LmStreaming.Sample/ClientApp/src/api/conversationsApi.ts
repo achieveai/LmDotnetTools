@@ -16,6 +16,8 @@ export interface PersistedMessage {
   parentRunId?: string | null;
   generationId?: string | null;
   messageOrderIdx?: number | null;
+  /** Store-assigned append order (#680); null on a row persisted before the column existed. */
+  seq?: number | null;
   timestamp: number;
   messageType: string;
   role: string;

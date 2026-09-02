@@ -17,12 +17,67 @@ public interface IConversationStore
     Task AppendMessagesAsync(string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default);
 
     /// <summary>
-    /// Loads all messages for a thread, ordered by timestamp.
+    /// Loads all messages for a thread in append order: by <see cref="PersistedMessage.Seq"/> where
+    /// the rows carry one, with any legacy rows that do not (written before the column existed)
+    /// ordered by <c>(timestamp, message_order_idx)</c> after them.
     /// </summary>
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>All messages for the thread, or empty list if thread not found.</returns>
     Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The highest <see cref="PersistedMessage.Seq"/> in the thread, or 0 when the thread has no rows
+    /// or none of its rows has been sequenced yet (a legacy thread before its first append).
+    /// </summary>
+    /// <remarks>
+    /// Read from the store on every call, never cached: its whole purpose is to tell a caller whether
+    /// ANOTHER writer appended since the caller last looked (spec 679 §2.2). The default reads the
+    /// whole thread; stores with an index answer it directly.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    async Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
+    {
+        var messages = await LoadMessagesAsync(threadId, ct).ConfigureAwait(false);
+        return messages.Count == 0 ? 0 : messages.Max(m => m.Seq ?? 0);
+    }
+
+    /// <summary>
+    /// Loads the rows whose <see cref="PersistedMessage.Seq"/> lies in
+    /// <c>[<paramref name="fromSeq"/>, <paramref name="toSeq"/>]</c>, ascending, at most
+    /// <paramref name="limit"/> of them. Rows without a Seq are never part of a range. An inverted
+    /// range is empty.
+    /// </summary>
+    /// <remarks>
+    /// This is the read a recall tool and a checkpoint reconciler make: a bounded slice of history by
+    /// position, without loading the thread. The default filters a full load; stores with an index
+    /// answer it directly.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="fromSeq">First sequence number to include.</param>
+    /// <param name="toSeq">Last sequence number to include.</param>
+    /// <param name="limit">Maximum number of rows to return.</param>
+    /// <param name="ct">Cancellation token.</param>
+    async Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct = default
+    )
+    {
+        if (limit <= 0 || toSeq < fromSeq)
+        {
+            return [];
+        }
+
+        var messages = await LoadMessagesAsync(threadId, ct).ConfigureAwait(false);
+        return
+        [
+            .. messages.Where(m => m.Seq is { } seq && seq >= fromSeq && seq <= toSeq).OrderBy(m => m.Seq).Take(limit),
+        ];
+    }
 
     /// <summary>
     /// Replaces a single previously-appended message identified by its persisted Id.
