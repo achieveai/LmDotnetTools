@@ -692,9 +692,11 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // ToolCallInjectionMiddleware re-invokes the function-set factory on EVERY LLM call, so this
         // provider rebuilt the whole sub-agent surface — template catalog text and all — once per turn
         // from inputs that change perhaps twice in a session. Serving the previous build while its
-        // inputs are unchanged is the win; GetFunctions_AfterTryRegister_ReflectsNewTemplate and
-        // SuppressSpawning_DropsOnlyTheSpawnContract are the mutation guards that it still rebuilds
-        // when they do change.
+        // inputs are unchanged is the win; GetFunctions_AfterTryRegister_ReflectsNewTemplate,
+        // SuppressSpawning_DropsOnlyTheSpawnContract and
+        // GetFunctions_BuiltBeforeSuppression_DoesNotServeTheSpawnToolInsideTheScope are the mutation
+        // guards that it still rebuilds when they do change — the last two pinning the suppression
+        // key in each direction separately.
         var first = _provider!.GetFunctions().ToList();
         var second = _provider!.GetFunctions().ToList();
 
@@ -785,6 +787,37 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             .Select(f => f.Contract.Name)
             .Should()
             .BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
+    }
+
+    [Fact]
+    public void GetFunctions_BuiltBeforeSuppression_DoesNotServeTheSpawnToolInsideTheScope()
+    {
+        // The memo's OVER-granting direction, pinned on its own rather than by shared implication.
+        // SuppressSpawning_DropsOnlyTheSpawnContract builds its first surface INSIDE the scope, so it
+        // exercises only the way OUT (suppressed -> not), where a stale memo under-grants. This is the way
+        // IN: an ordinary turn populates the memo WITH the spawn tool, and the next build — now inside a
+        // scope — must not serve that entry back. Both directions happen to ride on the same equality
+        // conjunct in the memo key today, so one mutation reddens both; that is an implementation
+        // coincidence, and this is the direction that fails OPEN, handing the spawn tool to exactly the
+        // turn a caller was promised could not start new children.
+        var provider = _provider!;
+
+        // Premise, not the subject: without an unsuppressed entry actually in the memo, the assertion
+        // below would pass for the wrong reason.
+        provider
+            .GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .Contain("Agent", "the memo has to hold a build that CARRIES the spawn tool for this to mean anything");
+
+        using (provider.SuppressSpawning())
+        {
+            provider
+                .GetFunctions()
+                .Select(f => f.Contract.Name)
+                .Should()
+                .BeEquivalentTo(["SendMessage", "CheckAgent", "WaitAgent"]);
+        }
     }
 
     [Fact]
