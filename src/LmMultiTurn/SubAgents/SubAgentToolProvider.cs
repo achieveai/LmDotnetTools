@@ -1356,6 +1356,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var snapshot = collaboration.Directory.Snapshot();
         var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
+        var truncated = listed.Count < snapshot.Count;
 
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
@@ -1368,10 +1369,10 @@ public class SubAgentToolProvider : IFunctionProvider
             // Unconditional, so completeness is stated rather than inferred from the array length.
             ["returned"] = listed.Count,
             ["total"] = snapshot.Count,
-            ["truncated"] = listed.Count < snapshot.Count,
+            ["truncated"] = truncated,
         };
 
-        if (listed.Count < snapshot.Count)
+        if (truncated)
         {
             payload["truncation_note"] =
                 $"Showing {listed.Count} of {snapshot.Count} agents. Every LIVE agent is listed; the "
