@@ -224,4 +224,122 @@ public class ConversationUsageAggregateTests
         agg.EstimatedPublicCostMicros.Should().Be(7500);
         agg.ProviderReportedCostMicros.Should().Be(3900);
     }
+
+    // --- Category-complete cost (#682): the fold carries completeness beside the number so a partial
+    // estimate can never be rendered as an exact total. ---
+
+    [Fact]
+    public void Fold_StampsEstimatedCostCompleteness_PartialWhenAnyAttemptIsPartial()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 1_000) with
+            {
+                CostCompleteness = CostCompleteness.Complete,
+            },
+            Record("a2", "model-A", input: 100, output: 40, estimated: 800) with
+            {
+                CostCompleteness = CostCompleteness.Partial,
+            },
+        };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        // The subtotal is still reported (it is a lower bound) but labelled so.
+        aggregate.PerModel[0].EstimatedPublicCostMicros.Should().Be(1_800);
+        aggregate.PerModel[0].EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+        aggregate.EstimatedPublicCostMicros.Should().Be(1_800);
+        aggregate.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void Fold_StampsEstimatedCostCompleteness_CompleteOnlyWhenEveryAttemptIsComplete()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 1_000) with
+            {
+                CostCompleteness = CostCompleteness.Complete,
+            },
+            Record("b1", "model-B", input: 100, output: 40, estimated: 500) with
+            {
+                CostCompleteness = CostCompleteness.Complete,
+            },
+        };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        aggregate.EstimatedCostCompleteness.Should().Be(CostCompleteness.Complete);
+        aggregate.PerModel.Should().OnlyContain(m => m.EstimatedCostCompleteness == CostCompleteness.Complete);
+    }
+
+    [Fact]
+    public void Fold_StampsEstimatedCostCompleteness_UnavailableWhenAnyModelIsUnpriced()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 1_000) with
+            {
+                CostCompleteness = CostCompleteness.Complete,
+            },
+            Record("b1", "unpriced", input: 100, output: 40),
+        };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        // Same rule as the strict cost fold (#377): an unpriced model makes the conversation figure null,
+        // and the completeness says why.
+        aggregate.EstimatedPublicCostMicros.Should().BeNull();
+        aggregate.EstimatedCostCompleteness.Should().Be(CostCompleteness.Unavailable);
+        aggregate
+            .PerModel.Single(m => m.ModelId == "unpriced")
+            .EstimatedCostCompleteness.Should()
+            .Be(CostCompleteness.Unavailable);
+    }
+
+    [Fact]
+    public void Fold_LegacyEstimatedRowWithoutCompleteness_CountsAsPartial_NotComplete()
+    {
+        // A row persisted before #682 deserializes with CostCompleteness.Unavailable beside a populated
+        // two-category estimate. The subtotal exists, so it is not Unavailable; it ignored cache
+        // categories, so it is not Complete.
+        var records = new[] { Record("a1", "model-A", input: 100, output: 40, estimated: 1_000) };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 1);
+
+        aggregate.PerModel[0].EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+        aggregate.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void Fold_PreferredCost_TakesProviderReportedPerAttempt_ElseTheEstimate()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 1_000, reported: 1_100),
+            Record("a2", "model-A", input: 100, output: 40, estimated: 800),
+        };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        // 1,100 (reported wins for a1) + 800 (estimate for a2). The two underlying subtotals stay separate.
+        aggregate.PerModel[0].PreferredCostMicros.Should().Be(1_900);
+        aggregate.PerModel[0].ProviderReportedCostMicros.Should().Be(1_100);
+        aggregate.PerModel[0].EstimatedPublicCostMicros.Should().Be(1_800);
+        aggregate.PreferredCostMicros.Should().Be(1_900);
+    }
+
+    [Fact]
+    public void Fold_PreferredCost_IsNull_WhenAnyModelHasNeitherFigure()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, reported: 1_100),
+            Record("b1", "unpriced", input: 100, output: 40),
+        };
+
+        var aggregate = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        aggregate.PreferredCostMicros.Should().BeNull();
+    }
 }

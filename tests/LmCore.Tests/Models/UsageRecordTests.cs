@@ -107,4 +107,68 @@ public class UsageRecordTests
         UsageRecord.EarliestOccurredAt(early, null).Should().Be(early);
         UsageRecord.EarliestOccurredAt(null, null).Should().BeNull();
     }
+
+    [Fact]
+    public void PreferredCostMicros_UsesProviderReported_WhenPresent_ElseTheEstimate_ElseNull()
+    {
+        // The display rule (#682): a provider's own figure outranks a public estimate, and an estimate
+        // outranks nothing. Both underlying figures stay queryable — preferring one does not erase the other.
+        var both = Sample() with
+        {
+            ProviderReportedCostMicros = 7_000,
+            EstimatedPublicCostMicros = 6_000,
+        };
+        both.PreferredCostMicros.Should().Be(7_000);
+        both.EstimatedPublicCostMicros.Should().Be(6_000);
+
+        (Sample() with { EstimatedPublicCostMicros = 6_000 }).PreferredCostMicros.Should().Be(6_000);
+        Sample().PreferredCostMicros.Should().BeNull();
+    }
+
+    [Fact]
+    public void RoundTrips_TheCategoryCompleteCostFields_ThroughJson()
+    {
+        var record = Sample() with
+        {
+            CacheWriteTokens = 2_000,
+            CacheWrite1hTokens = 500,
+            CostCompleteness = CostCompleteness.Partial,
+            CompactionCheckpointId = "cp-1",
+            ExecutionKind = UsageExecutionKind.Compaction,
+        };
+
+        var back = JsonSerializer.Deserialize<UsageRecord>(JsonSerializer.Serialize(record))!;
+
+        back.CacheWrite1hTokens.Should().Be(500);
+        back.CostCompleteness.Should().Be(CostCompleteness.Partial);
+        back.CompactionCheckpointId.Should().Be("cp-1");
+        back.ExecutionKind.Should().Be(UsageExecutionKind.Compaction);
+    }
+
+    [Fact]
+    public void Deserializing_RecordPersistedBeforeCostCompleteness_YieldsUnavailable_NotComplete()
+    {
+        // Rows written before #682 carry a two-category estimate (input + output only) and no completeness
+        // field. The enum's zero value is Unavailable precisely so such a row cannot deserialize as
+        // Complete — an old estimate that ignored cache categories is not complete, and the seed path
+        // re-derives Partial from the populated estimate.
+        const string legacyJson = """
+            {
+              "LogicalCallId": "call-1",
+              "ProviderAttemptId": "attempt-1",
+              "RootConversationId": "conv-1",
+              "RequestedModel": "gpt-5",
+              "InputTokens": 100,
+              "OutputTokens": 50,
+              "EstimatedPublicCostMicros": 6000,
+              "CostProvenance": 1
+            }
+            """;
+
+        var back = JsonSerializer.Deserialize<UsageRecord>(legacyJson)!;
+
+        back.CostCompleteness.Should().Be(CostCompleteness.Unavailable);
+        back.CacheWrite1hTokens.Should().BeNull();
+        back.CompactionCheckpointId.Should().BeNull();
+    }
 }
