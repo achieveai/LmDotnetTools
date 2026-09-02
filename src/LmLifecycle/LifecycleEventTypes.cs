@@ -10,7 +10,7 @@ namespace AchieveAi.LmDotnetTools.LmLifecycle;
 /// raw payload survives a round trip byte-for-byte precisely so that this is possible.
 /// </para>
 /// <para>
-/// These six events are deliberately bounded and observational. They are not an audit log: delivery
+/// These events are deliberately bounded and observational. They are not an audit log: delivery
 /// is best-effort with no durable outbox, replay, or backfill.
 /// </para>
 /// </remarks>
@@ -43,6 +43,13 @@ public static class LifecycleEventTypes
     public const string SandboxCreated = "sandbox_created";
 
     /// <summary>
+    /// One agent loop's request was sized against its model's window — estimated before dispatch,
+    /// measured once the provider reported usage. Payload:
+    /// <see cref="Payloads.ContextMeasuredPayload"/>.
+    /// </summary>
+    public const string ContextMeasured = "context_measured";
+
+    /// <summary>
     /// The event types this build understands, in no particular order.
     /// </summary>
     /// <remarks>
@@ -58,6 +65,7 @@ public static class LifecycleEventTypes
             ToolCompleted,
             RunCompleted,
             SandboxCreated,
+            ContextMeasured,
         };
 
     /// <summary>

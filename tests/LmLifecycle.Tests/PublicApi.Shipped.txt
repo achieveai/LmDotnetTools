@@ -66,6 +66,7 @@ LifecycleEventEnvelope.SchemaMajor : int { get; set; }
 LifecycleEventEnvelope.SourceSequence : long { get; set; }
 LifecycleEventEnvelope.SourceStreamId : string { get; set; }
 LifecycleEventTypes.ContextLoaded : string = "context_loaded"
+LifecycleEventTypes.ContextMeasured : string = "context_measured"
 LifecycleEventTypes.IsKnown(string) : bool
 LifecycleEventTypes.Known : System.Collections.Generic.IReadOnlySet<string> { get; }
 LifecycleEventTypes.RunCompleted : string = "run_completed"
@@ -120,6 +121,20 @@ Payloads.ContextLoadedPayload.RenderedHash : string { get; set; }
 Payloads.ContextLoadedPayload.RenderedText : string { get; set; }
 Payloads.ContextLoadedPayload.RunId : string { get; set; }
 Payloads.ContextLoadedPayload.Sources : System.Collections.Generic.IReadOnlyList<Payloads.LifecycleContextSource> { get; set; }
+Payloads.ContextMeasuredPayload..ctor()
+Payloads.ContextMeasuredPayload.ActiveCheckpointId : string { get; set; }
+Payloads.ContextMeasuredPayload.AgentId : string { get; set; }
+Payloads.ContextMeasuredPayload.EffectiveModelId : string { get; set; }
+Payloads.ContextMeasuredPayload.EstimatedInputTokens : long { get; set; }
+Payloads.ContextMeasuredPayload.GenerationId : string { get; set; }
+Payloads.ContextMeasuredPayload.GenerationOrdinal : long { get; set; }
+Payloads.ContextMeasuredPayload.MeasuredInputTokens : long? { get; set; }
+Payloads.ContextMeasuredPayload.Provenance : string { get; set; }
+Payloads.ContextMeasuredPayload.ReserveTokens : long { get; set; }
+Payloads.ContextMeasuredPayload.RowsInView : long { get; set; }
+Payloads.ContextMeasuredPayload.RunId : string { get; set; }
+Payloads.ContextMeasuredPayload.Utilization : double? { get; set; }
+Payloads.ContextMeasuredPayload.WindowTokens : long? { get; set; }
 Payloads.LifecycleContextSource..ctor()
 Payloads.LifecycleContextSource.DedupIdentity : string { get; set; }
 Payloads.LifecycleContextSource.DiscoveryKind : string { get; set; }
@@ -203,8 +218,10 @@ Serialization.LifecycleJsonContext..ctor()
 Serialization.LifecycleJsonContext..ctor(System.Text.Json.JsonSerializerOptions)
 Serialization.LifecycleJsonContext.Boolean : System.Text.Json.Serialization.Metadata.JsonTypeInfo<bool> { get; }
 Serialization.LifecycleJsonContext.ContextLoadedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.ContextLoadedPayload> { get; }
+Serialization.LifecycleJsonContext.ContextMeasuredPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.ContextMeasuredPayload> { get; }
 Serialization.LifecycleJsonContext.DateTimeOffset : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.DateTimeOffset> { get; }
 Serialization.LifecycleJsonContext.Default : Serialization.LifecycleJsonContext { get; }
+Serialization.LifecycleJsonContext.Double : System.Text.Json.Serialization.Metadata.JsonTypeInfo<double> { get; }
 Serialization.LifecycleJsonContext.GetTypeInfo(System.Type) : System.Text.Json.Serialization.Metadata.JsonTypeInfo
 Serialization.LifecycleJsonContext.IReadOnlyListLifecycleContextSource : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Collections.Generic.IReadOnlyList<Payloads.LifecycleContextSource>> { get; }
 Serialization.LifecycleJsonContext.IReadOnlyListSandboxInventoryEntry : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Collections.Generic.IReadOnlyList<Payloads.SandboxInventoryEntry>> { get; }
@@ -219,6 +236,7 @@ Serialization.LifecycleJsonContext.LifecycleEventEnvelope : System.Text.Json.Ser
 Serialization.LifecycleJsonContext.LifecycleRunCause : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleRunCause> { get; }
 Serialization.LifecycleJsonContext.LifecycleUsage : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleUsage> { get; }
 Serialization.LifecycleJsonContext.NullableDateTimeOffset : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.DateTimeOffset?> { get; }
+Serialization.LifecycleJsonContext.NullableDouble : System.Text.Json.Serialization.Metadata.JsonTypeInfo<double?> { get; }
 Serialization.LifecycleJsonContext.NullableInt64 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<long?> { get; }
 Serialization.LifecycleJsonContext.NullableJsonElement : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Text.Json.JsonElement?> { get; }
 Serialization.LifecycleJsonContext.RunCompletedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.RunCompletedPayload> { get; }
@@ -269,6 +287,7 @@ sealed class LifecycleDeliveryEnvelope
 sealed class LifecycleEventEnvelope
 sealed class NullLifecyclePublisher
 sealed class Payloads.ContextLoadedPayload
+sealed class Payloads.ContextMeasuredPayload
 sealed class Payloads.LifecycleContextSource
 sealed class Payloads.LifecycleError
 sealed class Payloads.LifecycleRunCause

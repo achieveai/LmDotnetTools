@@ -53,6 +53,7 @@ namespace AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
 [JsonSerializable(typeof(ToolCompletedPayload))]
 [JsonSerializable(typeof(RunCompletedPayload))]
 [JsonSerializable(typeof(SandboxCreatedPayload))]
+[JsonSerializable(typeof(ContextMeasuredPayload))]
 [JsonSerializable(typeof(ToolApprovalRequest))]
 [JsonSerializable(typeof(ToolApprovalDecision))]
 [JsonSerializable(typeof(JsonElement))]

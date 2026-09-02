@@ -147,6 +147,23 @@ public sealed class LifecycleContentRedactor
                 ("status", null),
                 ("inventory", new AllowList(("status", null), ("items", new AllowList(("kind", null)))))
             ),
+            // Content-free by construction (#681): counts, ratios, ids and statuses. The model id and
+            // agent id are configuration the subscriber already chose; nothing here is what the agent saw.
+            [LifecycleEventTypes.ContextMeasured] = new(
+                ("run_id", null),
+                ("generation_id", null),
+                ("generation_ordinal", null),
+                ("agent_id", null),
+                ("effective_model_id", null),
+                ("provenance", null),
+                ("estimated_input_tokens", null),
+                ("measured_input_tokens", null),
+                ("window_tokens", null),
+                ("reserve_tokens", null),
+                ("utilization", null),
+                ("active_checkpoint_id", null),
+                ("rows_in_view", null)
+            ),
         };
 
     /// <summary>
