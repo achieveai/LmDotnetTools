@@ -52,19 +52,25 @@ public sealed class ProgramReasoningExtraPropertiesTests
     {
         var props = Build("claude-sonnet-4.5", CopilotModelTransport.Anthropic);
 
-        props.Should().ContainKey("Thinking");
-        props["Thinking"].Should().BeOfType<AnthropicThinking>();
+        var thinking = props["Thinking"].Should().BeOfType<AnthropicThinking>().Which;
+        thinking.Type.Should().Be("enabled");
+        thinking.BudgetTokens.Should().NotBeNull("a classic model's request shape must not change (#709)");
     }
 
     [Fact]
-    public void Copilot_adaptive_thinking_models_omit_classic_thinking_budget()
+    public void Copilot_adaptive_thinking_models_request_summarized_adaptive_thinking()
     {
         // Models advertising adaptive_thinking (e.g. claude-sonnet-5) reject thinking.type.enabled with
-        // HTTP 400, so the classic budget request must NOT be sent for them.
+        // HTTP 400, so the classic budget request must NOT be sent for them. Sending nothing at all —
+        // what this branch used to do — leaves Anthropic's `display` at its "omitted" default, which
+        // returns thinking blocks with empty text; a Claude root conversation then renders blank
+        // thinking pills (#709). The adaptive shape asking for a summary is what makes the text arrive.
         var props = Build("claude-sonnet-5", CopilotModelTransport.Anthropic, copilotSupportsAdaptiveThinking: true);
 
-        props.Should().NotContainKey("Thinking");
-        props.Should().BeEmpty();
+        var thinking = props["Thinking"].Should().BeOfType<AnthropicThinking>().Which;
+        thinking.Type.Should().Be("adaptive");
+        thinking.Display.Should().Be("summarized");
+        thinking.BudgetTokens.Should().BeNull();
     }
 
     [Fact]

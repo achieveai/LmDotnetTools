@@ -5,6 +5,17 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 /// <summary>
 ///     Configuration for Claude's extended thinking capability.
 /// </summary>
+/// <remarks>
+///     Two request shapes exist. The classic shape (<see cref="Enabled" />) is
+///     <c>{"type":"enabled","budget_tokens":N}</c>, used by api.anthropic.com and Copilot's classic
+///     Claude models. Claude adaptive-thinking models (Opus 5, Sonnet 5, Opus 4.7+) reject that shape
+///     with HTTP 400 and instead take <see cref="Adaptive" />'s
+///     <c>{"type":"adaptive","display":"summarized"}</c> — <c>budget_tokens</c> must be omitted, not
+///     zero. On those models Anthropic's <c>display</c> defaults to <c>"omitted"</c>, which returns a
+///     thinking block with an empty <c>thinking</c> field and only a signature; asking for
+///     <c>"summarized"</c> is what makes the thinking text come back (#709). <c>"summarized"</c> is the
+///     only display this SDK ever requests — never <c>"updates"</c> or raw chain-of-thought.
+/// </remarks>
 public record AnthropicThinking
 {
     /// <summary>
@@ -33,16 +44,50 @@ public record AnthropicThinking
     }
 
     /// <summary>
-    ///     The type of thinking. Currently only "enabled" is supported.
+    ///     The classic <c>type: "enabled"</c> shape with an explicit token budget.
+    /// </summary>
+    /// <param name="budgetTokens">The budget for thinking tokens. Defaults to 1024.</param>
+    public static AnthropicThinking Enabled(int budgetTokens = 1024) =>
+        new() { Type = "enabled", BudgetTokens = budgetTokens };
+
+    /// <summary>
+    ///     The <c>type: "adaptive"</c> shape required by Claude adaptive-thinking models. Omits
+    ///     <c>budget_tokens</c> (those models reject it) and opts into a displayable summary rather
+    ///     than Anthropic's default <c>"omitted"</c> display, which returns empty thinking text (#709).
+    /// </summary>
+    /// <param name="display">Always <c>"summarized"</c> in practice — never raw chain-of-thought.</param>
+    public static AnthropicThinking Adaptive(string display = "summarized") =>
+        new()
+        {
+            Type = "adaptive",
+            BudgetTokens = null,
+            Display = display,
+        };
+
+    /// <summary>
+    ///     The type of thinking: <c>"enabled"</c> (classic, budget-based) or <c>"adaptive"</c>
+    ///     (Claude adaptive-thinking models; paired with <see cref="Display" />).
     /// </summary>
     [JsonPropertyName("type")]
     public string Type { get; init; } = "enabled";
 
     /// <summary>
     ///     The budget for thinking tokens. Should be at least 1024 for models that support thinking.
+    ///     Omitted from the request when null — adaptive-thinking models reject this field entirely.
     /// </summary>
     [JsonPropertyName("budget_tokens")]
-    public int BudgetTokens { get; init; } = 1024;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? BudgetTokens { get; init; } = 1024;
+
+    /// <summary>
+    ///     How much of the model's thinking an adaptive-thinking model returns: <c>"summarized"</c>
+    ///     (readable summary text) or <c>"omitted"</c> (Anthropic's default — an empty thinking field
+    ///     and only a signature). Omitted from the request when null, so it stays inert for the classic
+    ///     <see cref="Enabled" /> shape and for any caller that does not set it.
+    /// </summary>
+    [JsonPropertyName("display")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Display { get; init; }
 }
 
 /// <summary>

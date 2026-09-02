@@ -1703,9 +1703,10 @@ try
                     // an effort FLOOR (Option A: High) — applied only when the parent can itself think, so an
                     // inherited-model sub-agent reasons like the launching conversation instead of running
                     // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
-                    // overrides the floor (SubAgentManager). The parent "can think" when it has classic
-                    // reasoning metadata OR is an adaptive Copilot model (which reasons via output_config.effort
-                    // and therefore carries no classic extraProperties). Workflow plain-path delegates use the
+                    // overrides the floor (SubAgentManager). The parent "can think" when it has reasoning
+                    // metadata OR is an adaptive Copilot model — those reason via output_config.effort, so a
+                    // conversation that explicitly opts out of an effort request still carries none.
+                    // Workflow plain-path delegates use the
                     // controller's characteristics factory, which shapes the final selected model separately.
                     var parentCanThink =
                         !extraProperties.IsEmpty || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
@@ -2671,10 +2672,12 @@ public partial class Program
     ///     none. Without this wiring, Copilot-backed models return no thinking blocks.
     ///     <para>
     ///     Copilot Claude models that advertise <c>adaptive_thinking</c> (opus 4.x, sonnet 4.6+, sonnet 5)
-    ///     REJECT the classic <c>thinking.type.enabled</c> budget request with HTTP 400 — they require
-    ///     the newer <c>thinking.type.adaptive</c> + <c>output_config.effort</c> API, which this provider
-    ///     does not model yet. For those we omit the classic thinking parameter rather than send an
-    ///     unsupported one; they still reason, just without an explicit budget request.
+    ///     REJECT the classic <c>thinking.type.enabled</c> budget request with HTTP 400, and default
+    ///     <c>thinking.display</c> to <c>"omitted"</c> — which returns thinking blocks with an empty text
+    ///     field and only a signature, so their thinking pills render blank. They get the adaptive shape
+    ///     asking for a summarized display instead (#709). Effort is orthogonal and is shaped separately
+    ///     by <see cref="BuildConversationReasoningExtraProperties" />: a summarized display returns
+    ///     thinking text with or without <c>output_config.effort</c>.
     ///     </para>
     /// </summary>
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
@@ -2690,10 +2693,11 @@ public partial class Program
             || copilotTransport == CopilotModelTransport.Anthropic
         )
         {
-            // Adaptive-thinking Copilot models reject the classic budget request; skip it for them.
+            // Adaptive-thinking Copilot models reject the classic budget request, and stay silent
+            // unless the request opts into a summarized display.
             if (copilotSupportsAdaptiveThinking)
             {
-                return extraProperties;
+                return extraProperties.Add("Thinking", AnthropicThinking.Adaptive());
             }
 
             var budgetTokens = int.TryParse(

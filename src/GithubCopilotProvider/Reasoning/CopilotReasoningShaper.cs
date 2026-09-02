@@ -28,10 +28,7 @@ public static class CopilotReasoningShaper
 
         return model.Transport switch
         {
-            CopilotModelTransport.Anthropic => ImmutableDictionary<string, object?>.Empty.Add(
-                "OutputConfig",
-                new AnthropicOutputConfig { Effort = effort }
-            ),
+            CopilotModelTransport.Anthropic => ShapeAnthropic(model, effort),
             // Summary = "auto" is REQUIRED alongside Effort: the Responses API returns a displayable
             // reasoning summary only when asked, otherwise it emits an encrypted-only reasoning item
             // (ReasoningVisibility.Encrypted, GetDisplayText() == null) and thinking never renders — the
@@ -42,6 +39,28 @@ public static class CopilotReasoningShaper
             ),
             _ => ImmutableDictionary<string, object?>.Empty,
         };
+    }
+
+    /// <summary>
+    /// Builds the Anthropic-transport request metadata: the selected effort, plus — on an
+    /// adaptive-thinking model — the thinking shape that makes the reasoning readable.
+    /// </summary>
+    /// <remarks>
+    /// Effort bounds how long the model reasons; it does NOT make the reasoning visible. That takes
+    /// <c>thinking.display = "summarized"</c>, because Anthropic defaults <c>display</c> to
+    /// <c>"omitted"</c> on adaptive-thinking models and returns a thinking block with an empty text
+    /// field and only a signature — why every Claude thinking pill rendered blank (#709). Classic
+    /// Claude models reject <c>thinking.type.adaptive</c>, so they stay effort-only and keep the
+    /// budget-based thinking the host's provider defaults supply.
+    /// </remarks>
+    private static ImmutableDictionary<string, object?> ShapeAnthropic(CopilotModelInfo model, string effort)
+    {
+        var properties = ImmutableDictionary<string, object?>.Empty.Add(
+            "OutputConfig",
+            new AnthropicOutputConfig { Effort = effort }
+        );
+
+        return model.SupportsAdaptiveThinking ? properties.Add("Thinking", AnthropicThinking.Adaptive()) : properties;
     }
 
     /// <summary>
