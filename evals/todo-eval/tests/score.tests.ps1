@@ -17,6 +17,10 @@ Coverage:
 - F4: is_error:true alone marks a result as an error (union with the "Error:" prefix).
 - V7/V8: the board ledger accepts both indents bulk-initialize's echo emits (2-space main
   rows, 4-space subtask rows), and still invents nothing the echo did not name.
+- M1-M12 (#670): the coordination family — its own counts, refusals that carry no "Error:"
+  prefix, the error-code fallback chain, the polling exemption, wait outcomes, usage
+  dedupe and turn join, the host stamps, the redacted input forms, and the fingerprints.
+  Each mutation breaks ONE of those and the verdict flips.
 #>
 [CmdletBinding()]
 param()
@@ -315,6 +319,181 @@ try {
 
     # The paired negative, on the SAME run, so the positives above cannot be an unreached path.
     Assert (-not ($vbIds -contains '2.2')) 'V8: a row the echo never named is NOT in the ledger, so its not-found stays a typo'
+
+    # ---- M: the coordination family (#670) ------------------------------------------------
+    # Read from the committed fixtures/coordination-run store, which the C# twin scores too:
+    # one shared fixture is what makes a scorer disagreement visible instead of plausible.
+
+    $coordFixture = Join-Path $fixtures 'coordination-run'
+    $coordBoard = Join-Path $coordFixture 'board.json'
+
+    function Copy-CoordStore {
+        # A private copy of the fixture store that a mutation may edit. The fixture itself is
+        # never written to: two mutations would otherwise interfere through it.
+        param([string]$Name)
+        $dest = Join-Path $tmp $Name
+        Copy-Item -Recurse -Force (Join-Path $coordFixture 'conversations') $dest
+        return $dest
+    }
+
+    function Edit-CoordMessages {
+        # Applies $Edit to each inner message hashtable of one thread's messages.json.
+        param([string]$StoreDir, [string]$Thread, [scriptblock]$Edit)
+        $path = Join-Path $StoreDir "$Thread\messages.json"
+        $messages = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $path -Raw) -AsHashtable -Depth 64
+        foreach ($m in @($messages)) {
+            $inner = ConvertFrom-Json -InputObject $m['messageJson'] -AsHashtable -Depth 64
+            & $Edit $m $inner
+            $m['messageJson'] = ($inner | ConvertTo-Json -Depth 20 -Compress)
+        }
+        ConvertTo-Json -InputObject @($messages) -Depth 30 | Set-Content -LiteralPath $path
+    }
+
+    function Get-Count {
+        # A count-map lookup that tolerates the key being absent (StrictMode would throw).
+        param($Map, [string]$Key)
+        if ($null -eq $Map) { return 0 }
+        if (@($Map.PSObject.Properties.Name) -notcontains $Key) { return 0 }
+        return $Map.$Key
+    }
+
+    $m = Invoke-Score -ConversationsDir (Join-Path $coordFixture 'conversations') -BoardSnapshot $coordBoard
+
+    # M1: the two families are counted apart, and every coordination tool gets a row.
+    Assert ($m.schema -eq 'todo-eval/score@2') 'M1: the score object announces schema @2'
+    Assert ($m.totalToolCalls -eq 16) 'M1: 16 tool calls in total'
+    Assert ($m.coordinationToolCalls -eq 15) 'M1: 15 coordination calls'
+    Assert ($m.coordinationToolErrors -eq 5) 'M1: 5 coordination errors'
+    Assert ($m.taskToolCalls -eq 1) 'M1: the one board call is still counted as task work'
+    Assert (@($m.perTool.PSObject.Properties.Name).Count -eq 22) 'M1: 22 per-tool rows (15 task + 7 coordination)'
+    Assert ($m.perTool.'WaitForAgents'.family -eq 'coordination') 'M1: WaitForAgents is in the coordination family'
+    Assert ($m.perTool.'add-task'.family -eq 'task') 'M1: add-task is still in the task family'
+
+    # M2: the refusal shape. Its text is a plain sentence, so the task family's "Error:" prefix
+    # rule alone would have scored all three as SUCCESSES.
+    Assert ($m.perTool.'WaitForAgents'.errors -eq 3) 'M2: a refusal with no "Error:" prefix is still an error'
+    Assert ((Get-Count $m.perTool.'WaitForAgents'.errorCodes 'unknown_agent') -eq 3) 'M2: and it is classified by its error_code'
+
+    # M3: the error-code fallback chain, both remaining rungs.
+    Assert ((Get-Count $m.perTool.'SendMessage'.errorCodes 'depth_limit') -eq 1) 'M3: a code carried inside the result object is used'
+    Assert ((Get-Count $m.perTool.'CheckAgent'.errorCodes 'unclassified') -eq 1) 'M3: a coordination failure with no code anywhere is reported as unclassified'
+    Assert ((Get-Count $m.errorCodes 'unknown_agent') -eq 3) 'M3: codes roll up run-wide'
+
+    # M4: exactly one storm, and the polling exemption asserted on the SAME run, so the zero
+    # cannot be an unreached code path.
+    Assert ($m.retryStormCount -eq 1) 'M4: the three identical refusals are one storm'
+    Assert ($m.retryStorms[0].tool -eq 'WaitForAgents') 'M4: and the storm names WaitForAgents'
+    Assert ($m.perTool.'CheckAgents'.calls -eq 5) 'M4: the five identical polls really happened'
+    Assert (@($m.retryStorms | Where-Object { $_.tool -eq 'CheckAgents' }).Count -eq 0) 'M4: five identical SUCCESSFUL polls are never a storm'
+    Assert ($m.retryStorms[0].args -match '__argsSha256') 'M4: the storm reports an argument digest, not the arguments'
+    Assert ($m.retryStorms[0].args -notmatch 'agent-9') 'M4: and the model text really is gone from it'
+
+    # M5: wait outcomes separate "the wait timed out" from "the agent does not exist".
+    Assert ((Get-Count $m.waitOutcomes 'unknown_agent') -eq 3) 'M5: a refused wait is tallied by its code'
+    Assert ((Get-Count $m.waitOutcomes 'timeout') -eq 1) 'M5: a non-error wait is tallied by its status'
+
+    # M6 MUTATION: flip three of the successful CheckAgents polls to errors. If the exemption
+    # were keyed on the tool NAME rather than on the outcome, this would stay storm-free.
+    $m6Store = Copy-CoordStore 'm6-conversations'
+    $m6Flipped = 0
+    Edit-CoordMessages -StoreDir $m6Store -Thread 'thread-fixture-coord' -Edit {
+        param($envelope, $inner)
+        if ($envelope['messageType'] -eq 'ToolCallResultMessage' -and
+            $inner['tool_call_id'] -match '^call_co_(0006|0007|0008)$' -and $script:m6Flipped -lt 3) {
+            $inner['is_error'] = $true
+            $inner['error_code'] = 'transport_lost'
+            $script:m6Flipped++
+        }
+    }
+    $m6 = Invoke-Score -ConversationsDir $m6Store -BoardSnapshot $coordBoard
+    Assert ($m6Flipped -eq 3) 'M6: the mutation really flipped three polls'
+    Assert (@($m6.retryStorms | Where-Object { $_.tool -eq 'CheckAgents' }).Count -eq 1) 'M6: three consecutive FAILING polls of one identity ARE a storm'
+
+    # M7 MUTATION: the vocabulary drift alarm. Rename one coordination tool in the transcript
+    # and its calls must fall out of the coordination totals entirely - which is exactly what a
+    # host-side rename would do to a silently un-updated scorer.
+    $m7Store = Copy-CoordStore 'm7-conversations'
+    Edit-CoordMessages -StoreDir $m7Store -Thread 'thread-fixture-coord' -Edit {
+        param($envelope, $inner)
+        if ($envelope['messageType'] -eq 'ToolCallMessage' -and $inner['function_name'] -eq 'WaitForAgents') {
+            $inner['function_name'] = 'waitforagents'
+        }
+    }
+    $m7 = Invoke-Score -ConversationsDir $m7Store -BoardSnapshot $coordBoard
+    Assert ($m7.coordinationToolCalls -eq 12) 'M7: a renamed tool stops being coordination work'
+    Assert ($m7.perTool.'WaitForAgents'.calls -eq 0) 'M7: its row goes to zero rather than disappearing'
+    Assert ($m7.totalToolCalls -eq 16) 'M7: and the total still sees the calls, so the loss is visible'
+
+    # M8 MUTATION: strip the error_code. The refusals stay errors (is_error still says so) but
+    # lose their classification, and the score must SAY unclassified rather than omit them.
+    $m8Store = Copy-CoordStore 'm8-conversations'
+    Edit-CoordMessages -StoreDir $m8Store -Thread 'thread-fixture-coord' -Edit {
+        param($envelope, $inner)
+        if ($inner.Contains('error_code')) { $inner.Remove('error_code') }
+    }
+    $m8 = Invoke-Score -ConversationsDir $m8Store -BoardSnapshot $coordBoard
+    Assert ($m8.coordinationToolErrors -eq 5) 'M8: without codes the refusals are still errors'
+    Assert ((Get-Count $m8.errorCodes 'unclassified') -eq 4) 'M8: and every uncoded coordination failure is reported as unclassified'
+    Assert ((Get-Count $m8.waitOutcomes 'unclassified') -eq 3) 'M8: an uncoded refused wait is an unclassified outcome, not a missing one'
+
+    # M9 MUTATION: drop is_error and keep only error_code. This is the coordination-only third
+    # disjunct on its own - the fixture normally carries both, so without this mutation the
+    # disjunct could be deleted and every other check would stay green.
+    $m9Store = Copy-CoordStore 'm9-conversations'
+    Edit-CoordMessages -StoreDir $m9Store -Thread 'thread-fixture-coord' -Edit {
+        param($envelope, $inner)
+        if ($inner.Contains('is_error')) { $inner['is_error'] = $false }
+    }
+    $m9 = Invoke-Score -ConversationsDir $m9Store -BoardSnapshot $coordBoard
+    Assert ($m9.perTool.'WaitForAgents'.errors -eq 3) 'M9: an error_code alone marks a coordination result as an error'
+    Assert ($m9.perTool.'CheckAgent'.errors -eq 0) 'M9: and a coordination failure with neither flag nor code is NOT invented as one'
+
+    # M10: the redacted input forms a committed archive carries.
+    $m10Store = Copy-CoordStore 'm10-conversations'
+    Edit-CoordMessages -StoreDir $m10Store -Thread 'thread-fixture-coord' -Edit {
+        param($envelope, $inner)
+        if ($envelope['messageType'] -eq 'ToolCallMessage' -and $inner['function_name'] -eq 'WaitForAgents') {
+            $inner['function_args'] = '{"__argsSha256":"f37ffa650c05594f4d9ba546d9d23586552fb5f88e5ca246a9b59d87ca4b673d"}'
+        }
+    }
+    $m10 = Invoke-Score -ConversationsDir $m10Store -BoardSnapshot $coordBoard
+    Assert ($m10.retryStormCount -eq 1) 'M10: digest arguments still form the same single storm'
+    Assert ($m10.retryStorms[0].args -eq $m.retryStorms[0].args) 'M10: and the archive reports the same storm identity as the raw store'
+
+    # M11: usage. Both bags carry the primary attempt; counting it twice would double the run.
+    Assert ($m.usage.duplicateAttemptIds -eq 1) 'M11: the relayed attempt is deduped'
+    Assert ($m.usage.totals.records -eq 3) 'M11: three distinct usage records'
+    Assert ($m.usage.totals.totalTokens -eq 2070) 'M11: totals sum every token class'
+    Assert ($m.usage.byExecutionKind.SubAgent.totalTokens -eq 500) 'M11: the numeric ExecutionKind resolves to SubAgent'
+    Assert ($m.usage.attributedTurnTokens -eq 2000) 'M11: records whose attempt key is a real generation id join a turn'
+    Assert ($m.usage.unattributedTurnTokens -eq 70) 'M11: a synthetic derived: key can never join and is reported apart'
+    Assert (@($m.usage.kindsNotEmitted) -contains 'Continuation') 'M11: the kinds this build cannot emit are named, so their zeros are not read as measurements'
+
+    # M12: the host stamps and the obligations sentinel.
+    Assert ($m.spawnTimings[0].ToolRegistryMs -eq 37) 'M12: a spawn timing stamp is read back from metadata'
+    Assert ($m.startupWork.FunctionRegistryBuilds -eq 3) 'M12: the startup-work stamp is read back too'
+    Assert ($m.openObligations.resultsCarryingField -eq 0) 'M12: no result carries openObligations yet'
+    Assert ($m.openObligations.note -match 'NOT REPORTED') 'M12: so the zero is labelled NOT REPORTED rather than left to be read as none-open'
+
+    # M13 MUTATION: the corpus fingerprint moves when the corpus moves, and the two contract
+    # hashes do not - which is what lets #677 tell "different task" from "different scorer".
+    # Run against a COPY of the scorer and its corpus: mutating the repo's own task.md would
+    # leave the working tree dirty if this run were interrupted.
+    $m13Dir = Join-Path $tmp 'm13-corpus'
+    New-Item -ItemType Directory -Path $m13Dir -Force | Out-Null
+    Copy-Item -Force $score $m13Dir
+    foreach ($corpusFile in @('task.md', 'mode.json', 'expected-board.json')) {
+        Copy-Item -Force (Join-Path $root $corpusFile) $m13Dir
+    }
+    $m13Score = Join-Path $m13Dir 'score.ps1'
+    $m13Before = & $m13Score -ConversationsDir (Join-Path $coordFixture 'conversations') -BoardSnapshot $coordBoard | Out-String | ConvertFrom-Json
+    Assert ($m13Before.fingerprints.taskCorpusHash -eq $m.fingerprints.taskCorpusHash) 'M13: the copied corpus fingerprints identically to the original'
+
+    Add-Content -LiteralPath (Join-Path $m13Dir 'task.md') -Value 'mutation'
+    $m13 = & $m13Score -ConversationsDir (Join-Path $coordFixture 'conversations') -BoardSnapshot $coordBoard | Out-String | ConvertFrom-Json
+    Assert ($m13.fingerprints.taskCorpusHash -ne $m.fingerprints.taskCorpusHash) 'M13: perturbing task.md changes the corpus fingerprint'
+    Assert ($m13.fingerprints.specHash -eq $m.fingerprints.specHash) 'M13: but not the spec fingerprint'
+    Assert ($m13.fingerprints.evaluatorHash -eq $m.fingerprints.evaluatorHash) 'M13: nor the evaluator fingerprint'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
