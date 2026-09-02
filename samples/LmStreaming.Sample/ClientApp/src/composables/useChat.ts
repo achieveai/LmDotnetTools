@@ -11,6 +11,7 @@ import type {
   AuthEvent,
   AuthRequiredEvent,
   ConversationTodoMessage,
+  ContextPressureMessage,
 } from '@/types';
 import {
   MessageType,
@@ -33,6 +34,7 @@ import {
   isAgentMessage,
   isConversationUsageMessage,
   isConversationTodoMessage,
+  isContextPressureMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -208,6 +210,14 @@ export function useChat(options: UseChatOptions = {}) {
    * and `useChat` must not grow a second store.
    */
   const conversationTodo = ref<ConversationTodoMessage | null>(null);
+
+  /**
+   * Newest `context_pressure` frame (#685), held for the same reason and under the same rule as
+   * `conversationTodo`: `handleMessage` is where frames land, `useContextReport` owns the panel and
+   * watches this ref. A frame is metadata about the loop's window, never transcript content, so it
+   * produces no display item.
+   */
+  const contextPressure = ref<ContextPressureMessage | null>(null);
 
   /**
    * Replaces the usage banner with a folded conversation-wide aggregate (#196). The authoritative source
@@ -951,6 +961,13 @@ export function useChat(options: UseChatOptions = {}) {
     // one. The board state itself lives in useTodoBoard, which watches this ref.
     if (isConversationTodoMessage(msg)) {
       conversationTodo.value = msg;
+      return;
+    }
+
+    // Live context-pressure frame (#685). SET, never accumulate: the newest generation's observation
+    // is the whole truth for the live view, and the endpoint stays authoritative on reload.
+    if (isContextPressureMessage(msg)) {
+      contextPressure.value = msg;
       return;
     }
 
@@ -1908,6 +1925,7 @@ export function useChat(options: UseChatOptions = {}) {
     usage.value = null;
     cumulativeUsage.value = { promptTokens: 0, uncachedInputTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
     cumulativeCost.value = { estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' };
+    contextPressure.value = null;
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -2158,6 +2176,7 @@ export function useChat(options: UseChatOptions = {}) {
     cumulativeUsage,
     cumulativeCost,
     conversationTodo,
+    contextPressure,
     transport,
     threadId,
     currentRunId,
