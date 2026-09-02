@@ -114,6 +114,35 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
+    public async Task ProvisionAsync_deletes_a_minted_thread_when_effort_acknowledgement_is_missing()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-old-host\"}")
+            .OnJson(HttpMethod.Delete, "api/conversations/thread-old-host", "{}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "xhigh",
+                CancellationToken.None
+            );
+
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>();
+        handler
+            .Requests.Should()
+            .ContainSingle(r =>
+                r.Method == HttpMethod.Delete
+                && r.Uri.ToString().EndsWith("api/conversations/thread-old-host", StringComparison.Ordinal)
+            );
+    }
+
+    [Fact]
     public async Task ProvisionAsync_turns_an_invalid_effort_400_into_a_bounded_contract_error()
     {
         var handler = new FakeHttpMessageHandler().OnJson(

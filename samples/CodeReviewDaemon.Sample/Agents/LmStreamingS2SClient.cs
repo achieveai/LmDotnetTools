@@ -172,15 +172,27 @@ internal sealed class LmStreamingS2SClient
 
         _ = response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
+        var threadId = ReadStringProperty(body, "threadId");
         if (reasoningEffort is not null && !ReadBoolProperty(body, "reasoningEffortAccepted"))
         {
+            try
+            {
+                _ = await DeleteConversationAsync(threadId, ct).ConfigureAwait(false);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // Cleanup is best-effort. The stable contract error below is more actionable than a secondary
+                // delete failure, and the retention sweeper cannot know this id because provisioning never
+                // returned it to the caller.
+            }
+
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} did not acknowledge requested root reasoning effort "
                     + $"'{reasoningEffort}'. Upgrade the review host before running this review."
             );
         }
 
-        return ReadStringProperty(body, "threadId");
+        return threadId;
     }
 
     /// <summary>Updates a conversation's title/preview metadata (e.g. a human-readable "Review PR #n").</summary>

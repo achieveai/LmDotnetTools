@@ -1358,6 +1358,38 @@ public sealed class ReviewNotesArtifactBuilderTests
     }
 
     [Fact]
+    public async Task Provider_telemetry_cannot_add_markdown_table_columns()
+    {
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", "finding")]));
+        var node = NodeOnModel(
+            "agent-1",
+            "architecture | forged-agent-cell",
+            "gpt-5.6-sol | forged-model-cell",
+            source: "type-policy | forged-source-cell",
+            requestedEffort: "xhigh | forged-request-cell",
+            shapedEffort: "xhigh | forged-shaped-cell"
+        ) with
+        {
+            Template = "reviewer | forged-template-cell",
+            FailureCode = "timeout | forged-failure-cell",
+        };
+
+        var files = await BuildAsync(builder, NewContext(node));
+
+        var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
+        findings.Content.Should().Contain("| Model | gpt-5.6-sol \\| forged-model-cell |");
+        findings.Content.Should().Contain("| Model source | type-policy \\| forged-source-cell |");
+        findings.Content.Should().Contain("| Requested effort | xhigh \\| forged-reque… |");
+        findings.Content.Should().Contain("| Shaped effort | xhigh \\| forged-shape… |");
+        findings.Content.Should().Contain("| Template | reviewer \\| forged-template-cell |");
+        findings.Content.Should().Contain("| Failure code | timeout \\| forged-failure-cell |");
+
+        var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
+        contextFile.Content.Should().Contain("architecture \\| forged-agent-cell");
+        contextFile.Content.Should().Contain("reviewer \\| forged-template-cell");
+    }
+
+    [Fact]
     public async Task A_sub_agent_with_no_recorded_model_says_unrecorded_and_never_borrows_the_runs_model()
     {
         // The whole point of the column. A host that predates the field omits it, and a fallback to the

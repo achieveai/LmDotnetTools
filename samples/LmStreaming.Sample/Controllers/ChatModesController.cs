@@ -114,7 +114,10 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     private static BadRequestObjectResult? InvalidMode(ChatModeCreateUpdate data)
     {
         ArgumentNullException.ThrowIfNull(data);
-        if (!Services.ModeSubAgentPrompt.IsValidPlacement(data.SubAgentPromptPlacement))
+        if (
+            data.SubAgentPromptPlacementIsSet
+            && !Services.ModeSubAgentPrompt.IsValidPlacement(data.SubAgentPromptPlacement)
+        )
         {
             return new BadRequestObjectResult(
                 new

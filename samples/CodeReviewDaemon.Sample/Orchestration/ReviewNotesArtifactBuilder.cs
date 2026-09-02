@@ -164,6 +164,14 @@ internal static partial class UntrustedTranscriptText
     }
 
     /// <summary>
+    /// Reduces untrusted text for a markdown table cell. The pipe escape is context-specific: escaping it in
+    /// <see cref="Inline"/> would leak markdown syntax into headings and plain prose, while leaving it raw here
+    /// lets provider telemetry forge an extra table column.
+    /// </summary>
+    public static string TableCell(string? raw, int maxChars = 120) =>
+        Inline(raw, maxChars).Replace("|", "\\|", StringComparison.Ordinal);
+
+    /// <summary>
     /// A file-name-safe slug of an agent name/template. Restricted to ASCII letters, digits, dash and
     /// underscore so an agent name can never steer the path the daemon commits to — the notes dir is staged
     /// wholesale, so a name carrying <c>../</c> would otherwise decide where the write lands.
@@ -473,7 +481,7 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
             .Append("| Model | ")
-            .Append(UntrustedTranscriptText.Inline(context.ModelId))
+            .Append(UntrustedTranscriptText.TableCell(context.ModelId))
             .AppendLine(" |")
             .Append("| Modality | ")
             .Append(context.ToolAssisted ? "tool-assisted" : "diff-only")
@@ -526,7 +534,7 @@ internal sealed class ReviewNotesArtifactBuilder
     private static string RenderModel(ReviewSubAgentNode node) =>
         string.IsNullOrWhiteSpace(node.EffectiveModelId)
             ? UnrecordedModel
-            : UntrustedTranscriptText.Inline(node.EffectiveModelId, maxChars: 60);
+            : UntrustedTranscriptText.TableCell(node.EffectiveModelId, maxChars: 60);
 
     /// <summary>
     /// The intelligence tier that chose the model, or <see cref="UnrecordedModel"/>. Absent for an explicit
@@ -547,19 +555,19 @@ internal sealed class ReviewNotesArtifactBuilder
     private static string RenderModelSource(ReviewSubAgentNode node) =>
         string.IsNullOrWhiteSpace(node.ModelSelectionSource)
             ? UnrecordedModel
-            : UntrustedTranscriptText.Inline(node.ModelSelectionSource, maxChars: 40);
+            : UntrustedTranscriptText.TableCell(node.ModelSelectionSource, maxChars: 40);
 
     /// <summary>Normalized requested reasoning effort, or <see cref="UnrecordedModel"/>.</summary>
     private static string RenderRequestedEffort(ReviewSubAgentNode node) =>
         string.IsNullOrWhiteSpace(node.RequestedReasoningEffort)
             ? UnrecordedModel
-            : UntrustedTranscriptText.Inline(node.RequestedReasoningEffort, maxChars: 20);
+            : UntrustedTranscriptText.TableCell(node.RequestedReasoningEffort, maxChars: 20);
 
     /// <summary>Provider capability-shaped reasoning effort, or <see cref="UnrecordedModel"/>.</summary>
     private static string RenderShapedEffort(ReviewSubAgentNode node) =>
         string.IsNullOrWhiteSpace(node.ShapedReasoningEffort)
             ? UnrecordedModel
-            : UntrustedTranscriptText.Inline(node.ShapedReasoningEffort, maxChars: 20);
+            : UntrustedTranscriptText.TableCell(node.ShapedReasoningEffort, maxChars: 20);
 
     private async Task<IReadOnlyList<FindingsArtifact>> BuildFindingsAsync(
         ReviewRun run,
@@ -645,7 +653,7 @@ internal sealed class ReviewNotesArtifactBuilder
             .Append(RenderShapedEffort(node))
             .AppendLine(" |")
             .Append("| Template | ")
-            .Append(UntrustedTranscriptText.Inline(node.Template))
+            .Append(UntrustedTranscriptText.TableCell(node.Template))
             .AppendLine(" |")
             .Append("| Status | ")
             .Append(node.Status)
@@ -654,7 +662,7 @@ internal sealed class ReviewNotesArtifactBuilder
             .Append(node.Depth.ToString(CultureInfo.InvariantCulture))
             .AppendLine(" |")
             .Append("| Failure code | ")
-            .Append(UntrustedTranscriptText.Inline(node.FailureCode))
+            .Append(UntrustedTranscriptText.TableCell(node.FailureCode))
             .AppendLine(" |")
             .Append("| Terminal at (UTC) | ")
             .Append(node.TerminalAtUtc?.ToString("u", CultureInfo.InvariantCulture) ?? "(unrecorded)")
@@ -1005,7 +1013,7 @@ internal sealed class ReviewNotesArtifactBuilder
             )
             .AppendLine("` |")
             .Append("| Model | ")
-            .Append(UntrustedTranscriptText.Inline(context.ModelId))
+            .Append(UntrustedTranscriptText.TableCell(context.ModelId))
             .AppendLine(" |")
             .Append("| Modality | ")
             .Append(context.ToolAssisted ? "tool-assisted" : "diff-only")
@@ -1063,11 +1071,11 @@ internal sealed class ReviewNotesArtifactBuilder
                     .Append("| ")
                     .Append((i + 1).ToString(CultureInfo.InvariantCulture))
                     .Append(" | ")
-                    .Append(findings[i].Label)
+                    .Append(UntrustedTranscriptText.TableCell(findings[i].Label, maxChars: 80))
                     .Append(" | ")
                     .Append(RenderModel(nodes[i]))
                     .Append(" | ")
-                    .Append(UntrustedTranscriptText.Inline(nodes[i].Template))
+                    .Append(UntrustedTranscriptText.TableCell(nodes[i].Template))
                     .Append(" | ")
                     .Append(nodes[i].Status)
                     .Append(" | `")

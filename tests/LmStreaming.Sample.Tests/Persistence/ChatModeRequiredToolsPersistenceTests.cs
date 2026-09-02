@@ -3,8 +3,8 @@ namespace LmStreaming.Sample.Tests.Persistence;
 /// <summary>
 /// Persistence and CRUD-boundary tests for the mode-level <c>SubAgentRequiredTools</c> property
 /// (#623): legacy chat-modes.json files load unchanged (frozen literal fixture, not a round-trip
-/// self-check), the store round-trips the list through create/update/copy, an update without the
-/// field clears it back to "not enforced", and Prompts.yaml binding carries it.
+/// self-check), the store round-trips the list through create/update/copy, omitted update fields
+/// preserve it, explicit null clears it, and Prompts.yaml binding carries it.
 /// </summary>
 public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
 {
@@ -103,7 +103,7 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_WithoutTheField_ClearsItBackToNotEnforced()
+    public async Task Update_WithoutTheField_PreservesEnforcement()
     {
         var store = CreateStoreWithFile(null);
         var created = await store.CreateModeAsync(
@@ -119,6 +119,35 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
             created.Id,
             new ChatModeCreateUpdate { Name = "Clearable", SystemPrompt = "primary" }
         );
+
+        updated.SubAgentRequiredTools.Should().Equal("tasks:*");
+    }
+
+    [Fact]
+    public async Task Update_ExplicitNull_ClearsEnforcement()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Clearable",
+                SystemPrompt = "primary",
+                SubAgentRequiredTools = ["tasks:*"],
+            }
+        );
+        const string Json = """
+            {
+              "name": "Clearable",
+              "systemPrompt": "primary",
+              "subAgentRequiredTools": null
+            }
+            """;
+        var update = JsonSerializer.Deserialize<ChatModeCreateUpdate>(
+            Json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        )!;
+
+        var updated = await store.UpdateModeAsync(created.Id, update);
 
         updated.SubAgentRequiredTools.Should().BeNull();
     }
@@ -193,6 +222,132 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
         copy.SubAgentModelIntelligenceByType.Should().ContainSingle();
         copy.SubAgentModelIntelligenceByType!["code-reviewer:test-coverage-review"].Should().Be(3);
         copy.DefaultSubAgentModelIntelligence.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Update_WithoutDescriptionOrEnabledTools_PreservesBoth()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Restricted Mode",
+                Description = "keep me",
+                SystemPrompt = "primary",
+                EnabledTools = ["safe-tool"],
+            }
+        );
+
+        var updated = await store.UpdateModeAsync(
+            created.Id,
+            new ChatModeCreateUpdate
+            {
+                Name = "Restricted Mode",
+                SystemPrompt = "changed",
+                SubAgentReasoningEffort = "high",
+            }
+        );
+
+        updated.Description.Should().Be("keep me");
+        updated.EnabledTools.Should().Equal("safe-tool");
+    }
+
+    [Fact]
+    public async Task Update_ExplicitNull_ClearsDescriptionAndEnablesAllTools()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Restricted Mode",
+                Description = "clear me",
+                SystemPrompt = "primary",
+                EnabledTools = ["safe-tool"],
+            }
+        );
+        const string Json = """
+            {
+              "name": "Restricted Mode",
+              "description": null,
+              "systemPrompt": "primary",
+              "enabledTools": null
+            }
+            """;
+        var update = JsonSerializer.Deserialize<ChatModeCreateUpdate>(
+            Json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        )!;
+
+        var updated = await store.UpdateModeAsync(created.Id, update);
+
+        updated.Description.Should().BeNull();
+        updated.EnabledTools.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Update_WithoutChildPolicyFields_PreservesTheStoredPolicy()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Review Mode",
+                SystemPrompt = "primary",
+                SubAgentReasoningEffort = "xhigh",
+                SubAgentModelIntelligenceByType = new Dictionary<string, int>
+                {
+                    ["code-reviewer:architecture-review"] = 5,
+                },
+                DefaultSubAgentModelIntelligence = 3,
+            }
+        );
+
+        var updated = await store.UpdateModeAsync(
+            created.Id,
+            new ChatModeCreateUpdate { Name = "Renamed Review Mode", SystemPrompt = "changed" }
+        );
+
+        updated.SubAgentReasoningEffort.Should().Be("xhigh");
+        updated.SubAgentModelIntelligenceByType.Should().Contain("code-reviewer:architecture-review", 5);
+        updated.DefaultSubAgentModelIntelligence.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Update_ExplicitNull_ClearsTheChildPolicy()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Review Mode",
+                SystemPrompt = "primary",
+                SubAgentReasoningEffort = "xhigh",
+                SubAgentModelIntelligenceByType = new Dictionary<string, int>
+                {
+                    ["code-reviewer:architecture-review"] = 5,
+                },
+                DefaultSubAgentModelIntelligence = 3,
+            }
+        );
+        const string Json = """
+            {
+              "name": "Review Mode",
+              "systemPrompt": "primary",
+              "subAgentReasoningEffort": null,
+              "subAgentModelIntelligenceByType": null,
+              "defaultSubAgentModelIntelligence": null
+            }
+            """;
+        var update = JsonSerializer.Deserialize<ChatModeCreateUpdate>(
+            Json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        )!;
+
+        var updated = await store.UpdateModeAsync(created.Id, update);
+
+        updated.SubAgentReasoningEffort.Should().BeNull();
+        updated.SubAgentModelIntelligenceByType.Should().BeNull();
+        updated.DefaultSubAgentModelIntelligence.Should().BeNull();
     }
 
     [Theory]

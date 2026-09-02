@@ -425,6 +425,59 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SpawnAsync_PlainPathCharacteristicsFactoryShapesFloorForTierResolvedModel()
+    {
+        GenerateReplyOptions? receivedOptions = null;
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent(options => receivedOptions = options);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Plain template factory must not run."),
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+            ConversationEffortFloor = ReasoningEffort.Xhigh,
+            TierModelResolver = tier => tier == 3 ? "tier-3-model" : null,
+            PlainPathCharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(
+                    providerAgent.Object,
+                    ImmutableDictionary<string, object?>.Empty.Add("Reasoning", "xhigh")
+                )
+                {
+                    OwnsAgent = true,
+                    ShapedEffort = "xhigh",
+                };
+            },
+        };
+        await using var manager = new SubAgentManager(
+            Mock.Of<IMultiTurnAgent>(),
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            LoggerFactory.CreateLogger<SubAgentManager>(),
+            parentModelId: "controller-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
+
+        receivedCharacteristics
+            .Should()
+            .Be(new SubAgentCharacteristics("tier-3-model", ReasoningEffort.Xhigh) { IsModelTierResolved = true });
+        receivedOptions.Should().NotBeNull();
+        receivedOptions!.ModelId.Should().Be("tier-3-model");
+        receivedOptions.ExtraProperties.Should().Contain("Reasoning", "xhigh");
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.RequestedReasoningEffort.Should().Be("xhigh");
+        snapshot.ShapedReasoningEffort.Should().Be("xhigh");
+    }
+
+    [Fact]
     public async Task SpawnAsync_ExplicitTemplateModel_PlainPathBuildsProviderForTemplateModel()
     {
         GenerateReplyOptions? modelAgentOptions = null;

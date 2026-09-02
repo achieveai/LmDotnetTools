@@ -207,6 +207,18 @@ public record SubAgentOptions
     public Func<string, IStreamingAgent>? TierAgentFactory { get; init; }
 
     /// <summary>
+    /// Host-supplied characteristics factory for the PLAIN path (a template with no
+    /// <see cref="SubAgentTemplate.CharacteristicsAgentFactory"/>). This is the workflow-controller
+    /// counterpart to the template-level factory: after final model and effort resolution, the manager
+    /// invokes it so the host can build a transport-correct provider and capability-shape reasoning for
+    /// that exact model. When set, it supersedes <see cref="TierAgentFactory"/> and
+    /// <see cref="InheritedReasoning"/> for plain-path spawns. Null preserves legacy behavior.
+    /// Inherited through <see cref="ForChildLoop"/> so a workflow delegate's descendants remain under
+    /// the same conversation-wide provider policy.
+    /// </summary>
+    public Func<SubAgentCharacteristics, SubAgentProviderAgent>? PlainPathCharacteristicsAgentFactory { get; init; }
+
+    /// <summary>
     /// Host-supplied predicate that validates a spawn's explicit <c>model</c> override (the <c>Agent</c>
     /// tool's <c>model</c> argument) against the host's model catalog, returning <c>true</c> when the id
     /// names a model the host can actually build a provider for. The <c>model</c> argument is an

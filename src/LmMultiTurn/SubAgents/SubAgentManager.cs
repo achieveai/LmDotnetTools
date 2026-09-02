@@ -3011,32 +3011,67 @@ public sealed class SubAgentManager : IAsyncDisposable
                     && !string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
                         ? defaultOptions.ModelId
                     : null;
-                if (!string.IsNullOrWhiteSpace(plainProviderModel) && _options.TierAgentFactory is { } tierAgentFactory)
+                if (_options.PlainPathCharacteristicsAgentFactory is { } plainCharacteristicsFactory)
                 {
-                    providerAgent = tierAgentFactory(plainProviderModel);
-                    ownedProviderAgent = providerAgent;
+                    var provider = plainCharacteristicsFactory(
+                        new SubAgentCharacteristics(defaultOptions?.ModelId, requestedReasoningEffort)
+                        {
+                            IsModelExplicitlySelected =
+                                !string.IsNullOrWhiteSpace(modelOverride)
+                                || conversationDefaultModel is not null
+                                || template.IsModelExplicitlySelected,
+                            IsModelTierResolved = isModelTierResolved,
+                        }
+                    );
+                    providerAgent = provider.Agent;
+                    ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
+                    shapedReasoningEffort = provider.ShapedEffort;
+
+                    if (provider.UseParentModel && defaultOptions is not null)
+                    {
+                        defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
+                    }
+
+                    if (provider.ExtraProperties.Count > 0)
+                    {
+                        var requestExtraProperties =
+                            defaultOptions?.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
+                        defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                        {
+                            ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
+                        };
+                    }
                 }
                 else
                 {
-                    providerAgent = template.AgentFactory();
-                }
-
-                // A plain-path delegate (a template with no characteristics factory — e.g. a WorkflowAgent
-                // controller's transparent delegate) inherits the parent's PRE-SHAPED reasoning so it thinks
-                // like the launching conversation. Applied only when the delegate reuses the parent model (no
-                // explicit, per-spawn-tier, OR template-tier model — a different model may use a different
-                // transport than the shaped metadata targets) and carries no reasoning of its own, so a template
-                // that set ExtraProperties still wins.
-                if (
-                    _options.InheritedReasoning is { Count: > 0 } inheritedReasoning
-                    && string.IsNullOrWhiteSpace(plainProviderModel)
-                    && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0)
-                )
-                {
-                    defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                    if (
+                        !string.IsNullOrWhiteSpace(plainProviderModel)
+                        && _options.TierAgentFactory is { } tierAgentFactory
+                    )
                     {
-                        ExtraProperties = inheritedReasoning,
-                    };
+                        providerAgent = tierAgentFactory(plainProviderModel);
+                        ownedProviderAgent = providerAgent;
+                    }
+                    else
+                    {
+                        providerAgent = template.AgentFactory();
+                    }
+
+                    // Legacy plain-path hosts can still seed pre-shaped reasoning for a delegate that reuses
+                    // its parent's model. A selected model may use a different transport, so this fallback is
+                    // intentionally skipped there; hosts that need per-model shaping use the characteristics
+                    // factory above.
+                    if (
+                        _options.InheritedReasoning is { Count: > 0 } inheritedReasoning
+                        && string.IsNullOrWhiteSpace(plainProviderModel)
+                        && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0)
+                    )
+                    {
+                        defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                        {
+                            ExtraProperties = inheritedReasoning,
+                        };
+                    }
                 }
             }
 

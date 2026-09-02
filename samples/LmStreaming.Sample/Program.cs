@@ -1328,6 +1328,13 @@ try
                         "false",
                         StringComparison.OrdinalIgnoreCase
                     );
+                // Deterministic mock-workflow testing: expose the workflow tool family for scripted providers
+                // even in a mode that did not select it. Resolve this before the sub-agent catalog gate below,
+                // because workflow delegates need that catalog's type routing and effort policy too.
+                if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
+                {
+                    workspaceWorkflowEnabled = true;
+                }
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -1596,27 +1603,32 @@ try
                     // list) resolves to ModeCapabilities.LegacyDefaults, whose SubAgents is true, so
                     // every mode that predates capability selection keeps the Agent tool it has
                     // always had.
-                    var subAgentOptions = !caps.SubAgents
-                        ? null
-                        : BuildSubAgentOptionsAsync(
-                                isTestMode,
-                                sp.GetRequiredService<ITestAgentBuilder>(),
-                                loggerFactory,
-                                subAgentFactory,
-                                characteristicsAgentFactory,
-                                sandboxSession,
-                                sp.GetRequiredService<WorkspaceSubAgentLoader>(),
-                                sp.GetRequiredService<MarketplaceSubAgentLoader>(),
-                                sp.GetRequiredService<IWorkspaceStore>(),
-                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"),
-                                // The profile carries the mode's sub-agent prompt fragment (#610);
-                                // `mode` and `effectiveMode` hold identical fragment fields (the
-                                // `with` clauses above only rewrite SystemPrompt), so pass the
-                                // unaugmented profile.
-                                mode
-                            )
-                            .GetAwaiter()
-                            .GetResult();
+                    // Workflow controllers spawn delegates through the same catalog and mode policy even when
+                    // the root mode deliberately hides the ordinary Agent tool family. Build the options for
+                    // either consumer; ApplySubAgentToolNarrowing below still keeps the root surface closed when
+                    // caps.SubAgents is false.
+                    var subAgentOptions =
+                        !caps.SubAgents && !workspaceWorkflowEnabled
+                            ? null
+                            : BuildSubAgentOptionsAsync(
+                                    isTestMode,
+                                    sp.GetRequiredService<ITestAgentBuilder>(),
+                                    loggerFactory,
+                                    subAgentFactory,
+                                    characteristicsAgentFactory,
+                                    sandboxSession,
+                                    sp.GetRequiredService<WorkspaceSubAgentLoader>(),
+                                    sp.GetRequiredService<MarketplaceSubAgentLoader>(),
+                                    sp.GetRequiredService<IWorkspaceStore>(),
+                                    loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"),
+                                    // The profile carries the mode's sub-agent prompt fragment (#610);
+                                    // `mode` and `effectiveMode` hold identical fragment fields (the
+                                    // `with` clauses above only rewrite SystemPrompt), so pass the
+                                    // unaugmented profile.
+                                    mode
+                                )
+                                .GetAwaiter()
+                                .GetResult();
 
                     if (subAgentOptions is not null)
                     {
@@ -1679,8 +1691,8 @@ try
                     // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
                     // overrides the floor (SubAgentManager). The parent "can think" when it has classic
                     // reasoning metadata OR is an adaptive Copilot model (which reasons via output_config.effort
-                    // and therefore carries no classic extraProperties). The plain-path counterpart
-                    // (InheritedReasoning) is seeded on the controller's own options, not here.
+                    // and therefore carries no classic extraProperties). Workflow plain-path delegates use the
+                    // controller's characteristics factory, which shapes the final selected model separately.
                     var parentCanThink =
                         !extraProperties.IsEmpty || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
                     if (subAgentOptions is not null && parentCanThink)
@@ -1739,17 +1751,6 @@ try
                         NotifyWaitStore = isTestMode ? notifyWaitStore : null,
                         ThreadId = isTestMode ? threadId : null,
                     };
-
-                    // Deterministic mock-workflow testing: enable the workflow tool family for the SCRIPTED
-                    // mock providers (test / test-anthropic) in default mode WITHOUT a sandbox. The workflow
-                    // wiring below is sandbox-independent (it uses subAgentFactory / subAgentOptions / the
-                    // late-bound agent — never sandboxSession), and delegates inherit the conversation's mock
-                    // tools via the transparency snapshot. Scoped strictly to test providers, so a real-provider
-                    // default conversation never gets an unsandboxed WorkflowManager.
-                    if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
-                    {
-                        workspaceWorkflowEnabled = true;
-                    }
 
                     // Wire the StartWorkflowAgent tool family onto the conversation registry (Workspace Agent
                     // mode). Declared before the loop ctor so the launch tools are registered before the
@@ -1810,16 +1811,27 @@ try
                                     .. WorkflowToolProvider.AllToolNames,
                                     .. StartWorkflowToolProvider.ToolNames,
                                 ],
-                                // Controller delegates take the PLAIN path (CreateWorkflowControllerTemplates
-                                // sets CharacteristicsAgentFactory = null) and run on the controller's own model,
-                                // so they inherit its already-transport-shaped reasoning (Option A: High floor).
-                                // Keyed off `providerId` — the run's provider — so a preferred-provider run's
-                                // delegates think on that provider's transport. For Copilot, providerId == model id.
-                                InheritedReasoning = BuildControllerReasoningExtraProperties(
-                                    providerRegistry,
-                                    providerId,
-                                    providerId
-                                ),
+                                // Controller delegates take the plain template path, but their final model can
+                                // still differ by canonical type policy or workflow-unit tier. Shape reasoning
+                                // only after that model wins, using its own transport rather than a dictionary
+                                // pre-shaped for the controller.
+                                PlainPathCharacteristicsAgentFactory = characteristics =>
+                                {
+                                    var selectedModel = string.IsNullOrWhiteSpace(characteristics.ModelId)
+                                        ? providerId
+                                        : characteristics.ModelId;
+                                    var reasoning = BuildControllerReasoningExtraProperties(
+                                        providerRegistry,
+                                        selectedModel,
+                                        selectedModel,
+                                        characteristics.Effort ?? ReasoningEffort.High
+                                    );
+                                    return new SubAgentProviderAgent(agentFactory(selectedModel), reasoning)
+                                    {
+                                        OwnsAgent = true,
+                                        ShapedEffort = ReadShapedReasoningEffort(reasoning),
+                                    };
+                                },
                                 // Route a delegate's modelIntelligence tier (forwarded by the controller from the
                                 // composed unit) to a concrete model via the same host tier ladder. Controller
                                 // delegates take the PLAIN path, so a tier that resolves to a CROSS-transport model
@@ -4454,12 +4466,10 @@ public partial class Program
     ///     <see cref="SubAgentOptions.NonInheritedToolNames" /> - that one governs the children.
     /// </remarks>
     internal static SubAgentOptions? ApplySubAgentToolNarrowing(SubAgentOptions? options, ModeCapabilities caps) =>
-        options is not null && caps.SubAgentToolAllowList is { } allowList
-            ? options with
-            {
-                ExposedToolNames = allowList,
-            }
-            : options;
+        options is null ? null
+        : !caps.SubAgents ? options with { ExposedToolNames = new HashSet<string>(StringComparer.Ordinal) }
+        : caps.SubAgentToolAllowList is { } allowList ? options with { ExposedToolNames = allowList }
+        : options;
 
     /// <summary>
     ///     Builds the system-prompt suffix that tells a sandbox-backed agent where its workspace is and
