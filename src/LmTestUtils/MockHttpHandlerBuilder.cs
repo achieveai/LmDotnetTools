@@ -23,7 +23,11 @@ public interface IResponseProvider
     /// <summary>
     ///     Creates an HTTP response for the given request
     /// </summary>
-    Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex);
+    Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    );
 }
 
 /// <summary>
@@ -48,11 +52,13 @@ public interface IHttpHandlerMiddleware
     /// <param name="request">The HTTP request</param>
     /// <param name="requestIndex">The index of this request in the sequence</param>
     /// <param name="next">Function to call the next middleware in the chain, null if this is the last middleware</param>
+    /// <param name="cancellationToken">Token propagated from the caller's HttpClient request, for honouring cancellation/timeouts</param>
     /// <returns>HttpResponseMessage if handled, null to indicate no handling</returns>
     Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     );
 }
 
@@ -71,14 +77,21 @@ internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
     public async Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
         if (_provider.CanHandle(request, requestIndex))
         {
             try
             {
-                return await _provider.CreateResponseAsync(request, requestIndex);
+                return await _provider.CreateResponseAsync(request, requestIndex, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Caller-initiated cancellation (e.g. HttpClient.Timeout) must propagate,
+                // not be swallowed as a "provider failed, try the next middleware" case.
+                throw;
             }
             catch
             {
@@ -106,7 +119,8 @@ internal class RequestProcessorMiddleware : IHttpHandlerMiddleware
     public async Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
         await _processor.ProcessRequestAsync(request, requestIndex);
@@ -129,7 +143,8 @@ internal class RequestCaptureMiddleware : IHttpHandlerMiddleware
     public async Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
         await _capture.CaptureAsync(request);
@@ -172,7 +187,8 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
     public async Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
         if (_disposed)
@@ -285,11 +301,18 @@ internal class DelegateMiddleware : IHttpHandlerMiddleware
         HttpRequestMessage,
         int,
         Func<Task<HttpResponseMessage?>>?,
+        CancellationToken,
         Task<HttpResponseMessage?>
     > _middleware;
 
     public DelegateMiddleware(
-        Func<HttpRequestMessage, int, Func<Task<HttpResponseMessage?>>?, Task<HttpResponseMessage?>> middleware
+        Func<
+            HttpRequestMessage,
+            int,
+            Func<Task<HttpResponseMessage?>>?,
+            CancellationToken,
+            Task<HttpResponseMessage?>
+        > middleware
     )
     {
         _middleware = middleware;
@@ -298,10 +321,11 @@ internal class DelegateMiddleware : IHttpHandlerMiddleware
     public Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
-        return _middleware(request, requestIndex, next);
+        return _middleware(request, requestIndex, next, cancellationToken);
     }
 }
 
@@ -559,21 +583,25 @@ internal class MultiConditionalResponseProvider : IResponseProvider
         return _defaultProvider != null;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         // Find the first matching condition
         foreach (var (condition, provider) in _conditionalProviders)
         {
             if (condition(request, requestIndex))
             {
-                return provider.CreateResponseAsync(request, requestIndex);
+                return provider.CreateResponseAsync(request, requestIndex, cancellationToken);
             }
         }
 
         // Fall back to default provider if available
         if (_defaultProvider != null)
         {
-            return _defaultProvider.CreateResponseAsync(request, requestIndex);
+            return _defaultProvider.CreateResponseAsync(request, requestIndex, cancellationToken);
         }
 
         // If no default, return a generic error
@@ -683,9 +711,13 @@ internal class StatefulResponseProvider : IResponseProvider
         return _condition(request, requestIndex, _state);
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
-        return _innerProvider.CreateResponseAsync(request, requestIndex);
+        return _innerProvider.CreateResponseAsync(request, requestIndex, cancellationToken);
     }
 }
 
@@ -721,7 +753,11 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -774,7 +810,11 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -831,7 +871,11 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -903,7 +947,11 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -939,7 +987,11 @@ internal class StatusCodeSequenceResponseProvider : IResponseProvider
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         var currentIndex = Interlocked.Increment(ref _requestCount) - 1;
         var statusCodeIndex = Math.Min(currentIndex, _statusCodes.Length - 1);
@@ -997,7 +1049,11 @@ internal class RateLimitErrorResponseProvider : IResponseProvider
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
         response.Headers.Add("Retry-After", _retryAfterSeconds.ToString());
@@ -1061,7 +1117,11 @@ internal class AuthenticationErrorResponseProvider : IResponseProvider
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         var response = new HttpResponseMessage(HttpStatusCode.Unauthorized);
 
@@ -1113,10 +1173,17 @@ internal class TimeoutResponseProvider : IResponseProvider
         return true;
     }
 
-    public async Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public async Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
-        // Simulate a timeout by delaying longer than typical client timeout
-        await Task.Delay(_timeoutMilliseconds);
+        // Simulate a timeout by delaying longer than typical client timeout.
+        // Honour the caller's cancellation token so the delay itself throws
+        // TaskCanceledException as soon as the caller (e.g. HttpClient.Timeout)
+        // cancels, instead of racing a fixed delay against the caller's timer.
+        await Task.Delay(_timeoutMilliseconds, cancellationToken);
 
         return new HttpResponseMessage(HttpStatusCode.RequestTimeout)
         {
@@ -1167,7 +1234,11 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
         return _disposed ? throw new ObjectDisposedException(nameof(StreamingFileResponseProvider)) : true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -1220,7 +1291,11 @@ internal class RetryScenarioResponseProvider : IResponseProvider
         return true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         var currentCount = Interlocked.Increment(ref _requestCount);
 
@@ -1272,7 +1347,11 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         return _disposed ? throw new ObjectDisposedException(nameof(StreamingSequenceResponseProvider)) : true;
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -1452,7 +1531,11 @@ internal class ToolResultResponseProvider : IResponseProvider
         }
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         var response = new
         {
@@ -1493,9 +1576,13 @@ internal class ConditionalResponseProvider : IResponseProvider
         return _condition(request) && _innerProvider.CanHandle(request, requestIndex);
     }
 
-    public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
-        return _innerProvider.CreateResponseAsync(request, requestIndex);
+        return _innerProvider.CreateResponseAsync(request, requestIndex, cancellationToken);
     }
 }
 
@@ -1727,7 +1814,7 @@ public class SequentialBuilder
 /// </summary>
 internal class MockHttpHandler : HttpMessageHandler, IDisposable
 {
-    private readonly Func<HttpRequestMessage, int, Task<HttpResponseMessage?>> _middlewarePipeline;
+    private readonly Func<HttpRequestMessage, int, CancellationToken, Task<HttpResponseMessage?>> _middlewarePipeline;
     private int _requestIndex;
 
     public MockHttpHandler(IEnumerable<IHttpHandlerMiddleware> middlewares)
@@ -1751,7 +1838,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
     {
         var requestIndex = Interlocked.Increment(ref _requestIndex) - 1;
 
-        var response = await _middlewarePipeline(request, requestIndex);
+        var response = await _middlewarePipeline(request, requestIndex, cancellationToken);
 
         return response
             ?? throw new InvalidOperationException(
@@ -1759,13 +1846,13 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
             );
     }
 
-    private static Func<HttpRequestMessage, int, Task<HttpResponseMessage?>> BuildPipeline(
+    private static Func<HttpRequestMessage, int, CancellationToken, Task<HttpResponseMessage?>> BuildPipeline(
         IEnumerable<IHttpHandlerMiddleware> middlewares
     )
     {
         var middlewareList = middlewares.ToList();
 
-        return async (request, index) =>
+        return async (request, index, token) =>
         {
             // Build the pipeline dynamically for each request
             Func<Task<HttpResponseMessage?>>? next = null;
@@ -1775,7 +1862,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
             {
                 var middleware = middlewareList[i];
                 var currentNext = next;
-                next = () => middleware.HandleAsync(request, index, currentNext);
+                next = () => middleware.HandleAsync(request, index, currentNext, token);
             }
 
             // Execute the pipeline
@@ -2528,7 +2615,13 @@ public class MockHttpHandlerBuilder
     ///     Registers a delegate middleware
     /// </summary>
     public MockHttpHandlerBuilder Use(
-        Func<HttpRequestMessage, int, Func<Task<HttpResponseMessage?>>?, Task<HttpResponseMessage?>> middlewareFunc
+        Func<
+            HttpRequestMessage,
+            int,
+            Func<Task<HttpResponseMessage?>>?,
+            CancellationToken,
+            Task<HttpResponseMessage?>
+        > middlewareFunc
     )
     {
         _middlewares.Add(new DelegateMiddleware(middlewareFunc));
@@ -2995,7 +3088,11 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
         return _disposed ? throw new ObjectDisposedException(nameof(ApiForwardingProvider)) : true;
     }
 
-    public async Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
+    public async Task<HttpResponseMessage> CreateResponseAsync(
+        HttpRequestMessage request,
+        int requestIndex,
+        CancellationToken cancellationToken
+    )
     {
         if (_disposed)
         {
@@ -3142,7 +3239,8 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
     public async Task<HttpResponseMessage?> HandleAsync(
         HttpRequestMessage request,
         int requestIndex,
-        Func<Task<HttpResponseMessage?>>? next
+        Func<Task<HttpResponseMessage?>>? next,
+        CancellationToken cancellationToken
     )
     {
         if (_disposed)
