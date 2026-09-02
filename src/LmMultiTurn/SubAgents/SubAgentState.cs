@@ -229,6 +229,14 @@ internal class SubAgentState
     public string[]? RemoveTools { get; init; }
 
     /// <summary>
+    /// What this sub-agent can actually do, resolved once at construction from the loop's registered
+    /// handlers (#671). Lives here rather than in a manager-side lookup so it shares the state's
+    /// lifetime exactly: a record keyed separately would outlive a failed spawn's rollback, and the
+    /// receipt would then describe an agent that never existed.
+    /// </summary>
+    public required SpawnCapabilityRecord SpawnCapability { get; init; }
+
+    /// <summary>
     /// Provider pipeline created specifically for this sub-agent. Null means the provider is
     /// borrowed/shared and must not be disposed by this state.
     /// </summary>

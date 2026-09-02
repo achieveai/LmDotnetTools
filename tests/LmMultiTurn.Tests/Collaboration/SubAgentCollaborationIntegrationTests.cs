@@ -635,6 +635,77 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         received.FromName.Should().Be("child", "a leaf speaks for itself, not for its parent");
     }
 
+    /// <summary>
+    /// Hiding <c>Agent</c> is guidance for the NEXT turn; history is not rewritten, so a model that
+    /// saw the tool before the limit was reached can still call it. That call used to come back as a
+    /// bare "Unknown function" — the same answer a hallucinated tool name gets — which told the agent
+    /// neither that it had hit a rule nor what to do instead. #671: the loop asks the provider why the
+    /// tool is gone and returns that, with the code carried on the result rather than only in prose.
+    /// </summary>
+    [Fact]
+    public async Task AgentCall_AtDepthLimit_ReturnsDepthLimitTeachingRefusal_NotUnknownFunction()
+    {
+        // MaxDelegationDepth 0: the collaboration exists and nobody may spawn, so EmitShape withholds
+        // Agent and the loop never registers its handler.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 });
+        var result = await DriveOneToolCallAsync(root, "Agent");
+
+        result.IsError.Should().BeTrue("a withdrawn tool did not run — the refusal must not read as a success");
+        result.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+
+        using var doc = JsonDocument.Parse(result.Result);
+        doc.RootElement.GetProperty("code").GetString().Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+        doc.RootElement.GetProperty("error").GetString().Should().NotContain("Unknown function");
+        doc.RootElement.GetProperty("error")
+            .GetString()
+            .Should()
+            .Contain("SendMessage", "a refusal without a next valid action leaves the obligation stranded");
+        doc.RootElement.GetProperty("available_functions")
+            .EnumerateArray()
+            .Select(e => e.GetString())
+            .Should()
+            .Contain("GetAgents");
+    }
+
+    /// <summary>
+    /// The discriminator. SAME loop, SAME harness, one variable changed — a name nothing ever
+    /// advertised — so the teaching refusal above is evidence about withdrawal, not about every
+    /// unregistered name.
+    /// </summary>
+    [Fact]
+    public async Task AnInventedToolName_AtDepthLimit_StillGetsThePlainUnknownFunctionError()
+    {
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 });
+        var result = await DriveOneToolCallAsync(root, "TotallyMadeUp");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().BeNull();
+
+        using var doc = JsonDocument.Parse(result.Result);
+        doc.RootElement.GetProperty("error").GetString().Should().Contain("Unknown function");
+        doc.RootElement.TryGetProperty("code", out _).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Both withdrawal reasons can hold at once, and they are not interchangeable: suppression lifts
+    /// at the end of the turn, the depth limit never does. Reporting the temporary one here would
+    /// promise a retry that is guaranteed to fail forever, so the PERMANENT reason wins.
+    /// </summary>
+    [Fact]
+    public async Task AgentCall_SuppressedAndAtTheDepthLimit_ReportsTheDepthLimit_NotAThisTurnPause()
+    {
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 });
+        var result = await DriveOneToolCallAsync(root, "Agent", suppressSpawning: true);
+
+        result.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+
+        using var doc = JsonDocument.Parse(result.Result);
+        doc.RootElement.GetProperty("error")
+            .GetString()
+            .Should()
+            .NotContain("for this turn", "waiting out the turn cannot clear a limit that outlives it");
+    }
+
     #endregion
 
     #region Recursive delegation
@@ -2066,6 +2137,94 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 )
             )
             .Returns(Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = text, Role = Role.Assistant }])));
+    }
+
+    /// <summary>
+    /// Runs one turn of a REAL <see cref="MultiTurnAgentLoop"/> whose provider emits a single tool
+    /// call for <paramref name="functionName"/>, and returns the result the loop produced for it.
+    /// The loop is what decides how an unregistered name is answered, so nothing short of driving it
+    /// can show which of the two answers a caller gets.
+    /// </summary>
+    private async Task<ToolCallResultMessage> DriveOneToolCallAsync(
+        AgentCollaborationSetup collaboration,
+        string functionName,
+        bool suppressSpawning = false
+    )
+    {
+        // The provider asks for the tool ONCE and then settles, so the run produces exactly one
+        // result to assert on; repeating the call every turn would loop the agent until cancellation.
+        List<IMessage> firstTurn =
+        [
+            new ToolCallMessage
+            {
+                FunctionName = functionName,
+                FunctionArgs = "{}",
+                ToolCallId = "tc_withdrawn",
+                Role = Role.Assistant,
+            },
+        ];
+        List<IMessage> laterTurns = [new TextMessage { Text = "Understood.", Role = Role.Assistant }];
+
+        var turn = 0;
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable(turn++ == 0 ? firstTurn : laterTurns)));
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new()
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+        };
+
+        await using var loop = new MultiTurnAgentLoop(
+            provider.Object,
+            new FunctionRegistry(),
+            threadId: "withdrawn-tool-thread",
+            includeAskUserQuestionTool: false,
+            includeNotifyClientTool: false,
+            subAgentOptions: subAgentOptions,
+            subAgentTemplateSource: new MutableSubAgentTemplateSource(subAgentOptions.Templates),
+            collaboration: collaboration
+        );
+
+        loop.SubAgentTools!.GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .NotContain("Agent", "the withdrawal this test is about has to have happened");
+
+        using var suppression = suppressSpawning ? loop.SubAgentTools!.SuppressSpawning() : null;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = loop.RunAsync(cts.Token);
+
+        List<IMessage> emitted = [];
+        await foreach (
+            var message in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "delegate this", Role = Role.User }]),
+                cts.Token
+            )
+        )
+        {
+            emitted.Add(message);
+        }
+
+        await cts.CancelAsync();
+
+        return emitted.OfType<ToolCallResultMessage>().Should().ContainSingle().Subject;
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(

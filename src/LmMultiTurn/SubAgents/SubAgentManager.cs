@@ -604,7 +604,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Nobody awaits the completion on the background path; observe any fault
                 // so it never surfaces as an UnobservedTaskException.
                 ObserveCompletionFaults(state);
-                return SerializeSpawnReceipt(agentId, effectiveName, templateName, "spawned");
+                return SerializeSpawnReceipt(agentId, effectiveName, templateName, "spawned", state.SpawnCapability);
             }
 
             // Synchronous: block until the run completes and return its final answer.
@@ -619,25 +619,31 @@ public sealed class SubAgentManager : IAsyncDisposable
         // waits for the pump to create+start the agent (StateReady) and then awaits its completion.
         // Registration and enqueue are serialized with disposal so a successful receipt can never name
         // work accepted after shutdown began.
-        var queued = new QueuedSpawn
-        {
-            AgentId = agentId,
-            EffectiveName = effectiveName,
-            TemplateName = templateName,
-            Template = template,
-            Task = task,
-            Model = model,
-            AddTools = addTools,
-            RemoveTools = removeTools,
-            ModelIntelligence = modelIntelligence,
-            ModelSelectionSource = modelSelectionSource,
-            Lineage = lineage,
-            RunInBackground = runInBackground,
-            CallerCancellation = runInBackground ? CancellationToken.None : ct,
-        };
-
+        // Construction happens INSIDE the retire-on-error guard because it is not merely field
+        // assignment: projecting the spawn capability REJECTS an impossible tool request (remove_tools
+        // with no base set to remove from). Outside the guard that rejection would keep the
+        // collaboration slot this spawn was just admitted to, shrinking the root-wide cap for good.
+        QueuedSpawn queued;
         try
         {
+            queued = new QueuedSpawn
+            {
+                AgentId = agentId,
+                EffectiveName = effectiveName,
+                TemplateName = templateName,
+                Template = template,
+                Task = task,
+                Model = model,
+                AddTools = addTools,
+                RemoveTools = removeTools,
+                ModelIntelligence = modelIntelligence,
+                ModelSelectionSource = modelSelectionSource,
+                Lineage = lineage,
+                RunInBackground = runInBackground,
+                CallerCancellation = runInBackground ? CancellationToken.None : ct,
+                SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools),
+            };
+
             lock (_spawnQueue)
             {
                 ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
@@ -674,7 +680,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // The background caller returns now with a "queued" receipt and never awaits StateReady, so
             // observe a potential start-failure fault on it to avoid an UnobservedTaskException.
             ObserveTaskFault(queued.StateReady.Task);
-            return SerializeSpawnReceipt(agentId, effectiveName, templateName, "queued");
+            return SerializeSpawnReceipt(agentId, effectiveName, templateName, "queued", queued.SpawnCapability);
         }
 
         // Foreground (blocking) queued spawn: wait for the pump to create+start the agent, then await
@@ -718,7 +724,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         try
         {
             ct.ThrowIfCancellationRequested();
-            var (agent, store, ownedProviderAgent, routing) = await CreateSubAgentAsync(
+            var (agent, store, ownedProviderAgent, capability, routing) = await CreateSubAgentAsync(
                 agentId,
                 template,
                 model,
@@ -749,6 +755,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 ShapedReasoningEffort = routing.ShapedReasoningEffort,
                 AddTools = addTools,
                 RemoveTools = removeTools,
+                SpawnCapability = capability,
                 Store = store,
                 Name = effectiveName,
                 NotifyParentOnCompletion = runInBackground,
@@ -1018,17 +1025,78 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <c>"spawned"</c> for a spawn that started immediately or <c>"queued"</c> for one deferred to the
     /// pump because the pool was full.
     /// </summary>
-    private static string SerializeSpawnReceipt(string agentId, string name, string templateName, string status)
+    /// <remarks>
+    /// #671: identity and status alone cannot tell a dispatcher whether the delegate can do the work,
+    /// so the receipt also carries the delegate's effective tools, whether it may sub-delegate, the
+    /// live capacity its next spawn competes for, and any capability the spawn asked for and did not
+    /// get. Mismatch fields are OMITTED when there is nothing to report, so an ordinary receipt stays
+    /// small and a present field always means something happened. Delegation and capacity are omitted
+    /// rather than invented when the manager runs without a collaboration, where neither exists.
+    /// </remarks>
+    private string SerializeSpawnReceipt(
+        string agentId,
+        string name,
+        string templateName,
+        string status,
+        SpawnCapabilityRecord capability
+    )
     {
-        return JsonSerializer.Serialize(
-            new
+        var child = GetChildCollaboration(agentId);
+        var receipt = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["agent_id"] = agentId,
+            ["name"] = name,
+            ["template"] = templateName,
+            ["status"] = status,
+            ["tools"] = capability.Tools,
+            ["tools_source"] = capability.ToolsSource,
+            // Always present: "may I hand this delegate work that needs its own delegates?" is the
+            // question a dispatcher asks on every spawn, and a missing answer reads as "maybe".
+            ["can_delegate"] = child?.CanDelegate ?? false,
+        };
+
+        if (child is not null && Collaboration is { } parent)
+        {
+            receipt["delegation_depth"] = child.Context.DelegationDepth;
+            receipt["remaining_delegation_depth"] = Math.Max(
+                0,
+                child.Options.MaxDelegationDepth - child.Context.DelegationDepth
+            );
+            receipt["capacity"] = new
             {
-                agent_id = agentId,
-                name,
-                template = templateName,
-                status,
+                // A permit is held for the whole run, so the semaphore's free count IS the live
+                // in-flight number - including this spawn, which already holds one.
+                running = _options.MaxConcurrentSubAgents - _concurrencyGate.CurrentCount,
+                max_concurrent = _options.MaxConcurrentSubAgents,
+                total = parent.Directory.Capacity.InUse,
+                max_total = parent.Directory.Capacity.Capacity,
+            };
+        }
+
+        AddWhenAny(receipt, SpawnCapabilityCodes.UnmatchedAddTools, capability.UnmatchedAddTools);
+        AddWhenAny(receipt, SpawnCapabilityCodes.UnremovableTools, capability.UnremovableTools);
+        AddWhenAny(receipt, SpawnCapabilityCodes.RemoveToolsWithheldNothing, capability.RemoveToolsWithheldNothing);
+        AddWhenAny(receipt, SpawnCapabilityCodes.RemoveToolsRestoredByPolicy, capability.RestoredByRequiredTools);
+
+        if (capability.EmptyInheritedToolset)
+        {
+            receipt[SpawnCapabilityCodes.EmptyInheritedToolset] = true;
+        }
+
+        if (capability.NextAction is { } nextAction)
+        {
+            receipt["next_action"] = nextAction;
+        }
+
+        return JsonSerializer.Serialize(receipt);
+
+        static void AddWhenAny(Dictionary<string, object?> target, string code, IReadOnlyList<string> values)
+        {
+            if (values.Count > 0)
+            {
+                target[code] = values;
             }
-        );
+        }
     }
 
     /// <summary>
@@ -1616,7 +1684,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
-                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementRouting) =
+                // The capability record is discarded here on purpose: the receipt that carried it was
+                // returned to the caller when the sub-agent was first spawned, and a rebuild resolves
+                // the SAME template and spawn arguments, so re-publishing it would say nothing new.
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, _, replacementRouting) =
                     await CreateSubAgentAsync(
                         state.AgentId,
                         state.Template,
@@ -2719,6 +2790,12 @@ public sealed class SubAgentManager : IAsyncDisposable
         public required AgentLineage Lineage { get; init; }
         public CancellationToken CallerCancellation { get; init; }
 
+        /// <summary>
+        /// The capability this spawn is PROJECTED to have (#671). A queued spawn has no loop yet, so
+        /// its receipt cannot report a registered toolset — but it must not report an empty one either.
+        /// </summary>
+        public required SpawnCapabilityRecord SpawnCapability { get; init; }
+
         // RunContinuationsAsynchronously so the pump thread that completes this never inline-runs a
         // foreground caller's AwaitCompletionAsync continuation while it should be moving to the next
         // queued spawn.
@@ -2809,6 +2886,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         IMultiTurnAgent Agent,
         IConversationStore? Store,
         IStreamingAgent? OwnedProviderAgent,
+        SpawnCapabilityRecord Capability,
         SubAgentModelRouting Routing
     )> CreateSubAgentAsync(
         string agentId,
@@ -2925,6 +3003,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TestAgentFactoryOverride(agentId, template),
                 TestConversationStoreOverride?.Invoke(agentId, template),
                 TestOwnedProviderOverride?.Invoke(agentId, template),
+                // A substituted agent has no registered handlers to read, so the receipt reports the
+                // PROJECTED toolset and says so rather than claiming a surface that was never built.
+                ProjectSpawnCapability(template, addTools, removeTools),
                 BuildRouting(
                     template,
                     modelOverride,
@@ -3129,23 +3210,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             foreach (var contract in _parentContracts)
             {
-                // AskUserQuestion/NotifyClient (#246) are excluded from the ParentTools copy: every
-                // MultiTurnAgentLoop constructor — including the child loop built below — registers
-                // its OWN correctly-scoped instance of each unconditionally. Copying the parent's
-                // entry here too would leave two registrations of the same tool name in the child's
-                // fresh registry, and FunctionRegistry.Build()'s default (throwing) conflict
-                // resolution would crash this sub-agent's construction.
-                if (IsNeverInheritedTool(contract.Name))
-                {
-                    continue;
-                }
-
-                if (enabledSet != null && !enabledSet.Contains(contract.Name))
-                {
-                    continue;
-                }
-
-                if (!_parentHandlers.TryGetValue(contract.Name, out var handler))
+                if (!InheritsParentTool(contract.Name, enabledSet, out var handler))
                 {
                     continue;
                 }
@@ -3168,19 +3233,6 @@ public sealed class SubAgentManager : IAsyncDisposable
             // The #623 warning floor, at the same boundary as the inherited-toolset line above so
             // "ordered to work the board" and "received no board tools" are correlated in one place.
             WarnIfBoardDispatchLacksTaskTools(agentId, template, spawnName, task, inheritedToolNames);
-
-            // #635/#638: an add_tools entry that matched no parent tool, a remove_tools entry that
-            // withheld nothing, or a filter that resolved the whole toolset away, must not pass
-            // quietly regardless of what the dispatch prompt said.
-            WarnIfSpawnToolRequestMatchedNothing(
-                agentId,
-                template,
-                addTools,
-                removeTools,
-                inheritableToolNames,
-                enabledSet,
-                inheritedToolNames
-            );
 
             // Under collaboration the child ALWAYS gets its own manager, because messaging is not
             // delegation. SubAgentToolProvider already withholds the spawn tools when the child has no
@@ -3209,33 +3261,53 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _ = registry.AddProvider(childToolProvider);
             }
 
+            var childLoop = new MultiTurnAgentLoop(
+                providerAgent,
+                registry,
+                threadId: SubAgentThreadId(agentId),
+                // Explicit tool-control overload: a child always gets both browser-hosted client
+                // tools (matching the always-true behavior of the back-compat overload), but that
+                // overload has no descendantQuestionSink parameter — the child's questions must
+                // route to this manager's sink rather than the child's own persist-and-publish path.
+                includeAskUserQuestionTool: true,
+                includeNotifyClientTool: true,
+                systemPrompt: template.SystemPrompt,
+                defaultOptions: defaultOptions,
+                maxTurnsPerRun: template.MaxTurnsPerRun,
+                outputChannelCapacity: _options.OutputChannelCapacity,
+                store: store,
+                logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
+                // Not _options: a child runs its own delegations, so it must not inherit the spawn
+                // authority this level's host holds over ITS spawns (see ForChildLoop).
+                subAgentOptions: childParticipatesInCollaboration ? _childOptions : null,
+                subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
+                lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
+                collaboration: childCollaboration,
+                descendantQuestionSink: _descendantQuestionSink
+            );
+
+            // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
+            // withheld nothing or that the child holds anyway, or a filter that resolved the whole
+            // toolset away, must not pass quietly regardless of what the dispatch prompt said. Resolved
+            // AFTER the loop because its registered handlers are the child's truthful capability
+            // surface; the same record backs the warnings below and the spawn receipt (#671).
+            var capability = BuildSpawnCapabilityRecord(
+                template,
+                addTools,
+                removeTools,
+                inheritableToolNames,
+                enabledSet,
+                inheritedToolNames,
+                childLoop.RegisteredToolNames
+            );
+
+            WarnAboutSpawnCapability(agentId, template, capability);
+
             return (
-                new MultiTurnAgentLoop(
-                    providerAgent,
-                    registry,
-                    threadId: SubAgentThreadId(agentId),
-                    // Explicit tool-control overload: a child always gets both browser-hosted client
-                    // tools (matching the always-true behavior of the back-compat overload), but that
-                    // overload has no descendantQuestionSink parameter — the child's questions must
-                    // route to this manager's sink rather than the child's own persist-and-publish path.
-                    includeAskUserQuestionTool: true,
-                    includeNotifyClientTool: true,
-                    systemPrompt: template.SystemPrompt,
-                    defaultOptions: defaultOptions,
-                    maxTurnsPerRun: template.MaxTurnsPerRun,
-                    outputChannelCapacity: _options.OutputChannelCapacity,
-                    store: store,
-                    logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
-                    // Not _options: a child runs its own delegations, so it must not inherit the spawn
-                    // authority this level's host holds over ITS spawns (see ForChildLoop).
-                    subAgentOptions: childParticipatesInCollaboration ? _childOptions : null,
-                    subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
-                    lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
-                    collaboration: childCollaboration,
-                    descendantQuestionSink: _descendantQuestionSink
-                ),
+                childLoop,
                 store,
                 ownedProviderAgent,
+                capability,
                 // Capture the FINAL resolved model and the winning selection input together. This is the
                 // authoritative presentation record; callers must not reconstruct routing from the LLM's raw
                 // Agent arguments because workflow authority may have replaced placeholder values.
@@ -3387,7 +3459,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// no-base-set throw below otherwise makes unexpressible. Other spellings (<c>all</c>, a
     /// group wildcard like <c>tasks:*</c>) are deliberately NOT wildcards here — <c>all</c> is a
     /// legal tool name and this field has no group language — but a spawn whose add list matches
-    /// nothing is now reported by <see cref="WarnIfSpawnToolRequestMatchedNothing"/> rather than
+    /// nothing is now reported by <see cref="BuildSpawnCapabilityRecord"/> rather than
     /// passing quietly (#623's lesson).
     /// </para>
     /// </remarks>
@@ -3472,13 +3544,36 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Deliberately narrow. <c>all</c> is not a wildcard here: it is a legal tool name, and reading it
     /// as "everything" would silently over-grant. A group wildcard such as <c>tasks:*</c> is not one
     /// either — <c>add_tools</c> has no group language, only exact names — and both are covered
-    /// instead by <see cref="WarnIfSpawnToolRequestMatchedNothing"/>, which refuses to let an add
+    /// instead by <see cref="BuildSpawnCapabilityRecord"/>, which refuses to let an add
     /// entry that matched nothing pass in silence.
     /// </remarks>
     internal static bool IsAllToolsWildcard(string? tool)
     {
         var trimmed = tool?.Trim();
         return trimmed is "*" or "*:*";
+    }
+
+    /// <summary>
+    /// Whether a child resolved to <paramref name="enabledSet"/> inherits the parent tool
+    /// <paramref name="name"/>, and the handler it inherits with it.
+    /// </summary>
+    /// <remarks>
+    /// AskUserQuestion/NotifyClient (#246) are excluded from the ParentTools copy: every
+    /// <c>MultiTurnAgentLoop</c> constructor — including a child's — registers its OWN correctly-scoped
+    /// instance of each unconditionally. Copying the parent's entry too would leave two registrations
+    /// of the same tool name in the child's fresh registry, and <c>FunctionRegistry.Build()</c>'s
+    /// default (throwing) conflict resolution would crash that sub-agent's construction.
+    /// <para>
+    /// Shared with <see cref="ProjectSpawnCapability"/> so a queued spawn's projected toolset and the
+    /// toolset the pump later registers are decided by one rule rather than two that can diverge.
+    /// </para>
+    /// </remarks>
+    private bool InheritsParentTool(string name, HashSet<string>? enabledSet, out ToolHandler handler)
+    {
+        handler = null!;
+        return !IsNeverInheritedTool(name)
+            && (enabledSet is null || enabledSet.Contains(name))
+            && _parentHandlers.TryGetValue(name, out handler!);
     }
 
     /// <summary>
@@ -3489,7 +3584,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// Used by the parent-contract intersection to skip them, and by
-    /// <see cref="WarnIfSpawnToolRequestMatchedNothing"/> to count only what could actually have been
+    /// <see cref="BuildSpawnCapabilityRecord"/> to count only what could actually have been
     /// inherited. Counting them was wrong twice over (#638): the empty-toolset warning reported a
     /// parent tool count larger than the number of tools any child could ever receive, and on a parent
     /// exposing ONLY these two it fired on a spawn whose empty toolset was structurally unavoidable.
@@ -3605,59 +3700,174 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// either. Both are #638 F-002: a warning that fires on correct configuration trains people to
     /// ignore it, which costs the very signal these warnings exist to add.
     /// </para>
+    /// <para>
+    /// #671 folded the classification out of the log statements and into this record, which the spawn
+    /// RECEIPT also serializes. A warning only helps someone reading the operator log; the dispatching
+    /// model never sees one, so the same mismatch that is "diagnosable" for an operator was silent
+    /// work debt for the caller. One resolution backing both (#641) is what stops the receipt and the
+    /// log line from ever disagreeing about what the sub-agent can do. <c>effectiveToolNames</c> is the
+    /// child loop's REGISTERED tool names, or null for a spawn still sitting in the defer queue — which
+    /// has no loop yet and therefore reports a projected toolset instead.
+    /// </para>
     /// </summary>
-    private void WarnIfSpawnToolRequestMatchedNothing(
-        string agentId,
+    private SpawnCapabilityRecord BuildSpawnCapabilityRecord(
         SubAgentTemplate template,
         string[]? addTools,
         string[]? removeTools,
         IReadOnlyCollection<string> inheritableToolNames,
         HashSet<string>? enabledSet,
-        List<string> inheritedToolNames
+        IReadOnlyCollection<string> inheritedToolNames,
+        IReadOnlyCollection<string>? effectiveToolNames
     )
     {
-        if (addTools is { Length: > 0 })
-        {
-            var unmatched = addTools
-                .Where(tool => !IsAllToolsWildcard(tool) && !_parentContracts.Any(c => c.Name == tool))
-                .ToArray();
+        string[] unmatchedAddTools = addTools is { Length: > 0 }
+            ? [.. addTools.Where(tool => !IsAllToolsWildcard(tool) && !_parentContracts.Any(c => c.Name == tool))]
+            : [];
 
-            if (unmatched.Length > 0)
-            {
-                _logger.LogWarning(
-                    "Sub-agent {AgentId} (template {Template}) was spawned with add_tools naming "
-                        + "{UnmatchedCount} tool(s) the parent does not expose ({UnmatchedToolNames}); they were "
-                        + "ignored. add_tools matches exact tool names, or '*' for every tool the parent has.",
-                    agentId,
-                    template.Name,
-                    unmatched.Length,
-                    unmatched
-                );
-            }
-        }
-
-        if (removeTools is { Length: > 0 })
-        {
-            WarnIfRemoveToolsWithheldNothing(
-                agentId,
-                template,
-                addTools,
-                removeTools,
-                inheritableToolNames,
-                inheritedToolNames
-            );
-        }
-
-        // #638 F-002: AskUserQuestion/NotifyClient can never be inherited, so counting them both
-        // overstated the loss and let this fire on a parent from which nothing was inheritable.
-        var inheritableCount = _parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+        var (unremovable, withheldNothing, restored) = ClassifyRemoveTools(
+            template,
+            addTools,
+            removeTools,
+            inheritableToolNames,
+            inheritedToolNames,
+            effectiveToolNames
+        );
 
         // A template that declares an EMPTY tools list is asking for exactly this outcome. Only when
         // the spawn added nothing on top: `tools: []` plus an add_tools that resolved to nothing IS a
         // collapse, because the caller asked for a tool and did not get it.
         var deliberateDenyAll = template.EnabledTools is { Count: 0 } && addTools is null or { Length: 0 };
 
-        if (enabledSet is not null && inheritedToolNames.Count == 0 && inheritableCount > 0 && !deliberateDenyAll)
+        return new SpawnCapabilityRecord(
+            // Ordered so two receipts for the same resolution are byte-identical; the registry's key
+            // order is unspecified.
+            Tools: [.. (effectiveToolNames ?? inheritedToolNames).Order(StringComparer.Ordinal)],
+            ToolsSource: effectiveToolNames is null
+                ? SpawnCapabilityRecord.ProjectedSource
+                : SpawnCapabilityRecord.RegisteredSource,
+            UnmatchedAddTools: unmatchedAddTools,
+            UnremovableTools: unremovable,
+            RemoveToolsWithheldNothing: withheldNothing,
+            RestoredByRequiredTools: restored,
+            EmptyInheritedToolset: enabledSet is not null
+                && inheritedToolNames.Count == 0
+                && InheritableToolCount > 0
+                && !deliberateDenyAll
+        );
+    }
+
+    /// <summary>
+    /// The capability a DEFERRED spawn will have once the pump starts it: the same filters resolved
+    /// against the parent's surface, with no loop to read a registered toolset from yet.
+    /// </summary>
+    /// <remarks>
+    /// A queued receipt has to be honest about both halves. Omitting the toolset would read as "this
+    /// delegate has no tools" and send the dispatcher looking elsewhere; claiming a registered one
+    /// would name handlers that do not exist. It projects, says so via
+    /// <see cref="SpawnCapabilityRecord.ProjectedSource"/>, and still reports every mismatch that is
+    /// already decidable from the arguments — those do not become truer once a slot frees.
+    /// </remarks>
+    private SpawnCapabilityRecord ProjectSpawnCapability(
+        SubAgentTemplate template,
+        string[]? addTools,
+        string[]? removeTools
+    )
+    {
+        string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
+        var enabledSet = BuildEnabledToolSet(
+            template.EnabledTools,
+            addTools,
+            removeTools,
+            _options.RequiredToolNames,
+            inheritableToolNames
+        );
+
+        string[] projected =
+        [
+            .. _parentContracts.Select(c => c.Name).Where(name => InheritsParentTool(name, enabledSet, out _)),
+        ];
+
+        return BuildSpawnCapabilityRecord(
+            template,
+            addTools,
+            removeTools,
+            inheritableToolNames,
+            enabledSet,
+            projected,
+            effectiveToolNames: null
+        );
+    }
+
+    /// <summary>
+    /// The inheritable half of the parent's surface. #638 F-002: AskUserQuestion/NotifyClient can
+    /// never be inherited, so counting them both overstated the loss and let the empty-toolset signal
+    /// fire on a parent from which nothing was inheritable in the first place.
+    /// </summary>
+    private int InheritableToolCount => _parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+
+    /// <summary>
+    /// Emits the operator log lines for a resolved <see cref="SpawnCapabilityRecord"/>. Purely a
+    /// rendering of the record — it classifies nothing itself, so the log and the receipt cannot drift.
+    /// </summary>
+    private void WarnAboutSpawnCapability(string agentId, SubAgentTemplate template, SpawnCapabilityRecord capability)
+    {
+        if (capability.UnmatchedAddTools.Count > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with add_tools naming "
+                    + "{UnmatchedCount} tool(s) the parent does not expose ({UnmatchedToolNames}); they were "
+                    + "ignored. "
+                    + SpawnCapabilityCodes.AddToolsGrammar,
+                agentId,
+                template.Name,
+                capability.UnmatchedAddTools.Count,
+                capability.UnmatchedAddTools
+            );
+        }
+
+        if (capability.RemoveToolsWithheldNothing.Count > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
+                    + "{UnmatchedCount} tool(s) that were not in its toolset to begin with "
+                    + "({UnmatchedToolNames}); nothing was withheld. "
+                    + SpawnCapabilityCodes.RemoveToolsGrammar,
+                agentId,
+                template.Name,
+                capability.RemoveToolsWithheldNothing.Count,
+                capability.RemoveToolsWithheldNothing
+            );
+        }
+
+        if (capability.UnremovableTools.Count > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
+                    + "{UnremovableCount} tool(s) it is given directly rather than inheriting "
+                    + "({UnremovableToolNames}); remove_tools narrows only the INHERITED set, so the "
+                    + "sub-agent still has them.",
+                agentId,
+                template.Name,
+                capability.UnremovableTools.Count,
+                capability.UnremovableTools
+            );
+        }
+
+        if (capability.RestoredByRequiredTools.Count > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
+                    + "{RestoredCount} tool(s) this mode requires every sub-agent to carry "
+                    + "({RestoredToolNames}); they were removed and then restored by the required-tools "
+                    + "union, so the sub-agent still has them.",
+                agentId,
+                template.Name,
+                capability.RestoredByRequiredTools.Count,
+                capability.RestoredByRequiredTools
+            );
+        }
+
+        if (capability.EmptyInheritedToolset)
         {
             _logger.LogWarning(
                 "Sub-agent {AgentId} (template {Template}) resolved to an EMPTY inherited toolset from a "
@@ -3666,7 +3876,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     + "call no inherited tool at all.",
                 agentId,
                 template.Name,
-                inheritableCount
+                InheritableToolCount
             );
         }
     }
@@ -3690,20 +3900,29 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// only cover the spellings we happened to think of.
     /// </para>
     /// <para>
-    /// This line REPORTS the over-grant; it does not prevent it, and it only helps if someone reads
-    /// it. The half of #638 with a path to preventing the mistake is the <c>remove_tools</c> schema
-    /// description in <c>SubAgentToolProvider</c>, which the model reads on every spawn.
+    /// The classification REPORTS the over-grant; it does not prevent it. The half of #638 with a
+    /// path to preventing the mistake is the <c>remove_tools</c> schema description in
+    /// <c>SubAgentToolProvider</c>, which the model reads on every spawn.
     /// </para>
     /// </summary>
-    private void WarnIfRemoveToolsWithheldNothing(
-        string agentId,
+    /// <returns>
+    /// The three mutually exclusive outcomes, so each <c>remove_tools</c> entry appears in at most
+    /// one of them (an entry that was in the base set and is now gone did its job and appears in none).
+    /// </returns>
+    private (string[] Unremovable, string[] WithheldNothing, string[] RestoredByRequiredTools) ClassifyRemoveTools(
         SubAgentTemplate template,
         string[]? addTools,
-        string[] removeTools,
+        string[]? removeTools,
         IReadOnlyCollection<string> inheritableToolNames,
-        IReadOnlyCollection<string> inheritedToolNames
+        IReadOnlyCollection<string> inheritedToolNames,
+        IReadOnlyCollection<string>? effectiveToolNames
     )
     {
+        if (removeTools is not { Length: > 0 })
+        {
+            return ([], [], []);
+        }
+
         // The set the removals actually operated on: the SAME production builder, re-run with the
         // removals (and the required-tools union) omitted, so the diagnostic cannot drift from the
         // resolution it describes. Null only on the path where BuildEnabledToolSet already threw for
@@ -3718,7 +3937,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         if (beforeRemoval is null)
         {
-            return;
+            return ([], [], []);
         }
 
         // #641 F-001: classify against the MATERIALIZED toolset, never the resolved NAME set. The
@@ -3731,46 +3950,33 @@ public sealed class SubAgentManager : IAsyncDisposable
         // line at the same time.
         var childToolset = new HashSet<string>(inheritedToolNames, StringComparer.Ordinal);
 
-        // The two lines partition the entries by OBSERVABLE outcome, so each entry produces at most
-        // one of them: an entry the child actually HAS was defeated by the required-tools union; an
-        // entry the child does not have AND that was never in the base set withheld nothing. An entry
-        // that was in the base set and is now gone did its job and is reported by neither.
-        var withheldNothing = removeTools
-            .Where(tool => !childToolset.Contains(tool) && !beforeRemoval.Contains(tool))
-            .ToArray();
-        if (withheldNothing.Length > 0)
-        {
-            _logger.LogWarning(
-                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
-                    + "{UnmatchedCount} tool(s) that were not in its toolset to begin with "
-                    + "({UnmatchedToolNames}); nothing was withheld. remove_tools matches exact tool names "
-                    + "and has NO wildcard or group language, so an entry like '*' or 'tasks:*' withholds "
-                    + "nothing - name each tool to remove it.",
-                agentId,
-                template.Name,
-                withheldNothing.Length,
-                withheldNothing
-            );
-        }
+        // #644: a tool the child DEMONSTRABLY holds that the parent never exposed did not come through
+        // inheritance at all - it came from the per-agent ChildToolProviderFactory or from the child
+        // loop's own registrations. remove_tools narrows only the inherited set, so it could never
+        // have withheld it. Naming that entry "withheld nothing" is false in the direction that costs
+        // work: the dispatcher concludes the delegate LACKS a capability it has. Generic set
+        // membership, so it holds for any host tool. A queued spawn has no registered surface yet and
+        // therefore cannot claim this either way - it reports none.
+        var inheritable = new HashSet<string>(inheritableToolNames, StringComparer.Ordinal);
+        string[] unremovable = effectiveToolNames is null
+            ? []
+            : [.. removeTools.Where(tool => effectiveToolNames.Contains(tool) && !inheritable.Contains(tool))];
 
         // Removed, then restored by the mode's required-tools union (#623) AND actually materialized
         // in the child. Intentional precedence, but from the caller's seat the request was defeated,
-        // so it gets its own line. Membership in childToolset is what makes "the sub-agent still has
-        // them" a statement the operator can rely on rather than an inference from a name set.
-        var restoredByRequiredTools = removeTools.Where(childToolset.Contains).ToArray();
-        if (restoredByRequiredTools.Length > 0)
-        {
-            _logger.LogWarning(
-                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
-                    + "{RestoredCount} tool(s) this mode requires every sub-agent to carry "
-                    + "({RestoredToolNames}); they were removed and then restored by the required-tools "
-                    + "union, so the sub-agent still has them.",
-                agentId,
-                template.Name,
-                restoredByRequiredTools.Length,
-                restoredByRequiredTools
-            );
-        }
+        // so it gets its own outcome. Membership in childToolset is what makes "the sub-agent still
+        // has them" a statement the operator can rely on rather than an inference from a name set.
+        string[] restoredByRequiredTools = [.. removeTools.Where(childToolset.Contains)];
+
+        var unremovableSet = new HashSet<string>(unremovable, StringComparer.Ordinal);
+        string[] withheldNothing =
+        [
+            .. removeTools.Where(tool =>
+                !childToolset.Contains(tool) && !beforeRemoval.Contains(tool) && !unremovableSet.Contains(tool)
+            ),
+        ];
+
+        return (unremovable, withheldNothing, restoredByRequiredTools);
     }
 
     /// <summary>

@@ -2298,6 +2298,42 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             if (!_toolHandlers.TryGetValue(toolCall.FunctionName, out var handler))
             {
+                // Not every unregistered name is a hallucination: the sub-agent provider WITHDRAWS the
+                // spawn tool at the delegation limit (and while spawning is suppressed) while the model
+                // may still have it in history. Telling that model only "Unknown function" leaves it
+                // unable to tell a rule it must respect from a name it invented, and gives it nothing to
+                // do instead - so ask the provider for the reason first (#671).
+                if (
+                    SubAgentTools is { } subAgentTools
+                    && subAgentTools.TryDescribeWithdrawnTool(
+                        toolCall.FunctionName,
+                        out var withdrawnCode,
+                        out var withdrawnText
+                    )
+                )
+                {
+                    Logger.LogInformation(
+                        "Function '{FunctionName}' is withdrawn ({WithdrawalCode}); returning the reason "
+                            + "instead of an unknown-function error. ToolCallId: {ToolCallId}",
+                        toolCall.FunctionName,
+                        withdrawnCode,
+                        toolCall.ToolCallId
+                    );
+
+                    return BuildErrorResultMessage(
+                        toolCall,
+                        JsonSerializer.Serialize(
+                            new
+                            {
+                                error = withdrawnText,
+                                code = withdrawnCode,
+                                available_functions = _toolHandlers.Keys.ToArray(),
+                            }
+                        ),
+                        withdrawnCode
+                    );
+                }
+
                 // Unknown function - likely LLM hallucination, return error to allow self-correction
                 Logger.LogWarning(
                     "No handler registered for function '{FunctionName}'. Returning error to LLM. "
@@ -2456,12 +2492,23 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Builds the error result the model gets back for a call that never ran (unknown function,
     /// malformed arguments) or that threw. Goes through the same <see cref="ToolResultLimits"/>
     /// as a successful result, so an exception message of arbitrary size cannot enter history
-    /// unbounded (#694).
+    /// unbounded (#694). <c>errorCode</c> is the machine-readable reason, persisted alongside
+    /// <c>is_error</c> so a consumer can act on the refusal without parsing prose; it is null for
+    /// errors that carry no stable code.
     /// </summary>
-    private ToolCallResultMessage BuildErrorResultMessage(ToolCallMessage toolCall, string errorJson)
+    private ToolCallResultMessage BuildErrorResultMessage(
+        ToolCallMessage toolCall,
+        string errorJson,
+        string? errorCode = null
+    )
     {
         var tcr = ToolResultLimits.Apply(
-            new ToolCallResult(toolCall.ToolCallId, errorJson) { ToolName = toolCall.FunctionName, IsError = true }
+            new ToolCallResult(toolCall.ToolCallId, errorJson)
+            {
+                ToolName = toolCall.FunctionName,
+                IsError = true,
+                ErrorCode = errorCode,
+            }
         );
         return ToolCallResultMessage.FromToolCallResult(
             tcr,
