@@ -1020,6 +1020,16 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             AgentId = "agent-obs",
             TemplateName = "tmpl",
             Task = "observe",
+            // No toolset is resolved for a state built outside the spawn path.
+            SpawnCapability = new SpawnCapabilityRecord(
+                [],
+                SpawnCapabilityRecord.ProjectedSource,
+                [],
+                [],
+                [],
+                [],
+                false
+            ),
             Agent = agent,
             Template = new SubAgentTemplate
             {

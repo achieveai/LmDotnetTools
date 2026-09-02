@@ -305,6 +305,16 @@ public class SubAgentStateLifecycleTests
             AgentId = "agent-1",
             TemplateName = "tmpl",
             Task = "do work",
+            // No toolset is resolved for a state built outside the spawn path.
+            SpawnCapability = new SpawnCapabilityRecord(
+                [],
+                SpawnCapabilityRecord.ProjectedSource,
+                [],
+                [],
+                [],
+                [],
+                false
+            ),
             Agent = new Mock<IMultiTurnAgent>().Object,
             Template = new SubAgentTemplate
             {

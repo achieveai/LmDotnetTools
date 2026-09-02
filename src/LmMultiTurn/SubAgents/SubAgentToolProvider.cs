@@ -183,6 +183,64 @@ public class SubAgentToolProvider : IFunctionProvider
 
     private bool IsSpawningSuppressed => Volatile.Read(ref _spawnSuppressionDepth) > 0;
 
+    /// <summary>The code a refused-because-suppressed spawn carries. The one spelling; never aliased.</summary>
+    internal const string SpawnSuppressedCode = "spawn_suppressed";
+
+    private const string SpawnSuppressedText =
+        "Spawning new sub-agents is not available for this turn. Use CheckAgent to read what "
+        + "the existing sub-agents delivered, or SendMessage to follow up with one of them.";
+
+    /// <summary>
+    /// Explains a tool this provider deliberately WITHDREW from the contract set, so a model that
+    /// replays it from an earlier turn learns why instead of reading "Unknown function".
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only the spawn tool is ever withdrawn (see <see cref="EmitShape"/>), and withdrawing it is not
+    /// enforcement: contracts are rebuilt per turn, but conversation history is not, so a model that
+    /// saw <c>Agent</c> before the depth limit was reached can still call it. Until now that call came
+    /// back as a bare unknown-function error — indistinguishable from a hallucinated tool name, and
+    /// carrying no reason and no alternative. An agent cannot correct for a rule it is never told.
+    /// </para>
+    /// <para>
+    /// Re-advertising <c>Agent</c> so its own handler could refuse is not an option: a
+    /// <see cref="FunctionDescriptor"/> carries the contract and the handler together, so registering
+    /// the handler would put the tool back in front of the model.
+    /// </para>
+    /// </remarks>
+    /// <returns>True when <paramref name="name"/> names a withdrawn tool, with the reason filled in.</returns>
+    internal bool TryDescribeWithdrawnTool(string name, out string code, out string text)
+    {
+        code = string.Empty;
+        text = string.Empty;
+
+        if (!string.Equals(name, SpawnToolName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // Precedence matches EmitShape's: suppression is the narrower, this-turn-only reason, so it is
+        // the one to report when both hold — waiting out the turn is actionable; the depth limit is not.
+        if (IsSpawningSuppressed)
+        {
+            code = SpawnSuppressedCode;
+            text = SpawnSuppressedText;
+            return true;
+        }
+
+        if (_manager.Collaboration is { CanDelegate: false } collaboration)
+        {
+            code = SubAgentCollaborationFailureCodes.DepthLimit;
+            text =
+                $"Maximum delegation depth ({collaboration.Options.MaxDelegationDepth}) reached, so "
+                + $"{SpawnToolName} is not available to this agent. Do the work yourself, or use "
+                + $"{GetAgentsToolName} and {SendMessageToolName} to ask an agent that already exists.";
+            return true;
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Reference-counted, idempotent suppression scope handed out by <see cref="SuppressSpawning"/>.
     /// </summary>
@@ -773,11 +831,7 @@ public class SubAgentToolProvider : IFunctionProvider
         // is not enough — refuse here too if the model replays a spawn from earlier history.
         if (IsSpawningSuppressed)
         {
-            return ToolHandlerResult.FromError(
-                "Spawning new sub-agents is not available for this turn. Use CheckAgent to read what "
-                    + "the existing sub-agents delivered, or SendMessage to follow up with one of them.",
-                "spawn_suppressed"
-            );
+            return ToolHandlerResult.FromError(SpawnSuppressedText, SpawnSuppressedCode);
         }
 
         using var doc = JsonDocument.Parse(argsJson);
