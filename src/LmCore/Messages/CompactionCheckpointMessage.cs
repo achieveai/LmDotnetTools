@@ -257,8 +257,9 @@ public sealed record ContextManifest
 ///     <para>
 ///         <see cref="Text" /> is a computed rendering of the structured fields (the same discipline as
 ///         <see cref="NotifyMessage.Text" />): it is written for search and the mirror and skipped on read,
-///         so it can never drift from the manifest it renders. The exact envelope prose is owned by the
-///         renderer in #683; this rendering is the durable, deterministic minimum.
+///         so it can never drift from the manifest it renders. It is <see cref="RenderEnvelope" /> with
+///         <see cref="CheckpointRenderOptions.Default" />, so the mirror line and the request the model
+///         sees differ only by the host-chosen trailer (#683; spec 679 §2.3).
 ///     </para>
 /// </remarks>
 public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
@@ -310,7 +311,7 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
 
     /// <summary>The rendered envelope, for search and the mirror. Computed; never set.</summary>
     [JsonPropertyName("text")]
-    public string Text => _cachedText ??= Render();
+    public string Text => _cachedText ??= RenderEnvelope(CheckpointRenderOptions.Default);
 
     /// <inheritdoc />
     public string? GetText() => Text;
@@ -353,8 +354,17 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; }
 
-    private string Render()
+    /// <summary>
+    ///     Renders the checkpoint into the envelope the agent projection dispatches as a synthetic user
+    ///     turn (spec 679 §2.3). Sections appear in a fixed order and an empty section is omitted; the
+    ///     narrative always renders. <c>Current instruction</c> — the human rows of the current run that
+    ///     fell at or before the boundary, verbatim — is first when present, so the model reads the live
+    ///     task before the summary that qualifies it.
+    /// </summary>
+    public string RenderEnvelope(CheckpointRenderOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         var sb = new StringBuilder();
         _ = sb.Append(
                 CultureInfo.InvariantCulture,
@@ -364,7 +374,15 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
             .Append(CultureInfo.InvariantCulture, $" created_at=\"{CreatedAtUtc.ToUniversalTime():O}\">")
             .Append('\n');
 
-        AppendQuoted(sb, "Current instruction (verbatim)", Manifest.CurrentInstruction);
+        if (Manifest.CurrentInstruction.Count > 0)
+        {
+            var seqs = string.Join(
+                ", ",
+                Manifest.CurrentInstruction.Select(q => q.Seq.ToString(CultureInfo.InvariantCulture))
+            );
+            AppendQuoted(sb, $"Current instruction (verbatim, seq {seqs})", Manifest.CurrentInstruction);
+        }
+
         AppendQuoted(sb, "Standing instructions (verbatim, oldest first)", Manifest.Instructions);
         AppendLines(sb, "Goal and acceptance criteria", Manifest.Goals);
         AppendQuoted(sb, "Decisions and approvals", Manifest.Decisions);
@@ -401,8 +419,12 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
             )
         );
 
-        _ = sb.Append("Use RecallConversation to read any compacted range verbatim.\n</context-checkpoint>");
-        return sb.ToString();
+        if (!string.IsNullOrEmpty(options.RecallToolName))
+        {
+            _ = sb.Append("Use ").Append(options.RecallToolName).Append(" to read any compacted range verbatim.\n");
+        }
+
+        return sb.Append("</context-checkpoint>").ToString();
     }
 
     private static void AppendQuoted(StringBuilder sb, string heading, IReadOnlyList<QuotedItem> items) =>
