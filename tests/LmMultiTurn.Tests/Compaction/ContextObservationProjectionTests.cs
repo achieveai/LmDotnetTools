@@ -125,4 +125,24 @@ public sealed class ContextObservationProjectionTests : IAsyncLifetime
         (await ContextObservationProjection.LoadLatestAsync(store, Thread)).Should().BeNull();
         (await ContextObservationProjection.LoadHistoryAsync(store, Thread)).Should().BeEmpty();
     }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task Record_ForTheGenerationAtTheRingTail_ReplacesItInsteadOfAppending(string kind)
+    {
+        // #681: a generation is observed twice - estimated before dispatch, measured after the provider's
+        // usage arrives. The ring holds ONE entry per generation, and the measured figure wins.
+        var store = _harness.Open(kind);
+
+        await ContextObservationProjection.RecordAsync(store, Observation(1));
+        await ContextObservationProjection.RecordAsync(store, Observation(2));
+        await ContextObservationProjection.RecordAsync(store, Observation(2, measured: 2_222));
+
+        var history = await ContextObservationProjection.LoadHistoryAsync(store, Thread);
+        history.Should().HaveCount(2);
+        history[1].GenerationId.Should().Be("gen-2");
+        history[1].Provenance.Should().Be(MeasurementProvenance.Measured);
+        history[1].MeasuredInputTokens.Should().Be(2_222);
+        (await ContextObservationProjection.LoadLatestAsync(store, Thread))!.MeasuredInputTokens.Should().Be(2_222);
+    }
 }

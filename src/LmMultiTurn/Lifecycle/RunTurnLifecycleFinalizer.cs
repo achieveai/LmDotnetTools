@@ -448,6 +448,55 @@ public sealed class RunTurnLifecycleFinalizer
     }
 
     /// <summary>
+    /// Emits <see cref="LifecycleEventTypes.ContextMeasured"/> for one context observation (#681).
+    /// </summary>
+    /// <param name="observation">The observation as the loop recorded it.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns><see langword="true"/> when an event went out.</returns>
+    /// <remarks>
+    /// Emitted twice per generation — estimated, then measured — and stamped with the observation's own
+    /// time rather than "now", so the event and the persisted record agree on when the size was taken.
+    /// The payload is content-free: counts, ratios and ids only.
+    /// </remarks>
+    public async Task<bool> ContextMeasuredAsync(ContextObservation observation, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+
+        if (!PublishesEvents)
+        {
+            return false;
+        }
+
+        var parentRunId = _inFlight.TryGetValue(observation.RunId, out var progress) ? progress.ParentRunId : null;
+
+        await PublishAsync(
+                LifecycleEventTypes.ContextMeasured,
+                new ContextMeasuredPayload
+                {
+                    RunId = observation.RunId,
+                    GenerationId = observation.GenerationId,
+                    GenerationOrdinal = observation.GenerationOrdinal,
+                    AgentId = observation.AgentId,
+                    EffectiveModelId = observation.EffectiveModelId,
+                    Provenance = observation.Provenance.ToString(),
+                    EstimatedInputTokens = observation.EstimatedInputTokens,
+                    MeasuredInputTokens = observation.MeasuredInputTokens,
+                    WindowTokens = observation.WindowTokens,
+                    ReserveTokens = observation.ReserveTokens,
+                    Utilization = observation.Utilization,
+                    ActiveCheckpointId = observation.ActiveCheckpointId,
+                    RowsInView = observation.RowsInView,
+                },
+                BuildCorrelation(observation.RunId, observation.GenerationId, parentRunId),
+                observation.ObservedAtUtc,
+                ct
+            )
+            .ConfigureAwait(false);
+
+        return true;
+    }
+
+    /// <summary>
     /// Emits <see cref="LifecycleEventTypes.ToolCompleted"/> for a tool call that reached its final
     /// state.
     /// </summary>

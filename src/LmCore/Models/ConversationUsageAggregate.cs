@@ -296,8 +296,10 @@ public sealed record ConversationUsageAggregate
     ///     model's attempt that carries no estimate, or a row persisted before completeness existed) makes the
     ///     sum Partial, not Unavailable — there is a number, but it is not the whole number.
     /// </summary>
-    private static CostCompleteness FoldCompleteness(long? sum, IEnumerable<CostCompleteness> parts)
+    public static CostCompleteness FoldCompleteness(long? sum, IEnumerable<CostCompleteness> parts)
     {
+        ArgumentNullException.ThrowIfNull(parts);
+
         if (sum is null)
         {
             return CostCompleteness.Unavailable;
@@ -345,8 +347,11 @@ public sealed record ConversationUsageAggregate
     ///     only when every value is null (a known-cost subtotal — never surfaces <c>0</c> for entirely
     ///     unknown pricing).
     /// </summary>
-    private static long? SumKnown(IEnumerable<long?> values)
+    /// <summary>Sums the known values, or null when none is known — an absent figure is never a zero.</summary>
+    public static long? SumKnown(IEnumerable<long?> values)
     {
+        ArgumentNullException.ThrowIfNull(values);
+
         long sum = 0;
         var anyKnown = false;
         foreach (var value in values)
