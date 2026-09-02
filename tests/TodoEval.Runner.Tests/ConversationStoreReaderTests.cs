@@ -23,9 +23,9 @@ public class ConversationStoreReaderTests
         thread.TotalToolCalls.Should().Be(12);
         thread.TaskToolCallCount.Should().Be(12);
         thread.UnpairedToolCalls.Should().Be(1, "call c09 has no result envelope");
-        thread.PerTaskTool["add-note"].Should().Be(new ToolStats { Calls = 7, Errors = 5 });
-        thread.PerTaskTool["bulk-initialize"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
-        thread.PerTaskTool["block-task"].Should().Be(new ToolStats { Calls = 2, Errors = 0 });
+        thread.PerTool["add-note"].Should().Be(new ToolStats { Calls = 7, Errors = 5 });
+        thread.PerTool["bulk-initialize"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
+        thread.PerTool["block-task"].Should().Be(new ToolStats { Calls = 2, Errors = 0 });
     }
 
     [Fact]
@@ -36,8 +36,8 @@ public class ConversationStoreReaderTests
         // Every fixture error row records is_error:false (production reality the spec pins) —
         // the "Error:" text prefix alone must flag them. The update-task row records
         // is_error:true on a success text — the flag alone must flag it too (defensive union).
-        thread.PerTaskTool["add-note"].Errors.Should().Be(5, "is_error:false must not hide 'Error:' texts");
-        thread.PerTaskTool["update-task"].Errors.Should().Be(1, "is_error:true alone makes an error");
+        thread.PerTool["add-note"].Errors.Should().Be(5, "is_error:false must not hide 'Error:' texts");
+        thread.PerTool["update-task"].Errors.Should().Be(1, "is_error:true alone makes an error");
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public class ConversationStoreReaderTests
         // Call e04's result is a JSON-quoted string: its text starts with '"', not "Error:".
         // Call e01 has TWO results (error first, success second): the FIRST wins, so it stays
         // an error — 2 errors total, not 1 (last-wins) and not 3 (quoted string as error).
-        thread.PerTaskTool["get-task"].Should().Be(new ToolStats { Calls = 4, Errors = 2 });
+        thread.PerTool["get-task"].Should().Be(new ToolStats { Calls = 4, Errors = 2 });
     }
 
     [Fact]
@@ -56,17 +56,20 @@ public class ConversationStoreReaderTests
     {
         var thread = Load("thread-errors");
 
-        thread.PerTaskTool["list-notes"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
+        thread.PerTool["list-notes"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
     }
 
     [Fact]
-    public void NonTaskTools_CountInTotalsOnly()
+    public void OtherFamilyTools_CountInTotalsOnly()
     {
+        // web-search is neither a board tool nor a coordination tool: the "other" family is
+        // counted in the totals and gets no per-tool row of its own.
         var thread = Load("thread-errors");
 
         thread.TotalToolCalls.Should().Be(8);
         thread.TaskToolCallCount.Should().Be(7, "web-search is not a task tool");
-        thread.PerTaskTool.Should().NotContainKey("web-search");
+        thread.CoordinationToolCallCount.Should().Be(0);
+        thread.PerTool.Should().NotContainKey("web-search");
     }
 
     [Fact]
@@ -131,7 +134,7 @@ public class ConversationStoreReaderTests
         orphan.ParentThreadId.Should().BeNull();
         orphan.IsSubAgentThread.Should().BeTrue();
         orphan.TaskToolCallCount.Should().Be(1);
-        orphan.PerTaskTool["claim-task"].Should().Be(new ToolStats { Calls = 1, Errors = 1 });
+        orphan.PerTool["claim-task"].Should().Be(new ToolStats { Calls = 1, Errors = 1 });
     }
 
     [Fact]

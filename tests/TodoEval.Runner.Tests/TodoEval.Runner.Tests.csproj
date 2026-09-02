@@ -24,6 +24,14 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\samples\TodoEval.Runner\TodoEval.Runner.csproj" />
+    <!--
+      TEST-ONLY references. TodoEval.Runner itself keeps zero project references on purpose (it
+      measures the HOST, not a client abstraction), so it MIRRORS both tool vocabularies. These
+      references exist only so CoordinationVocabularyParityTests can reflect over the real
+      SubAgentToolProvider and TaskManager and prove the mirrors have not drifted.
+    -->
+    <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+    <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />

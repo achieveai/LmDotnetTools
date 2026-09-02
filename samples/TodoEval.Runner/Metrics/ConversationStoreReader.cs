@@ -99,7 +99,7 @@ internal static class ConversationStoreReader
         ///     <c>status</c> (or its error code). Empty on every build before #673/#674 emit those
         ///     states - a real counter reading zero, not a hardcoded zero.
         /// </summary>
-        public required IReadOnlyDictionary<string, int> WaitOutcomes { get; init; }
+        public required CountMap WaitOutcomes { get; init; }
 
         /// <summary>
         ///     The last <c>openObligations</c> value any coordination result carried, and how many
@@ -321,8 +321,18 @@ internal static class ConversationStoreReader
                 if (isError)
                 {
                     stats.Errors++;
-                    var code = result.ErrorCode ?? UnclassifiedErrorCode;
-                    stats.ErrorCodes[code] = stats.ErrorCodes.TryGetValue(code, out var seen) ? seen + 1 : 1;
+
+                    // A coordination refusal ALWAYS lands in the tally, falling back to
+                    // "unclassified" when the code is missing, so a reader can never confuse "no
+                    // refusals" with "refusals we failed to classify". A task error is tallied only
+                    // when it really carries a code: the 15 board tools report errors as "Error:"
+                    // text today, and blanketing them as unclassified would bury the coordination
+                    // taxonomy under a hundred meaningless rows.
+                    var code = result.ErrorCode ?? (family == ToolFamily.Coordination ? UnclassifiedErrorCode : null);
+                    if (code is not null)
+                    {
+                        stats.ErrorCodes[code] = stats.ErrorCodes.TryGetValue(code, out var seen) ? seen + 1 : 1;
+                    }
                 }
 
                 var rawArgs = GetString(inner.RootElement, "function_args");
@@ -402,7 +412,7 @@ internal static class ConversationStoreReader
                 {
                     Calls = kvp.Value.Calls,
                     Errors = kvp.Value.Errors,
-                    ErrorCodes = kvp.Value.ErrorCodes,
+                    ErrorCodes = CountMap.From(kvp.Value.ErrorCodes),
                 },
                 StringComparer.Ordinal
             ),
@@ -562,7 +572,7 @@ internal static class ConversationStoreReader
     {
         private readonly Dictionary<string, int> _waitOutcomes = new(StringComparer.Ordinal);
 
-        public IReadOnlyDictionary<string, int> WaitOutcomes => _waitOutcomes;
+        public CountMap WaitOutcomes => CountMap.From(_waitOutcomes);
         public int OpenObligationsLastObserved { get; private set; }
         public int OpenObligationResults { get; private set; }
 

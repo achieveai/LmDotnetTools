@@ -9,24 +9,15 @@ internal sealed record ToolStats
     public int Errors { get; init; }
 
     /// <summary>Failure count per stable error code; <c>unclassified</c> when the result named none.</summary>
-    public IReadOnlyDictionary<string, int> ErrorCodes { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal);
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
 
-    public ToolStats Merge(ToolStats other)
-    {
-        var codes = new Dictionary<string, int>(ErrorCodes, StringComparer.Ordinal);
-        foreach (var (code, count) in other.ErrorCodes)
-        {
-            codes[code] = codes.TryGetValue(code, out var seen) ? seen + count : count;
-        }
-
-        return new ToolStats
+    public ToolStats Merge(ToolStats other) =>
+        new()
         {
             Calls = Calls + other.Calls,
             Errors = Errors + other.Errors,
-            ErrorCodes = codes,
+            ErrorCodes = CountMap.Merge([ErrorCodes, other.ErrorCodes]),
         };
-    }
 }
 
 /// <summary>
@@ -42,8 +33,7 @@ internal sealed record PerToolScore
     /// <summary><c>task</c> or <c>coordination</c> - the only two families that get a row.</summary>
     public required string Family { get; init; }
 
-    public IReadOnlyDictionary<string, int> ErrorCodes { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal);
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
 }
 
 /// <summary>
@@ -189,12 +179,10 @@ internal sealed record RunMetrics
         new Dictionary<string, PerToolScore>(StringComparer.Ordinal);
 
     /// <summary>Every failure in the run rolled up by error code, across both families.</summary>
-    public IReadOnlyDictionary<string, int> ErrorCodes { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal);
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
 
     /// <summary>How the run's wait calls ended, keyed by result status or error code.</summary>
-    public IReadOnlyDictionary<string, int> WaitOutcomes { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal);
+    public CountMap WaitOutcomes { get; init; } = CountMap.Empty;
 
     public OpenObligationsReport OpenObligations { get; init; } = OpenObligationsReport.From(0, 0);
 
@@ -417,8 +405,8 @@ internal static class MetricsExtractor
             CoordinationToolErrors = coordinationRows.Sum(r => r.Errors),
             UnpairedToolCalls = group.Sum(t => t.UnpairedToolCalls),
             PerTool = perTool,
-            ErrorCodes = MergeCounts(perTool.Values.Select(r => r.ErrorCodes)),
-            WaitOutcomes = MergeCounts(group.Select(t => t.WaitOutcomes)),
+            ErrorCodes = CountMap.Merge(perTool.Values.Select(r => r.ErrorCodes)),
+            WaitOutcomes = CountMap.Merge(group.Select(t => t.WaitOutcomes)),
             OpenObligations = OpenObligationsReport.From(
                 group.Select(t => t.OpenObligationsLastObserved).LastOrDefault(),
                 group.Sum(t => t.OpenObligationResults)
@@ -470,17 +458,6 @@ internal static class MetricsExtractor
         IReadOnlyDictionary<string, PerToolScore> perTool,
         ToolFamily family
     ) => [.. perTool.Where(kvp => ToolFamilies.Classify(kvp.Key) == family).Select(kvp => kvp.Value)];
-
-    private static IReadOnlyDictionary<string, int> MergeCounts(IEnumerable<IReadOnlyDictionary<string, int>> sources)
-    {
-        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var (key, count) in sources.SelectMany(source => source))
-        {
-            merged[key] = merged.TryGetValue(key, out var seen) ? seen + count : count;
-        }
-
-        return merged;
-    }
 
     private static IReadOnlyList<SpawnTiming> SpawnTimingsOf(ConversationStoreReader.ThreadData thread) =>
         ReadStamp<List<SpawnTiming>>(thread.SpawnTimingsJson) ?? [];

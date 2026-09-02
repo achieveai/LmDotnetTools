@@ -34,6 +34,7 @@ public class ResultsWriterTests
                     Calls = calls,
                     Errors = errors,
                     ErrorRate = calls > 0 ? Math.Round((double)errors / calls, 4) : 0,
+                    Family = "task",
                 },
             },
             RetryStormCount = storms,
@@ -133,7 +134,7 @@ public class ResultsWriterTests
             lines.Should().HaveCount(2);
             lines[0]
                 .Should()
-                .Contain("\"schema\":\"todo-eval/score@1\"")
+                .Contain("\"schema\":\"todo-eval/score@2\"")
                 .And.Contain("\"runKey\":\"model-a/seed0\"")
                 .And.Contain("\"completion\":true")
                 .And.Contain("\"validity\":{\"valid\":true");

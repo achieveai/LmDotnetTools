@@ -113,8 +113,8 @@ internal static class ResultsWriter
             );
             sb.AppendLine();
             AppendPerToolTable(sb, runs, CoordinationTools.All);
-            AppendCountTable(sb, "Error codes", "Code", MergeCounts(runs.Select(r => r.ErrorCodes)));
-            AppendCountTable(sb, "Wait outcomes", "Outcome", MergeCounts(runs.Select(r => r.WaitOutcomes)));
+            AppendCountTable(sb, "Error codes", "Code", CountMap.Merge(runs.Select(r => r.ErrorCodes)));
+            AppendCountTable(sb, "Wait outcomes", "Outcome", CountMap.Merge(runs.Select(r => r.WaitOutcomes)));
         }
 
         sb.AppendLine();
@@ -354,17 +354,6 @@ internal static class ResultsWriter
         {
             sb.AppendLine($"| {key} | {count} |");
         }
-    }
-
-    private static IReadOnlyDictionary<string, int> MergeCounts(IEnumerable<IReadOnlyDictionary<string, int>> sources)
-    {
-        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var (key, count) in sources.SelectMany(source => source))
-        {
-            merged[key] = merged.TryGetValue(key, out var seen) ? seen + count : count;
-        }
-
-        return merged;
     }
 
     private static UsageTotals Combine(UsageTotals a, UsageTotals b) =>

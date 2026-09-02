@@ -57,7 +57,7 @@ public class MetricsExtractorTests
         storm.Args.Should().Be("""{"noteText":"x","subtaskId":0,"taskId":"2.1"}""");
 
         // Per-tool rows exist for all 15 tools, zero-call rows included.
-        run.PerTool.Should().HaveCount(15);
+        run.PerTool.Should().HaveCount(22, "15 task rows then 7 coordination rows");
         run.PerTool["add-note"]
             .Should()
             .Be(
@@ -66,6 +66,7 @@ public class MetricsExtractorTests
                     Calls = 8,
                     Errors = 5,
                     ErrorRate = 0.625,
+                    Family = "task",
                 }
             );
         run.PerTool["block-task"]
@@ -76,6 +77,7 @@ public class MetricsExtractorTests
                     Calls = 2,
                     Errors = 0,
                     ErrorRate = 0,
+                    Family = "task",
                 }
             );
         run.PerTool["update-task"]
@@ -86,6 +88,7 @@ public class MetricsExtractorTests
                     Calls = 1,
                     Errors = 1,
                     ErrorRate = 1,
+                    Family = "task",
                 }
             );
         run.PerTool["search-tasks"]
@@ -96,6 +99,7 @@ public class MetricsExtractorTests
                     Calls = 0,
                     Errors = 0,
                     ErrorRate = 0,
+                    Family = "task",
                 }
             );
 
@@ -138,6 +142,7 @@ public class MetricsExtractorTests
                     Calls = 4,
                     Errors = 2,
                     ErrorRate = 0.5,
+                    Family = "task",
                 }
             );
         run.PerTool["add-task"]
@@ -148,6 +153,7 @@ public class MetricsExtractorTests
                     Calls = 2,
                     Errors = 0,
                     ErrorRate = 0,
+                    Family = "task",
                 }
             );
         run.PerTool["list-notes"]
@@ -158,6 +164,7 @@ public class MetricsExtractorTests
                     Calls = 1,
                     Errors = 0,
                     ErrorRate = 0,
+                    Family = "task",
                 }
             );
         run.RetryStormCount.Should().Be(0, "two consecutive failures are below the storm threshold");
@@ -197,7 +204,7 @@ public class MetricsExtractorTests
         run.Completion.Should().BeFalse();
         run.CompletionFailures.Should().ContainSingle().Which.Should().Contain("thread-vanished");
         run.Threads.Should().Be(0);
-        run.PerTool.Should().HaveCount(15, "the zero row set is emitted even without a conversation");
+        run.PerTool.Should().HaveCount(22, "the zero row set is emitted even without a conversation");
 
         // Spec: zero threads is harness misconfiguration, never a valid failed run.
         run.Validity.Valid.Should().BeFalse();
