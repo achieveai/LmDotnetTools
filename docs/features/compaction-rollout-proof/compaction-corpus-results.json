@@ -1,0 +1,2656 @@
+{
+  "EvaluatorVersion": "686.1",
+  "GeneratedAtUtc": "2026-09-02T23:18:36.5935824+00:00",
+  "Fingerprints": {
+    "a": "3722036a2cf0ae6a28d02376f802d77bc613bd067f5ac0e51799f8e83e30bda0",
+    "b": "4e0228ccd30eb270a63747b7e07d9317904b46b5bfaad02ff6a80aa95db7f910",
+    "c": "3eb0f9d39baa4bfa16fed586d9bcd6d179c23bc8adc745d281ef64b45cdb021c",
+    "d": "3dc83be360b121db5a28f28053d1b69e6d8e6f8377e130df07bd727ca8656c02",
+    "e": "9bc42f8f34c6e5ed510953d48f736cbba070a28994438442999276b3ec17cf02",
+    "f": "6f8a05445eb87ac0e367b01ef1d92f506b55d2053b9e46ec203512559750949a",
+    "g": "304a1b30a92251d996e9c34c515c919b886c7b8b3837e04adeaedd088631d128",
+    "h": "09007ff66a6e630ab81557c23614cfc695b6a63114dd202e069a273d5467963e",
+    "i": "7be42b46cf75d1335426cee6e20182694d8221739cd23b61187b6198c72fa3d1",
+    "j": "88e9389c2a8883fee27011ef2e5ba4ba4ef208d2d01cb0e60c4073017d78e499",
+    "k": "c436feaf557e67ae7610c844e8d35fc30b0db0e1c931a48aad8aaabd6ef59d55",
+    "l": "1f94ff8bff47f9e04529ebba632e0b4638724cbe1981bbc69f9b23c3acaa335d",
+    "m": "6498734d29f85ebfc949a8b36b1f3a72b8d38cff09c70f0ed63d4d0bcd2ca0c3"
+  },
+  "Results": [
+    {
+      "ScenarioId": "a",
+      "Item": "primary 40-turn tool-heavy",
+      "Mode": "Compact",
+      "Fingerprint": "3722036a2cf0ae6a28d02376f802d77bc613bd067f5ac0e51799f8e83e30bda0",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Audit every file and report.",
+          "RunId": "e925771ba7d94dc081dc38af34d8d0f9",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 41,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2050,
+      "MeanRequestTokens": 1650.4146341463415,
+      "TotalPromptTokens": 67667,
+      "TotalCachedTokens": 27732,
+      "CacheHitRatio": 0.4098304934458451,
+      "CheckpointsActivated": 20,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 15,
+        "compact": 20
+      },
+      "Reasons": {
+        "below_threshold": 15,
+        "hard": 20
+      },
+      "CostMicros": 146426,
+      "CompactionCostMicros": 6000,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 1826,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 20,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 61
+      },
+      "Notes": [
+        "checkpoint cp-0b7cf (Preemptive) boundary 10, 10 rows, 1033-\u003E146 tokens, agents [], tasks 0",
+        "checkpoint cp-275b6 (Preemptive) boundary 16, 16 rows, 1709-\u003E161 tokens, agents [], tasks 0",
+        "checkpoint cp-eda6e (Preemptive) boundary 23, 23 rows, 2385-\u003E177 tokens, agents [], tasks 0",
+        "checkpoint cp-d7c96 (Preemptive) boundary 30, 30 rows, 3061-\u003E192 tokens, agents [], tasks 0",
+        "checkpoint cp-55e3e (Preemptive) boundary 37, 37 rows, 3737-\u003E208 tokens, agents [], tasks 0",
+        "checkpoint cp-bd010 (Preemptive) boundary 44, 44 rows, 4413-\u003E223 tokens, agents [], tasks 0",
+        "checkpoint cp-8a6d2 (Preemptive) boundary 51, 51 rows, 5089-\u003E239 tokens, agents [], tasks 0",
+        "checkpoint cp-78dda (Preemptive) boundary 58, 58 rows, 5765-\u003E254 tokens, agents [], tasks 0",
+        "checkpoint cp-3d891 (Preemptive) boundary 65, 65 rows, 6441-\u003E270 tokens, agents [], tasks 0",
+        "checkpoint cp-44715 (Preemptive) boundary 72, 72 rows, 7117-\u003E285 tokens, agents [], tasks 0",
+        "checkpoint cp-af1ae (Preemptive) boundary 79, 79 rows, 7793-\u003E301 tokens, agents [], tasks 0",
+        "checkpoint cp-097be (Preemptive) boundary 86, 86 rows, 8469-\u003E316 tokens, agents [], tasks 0",
+        "checkpoint cp-afd71 (Preemptive) boundary 93, 93 rows, 9145-\u003E332 tokens, agents [], tasks 0",
+        "checkpoint cp-2d3ba (Preemptive) boundary 100, 100 rows, 9821-\u003E348 tokens, agents [], tasks 0",
+        "checkpoint cp-9812d (Preemptive) boundary 107, 107 rows, 10497-\u003E364 tokens, agents [], tasks 0",
+        "checkpoint cp-e0beb (Preemptive) boundary 110, 110 rows, 10835-\u003E380 tokens, agents [], tasks 0",
+        "checkpoint cp-3e954 (Preemptive) boundary 114, 114 rows, 11173-\u003E396 tokens, agents [], tasks 0",
+        "checkpoint cp-295a2 (Preemptive) boundary 117, 117 rows, 11511-\u003E412 tokens, agents [], tasks 0",
+        "checkpoint cp-01fb4 (Preemptive) boundary 121, 121 rows, 11849-\u003E428 tokens, agents [], tasks 0",
+        "checkpoint cp-77819 (Preemptive) boundary 125, 125 rows, 12187-\u003E444 tokens, agents [], tasks 0",
+        "34 of 41 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "a",
+      "Item": "primary 40-turn tool-heavy",
+      "Mode": "Off",
+      "Fingerprint": "3722036a2cf0ae6a28d02376f802d77bc613bd067f5ac0e51799f8e83e30bda0",
+      "TaskSuccess": false,
+      "ExpectedSuccess": false,
+      "Runs": [
+        {
+          "Input": "Audit every file and report.",
+          "RunId": "da5dc2122dfa479aae56c5de2b2f76c4",
+          "IsError": true,
+          "Error": "prompt is too long: context_length_exceeded",
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2723,
+      "MeanRequestTokens": 1371,
+      "TotalPromptTokens": 12339,
+      "TotalCachedTokens": 9616,
+      "CacheHitRatio": 0.7793176108274577,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 11724,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 228,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": [
+        "1 root request(s) exceeded the window at the provider"
+      ]
+    },
+    {
+      "ScenarioId": "a",
+      "Item": "primary 40-turn tool-heavy",
+      "Mode": "Shadow",
+      "Fingerprint": "3722036a2cf0ae6a28d02376f802d77bc613bd067f5ac0e51799f8e83e30bda0",
+      "TaskSuccess": false,
+      "ExpectedSuccess": false,
+      "Runs": [
+        {
+          "Input": "Audit every file and report.",
+          "RunId": "f9e19ab2c8224e2199d5108b21739bdd",
+          "IsError": true,
+          "Error": "prompt is too long: context_length_exceeded",
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2723,
+      "MeanRequestTokens": 1371,
+      "TotalPromptTokens": 12339,
+      "TotalCachedTokens": 9616,
+      "CacheHitRatio": 0.7793176108274577,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 2,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 2
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 2
+      },
+      "CostMicros": 11724,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 153,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": [
+        "1 root request(s) exceeded the window at the provider"
+      ]
+    },
+    {
+      "ScenarioId": "b",
+      "Item": "mid-run correction \u002B errored run",
+      "Mode": "Compact",
+      "Fingerprint": "4e0228ccd30eb270a63747b7e07d9317904b46b5bfaad02ff6a80aa95db7f910",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Plan the work.",
+          "RunId": "a6713043df434837a3e853dd5ac574f7",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Go.",
+          "RunId": "a4dd10bd3458419cb3c6c33b8a13ff31",
+          "IsError": true,
+          "Error": "provider failed mid-run",
+          "ExpectedError": true
+        },
+        {
+          "Input": "Retry the work.",
+          "RunId": "ec92bcf79d9144bcacc79ab50cb8a4f8",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1764,
+      "MeanRequestTokens": 929.3333333333334,
+      "TotalPromptTokens": 8364,
+      "TotalCachedTokens": 5382,
+      "CacheHitRatio": 0.6434720229555236,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 7,
+        "warn": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "hard": 1
+      },
+      "CostMicros": 12027,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 505,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "todo.board",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-139e6 (Preemptive) boundary 13, 13 rows, 1072-\u003E155 tokens, agents [], tasks 2",
+        "1 of 9 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "b",
+      "Item": "mid-run correction \u002B errored run",
+      "Mode": "Off",
+      "Fingerprint": "4e0228ccd30eb270a63747b7e07d9317904b46b5bfaad02ff6a80aa95db7f910",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Plan the work.",
+          "RunId": "e84f41055d8e47359db249f007a45faa",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Go.",
+          "RunId": "dab5745f4226475d95ec1489df7f3865",
+          "IsError": true,
+          "Error": "provider failed mid-run",
+          "ExpectedError": true
+        },
+        {
+          "Input": "Retry the work.",
+          "RunId": "ed3cd33a6c064715835a4b2cc06c6ecc",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2102,
+      "MeanRequestTokens": 1027.5555555555557,
+      "TotalPromptTokens": 9248,
+      "TotalCachedTokens": 7146,
+      "CacheHitRatio": 0.7727076124567474,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 9616,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 243,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "todo.board",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "b",
+      "Item": "mid-run correction \u002B errored run",
+      "Mode": "Shadow",
+      "Fingerprint": "4e0228ccd30eb270a63747b7e07d9317904b46b5bfaad02ff6a80aa95db7f910",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Plan the work.",
+          "RunId": "3cbb7a0790254e2ba72e4ecf1aaf51ff",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Go.",
+          "RunId": "58fd91364f0e40349be8fe880e9708a3",
+          "IsError": true,
+          "Error": "provider failed mid-run",
+          "ExpectedError": true
+        },
+        {
+          "Input": "Retry the work.",
+          "RunId": "f10a00ae5a2f4f588e9ccf9bfb03e1ef",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2123,
+      "MeanRequestTokens": 1029.888888888889,
+      "TotalPromptTokens": 9269,
+      "TotalCachedTokens": 7146,
+      "CacheHitRatio": 0.770956953285144,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 7,
+        "warn": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "hard": 1
+      },
+      "CostMicros": 9679,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 130,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "todo.board",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "c",
+      "Item": "primary spawning three sub-agents, one non-terminal at the cut",
+      "Mode": "Compact",
+      "Fingerprint": "3eb0f9d39baa4bfa16fed586d9bcd6d179c23bc8adc745d281ef64b45cdb021c",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the three tasks.",
+          "RunId": "fbf878b61c424c88bc746a693ddeba22",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 11,
+      "ChildProviderCalls": 3,
+      "PeakRequestTokens": 1928,
+      "MeanRequestTokens": 904,
+      "TotalPromptTokens": 9944,
+      "TotalCachedTokens": 6371,
+      "CacheHitRatio": 0.6406878519710378,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 11,
+        "skipped": 1,
+        "compact": 1,
+        "warn": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 17433,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 708,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 15
+      },
+      "Notes": [
+        "checkpoint cp-68cfe (Preemptive) boundary 16, 16 rows, 914-\u003E187 tokens, agents [56df034706ba-1be56d94:completed, 2eed84ee503d-1be56d94:running, 28b74fc8c02d-1be56d94:completed], tasks 0",
+        "2 of 11 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "c",
+      "Item": "primary spawning three sub-agents, one non-terminal at the cut",
+      "Mode": "Off",
+      "Fingerprint": "3eb0f9d39baa4bfa16fed586d9bcd6d179c23bc8adc745d281ef64b45cdb021c",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the three tasks.",
+          "RunId": "c6944b6e7484484cad7eb3d20906b42a",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 11,
+      "ChildProviderCalls": 3,
+      "PeakRequestTokens": 2360,
+      "MeanRequestTokens": 1034,
+      "TotalPromptTokens": 11374,
+      "TotalCachedTokens": 9014,
+      "CacheHitRatio": 0.7925092315807983,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 14287,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 225,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 14
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "c",
+      "Item": "primary spawning three sub-agents, one non-terminal at the cut",
+      "Mode": "Shadow",
+      "Fingerprint": "3eb0f9d39baa4bfa16fed586d9bcd6d179c23bc8adc745d281ef64b45cdb021c",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the three tasks.",
+          "RunId": "806252bb30c54bdf922fd39b506b8620",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 11,
+      "ChildProviderCalls": 3,
+      "PeakRequestTokens": 2360,
+      "MeanRequestTokens": 1034,
+      "TotalPromptTokens": 11374,
+      "TotalCachedTokens": 9014,
+      "CacheHitRatio": 0.7925092315807983,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 2,
+      "Decisions": {
+        "no_action": 11,
+        "skipped": 1,
+        "shadow": 2
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 2
+      },
+      "CostMicros": 14287,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 372,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 14
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "d",
+      "Item": "sub-agent that compacts itself",
+      "Mode": "Compact",
+      "Fingerprint": "3dc83be360b121db5a28f28053d1b69e6d8e6f8377e130df07bd727ca8656c02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the deep task.",
+          "RunId": "91c4aca5b05c478a97a9a502a6c5f91b",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 2,
+      "ChildProviderCalls": 7,
+      "PeakRequestTokens": 81,
+      "MeanRequestTokens": 49.5,
+      "TotalPromptTokens": 99,
+      "TotalCachedTokens": 18,
+      "CacheHitRatio": 0.18181818181818182,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 1,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 7,
+        "warn": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "hard": 1
+      },
+      "CostMicros": 13686,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 126,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "d",
+      "Item": "sub-agent that compacts itself",
+      "Mode": "Off",
+      "Fingerprint": "3dc83be360b121db5a28f28053d1b69e6d8e6f8377e130df07bd727ca8656c02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the deep task.",
+          "RunId": "40770a3c8e72463f9e8bb2062fe53dec",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 2,
+      "ChildProviderCalls": 7,
+      "PeakRequestTokens": 81,
+      "MeanRequestTokens": 49.5,
+      "TotalPromptTokens": 99,
+      "TotalCachedTokens": 18,
+      "CacheHitRatio": 0.18181818181818182,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 10712,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 168,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "d",
+      "Item": "sub-agent that compacts itself",
+      "Mode": "Shadow",
+      "Fingerprint": "3dc83be360b121db5a28f28053d1b69e6d8e6f8377e130df07bd727ca8656c02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Delegate the deep task.",
+          "RunId": "749a6334cd944d9484c3b1ecf643727f",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 2,
+      "ChildProviderCalls": 7,
+      "PeakRequestTokens": 81,
+      "MeanRequestTokens": 49.5,
+      "TotalPromptTokens": 99,
+      "TotalCachedTokens": 18,
+      "CacheHitRatio": 0.18181818181818182,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 7,
+        "warn": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "hard": 1
+      },
+      "CostMicros": 10712,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 177,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "e",
+      "Item": "workflow controller \u002B two tasks",
+      "Mode": "Compact",
+      "Fingerprint": "9bc42f8f34c6e5ed510953d48f736cbba070a28994438442999276b3ec17cf02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Run the workflow.",
+          "RunId": "c0f0e42cc6cf4fc9b20b9ed84895414e",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1855,
+      "MeanRequestTokens": 852.4444444444445,
+      "TotalPromptTokens": 7672,
+      "TotalCachedTokens": 4313,
+      "CacheHitRatio": 0.5621741397288843,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 7,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 14371,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 232,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 10
+      },
+      "Notes": [
+        "checkpoint cp-15db3 (Preemptive) boundary 13, 13 rows, 841-\u003E140 tokens, agents [], tasks 0",
+        "1 of 9 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "e",
+      "Item": "workflow controller \u002B two tasks",
+      "Mode": "Off",
+      "Fingerprint": "9bc42f8f34c6e5ed510953d48f736cbba070a28994438442999276b3ec17cf02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Run the workflow.",
+          "RunId": "f8f3deea808e4d76a232c2fb38986307",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2193,
+      "MeanRequestTokens": 929,
+      "TotalPromptTokens": 8361,
+      "TotalCachedTokens": 6168,
+      "CacheHitRatio": 0.7377108001435235,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 11129,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 279,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "e",
+      "Item": "workflow controller \u002B two tasks",
+      "Mode": "Shadow",
+      "Fingerprint": "9bc42f8f34c6e5ed510953d48f736cbba070a28994438442999276b3ec17cf02",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Run the workflow.",
+          "RunId": "84f3f48009e64c92a83ed14e5a9e14f2",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2193,
+      "MeanRequestTokens": 929,
+      "TotalPromptTokens": 8361,
+      "TotalCachedTokens": 6168,
+      "CacheHitRatio": 0.7377108001435235,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 7,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 11129,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 1984,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "f",
+      "Item": "continuation after an interrupted stream",
+      "Mode": "Compact",
+      "Fingerprint": "6f8a05445eb87ac0e367b01ef1d92f506b55d2053b9e46ec203512559750949a",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Keep going until done.",
+          "RunId": "fca65e8f7d9f44a3870254b024f8b0fe",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2046,
+      "MeanRequestTokens": 1197.4444444444443,
+      "TotalPromptTokens": 10777,
+      "TotalCachedTokens": 7224,
+      "CacheHitRatio": 0.6703164145866196,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 2,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "unsafe_state": 1,
+        "hard": 1
+      },
+      "CostMicros": 14000,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 103,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-a5a2f (Preemptive) boundary 10, 10 rows, 1032-\u003E143 tokens, agents [], tasks 0",
+        "1 of 9 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "f",
+      "Item": "continuation after an interrupted stream",
+      "Mode": "Off",
+      "Fingerprint": "6f8a05445eb87ac0e367b01ef1d92f506b55d2053b9e46ec203512559750949a",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Keep going until done.",
+          "RunId": "cb8e48dd59cd401cb5b84a9eca41046a",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2384,
+      "MeanRequestTokens": 1294.888888888889,
+      "TotalPromptTokens": 11654,
+      "TotalCachedTokens": 9270,
+      "CacheHitRatio": 0.7954350437617985,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 10807,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 204,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "f",
+      "Item": "continuation after an interrupted stream",
+      "Mode": "Shadow",
+      "Fingerprint": "6f8a05445eb87ac0e367b01ef1d92f506b55d2053b9e46ec203512559750949a",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Keep going until done.",
+          "RunId": "d405c70a82e545158fcfeb1d51da568f",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2384,
+      "MeanRequestTokens": 1294.888888888889,
+      "TotalPromptTokens": 11654,
+      "TotalCachedTokens": 9270,
+      "CacheHitRatio": 0.7954350437617985,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 2,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "unsafe_state": 1,
+        "hard": 1
+      },
+      "CostMicros": 10807,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 142,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "g",
+      "Item": "deferred AskUserQuestion outstanding (must skip)",
+      "Mode": "Compact",
+      "Fingerprint": "304a1b30a92251d996e9c34c515c919b886c7b8b3837e04adeaedd088631d128",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work through the plan.",
+          "RunId": "5ec38fbe6e49475fada06547e10687dc",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "ff37abddc406421aa958f969b54f10f7",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027g-ask-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2046,
+      "MeanRequestTokens": 1060.125,
+      "TotalPromptTokens": 8481,
+      "TotalCachedTokens": 5178,
+      "CacheHitRatio": 0.6105412097629996,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 14162,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 261,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-5539d (Preemptive) boundary 10, 10 rows, 1032-\u003E104 tokens, agents [], tasks 0",
+        "1 of 8 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "g",
+      "Item": "deferred AskUserQuestion outstanding (must skip)",
+      "Mode": "Off",
+      "Fingerprint": "304a1b30a92251d996e9c34c515c919b886c7b8b3837e04adeaedd088631d128",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work through the plan.",
+          "RunId": "8b6b0d8ce67c4b90b00fe062d7a1a6bd",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "f50ebaaceb2943278a1a5fa7e0899a36",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027g-ask-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2173,
+      "MeanRequestTokens": 1174.625,
+      "TotalPromptTokens": 9397,
+      "TotalCachedTokens": 7224,
+      "CacheHitRatio": 0.7687559859529637,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 11086,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 376,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "g",
+      "Item": "deferred AskUserQuestion outstanding (must skip)",
+      "Mode": "Shadow",
+      "Fingerprint": "304a1b30a92251d996e9c34c515c919b886c7b8b3837e04adeaedd088631d128",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work through the plan.",
+          "RunId": "91a86f9df06f4d7fbbe75f2d39261ef9",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "5610e39ef6fb416582048796f6db1eea",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027g-ask-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2173,
+      "MeanRequestTokens": 1174.625,
+      "TotalPromptTokens": 9397,
+      "TotalCachedTokens": 7224,
+      "CacheHitRatio": 0.7687559859529637,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 11086,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 146,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "h",
+      "Item": "parked Wait (must skip)",
+      "Mode": "Compact",
+      "Fingerprint": "09007ff66a6e630ab81557c23614cfc695b6a63114dd202e069a273d5467963e",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work, then wait.",
+          "RunId": "99fe80ce3c3841fdb415d57b5c5f5ba5",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "7d66c7d7cd3048a1b5a5514a5f12817f",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027h-wait-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2044,
+      "MeanRequestTokens": 1054.125,
+      "TotalPromptTokens": 8433,
+      "TotalCachedTokens": 5166,
+      "CacheHitRatio": 0.6125933831376734,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 14051,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 3164,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-8b3bd (Preemptive) boundary 10, 10 rows, 1030-\u003E104 tokens, agents [], tasks 0",
+        "1 of 8 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "h",
+      "Item": "parked Wait (must skip)",
+      "Mode": "Off",
+      "Fingerprint": "09007ff66a6e630ab81557c23614cfc695b6a63114dd202e069a273d5467963e",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work, then wait.",
+          "RunId": "c0790992c1954c248231cc597d48efda",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "8ef52528716046c4b10fe831c47ade73",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027h-wait-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2137,
+      "MeanRequestTokens": 1168.375,
+      "TotalPromptTokens": 9347,
+      "TotalCachedTokens": 7210,
+      "CacheHitRatio": 0.7713704932063764,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 10974,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 3160,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "h",
+      "Item": "parked Wait (must skip)",
+      "Mode": "Shadow",
+      "Fingerprint": "09007ff66a6e630ab81557c23614cfc695b6a63114dd202e069a273d5467963e",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work, then wait.",
+          "RunId": "a92eb976b6ce4bca87d0f402637a3d02",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Any progress?",
+          "RunId": "6b6de978f26f4f5ab6b6664bfb83f764",
+          "IsError": true,
+          "Error": "Cannot send request: tool call \u0027h-wait-1\u0027 is still deferred. Resolve all deferred tool calls via ResolveToolCallAsync before resuming.",
+          "ExpectedError": true
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2137,
+      "MeanRequestTokens": 1168.375,
+      "TotalPromptTokens": 9347,
+      "TotalCachedTokens": 7210,
+      "CacheHitRatio": 0.7713704932063764,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 10974,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 3370,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "i",
+      "Item": "restart mid-conversation",
+      "Mode": "Compact",
+      "Fingerprint": "7be42b46cf75d1335426cee6e20182694d8221739cd23b61187b6198c72fa3d1",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the work.",
+          "RunId": "0f4bc6f050d243b2b85ae1bb7e7fea74",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Continue after the restart.",
+          "RunId": "905b7e381b3a429da6cfc515dbcd8bdc",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2044,
+      "MeanRequestTokens": 1048.125,
+      "TotalPromptTokens": 8385,
+      "TotalCachedTokens": 5166,
+      "CacheHitRatio": 0.6161001788908765,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 13907,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 285,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-3babb (Preemptive) boundary 10, 10 rows, 1030-\u003E104 tokens, agents [], tasks 0",
+        "1 of 8 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "i",
+      "Item": "restart mid-conversation",
+      "Mode": "Off",
+      "Fingerprint": "7be42b46cf75d1335426cee6e20182694d8221739cd23b61187b6198c72fa3d1",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the work.",
+          "RunId": "1cb9e158cf0c45f9838b5ee8a9ba14d0",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Continue after the restart.",
+          "RunId": "d28a6006bc514505a9a1f755dfce0dbe",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2089,
+      "MeanRequestTokens": 1162.375,
+      "TotalPromptTokens": 9299,
+      "TotalCachedTokens": 7210,
+      "CacheHitRatio": 0.7753521884073556,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 10830,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 225,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "i",
+      "Item": "restart mid-conversation",
+      "Mode": "Shadow",
+      "Fingerprint": "7be42b46cf75d1335426cee6e20182694d8221739cd23b61187b6198c72fa3d1",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the work.",
+          "RunId": "6e53677373dd4e84a4149f115d3542d3",
+          "IsError": false,
+          "ExpectedError": false
+        },
+        {
+          "Input": "Continue after the restart.",
+          "RunId": "9fa46e203aa14d1b932b483925fb52e5",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2089,
+      "MeanRequestTokens": 1162.375,
+      "TotalPromptTokens": 9299,
+      "TotalCachedTokens": 7210,
+      "CacheHitRatio": 0.7753521884073556,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 10830,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 143,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "j",
+      "Item": "recall round trip",
+      "Mode": "Compact",
+      "Fingerprint": "88e9389c2a8883fee27011ef2e5ba4ba4ef208d2d01cb0e60c4073017d78e499",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the recall work.",
+          "RunId": "1340c33dec074e3496ea744cc0ad6ab3",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2046,
+      "MeanRequestTokens": 1150.4444444444443,
+      "TotalPromptTokens": 10354,
+      "TotalCachedTokens": 6685,
+      "CacheHitRatio": 0.6456441954800077,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 6,
+        "warn": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 16012,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 279,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 10
+      },
+      "Notes": [
+        "checkpoint cp-233f7 (Preemptive) boundary 10, 10 rows, 1032-\u003E143 tokens, agents [], tasks 0",
+        "2 of 9 root requests carried a checkpoint envelope",
+        "recall returned the compacted instruction verbatim"
+      ]
+    },
+    {
+      "ScenarioId": "j",
+      "Item": "recall round trip",
+      "Mode": "Off",
+      "Fingerprint": "88e9389c2a8883fee27011ef2e5ba4ba4ef208d2d01cb0e60c4073017d78e499",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the recall work.",
+          "RunId": "e53860430e334d47a62c0f3c92547b8e",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2451,
+      "MeanRequestTokens": 1339.888888888889,
+      "TotalPromptTokens": 12059,
+      "TotalCachedTokens": 9608,
+      "CacheHitRatio": 0.7967493158636703,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 12935,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 265,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "recall answered: {\u0022error\u0022:\u0022Unknown function: RecallConversation\u0022,\u0022available_functions\u0022:[\u0022Echo\u0022]}"
+      ]
+    },
+    {
+      "ScenarioId": "j",
+      "Item": "recall round trip",
+      "Mode": "Shadow",
+      "Fingerprint": "88e9389c2a8883fee27011ef2e5ba4ba4ef208d2d01cb0e60c4073017d78e499",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Start the recall work.",
+          "RunId": "68dbc0dafac646c9994aef9c66a1137c",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 9,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2439,
+      "MeanRequestTokens": 1338.5555555555557,
+      "TotalPromptTokens": 12047,
+      "TotalCachedTokens": 9608,
+      "CacheHitRatio": 0.7975429567527185,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 2,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 2
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 2
+      },
+      "CostMicros": 12899,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 267,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "recall answered: {\u0022error\u0022:\u0022nothing_compacted\u0022}"
+      ]
+    },
+    {
+      "ScenarioId": "k",
+      "Item": "legacy rows without Seq",
+      "Mode": "Compact",
+      "Fingerprint": "c436feaf557e67ae7610c844e8d35fc30b0db0e1c931a48aad8aaabd6ef59d55",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Continue the old thread.",
+          "RunId": "28f8524ac54940539b81d5ef56850087",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 3,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1936,
+      "MeanRequestTokens": 1659,
+      "TotalPromptTokens": 4977,
+      "TotalCachedTokens": 1598,
+      "CacheHitRatio": 0.3210769539883464,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 11816,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 1011,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 4
+      },
+      "Notes": [
+        "checkpoint cp-97ad6 (Preemptive) boundary 4, 4 rows, 1264-\u003E421 tokens, agents [], tasks 0",
+        "1 of 3 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "k",
+      "Item": "legacy rows without Seq",
+      "Mode": "Off",
+      "Fingerprint": "c436feaf557e67ae7610c844e8d35fc30b0db0e1c931a48aad8aaabd6ef59d55",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Continue the old thread.",
+          "RunId": "0b131cf5debf47169651d8341e46d4c4",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 3,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2274,
+      "MeanRequestTokens": 1936,
+      "TotalPromptTokens": 5808,
+      "TotalCachedTokens": 3534,
+      "CacheHitRatio": 0.6084710743801653,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 8782,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 739,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 3
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "k",
+      "Item": "legacy rows without Seq",
+      "Mode": "Shadow",
+      "Fingerprint": "c436feaf557e67ae7610c844e8d35fc30b0db0e1c931a48aad8aaabd6ef59d55",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Continue the old thread.",
+          "RunId": "e664773fe3e84c8686012987f6483daa",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 3,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2274,
+      "MeanRequestTokens": 1936,
+      "TotalPromptTokens": 5808,
+      "TotalCachedTokens": 3534,
+      "CacheHitRatio": 0.6084710743801653,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 1,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 8782,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Complete",
+      "LatencyMs": 804,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 3
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "l",
+      "Item": "unknown model (capacity unknown)",
+      "Mode": "Compact",
+      "Fingerprint": "1f94ff8bff47f9e04529ebba632e0b4638724cbe1981bbc69f9b23c3acaa335d",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the unknown model.",
+          "RunId": "437621ab23cb46279f852bbbd8c81c1e",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 4,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1033,
+      "MeanRequestTokens": 526,
+      "TotalPromptTokens": 2104,
+      "TotalCachedTokens": 1071,
+      "CacheHitRatio": 0.5090304182509505,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "skipped": 4
+      },
+      "Reasons": {
+        "capacity_unknown": 4
+      },
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Unavailable",
+      "LatencyMs": 309,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 4
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "l",
+      "Item": "unknown model (capacity unknown)",
+      "Mode": "Off",
+      "Fingerprint": "1f94ff8bff47f9e04529ebba632e0b4638724cbe1981bbc69f9b23c3acaa335d",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the unknown model.",
+          "RunId": "56f178e030e24bb897657b25b1dab3fe",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 4,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1033,
+      "MeanRequestTokens": 526,
+      "TotalPromptTokens": 2104,
+      "TotalCachedTokens": 1071,
+      "CacheHitRatio": 0.5090304182509505,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Unavailable",
+      "LatencyMs": 105,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 4
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "l",
+      "Item": "unknown model (capacity unknown)",
+      "Mode": "Shadow",
+      "Fingerprint": "1f94ff8bff47f9e04529ebba632e0b4638724cbe1981bbc69f9b23c3acaa335d",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the unknown model.",
+          "RunId": "0a6e5030241946fe8b314a8c1d8a093f",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 4,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 1033,
+      "MeanRequestTokens": 526,
+      "TotalPromptTokens": 2104,
+      "TotalCachedTokens": 1071,
+      "CacheHitRatio": 0.5090304182509505,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "skipped": 4
+      },
+      "Reasons": {
+        "capacity_unknown": 4
+      },
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Unavailable",
+      "LatencyMs": 189,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 4
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "m",
+      "Item": "unpriced category (partial cost)",
+      "Mode": "Compact",
+      "Fingerprint": "6498734d29f85ebfc949a8b36b1f3a72b8d38cff09c70f0ed63d4d0bcd2ca0c3",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the partially priced model.",
+          "RunId": "dbae4b4cabb74301a61920b95f6a395e",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2049,
+      "MeanRequestTokens": 1094.75,
+      "TotalPromptTokens": 8758,
+      "TotalCachedTokens": 5196,
+      "CacheHitRatio": 0.5932861383877598,
+      "CheckpointsActivated": 1,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "compact": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 13386,
+      "CompactionCostMicros": 300,
+      "CostCompleteness": "Partial",
+      "LatencyMs": 243,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 1,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 9
+      },
+      "Notes": [
+        "checkpoint cp-55bdd (Preemptive) boundary 10, 10 rows, 1035-\u003E149 tokens, agents [], tasks 0",
+        "1 of 8 root requests carried a checkpoint envelope"
+      ]
+    },
+    {
+      "ScenarioId": "m",
+      "Item": "unpriced category (partial cost)",
+      "Mode": "Off",
+      "Fingerprint": "6498734d29f85ebfc949a8b36b1f3a72b8d38cff09c70f0ed63d4d0bcd2ca0c3",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the partially priced model.",
+          "RunId": "ae031f4abcde43bda914fcf5b3b49eea",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2387,
+      "MeanRequestTokens": 1204,
+      "TotalPromptTokens": 9632,
+      "TotalCachedTokens": 7245,
+      "CacheHitRatio": 0.7521802325581395,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 0,
+      "Decisions": {},
+      "Reasons": {},
+      "CostMicros": 9561,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Partial",
+      "LatencyMs": 105,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    },
+    {
+      "ScenarioId": "m",
+      "Item": "unpriced category (partial cost)",
+      "Mode": "Shadow",
+      "Fingerprint": "6498734d29f85ebfc949a8b36b1f3a72b8d38cff09c70f0ed63d4d0bcd2ca0c3",
+      "TaskSuccess": true,
+      "ExpectedSuccess": true,
+      "Runs": [
+        {
+          "Input": "Work on the partially priced model.",
+          "RunId": "e67e51e787d1435c9390a8ab911cc29e",
+          "IsError": false,
+          "ExpectedError": false
+        }
+      ],
+      "ProviderCalls": 8,
+      "ChildProviderCalls": 0,
+      "PeakRequestTokens": 2387,
+      "MeanRequestTokens": 1204,
+      "TotalPromptTokens": 9632,
+      "TotalCachedTokens": 7245,
+      "CacheHitRatio": 0.7521802325581395,
+      "CheckpointsActivated": 0,
+      "ChildCheckpointsActivated": 0,
+      "ShadowCheckpoints": 1,
+      "Decisions": {
+        "no_action": 5,
+        "warn": 1,
+        "skipped": 1,
+        "shadow": 1
+      },
+      "Reasons": {
+        "below_threshold": 1,
+        "hard": 1
+      },
+      "CostMicros": 9561,
+      "CompactionCostMicros": 0,
+      "CostCompleteness": "Partial",
+      "LatencyMs": 305,
+      "SummaryLatencyMs": 0,
+      "Invariants": {
+        "InvalidToolPairs": 0,
+        "ProtectedStateLoss": [],
+        "CrossThreadReads": 0,
+        "RawHistoryLoss": [],
+        "AllZero": true
+      },
+      "Retention": {
+        "CheckpointsChecked": 0,
+        "CurrentInstructionVerbatim": true,
+        "TasksOnBoard": true,
+        "AgentsMatchRoster": true,
+        "RecoveryZero": true,
+        "IndexContiguous": true,
+        "ArtifactsCarried": true,
+        "MetadataKeys": [
+          "compaction.state",
+          "context.latest",
+          "context.observations",
+          "usage.aggregate",
+          "usage.records"
+        ],
+        "RunLedgerEntries": 0,
+        "UsageRecords": 8
+      },
+      "Notes": []
+    }
+  ]
+}

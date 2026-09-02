@@ -139,7 +139,7 @@ public sealed record CorpusReport
         _ = sb.AppendLine();
         _ = sb.AppendLine(
             CultureInfo.InvariantCulture,
-            $"Evaluator `{EvaluatorVersion}`, generated {GeneratedAtUtc:yyyy-MM-dd HH:mm:ss}Z by `CompactionCorpusTests` (mock providers only; window 2400 tokens unless the scenario title says otherwise, reserve 100)."
+            $"Evaluator `{EvaluatorVersion}`, generated {GeneratedAtUtc:yyyy-MM-dd HH:mm:ss}Z by `CompactionCorpusTests` (mock providers only; window 2400 tokens unless the scenario title says otherwise, reserve 0)."
         );
         _ = sb.AppendLine();
         _ = sb.AppendLine("Latency is wall-clock on the machine that generated the report: reported, never asserted.");
