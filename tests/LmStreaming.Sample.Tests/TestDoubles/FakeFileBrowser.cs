@@ -77,6 +77,13 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     /// <c>.conversations/.gitignore</c> fails.
     /// </summary>
     public Func<string, Exception?>? WriteFailure { get; set; }
+
+    /// <summary>
+    /// The default command outcome. <c>OperationRecordReleased</c> is true because that is what a healthy
+    /// gateway does — the SDK deletes the operation record once it has read the result — so the default
+    /// double does not look like the retained-record failure of issue #725. A test that wants that failure
+    /// sets the flag false here (or through <see cref="ExecuteHandler"/>).
+    /// </summary>
     public SandboxCommandResult ExecResult { get; set; } =
         new()
         {
@@ -84,6 +91,7 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
             StandardOutput = "",
             StandardError = "",
             OperationId = "op",
+            OperationRecordReleased = true,
         };
 
     /// <summary>

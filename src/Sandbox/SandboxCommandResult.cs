@@ -37,6 +37,24 @@ public sealed record SandboxCommandResult
     public required string OperationId { get; init; }
 
     /// <summary>
+    /// Whether the gateway's operation RECORD for this command was released — its
+    /// <c>DELETE .../operations/{operation_id}</c> either succeeded or reported the record already gone
+    /// (<c>404</c>: nothing left to reclaim). <see cref="SandboxClient.ExecuteAsync"/> issues that delete
+    /// once BOTH artifacts have been downloaded, because the same delete also removes the on-disk
+    /// artifact directory.
+    /// </summary>
+    /// <remarks>
+    /// <c>false</c> means the gateway still holds this record (and its stdout/stderr files) until the
+    /// terminal TTL prunes the record. It is never an error — the command itself succeeded and its output
+    /// above is complete — but it IS the early warning a long-lived session wants: a retained record keeps
+    /// its slot in the gateway's per-session record cap, and a session that retains one per command is
+    /// eventually refused with <c>503 operation_capacity_exhausted</c> (issue #725). A caller running many
+    /// commands on one session should report a persistent <c>false</c> ONCE per session — logging it per
+    /// call buries the signal under one line per command, which is how that failure originally presented.
+    /// </remarks>
+    public bool OperationRecordReleased { get; init; }
+
+    /// <summary>
     /// <see cref="StandardOutput"/> followed by <see cref="StandardError"/> — a convenience
     /// concatenation, not a real-time interleaving of the two streams.
     /// </summary>

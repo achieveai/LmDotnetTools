@@ -168,6 +168,9 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
             StandardOutput = stdout,
             StandardError = stderr,
             OperationId = "local",
+            // A local process leaves no gateway record behind at all, which is the same thing callers
+            // want to know: nothing is holding a slot in the session's operation-record cap.
+            OperationRecordReleased = true,
         };
     }
 

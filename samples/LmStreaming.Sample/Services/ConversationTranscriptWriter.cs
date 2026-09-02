@@ -739,6 +739,18 @@ public sealed class ConversationTranscriptWriter
     private bool _transcriptExists;
 
     private bool _agentsDirectoryTouched;
+
+    /// <summary>
+    ///     Whether this writer has already reported the sandbox SDK failing to release a command's gateway
+    ///     operation record. One writer serves one conversation (and therefore one workspace session), so
+    ///     this makes that report once per session at Warning and per call at Debug thereafter. A retained
+    ///     record keeps its slot in the gateway's per-session record cap, and a session that retains one
+    ///     per command eventually gets every flush refused with 503 <c>operation_capacity_exhausted</c>
+    ///     (issue #725) — the signal is worth surfacing, but warning on every flush is exactly how that
+    ///     failure buried itself in the host log the first time.
+    /// </summary>
+    private bool _unreleasedOperationRecordReported;
+
     private int _subAgentCursor;
     private int _sawSubAgentActivity;
     private int _sweepRestartRequested;
@@ -2179,15 +2191,49 @@ public sealed class ConversationTranscriptWriter
     {
         try
         {
-            return await _fileBrowser
+            var result = await _fileBrowser
                 .ExecuteWorkspaceCommandAsync(sessionId, new SandboxCommand(arguments), ct)
                 .ConfigureAwait(false);
+            if (!result.OperationRecordReleased)
+            {
+                ReportUnreleasedOperationRecord(sessionId);
+            }
+
+            return result;
         }
         catch (SandboxException ex)
         {
             _logger.LogWarning(ex, "Transcript command {Command} failed for thread {ThreadId}", arguments[0], ThreadId);
             return null;
         }
+    }
+
+    /// <summary>
+    ///     Reports the sandbox SDK's best-effort release of a completed command's gateway operation record
+    ///     having failed — once per session at Warning, then at Debug. See
+    ///     <see cref="_unreleasedOperationRecordReported"/> for why the cadence matters.
+    /// </summary>
+    private void ReportUnreleasedOperationRecord(string sessionId)
+    {
+        if (_unreleasedOperationRecordReported)
+        {
+            _logger.LogDebug(
+                "Sandbox session {SessionId} is still retaining transcript operation records for thread {ThreadId}",
+                sessionId,
+                ThreadId
+            );
+            return;
+        }
+
+        _unreleasedOperationRecordReported = true;
+        _logger.LogWarning(
+            "Sandbox session {SessionId} did not release a completed transcript command's operation record "
+                + "for thread {ThreadId}. Retained records hold their slot in the gateway's per-session "
+                + "record cap until the terminal TTL expires; if this persists, later flushes will be "
+                + "refused with 503 operation_capacity_exhausted. Reported once per session.",
+            sessionId,
+            ThreadId
+        );
     }
 
     // -------- Metadata --------

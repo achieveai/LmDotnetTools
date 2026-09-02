@@ -1706,6 +1706,53 @@ public sealed class ConversationTranscriptWriterTests
     }
 
     /// <summary>
+    /// Issue #725. When the SDK cannot release a completed command's gateway operation record, the writer
+    /// says so ONCE for the session and drops to Debug afterwards. The cadence is the point: the original
+    /// outage produced 1508 identical warnings from this one call site, which is how the actual signal
+    /// (the session was accumulating records until every submit was refused) went unread.
+    /// </summary>
+    [Fact]
+    public async Task RetainedOperationRecord_IsWarnedOncePerSession_ThenDebug()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User"), Msg("m2", 2)]);
+
+        var browser = new FakeFileBrowser
+        {
+            ExecResult = new SandboxCommandResult
+            {
+                ExitCode = 0,
+                StandardOutput = "",
+                StandardError = "",
+                OperationId = "op",
+                OperationRecordReleased = false,
+            },
+        };
+        var logger = new CapturingLogger<ConversationTranscriptWriter>();
+        var writer = CreateWriter(store, browser, logger);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m3", 3, "User"), Msg("m4", 4)]);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // Several commands ran across the two flushes, every one of them retaining its record.
+        _ = browser.Commands.Count.Should().BeGreaterThan(1);
+        _ = logger
+            .Entries.Where(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("operation record", StringComparison.Ordinal)
+            )
+            .Should()
+            .ContainSingle();
+        _ = logger
+            .Entries.Where(e =>
+                e.Level == LogLevel.Debug && e.Message.Contains("operation records", StringComparison.Ordinal)
+            )
+            .Should()
+            .NotBeEmpty();
+    }
+
+    /// <summary>
     /// A conversation with no workspace bound never even reaches the gateway — the metadata read alone
     /// settles it. Same quiet debug outcome.
     /// </summary>
