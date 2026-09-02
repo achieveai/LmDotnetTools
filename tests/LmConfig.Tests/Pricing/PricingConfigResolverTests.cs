@@ -328,6 +328,198 @@ public class PricingConfigResolverTests
         Assert.Equal(15.0m, priced.CompletionPerMillion);
     }
 
+    // --- Category-complete rates (#682): the config carries cache read / cache write (per TTL) /
+    // reasoning rates, the accounting mode and an effective date, and the resolver maps every one of
+    // them onto ModelPricing. A route that disagrees on ANY of them is a conflicting route. ---
+
+    private static PricingConfig FullRates() =>
+        new()
+        {
+            PromptPerMillion = 3.0,
+            CompletionPerMillion = 15.0,
+            CacheReadPerMillion = 0.30,
+            CacheWrite5mPerMillion = 3.75,
+            CacheWrite1hPerMillion = 6.0,
+            ReasoningPerMillion = null,
+            CacheAccounting = CacheAccounting.Additive,
+            EffectiveDate = new DateOnly(2026, 9, 2),
+        };
+
+    [Fact]
+    public void Resolve_MapsEveryCategoryRate_AccountingMode_AndEffectiveDate()
+    {
+        var resolver = new PricingConfigResolver(
+            new Dictionary<string, PricingConfig> { ["claude"] = FullRates() },
+            source: "test-catalog",
+            version: "2026-09-02"
+        );
+
+        var pricing = resolver.Resolve("claude");
+
+        Assert.NotNull(pricing);
+        Assert.Equal(0.30m, pricing!.CacheReadPerMillion);
+        Assert.Equal(3.75m, pricing.CacheWrite5mPerMillion);
+        Assert.Equal(6.0m, pricing.CacheWrite1hPerMillion);
+        Assert.Null(pricing.ReasoningPerMillion);
+        Assert.Equal(CacheAccounting.Additive, pricing.CacheAccounting);
+        Assert.Equal(new DateOnly(2026, 9, 2), pricing.EffectiveDate);
+        Assert.Equal("test-catalog", pricing.Source);
+        Assert.Equal("2026-09-02", pricing.Version);
+    }
+
+    [Fact]
+    public void Resolve_LegacyTwoRateEntry_LeavesCategoryRatesNull_AndDefaultsToSubsetAccounting()
+    {
+        // An entry written before #682 still loads. Its cache categories have no rate, so a record with
+        // cache tokens prices Partial — never at the base rate, never zero.
+        var pricing = Resolver().Resolve("model-A");
+
+        Assert.NotNull(pricing);
+        Assert.Null(pricing!.CacheReadPerMillion);
+        Assert.Null(pricing.CacheWrite5mPerMillion);
+        Assert.Null(pricing.CacheWrite1hPerMillion);
+        Assert.Null(pricing.ReasoningPerMillion);
+        Assert.Null(pricing.EffectiveDate);
+        Assert.Equal(CacheAccounting.SubsetOfInput, pricing.CacheAccounting);
+
+        var estimate = pricing.Estimate(
+            new UsageRecord
+            {
+                LogicalCallId = "c",
+                ProviderAttemptId = "a",
+                RootConversationId = "r",
+                RequestedModel = "model-A",
+                InputTokens = 1000,
+                CacheReadTokens = 400,
+                OutputTokens = 500,
+            }
+        );
+
+        Assert.Equal(CostCompleteness.Partial, estimate.Completeness);
+        Assert.Equal((600 * 2) + (500 * 8), estimate.Micros); // 600 uncached @ $2 + 500 @ $8; reads unpriced
+    }
+
+    [Fact]
+    public void FromAppConfig_RoutesThatAgreeOnBaseRates_ButDifferOnACacheRate_AreConflicting()
+    {
+        // Two routes with identical prompt/completion rates but different cache-read rates: a record
+        // stamped with the shared name may have been billed either way, so the name goes dark.
+        var cheapReads = FullRates() with
+        {
+            CacheReadPerMillion = 0.10,
+        };
+
+        var resolver = PricingConfigResolver.FromAppConfig(
+            Catalog(
+                Model("contested", Provider("A", "a/contested", FullRates()), Provider("B", "b/contested", cheapReads))
+            )
+        );
+
+        Assert.Null(resolver.Resolve("contested"));
+        Assert.Equal(0.30m, resolver.Resolve("a/contested")!.CacheReadPerMillion);
+        Assert.Equal(0.10m, resolver.Resolve("b/contested")!.CacheReadPerMillion);
+    }
+
+    [Fact]
+    public void FromAppConfig_RoutesThatDifferOnlyInAccountingMode_AreConflicting()
+    {
+        var subset = FullRates() with { CacheAccounting = CacheAccounting.SubsetOfInput };
+
+        var resolver = PricingConfigResolver.FromAppConfig(
+            Catalog(Model("contested", Provider("A", "a/contested", FullRates()), Provider("B", "b/contested", subset)))
+        );
+
+        Assert.Null(resolver.Resolve("contested"));
+    }
+
+    [Fact]
+    public void FromAppConfig_RoutesWithIdenticalFullRates_StillResolve()
+    {
+        var resolver = PricingConfigResolver.FromAppConfig(
+            Catalog(Model("agreed", Provider("A", "a/agreed", FullRates()), Provider("B", "b/agreed", FullRates())))
+        );
+
+        var pricing = resolver.Resolve("agreed");
+        Assert.NotNull(pricing);
+        Assert.Equal(6.0m, pricing!.CacheWrite1hPerMillion);
+    }
+
+    [Fact]
+    public void PricingConfig_RoundTripsTheNewKeys_ThroughJson()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(FullRates());
+
+        Assert.Contains("\"cache_read_per_million\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"cache_write_5m_per_million\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"cache_write_1h_per_million\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"reasoning_per_million\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"cache_accounting\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"effective_date\"", json, StringComparison.Ordinal);
+
+        var back = System.Text.Json.JsonSerializer.Deserialize<PricingConfig>(json);
+        Assert.Equal(FullRates(), back);
+    }
+
+    [Fact]
+    public void PricingConfig_LegacyJsonWithoutTheNewKeys_StillLoads()
+    {
+        var back = System.Text.Json.JsonSerializer.Deserialize<PricingConfig>(
+            """{ "prompt_per_million": 3.0, "completion_per_million": 15.0 }"""
+        );
+
+        Assert.NotNull(back);
+        Assert.Null(back!.CacheReadPerMillion);
+        Assert.Equal(CacheAccounting.SubsetOfInput, back.CacheAccounting);
+        Assert.Null(back.EffectiveDate);
+    }
+
+    [Fact]
+    public void AddLmConfig_BoundFromConfiguration_BindsTheNewPricingKeys()
+    {
+        var services = new ServiceCollection();
+        _ = services.AddLmConfig(
+            LmConfigSection(
+                """
+                {
+                  "LmConfig": {
+                    "Models": [
+                      {
+                        "Id": "claude",
+                        "IsReasoning": false,
+                        "Providers": [
+                          {
+                            "Name": "Anthropic",
+                            "ModelName": "claude",
+                            "Pricing": {
+                              "PromptPerMillion": 3.0,
+                              "CompletionPerMillion": 15.0,
+                              "CacheReadPerMillion": 0.30,
+                              "CacheWrite5mPerMillion": 3.75,
+                              "CacheWrite1hPerMillion": 6.0,
+                              "CacheAccounting": "Additive",
+                              "EffectiveDate": "2026-09-02"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """
+            )
+        );
+
+        using var provider = services.BuildServiceProvider();
+        var pricing = provider.GetRequiredService<IPricingResolver>().Resolve("claude");
+
+        Assert.NotNull(pricing);
+        Assert.Equal(0.30m, pricing!.CacheReadPerMillion);
+        Assert.Equal(3.75m, pricing.CacheWrite5mPerMillion);
+        Assert.Equal(6.0m, pricing.CacheWrite1hPerMillion);
+        Assert.Equal(CacheAccounting.Additive, pricing.CacheAccounting);
+        Assert.Equal(new DateOnly(2026, 9, 2), pricing.EffectiveDate);
+    }
+
     private sealed class StubPricingResolver : IPricingResolver
     {
         public ModelPricing? Resolve(string modelId) => null;
