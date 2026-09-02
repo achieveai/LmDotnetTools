@@ -197,6 +197,7 @@ internal sealed class CorpusRunner : IAsyncDisposable
     private Task? _runTask;
     private Drain? _drain;
     private bool _initialized;
+    private bool _featureOff;
 
     public CorpusRunner(
         CorpusScenario scenario,
@@ -339,6 +340,23 @@ internal sealed class CorpusRunner : IAsyncDisposable
     public async Task RestartAsync(CancellationToken ct = default)
     {
         await StopLoopAsync();
+        StartLoop();
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Restarts the loop with a different compaction setup: the rollout seam. Returning null from
+    /// <paramref name="reconfigure"/> brings the next loop up with no compaction at all (feature off).
+    /// </summary>
+    public async Task RestartWithAsync(
+        Func<CompactionSetup, CompactionSetup?> reconfigure,
+        CancellationToken ct = default
+    )
+    {
+        await StopLoopAsync();
+        var next = reconfigure(Setup ?? Configure(NewSetup()));
+        _featureOff = next is null;
+        Setup = next;
         StartLoop();
         await Task.CompletedTask;
     }
@@ -491,18 +509,10 @@ internal sealed class CorpusRunner : IAsyncDisposable
             (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(EchoPadding))
         );
 
-        Setup ??= Configure(
-            new CompactionSetup
-            {
-                Options = Options,
-                Summarizer = Summarizer,
-                ResolveWindowTokens = _ => _scenario.WindowTokens,
-                ProviderId = "corpus",
-                Clock = Clock,
-                ReadEnvironment = _ => KillSwitchEnv,
-                IsContextOverflow = ex => ex is HttpRequestException { StatusCode: HttpStatusCode.BadRequest },
-            }
-        );
+        if (!_featureOff)
+        {
+            Setup ??= Configure(NewSetup());
+        }
 
         SubAgentOptions? subAgents = null;
         if (_scenario.Children.Count > 0)
@@ -559,7 +569,7 @@ internal sealed class CorpusRunner : IAsyncDisposable
             pricingResolver: new CorpusPricingResolver(_scenario.Pricing),
             lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
             collaboration: collaboration,
-            compaction: Setup
+            compaction: _featureOff ? null : Setup
         );
         _runTask = Loop.RunAsync(_cts.Token);
         _drain = LoopSubscription.StartDraining(
@@ -579,6 +589,18 @@ internal sealed class CorpusRunner : IAsyncDisposable
     }
 
     private CompactionSetup Configure(CompactionSetup setup) => _configureSetup?.Invoke(setup) ?? setup;
+
+    private CompactionSetup NewSetup() =>
+        new()
+        {
+            Options = Options,
+            Summarizer = Summarizer,
+            ResolveWindowTokens = _ => _scenario.WindowTokens,
+            ProviderId = "corpus",
+            Clock = Clock,
+            ReadEnvironment = _ => KillSwitchEnv,
+            IsContextOverflow = ex => ex is HttpRequestException { StatusCode: HttpStatusCode.BadRequest },
+        };
 
     private async Task StopLoopAsync()
     {
