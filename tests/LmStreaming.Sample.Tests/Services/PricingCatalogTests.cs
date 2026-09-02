@@ -309,6 +309,186 @@ public class PricingCatalogTests
         catalog.Models.Should().ContainSingle(m => m.Id == "claude-sonnet-4-5");
     }
 
+    // --- Category-complete rates (#682): the section carries cache read / cache write (per TTL) /
+    // reasoning rates, the accounting mode and an effective date, and a two-rate entry written before
+    // any of them existed still loads. ---
+
+    private static IConfiguration AnthropicShapedConfig(params (string Key, string Value)[] extra)
+    {
+        var entries = new List<(string, string)>
+        {
+            ("Pricing:Version", "2026-09-02"),
+            ("Pricing:Models:claude:PromptPerMillion", "3"),
+            ("Pricing:Models:claude:CompletionPerMillion", "15"),
+            ("Pricing:Models:claude:CacheReadPerMillion", "0.30"),
+            ("Pricing:Models:claude:CacheWrite5mPerMillion", "3.75"),
+            ("Pricing:Models:claude:CacheWrite1hPerMillion", "6"),
+            ("Pricing:Models:claude:CacheAccounting", "Additive"),
+            ("Pricing:Models:claude:EffectiveDate", "2026-09-02"),
+        };
+        foreach (var (key, value) in extra)
+        {
+            // An extra entry OVERRIDES the shaped default for its key rather than duplicating it.
+            _ = entries.RemoveAll(e => e.Item1 == key);
+            entries.Add((key, value));
+        }
+
+        return Config([.. entries]);
+    }
+
+    [Fact]
+    public void TheNewPricingKeys_RoundTripFromConfigurationOntoTheResolvedRate()
+    {
+        var pricing = ResolverFrom(AnthropicShapedConfig()).Resolve("claude");
+
+        pricing.Should().NotBeNull();
+        pricing!.CacheReadPerMillion.Should().Be(0.30m);
+        pricing.CacheWrite5mPerMillion.Should().Be(3.75m);
+        pricing.CacheWrite1hPerMillion.Should().Be(6m);
+        pricing.ReasoningPerMillion.Should().BeNull();
+        pricing.CacheAccounting.Should().Be(CacheAccounting.Additive);
+        pricing.EffectiveDate.Should().Be(new DateOnly(2026, 9, 2));
+        pricing.Version.Should().Be("2026-09-02");
+    }
+
+    [Fact]
+    public void AnAnthropicShapedRecord_IsPricedAcrossEveryCategory_ThroughTheConfiguredCatalog()
+    {
+        var ledger = new UsageLedger("conv-1", ResolverFrom(AnthropicShapedConfig()));
+
+        // input EXCLUDES the cache tokens (Additive). 1,000 @ $3 + 4,000 reads @ $0.30 + 2,000 writes @ $3.75
+        // + 100 out @ $15 = 13,200 micros; Partial because the provider does not report the write TTL.
+        var record = ledger.UpsertAttempt(
+            Observation("claude", 1_000, 100) with
+            {
+                CacheReadTokens = 4_000,
+                CacheWriteTokens = 2_000,
+            }
+        );
+
+        record.EstimatedPublicCostMicros.Should().Be(13_200);
+        record.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void ALegacyTwoRateEntry_StillLoads_AndPricesCacheCategoriesAsPartial()
+    {
+        // Backward compatibility: the pre-#682 shape is exactly the first test's shape. Cache tokens on such
+        // an entry are not priced at the base rate and do not zero the estimate — they make it Partial.
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")
+            )
+        );
+        var ledger = new UsageLedger("conv-1", resolver);
+
+        var record = ledger.UpsertAttempt(Observation("claude-sonnet-4-5", 1_000, 100) with { CacheReadTokens = 400 });
+
+        // SubsetOfInput default: 600 uncached @ $3 + 100 @ $15 = 3,300; the 400 reads have no rate and are
+        // neither charged at $3 (that would be 4,500) nor silently zeroed — they make the estimate Partial.
+        record.EstimatedPublicCostMicros.Should().Be(3_300);
+        record.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Theory]
+    [InlineData("CacheReadPerMillion", "-1")]
+    [InlineData("CacheWrite5mPerMillion", "NaN")]
+    [InlineData("CacheWrite1hPerMillion", "Infinity")]
+    [InlineData("ReasoningPerMillion", "-0.5")]
+    public void AnUnusableCategoryRate_RejectsTheEntry_LikeAnUnusableBaseRate(string key, string value)
+    {
+        var resolver = ResolverFrom(AnthropicShapedConfig(($"Pricing:Models:claude:{key}", value)));
+
+        // The same rule as the base rates: a wrong number is worse than an absent one because it is summed,
+        // reported and believed. Half-fixing the entry by dropping only the bad key would leave a Partial
+        // estimate that looks like a provider gap rather than an operator typo.
+        resolver.Resolve("claude").Should().BeNull();
+    }
+
+    [Fact]
+    public void AnUnknownCacheAccountingValue_RejectsTheEntry_RatherThanDefaultingSilently()
+    {
+        // Additive vs SubsetOfInput changes the arithmetic; a misspelt mode silently falling back to the
+        // default would price every Anthropic cache read twice. Reject and log.
+        var resolver = ResolverFrom(AnthropicShapedConfig(("Pricing:Models:claude:CacheAccounting", "Aditive")));
+
+        resolver.Resolve("claude").Should().BeNull();
+    }
+
+    [Fact]
+    public void AnUnparseableEffectiveDate_RejectsTheEntry()
+    {
+        var resolver = ResolverFrom(AnthropicShapedConfig(("Pricing:Models:claude:EffectiveDate", "September 2nd")));
+
+        resolver.Resolve("claude").Should().BeNull();
+    }
+
+    [Fact]
+    public void ARejectedCategoryRate_IsLogged_NamingTheKey()
+    {
+        var sink = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        _ = services.AddLogging(b => b.AddProvider(sink));
+        _ = services.AddConfiguredPricing(AnthropicShapedConfig(("Pricing:Models:claude:CacheReadPerMillion", "-1")));
+
+        _ = services.BuildServiceProvider().GetRequiredService<IPricingResolver>();
+
+        sink.Messages.Should().ContainSingle(m => m.Contains("CacheReadPerMillion", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheShippedAppsettings_PricesOnlyCitedRates_EachWithAnEffectiveDateAndAccountingMode()
+    {
+        // The repository ships public list prices for the ids the sample's per-token API providers default
+        // to (#682). Every shipped entry must resolve (a silently dropped entry looks like an unconfigured
+        // model) and must carry the effective date that lets the next person re-verify it against the
+        // vendor page cited in docs/features/public-pricing-catalog.md.
+        var appsettings = FindSampleAppsettings();
+        var configuration = new ConfigurationBuilder().AddJsonFile(appsettings, optional: false).Build();
+        var rejected = new List<string>();
+        var catalog = PricingCatalog.BuildCatalog(configuration, rejected);
+        var resolver = ResolverFrom(configuration);
+
+        rejected.Should().BeEmpty();
+        catalog.Models.Should().NotBeEmpty();
+        foreach (var entry in configuration.GetSection("Pricing:Models").GetChildren())
+        {
+            var pricing = resolver.Resolve(entry.Key);
+            pricing.Should().NotBeNull($"shipped entry '{entry.Key}' must resolve");
+            pricing!.EffectiveDate.Should().NotBeNull($"shipped entry '{entry.Key}' must be dated");
+            entry["_source"].Should().NotBeNullOrWhiteSpace($"shipped entry '{entry.Key}' must cite its vendor page");
+        }
+
+        // The Anthropic ids report input EXCLUDING cache tokens, so they must not carry the subset default.
+        foreach (var entry in configuration.GetSection("Pricing:Models").GetChildren())
+        {
+            if (entry.Key.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+            {
+                resolver.Resolve(entry.Key)!.CacheAccounting.Should().Be(CacheAccounting.Additive, entry.Key);
+            }
+        }
+    }
+
+    private static string FindSampleAppsettings()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "samples", "LmStreaming.Sample", "appsettings.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new FileNotFoundException(
+            "samples/LmStreaming.Sample/appsettings.json not found above the test output directory."
+        );
+    }
+
     [Fact]
     public void OneNamePricedTwoWays_IsDropped_RatherThanResolvedToWhicheverCameFirst()
     {

@@ -75,6 +75,25 @@ public class UsageRecordMapperTests
     }
 
     [Fact]
+    public void FromUsageMessage_AcceptsTheCompactionKind_LikeAnyOtherDescendantKind()
+    {
+        // A checkpoint summarization pass (#682/#683) is one provider call attributed to the loop's own
+        // thread. The mapper needs no special case: the kind is stamped and the owner becomes the parent
+        // execution, the same convention every non-primary kind uses.
+        var message = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+            GenerationId = "gen-cp",
+        };
+
+        var record = UsageRecordMapper.FromUsageMessage(message, "thread-1", UsageExecutionKind.Compaction, "model-A");
+
+        record.ExecutionKind.Should().Be(UsageExecutionKind.Compaction);
+        record.ParentExecutionId.Should().Be("thread-1");
+        record.CostCompleteness.Should().Be(CostCompleteness.Unavailable); // nothing priced yet
+    }
+
+    [Fact]
     public void CacheCreationTokens_FoldAdditively_IntoAggregateTotal()
     {
         var ledger = new UsageLedger("root");

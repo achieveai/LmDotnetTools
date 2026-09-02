@@ -127,10 +127,11 @@ public sealed class PricingConfigResolver : IPricingResolver
                 continue;
             }
 
+            // Record equality: every rate, the accounting mode and the effective date must agree. Two
+            // routes that share base rates but differ on a cache rate — or on whether cache reads are a
+            // subset of input — bill a request differently, so the shared name is just as ambiguous (#682).
             var first = offered[0];
-            var agrees = offered.All(p =>
-                p.PromptPerMillion == first.PromptPerMillion && p.CompletionPerMillion == first.CompletionPerMillion
-            );
+            var agrees = offered.All(p => p == first);
 
             if (agrees)
             {
@@ -154,8 +155,16 @@ public sealed class PricingConfigResolver : IPricingResolver
             ModelId = modelId,
             PromptPerMillion = (decimal)config.PromptPerMillion,
             CompletionPerMillion = (decimal)config.CompletionPerMillion,
+            CacheReadPerMillion = ToDecimal(config.CacheReadPerMillion),
+            CacheWrite5mPerMillion = ToDecimal(config.CacheWrite5mPerMillion),
+            CacheWrite1hPerMillion = ToDecimal(config.CacheWrite1hPerMillion),
+            ReasoningPerMillion = ToDecimal(config.ReasoningPerMillion),
+            CacheAccounting = config.CacheAccounting,
+            EffectiveDate = config.EffectiveDate,
             Source = _source,
             Version = _version,
         };
     }
+
+    private static decimal? ToDecimal(double? rate) => rate is null ? null : (decimal)rate.Value;
 }

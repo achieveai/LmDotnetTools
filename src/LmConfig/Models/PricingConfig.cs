@@ -1,14 +1,21 @@
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Models;
 
 /// <summary>
 ///     Pricing configuration for token-based costs.
 /// </summary>
+/// <remarks>
+///     The two base rates are required. The category rates, accounting mode and effective date (#682) are
+///     optional so a catalog written before they existed still loads; a category left null makes a public
+///     estimate for a record with tokens in that category <see cref="CostCompleteness.Partial" /> rather than
+///     pricing it at the base rate or at zero.
+/// </remarks>
 public record PricingConfig
 {
     /// <summary>
-    ///     Cost per million prompt tokens.
+    ///     Cost per million (uncached) prompt tokens.
     /// </summary>
     [JsonPropertyName("prompt_per_million")]
     public required double PromptPerMillion { get; init; }
@@ -18,6 +25,34 @@ public record PricingConfig
     /// </summary>
     [JsonPropertyName("completion_per_million")]
     public required double CompletionPerMillion { get; init; }
+
+    /// <summary>Cost per million cache-read (cache hit) tokens, or null when unknown.</summary>
+    [JsonPropertyName("cache_read_per_million")]
+    public double? CacheReadPerMillion { get; init; }
+
+    /// <summary>Cost per million cache-write tokens with a 5-minute TTL, or null when unknown.</summary>
+    [JsonPropertyName("cache_write_5m_per_million")]
+    public double? CacheWrite5mPerMillion { get; init; }
+
+    /// <summary>Cost per million cache-write tokens with a 1-hour TTL, or null when unknown.</summary>
+    [JsonPropertyName("cache_write_1h_per_million")]
+    public double? CacheWrite1hPerMillion { get; init; }
+
+    /// <summary>Cost per million reasoning tokens, or null when reasoning is billed as completion.</summary>
+    [JsonPropertyName("reasoning_per_million")]
+    public double? ReasoningPerMillion { get; init; }
+
+    /// <summary>
+    ///     How the provider reports cache tokens relative to the prompt count. Anthropic routes must declare
+    ///     <see cref="LmCore.Models.CacheAccounting.Additive" />; the default is the OpenAI subset convention.
+    /// </summary>
+    [JsonPropertyName("cache_accounting")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public CacheAccounting CacheAccounting { get; init; } = CacheAccounting.SubsetOfInput;
+
+    /// <summary>Date the rates were taken from the vendor's published list, or null when not recorded.</summary>
+    [JsonPropertyName("effective_date")]
+    public DateOnly? EffectiveDate { get; init; }
 
     /// <summary>
     ///     Calculates the total cost for a request.

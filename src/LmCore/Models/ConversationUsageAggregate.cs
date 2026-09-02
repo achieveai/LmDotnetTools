@@ -48,6 +48,20 @@ public sealed record ModelUsageRow
     /// <summary>Known-cost subtotal for provider-reported cost, or null when no attempt had one.</summary>
     public long? ProviderReportedCostMicros { get; init; }
 
+    /// <summary>
+    ///     Known-cost subtotal of each attempt's <see cref="UsageRecord.PreferredCostMicros" /> (provider-reported
+    ///     when present, else the public estimate), or null when no attempt had either.
+    /// </summary>
+    public long? PreferredCostMicros { get; init; }
+
+    /// <summary>
+    ///     Completeness of <see cref="EstimatedPublicCostMicros" /> (#682): <see cref="CostCompleteness.Unavailable" />
+    ///     when the subtotal is null, <see cref="CostCompleteness.Complete" /> only when every folded attempt's
+    ///     estimate is complete, else <see cref="CostCompleteness.Partial" /> — including an attempt whose
+    ///     estimate predates completeness stamping, and an attempt of a priced model that carries no estimate.
+    /// </summary>
+    public CostCompleteness EstimatedCostCompleteness { get; init; } = CostCompleteness.Unavailable;
+
     /// <summary>Number of distinct billable attempts folded into this row.</summary>
     public int AttemptCount { get; init; }
 }
@@ -98,6 +112,19 @@ public sealed record ConversationUsageAggregate
     /// </summary>
     public long? ProviderReportedCostMicros { get; init; }
 
+    /// <summary>
+    ///     Grand preferred-display cost (per attempt: provider-reported when present, else the public
+    ///     estimate), or null when <b>any</b> model has neither — the same strict fold as the other totals.
+    /// </summary>
+    public long? PreferredCostMicros { get; init; }
+
+    /// <summary>
+    ///     Completeness of <see cref="EstimatedPublicCostMicros" /> across the conversation (#682): Unavailable
+    ///     when the strict total is null, Complete only when every model's estimate is complete, else Partial.
+    ///     A consumer that shows the total must show this beside it; a partial figure is a lower bound.
+    /// </summary>
+    public CostCompleteness EstimatedCostCompleteness { get; init; } = CostCompleteness.Unavailable;
+
     /// <summary>ISO currency code for the cost figures.</summary>
     public string Currency { get; init; } = "USD";
 
@@ -133,9 +160,16 @@ public sealed record ConversationUsageAggregate
                 TotalTokens = g.Sum(r => r.TotalTokens),
                 EstimatedPublicCostMicros = SumKnown(g.Select(r => r.EstimatedPublicCostMicros)),
                 ProviderReportedCostMicros = SumKnown(g.Select(r => r.ProviderReportedCostMicros)),
+                PreferredCostMicros = SumKnown(g.Select(r => r.PreferredCostMicros)),
+                EstimatedCostCompleteness = FoldCompleteness(
+                    SumKnown(g.Select(r => r.EstimatedPublicCostMicros)),
+                    g.Select(r => r.CostCompleteness)
+                ),
                 AttemptCount = g.Count(),
             })
             .ToList();
+
+        var estimatedTotal = SumStrict(perModel.Select(m => m.EstimatedPublicCostMicros));
 
         return new ConversationUsageAggregate
         {
@@ -144,9 +178,30 @@ public sealed record ConversationUsageAggregate
             Completeness = completeness,
             PerModel = perModel,
             TotalTokens = perModel.Sum(m => m.TotalTokens),
-            EstimatedPublicCostMicros = SumStrict(perModel.Select(m => m.EstimatedPublicCostMicros)),
+            EstimatedPublicCostMicros = estimatedTotal,
             ProviderReportedCostMicros = SumStrict(perModel.Select(m => m.ProviderReportedCostMicros)),
+            PreferredCostMicros = SumStrict(perModel.Select(m => m.PreferredCostMicros)),
+            EstimatedCostCompleteness = FoldCompleteness(
+                estimatedTotal,
+                perModel.Select(m => m.EstimatedCostCompleteness)
+            ),
         };
+    }
+
+    /// <summary>
+    ///     Completeness of a summed estimate: no figure at all is Unavailable; a figure is Complete only when
+    ///     every part is Complete, else Partial. A part stamped Unavailable while the sum exists (a priced
+    ///     model's attempt that carries no estimate, or a row persisted before completeness existed) makes the
+    ///     sum Partial, not Unavailable — there is a number, but it is not the whole number.
+    /// </summary>
+    private static CostCompleteness FoldCompleteness(long? sum, IEnumerable<CostCompleteness> parts)
+    {
+        if (sum is null)
+        {
+            return CostCompleteness.Unavailable;
+        }
+
+        return parts.All(p => p == CostCompleteness.Complete) ? CostCompleteness.Complete : CostCompleteness.Partial;
     }
 
     /// <summary>

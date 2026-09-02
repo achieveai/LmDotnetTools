@@ -34,6 +34,13 @@ public enum UsageExecutionKind
 
     /// <summary>A continuation / restart of an existing execution.</summary>
     Continuation,
+
+    /// <summary>
+    ///     A context-compaction summarization pass (#682/#683): one provider call made by a loop on its own
+    ///     thread to produce a checkpoint, attributed like any descendant record and carrying
+    ///     <see cref="UsageRecord.CompactionCheckpointId" />.
+    /// </summary>
+    Compaction,
 }
 
 /// <summary>
@@ -128,6 +135,14 @@ public sealed record UsageRecord
     /// <summary>Cache-creation tokens — billed separately, additive to the total.</summary>
     public long CacheWriteTokens { get; init; }
 
+    /// <summary>
+    ///     The portion of <see cref="CacheWriteTokens" /> written with a 1-hour TTL, when the provider reports
+    ///     the split; the remainder was written with the 5-minute TTL. Null when the provider reports only
+    ///     the combined count (the Anthropic provider today), in which case a public estimate prices every
+    ///     write at the 5m rate and is <see cref="CostCompleteness.Partial" /> (#682).
+    /// </summary>
+    public long? CacheWrite1hTokens { get; init; }
+
     /// <summary>Reasoning tokens — a subset of <see cref="OutputTokens" />.</summary>
     public long ReasoningTokens { get; init; }
 
@@ -158,6 +173,27 @@ public sealed record UsageRecord
     ///     "why is there no cost"; the latter would need its own field if a consumer ever needs it.
     /// </remarks>
     public CostProvenance CostProvenance { get; init; } = CostProvenance.Unavailable;
+
+    /// <summary>
+    ///     Whether <see cref="EstimatedPublicCostMicros" /> covers every billed category of this record
+    ///     (#682). <see cref="CostCompleteness.Partial" /> means the figure is a lower bound over the
+    ///     categories that had a rate; consumers must not render it as an exact total. Stamped where the
+    ///     estimate is computed; the default is <see cref="CostCompleteness.Unavailable" /> so a row persisted
+    ///     before the field existed is never mistaken for a complete one.
+    /// </summary>
+    public CostCompleteness CostCompleteness { get; init; } = CostCompleteness.Unavailable;
+
+    /// <summary>
+    ///     The preferred display amount: the provider's own figure when it reported one, else the public
+    ///     estimate, else null ("unavailable"). Both underlying figures stay queryable in their own fields.
+    /// </summary>
+    public long? PreferredCostMicros => ProviderReportedCostMicros ?? EstimatedPublicCostMicros;
+
+    /// <summary>
+    ///     For a <see cref="UsageExecutionKind.Compaction" /> attempt, the checkpoint the summarization pass
+    ///     produced; null for every other kind.
+    /// </summary>
+    public string? CompactionCheckpointId { get; init; }
 
     // --- Finalization ---
 
