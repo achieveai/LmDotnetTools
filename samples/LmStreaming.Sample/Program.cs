@@ -2159,20 +2159,18 @@ try
                             taskManager.GetTasks,
                             // A name that resolves to a live sub-agent is nudged there; anything else
                             // would land in the root conversation and is gated on the explicit opt-in.
-                            name =>
-                                nudgeAgent.SubAgentManager is { } manager && manager.TryGetAgent(name, out _)
-                                    ? TodoNudgeTargetKind.SubAgent
-                                    : TodoNudgeTargetKind.RootConversation,
-                            async (name, message, ct) =>
-                            {
-                                var target =
-                                    nudgeAgent.SubAgentManager is { } manager
-                                    && manager.TryGetAgent(name, out var subAgent)
-                                    && subAgent is not null
-                                        ? subAgent
-                                        : nudgeAgent;
-                                return await target.TrySendAsync([message], ct: ct) is not null;
-                            },
+                            name => TodoNotificationDelivery.ResolveTargetKind(nudgeAgent.SubAgentManager, name),
+                            // #690: delivered through the manager's lifecycle path, never straight at the
+                            // child's loop — a finished child's loop still accepts input but its owned
+                            // provider is gone, so a direct send starts a run that dies on its first call.
+                            (name, message, ct) =>
+                                TodoNotificationDelivery.DeliverAsync(
+                                    nudgeAgent,
+                                    nudgeAgent.SubAgentManager,
+                                    name,
+                                    message,
+                                    ct
+                                ),
                             TimeProvider.System,
                             loggerFactory.CreateLogger<TodoNudgeService>()
                         );
@@ -2221,22 +2219,17 @@ try
                         var digestService = new TodoDigestService(
                             todoDigestOptions,
                             taskManager.GetTasks,
-                            name =>
-                                digestAgent.SubAgentManager is { } manager && manager.TryGetAgent(name, out _)
-                                    ? TodoNudgeTargetKind.SubAgent
-                                    : TodoNudgeTargetKind.RootConversation,
-                            async (name, message, ct) =>
-                            {
-                                // A null name is the primary digest's address: the root conversation.
-                                var target =
-                                    name is not null
-                                    && digestAgent.SubAgentManager is { } manager
-                                    && manager.TryGetAgent(name, out var subAgent)
-                                    && subAgent is not null
-                                        ? subAgent
-                                        : digestAgent;
-                                return await target.TrySendAsync([message], ct: ct) is not null;
-                            },
+                            name => TodoNotificationDelivery.ResolveTargetKind(digestAgent.SubAgentManager, name),
+                            // A null name is the primary digest's address: the root conversation. Same
+                            // manager-routed delivery as the nudges (#690) for a sub-agent target.
+                            (name, message, ct) =>
+                                TodoNotificationDelivery.DeliverAsync(
+                                    digestAgent,
+                                    digestAgent.SubAgentManager,
+                                    name,
+                                    message,
+                                    ct
+                                ),
                             TimeProvider.System,
                             loggerFactory.CreateLogger<TodoDigestService>()
                         );

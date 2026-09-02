@@ -1163,7 +1163,7 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Receives frames from the sub-agent WebSocket client and relays their text to the focused child
     /// sub-agent, via the shared bounded receive pump (<see cref="ReceiveTextMessagesAsync"/>). Delivery
-    /// goes through <see cref="RelaySubAgentMessageAsync"/> (using <see cref="SubAgentManager.SendMessageAsync"/>
+    /// goes through <see cref="RelaySubAgentMessageAsync"/> (using <see cref="SubAgentManager.SendMessageAsync(string, string, bool, CancellationToken)"/>
     /// in background mode) rather than <c>IMultiTurnAgent.SendAsync</c> — the sub-agent sink.
     /// </summary>
     private Task ReceiveSubAgentMessagesFromClientAsync(

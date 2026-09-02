@@ -1290,13 +1290,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Continues a sub-agent with an already-formed message rather than plain text.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The collaboration delivery path uses this so an <see cref="AgentMessage"/> reaches the target as
     /// itself. Flattening it to text would strip the structured sender, type, and correlation that the
     /// UI and the persisted history read, leaving only the rendered envelope — and a rehydrated
     /// conversation would then have no way to tell an agent-to-agent message from anything else a user
     /// might have typed.
+    /// </para>
+    /// <para>
+    /// Public because a host's out-of-band notifications (a todo-board nudge or digest, #690) must take
+    /// THIS path too: a child that finished keeps a live loop that still accepts input, but its owned
+    /// provider was disposed at completion, so a direct <c>TrySendAsync</c> at the loop starts a run that
+    /// dies on its first provider call. Only this method restarts a finished child with a fresh provider
+    /// (or refuses observably), and <see cref="TryGetAgent"/> alone cannot tell a finished child apart.
+    /// </para>
     /// </remarks>
-    internal async Task<string> SendMessageAsync(
+    public async Task<string> SendMessageAsync(
         string target,
         IMessage message,
         bool runInBackground,
