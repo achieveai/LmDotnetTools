@@ -169,6 +169,15 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         continue;
       }
 
+      // Skip reasoning with nothing to show (#709). A Claude adaptive-thinking model whose request
+      // left `thinking.display` at its "omitted" default returns a thinking block with empty text
+      // plus a signature, which the backend persists as a Plain ReasoningMessage of ''. Buffering it
+      // rendered a thinking pill that expanded to nothing on every generation. The request-shape fix
+      // stops new conversations producing these, but persisted history still carries them.
+      if (reasoning.reasoning.trim().length === 0) {
+        continue;
+      }
+
       // Skip duplicate plain reasoning with same content already in pill buffer
       // (backend stores both streamed accumulation and final complete message)
       const isDuplicate = pillBuffer.some(

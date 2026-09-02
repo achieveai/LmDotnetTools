@@ -35,6 +35,27 @@ one-way — the providers know nothing about Copilot.
   OpenAI Responses API (`/responses`) through Copilot over **SSE** or **WebSocket**
   (`CopilotResponsesTransport`).
 
+### Reasoning (`Reasoning/`)
+- **`CopilotReasoningShaper.Shape(model, effort)`** — turns a typed `ReasoningEffort` into the
+  request metadata the model's transport understands, driven by the catalog capabilities
+  `CopilotModelCatalogParser` discovers.
+
+Two request shapes exist for Claude models, and picking the wrong one is a hard error:
+
+| Model | Thinking request | Notes |
+| --- | --- | --- |
+| Classic (e.g. `claude-sonnet-4.5`) | `thinking: {type: "enabled", budget_tokens: N}` | Rejects `type: "adaptive"`. |
+| Adaptive (`SupportsAdaptiveThinking`, e.g. `claude-sonnet-5`, `claude-opus-5`) | `thinking: {type: "adaptive", display: "summarized"}` plus `output_config: {effort}` | Rejects `budget_tokens` with HTTP 400. |
+
+On adaptive models Anthropic defaults `display` to `"omitted"`, which returns a thinking block
+whose `thinking` field is empty — only the signature comes back, so thinking renders blank. Asking
+for `display: "summarized"` is what makes the text arrive; `output_config.effort` bounds how long
+the model reasons but does not affect whether the reasoning is readable. `"summarized"` is the only
+display value this SDK ever requests — never `"updates"`, never raw chain-of-thought.
+
+Responses-transport models take `reasoning: {effort, summary: "auto"}`; `summary` is the equivalent
+opt-in there.
+
 ## Usage
 
 ```csharp
