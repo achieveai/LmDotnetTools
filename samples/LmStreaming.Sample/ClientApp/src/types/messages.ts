@@ -32,6 +32,8 @@ export const MessageType = {
   ConversationUsage: 'conversation_usage',
   // Live-only ToDo-board snapshot for the work panel (#583)
   ConversationTodo: 'conversation_todo',
+  // Live-only per-agent context pressure frame for the context/cost panel (#681 → #685)
+  ContextPressure: 'context_pressure',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -495,6 +497,39 @@ export interface ConversationTodoMessage extends IMessage {
 }
 
 /**
+ * ContextPressureMessage matching C# ContextPressureMessage.cs (#681; spec 679 §7.2).
+ *
+ * A live-only frame carrying one agent loop's latest context observation: how full the model's window
+ * is, measured or estimated, for the thread it was taken on. Published after each observation write,
+ * and ONLY when the model's window is known (a gauge with no scale shows nothing). Transient: never
+ * persisted — the authoritative figure survives reload via `GET /conversations/{id}/context`, and
+ * frames only update that snapshot, never replace it (the usage-frame rule).
+ *
+ * Content-free by construction: counts, ratios, ids and statuses only. Field names are pinned to
+ * camelCase by `JsonPropertyName` on the producer, independent of the serializer's naming policy.
+ */
+export interface ContextPressureMessage extends IMessage {
+  $type: typeof MessageType.ContextPressure;
+  /** The thread the observation was taken on. Optional on the wire; the consumer fails closed without it. */
+  threadId?: string | null;
+  /** `root` or the sub-agent id. */
+  agentId: string;
+  generationOrdinal: number;
+  observedAtUtc: string;
+  effectiveModelId: string;
+  estimatedInputTokens: number;
+  measuredInputTokens?: number | null;
+  /** Measured | Estimated | Unavailable. */
+  provenance: string;
+  windowTokens?: number | null;
+  reserveTokens: number;
+  /** Fraction of the usable window the request occupies; absent when the window is unknown. */
+  utilization?: number | null;
+  activeCheckpointId?: string | null;
+  rowsInView?: number;
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -518,7 +553,8 @@ export type Message =
   | NotifyMessage
   | AgentMessage
   | ConversationUsageMessage
-  | ConversationTodoMessage;
+  | ConversationTodoMessage
+  | ContextPressureMessage;
 
 // Type guard functions
 
@@ -608,6 +644,10 @@ export function isConversationUsageMessage(msg: IMessage): msg is ConversationUs
 
 export function isConversationTodoMessage(msg: IMessage): msg is ConversationTodoMessage {
   return msg.$type === MessageType.ConversationTodo;
+}
+
+export function isContextPressureMessage(msg: IMessage): msg is ContextPressureMessage {
+  return msg.$type === MessageType.ContextPressure;
 }
 
 /**
