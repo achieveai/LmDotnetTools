@@ -152,6 +152,39 @@ internal static class CorpusEvaluator
             );
         }
 
+        // --- everything the summariser returned reached a manifest (the drop-class mutations of §12.3) ---
+        // Only Compact activates what it summarises; a checkpoint per summary means none was rejected.
+        if (data.Mode == CompactionMode.Compact && data.RootSummaries.Count == activated.Count)
+        {
+            var carriedQuotes = activated
+                .SelectMany(cp => cp.Manifest.Instructions.Concat(cp.Manifest.Decisions))
+                .Select(q => (q.Seq, q.Quote))
+                .ToHashSet();
+            var carriedPaths = activated
+                .SelectMany(cp => cp.Manifest.Artifacts.Select(a => a.Path))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var summary in data.RootSummaries)
+            {
+                foreach (var quote in summary.Instructions.Concat(summary.Decisions))
+                {
+                    if (!carriedQuotes.Contains((quote.Seq, quote.Quote)))
+                    {
+                        instructionVerbatim = false;
+                        loss.Add($"the summary's quote at seq {quote.Seq} never reached a manifest verbatim");
+                    }
+                }
+
+                foreach (var artifact in summary.Artifacts)
+                {
+                    if (!carriedPaths.Contains(artifact.Path))
+                    {
+                        artifactsCarried = false;
+                        loss.Add($"the summary's artifact '{artifact.Path}' never reached a manifest");
+                    }
+                }
+            }
+        }
+
         // --- raw history: no gaps, every covered row still there ---
         rawLoss.AddRange(SequenceGaps("root", data.RootRows));
         foreach (var kv in data.ChildThreads)

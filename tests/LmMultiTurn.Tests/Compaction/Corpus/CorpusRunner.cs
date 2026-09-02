@@ -53,6 +53,9 @@ internal sealed class CorpusPricingResolver(CorpusPricing pricing) : IPricingRes
 /// </summary>
 internal sealed class CorpusSummarizer : ICheckpointSummarizer
 {
+    /// <summary>Every summary handed back, by thread: the evaluator checks each one reached a manifest.</summary>
+    public List<(string ThreadId, CheckpointSummary Summary)> Summaries { get; } = [];
+
     public const string ArtifactPath = "notes/plan.md";
 
     public List<CheckpointSummaryRequest> Requests { get; } = [];
@@ -79,30 +82,32 @@ internal sealed class CorpusSummarizer : ICheckpointSummarizer
         }
 
         var decision = request.Rows.FirstOrDefault(r => r.Message is TextMessage { Role: Role.Assistant });
-        return new CheckpointSummaryResponse(
-            new CheckpointSummary
-            {
-                Instructions =
-                [
-                    .. request.CurrentInstruction.Select(r => new QuotedItem
-                    {
-                        Seq = r.Seq,
-                        Quote = (r.Message as TextMessage)?.Text ?? string.Empty,
-                    }),
-                ],
-                Decisions = decision is null
+        var summary = new CheckpointSummary
+        {
+            Instructions =
+            [
+                .. request.CurrentInstruction.Select(r => new QuotedItem
+                {
+                    Seq = r.Seq,
+                    Quote = (r.Message as TextMessage)?.Text ?? string.Empty,
+                }),
+            ],
+            Decisions = decision is null
+                ? []
+                : [new QuotedItem { Seq = decision.Seq, Quote = ((TextMessage)decision.Message).Text }],
+            Artifacts =
+                request.Rows.Count == 0
                     ? []
-                    : [new QuotedItem { Seq = decision.Seq, Quote = ((TextMessage)decision.Message).Text }],
-                Artifacts =
-                    request.Rows.Count == 0
-                        ? []
-                        : [new ArtifactRef { Path = ArtifactPath, OriginSeq = request.Rows[0].Seq }],
-                Headlines = request.RunIds.ToDictionary(id => id, _ => "ran the tools", StringComparer.Ordinal),
-                AgentOutcomes = request
-                    .Roster.Where(a => string.Equals(a.Status, "Completed", StringComparison.Ordinal))
-                    .ToDictionary(a => a.AgentId, _ => "finished", StringComparer.Ordinal),
-                Narrative = $"Summarised {request.Rows.Count} rows across {request.RunIds.Count} runs.",
-            },
+                    : [new ArtifactRef { Path = ArtifactPath, OriginSeq = request.Rows[0].Seq }],
+            Headlines = request.RunIds.ToDictionary(id => id, _ => "ran the tools", StringComparer.Ordinal),
+            AgentOutcomes = request
+                .Roster.Where(a => string.Equals(a.Status, "Completed", StringComparison.Ordinal))
+                .ToDictionary(a => a.AgentId, _ => "finished", StringComparer.Ordinal),
+            Narrative = $"Summarised {request.Rows.Count} rows across {request.RunIds.Count} runs.",
+        };
+        Summaries.Add((request.ThreadId, summary));
+        return new CheckpointSummaryResponse(
+            summary,
             new UsageMessage
             {
                 Usage = new Usage
@@ -134,6 +139,9 @@ internal sealed record CorpusRunData
 
     /// <summary>Root provider calls made by the end of each scenario step, in step order (D7 park proof).</summary>
     public required IReadOnlyList<int> CallsAtStep { get; init; }
+
+    /// <summary>What the summariser returned for the root thread, in order.</summary>
+    public required IReadOnlyList<CheckpointSummary> RootSummaries { get; init; }
 
     public required ScriptedProvider Root { get; init; }
 
@@ -666,6 +674,12 @@ internal sealed class CorpusRunner : IAsyncDisposable
             Mode = Mode,
             Runs = [.. _runs],
             CallsAtStep = [.. _callsAtStep],
+            RootSummaries =
+            [
+                .. Summarizer
+                    .Summaries.Where(s => string.Equals(s.ThreadId, RootThread, StringComparison.Ordinal))
+                    .Select(s => s.Summary),
+            ],
             Root = Root,
             Children = [.. _children],
             RootRows = rootRows,

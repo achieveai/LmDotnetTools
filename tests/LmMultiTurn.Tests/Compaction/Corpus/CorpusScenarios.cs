@@ -150,6 +150,7 @@ public static class CorpusScenarios
                     ScriptedReply.Call("Echo", "f-7"),
                 ],
             },
+            MustSkipWith = CompactionSkipReasons.UnsafeState,
         },
         new CorpusScenario
         {
