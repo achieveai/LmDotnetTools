@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -267,6 +269,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <inheritdoc />
     public string ThreadId { get; }
 
+    /// <summary>
+    /// Size bound applied to every tool result on its way into history — the loop's own tool
+    /// executions and their error results, deferred resolutions, and results a provider streams
+    /// back for tools it ran itself (Anthropic <c>web_search</c>, code execution, ...). Whatever
+    /// produced the result, the copy that is stored and replayed to the provider is at most
+    /// <see cref="ToolResultLimits.MaxResultBytes"/> UTF-8 bytes, ends with the truncation marker
+    /// and is flagged <see cref="ToolCallResultMessage.IsTruncated"/> when it had to be cut (#694).
+    /// Defaults to <see cref="ToolResultLimits.Default"/>; set at construction:
+    /// <c>new MultiTurnAgentLoop(...) { ToolResultLimits = new() { MaxResultBytes = ... } }</c>.
+    /// </summary>
+    public ToolResultLimits ToolResultLimits { get; init; } = ToolResultLimits.Default;
+
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
 
@@ -434,6 +448,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     protected void AddToHistory(IMessage message, string? runIdOverride)
     {
+        message = BoundToolResult(message);
+
         lock (_historyLock)
         {
             ConversationHistory.Add(message);
@@ -463,6 +479,65 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 _ = PersistMessageAsync(message, runId, CancellationToken.None);
             }
         }
+    }
+
+    /// <summary>
+    /// The single seam every tool result crosses on its way into history. Producers bound their
+    /// own output too (the executor, the deferred path), so for those this is a no-op; the paths
+    /// that have no producer-side bound — a provider reporting a server-side tool it executed
+    /// itself, or host code injecting a result — are caught here, so the stored and replayed copy
+    /// is always within <see cref="ToolResultLimits"/>. Returns <paramref name="message"/> itself
+    /// when nothing had to be cut.
+    /// </summary>
+    private IMessage BoundToolResult(IMessage message)
+    {
+        switch (message)
+        {
+            case ToolCallResultMessage single:
+                if (!ToolResultLimits.TryApply(single.ToToolCallResult(), out var boundedSingle))
+                {
+                    return message;
+                }
+
+                LogToolResultTruncated(single.ToolCallId, single.ToolName, single.Result);
+                return single with
+                {
+                    Result = boundedSingle.Result,
+                    ContentBlocks = boundedSingle.ContentBlocks,
+                    IsTruncated = true,
+                };
+
+            case ToolsCallResultMessage plural:
+                ImmutableList<ToolCallResult>.Builder? builder = null;
+                for (var i = 0; i < plural.ToolCallResults.Count; i++)
+                {
+                    var original = plural.ToolCallResults[i];
+                    if (!ToolResultLimits.TryApply(original, out var bounded))
+                    {
+                        continue;
+                    }
+
+                    LogToolResultTruncated(original.ToolCallId, original.ToolName, original.Result);
+                    builder ??= plural.ToolCallResults.ToBuilder();
+                    builder[i] = bounded;
+                }
+
+                return builder == null ? message : plural with { ToolCallResults = builder.ToImmutable() };
+
+            default:
+                return message;
+        }
+    }
+
+    private void LogToolResultTruncated(string? toolCallId, string? toolName, string? original)
+    {
+        Logger.LogWarning(
+            "Tool result truncated before entering history: ToolCallId={ToolCallId}, FunctionName={FunctionName}, OriginalBytes={OriginalBytes}, MaxResultBytes={MaxResultBytes}",
+            toolCallId,
+            toolName,
+            Encoding.UTF8.GetByteCount(original ?? string.Empty),
+            ToolResultLimits.MaxResultBytes
+        );
     }
 
     /// <summary>

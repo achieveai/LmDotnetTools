@@ -512,6 +512,33 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("call_2", result2.ToolCallId);
         Assert.Equal("result2", result2.Result);
     }
+
+    [Fact]
+    public async Task Downstream_PreservesIsTruncated_WhenSplittingToolsCallResultMessage()
+    {
+        // #694 / #706: the truncation flag must survive the plural -> singular split, or a UI
+        // reading history would see a result that ends with the marker but is not flagged.
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new ToolsCallResultMessage
+            {
+                ToolCallResults =
+                [
+                    new ToolCallResult("call_1", "cut") { IsTruncated = true },
+                    new ToolCallResult("call_2", "whole"),
+                ],
+                GenerationId = "gen1",
+            }
+        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
+
+        var messages = (await middleware.InvokeAsync(context, agent)).ToList();
+
+        var cut = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        var whole = Assert.IsType<ToolCallResultMessage>(messages[1]);
+        Assert.True(cut.IsTruncated);
+        Assert.False(whole.IsTruncated);
+    }
     #endregion
     #region ToolCallUpdate Identity Tests
     [Fact]
@@ -1109,6 +1136,40 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("result3", toolsCallResultMessage.ToolCallResults[2].Result);
         Assert.Equal("gen1", toolsCallResultMessage.GenerationId);
         Assert.Equal(0, toolsCallResultMessage.MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Upstream_PreservesIsTruncated_WhenAggregatingToolCallResultMessages()
+    {
+        // #694 / #706: the flag on a persisted singular result must reach the plural form the
+        // provider request is built from.
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_1",
+                Result = "cut",
+                IsTruncated = true,
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_2",
+                Result = "whole",
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        await middleware.InvokeAsync(context, agent);
+
+        var aggregated = Assert.IsType<ToolsCallResultMessage>(Assert.Single(agent.ReceivedMessages));
+        Assert.True(aggregated.ToolCallResults[0].IsTruncated);
+        Assert.False(aggregated.ToolCallResults[1].IsTruncated);
     }
 
     [Fact]

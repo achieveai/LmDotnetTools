@@ -2137,23 +2137,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     string.Join(", ", _toolHandlers.Keys)
                 );
 
-                return new ToolCallResultMessage
-                {
-                    ToolCallId = toolCall.ToolCallId,
-                    ToolName = toolCall.FunctionName,
-                    Result = JsonSerializer.Serialize(
+                return BuildErrorResultMessage(
+                    toolCall,
+                    JsonSerializer.Serialize(
                         new
                         {
                             error = $"Unknown function: {toolCall.FunctionName}",
                             available_functions = _toolHandlers.Keys.ToArray(),
                         }
-                    ),
-                    IsError = true,
-                    ExecutionTarget = ExecutionTarget.LocalFunction,
-                    Role = Role.User,
-                    FromAgent = toolCall.FromAgent,
-                    GenerationId = toolCall.GenerationId,
-                };
+                    )
+                );
             }
 
             // The gate opens here and nowhere earlier: an unknown function has already returned
@@ -2187,7 +2180,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 );
 
                 return ToolCallResultMessage.FromToolCallResult(
-                    prepared.ToBlockedResult(),
+                    ToolResultLimits.Apply(prepared.ToBlockedResult()),
                     role: Role.User,
                     fromAgent: toolCall.FromAgent,
                     generationId: toolCall.GenerationId
@@ -2214,24 +2207,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     toolCall.FunctionArgs?.Length ?? 0
                 );
 
-                return new ToolCallResultMessage
-                {
-                    ToolCallId = toolCall.ToolCallId,
-                    ToolName = toolCall.FunctionName,
-                    Result = JsonSerializer.Serialize(
+                return BuildErrorResultMessage(
+                    toolCall,
+                    JsonSerializer.Serialize(
                         new
                         {
                             error = $"Malformed arguments for '{toolCall.FunctionName}': the tool-call argument JSON was "
                                 + "empty or not well-formed (it may have been truncated). Re-issue the tool call with "
                                 + "complete, valid JSON arguments.",
                         }
-                    ),
-                    IsError = true,
-                    ExecutionTarget = ExecutionTarget.LocalFunction,
-                    Role = Role.User,
-                    FromAgent = toolCall.FromAgent,
-                    GenerationId = toolCall.GenerationId,
-                };
+                    )
+                );
             }
 
             var result = await handler(prepared.Arguments.Json, ctx, ct);
@@ -2249,17 +2235,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             // Tool execution errors are returned to the LLM for retry/correction
             Logger.LogError(ex, "Error executing tool call: {FunctionName}", toolCall.FunctionName);
-            return new ToolCallResultMessage
-            {
-                ToolCallId = toolCall.ToolCallId,
-                ToolName = toolCall.FunctionName,
-                Result = JsonSerializer.Serialize(new { error = ex.Message }),
-                IsError = true,
-                ExecutionTarget = ExecutionTarget.LocalFunction,
-                Role = Role.User,
-                FromAgent = toolCall.FromAgent,
-                GenerationId = toolCall.GenerationId,
-            };
+            return BuildErrorResultMessage(toolCall, JsonSerializer.Serialize(new { error = ex.Message }));
         }
     }
 
@@ -2290,9 +2266,33 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
     }
 
-    private static ToolCallResultMessage BuildResultMessage(ToolCallMessage toolCall, ToolHandlerResult result)
+    private ToolCallResultMessage BuildResultMessage(ToolCallMessage toolCall, ToolHandlerResult result)
     {
-        var tcr = ToolCallResultBuilder.FromHandlerResult(result, toolCall.ToolCallId, toolCall.FunctionName);
+        var tcr = ToolCallResultBuilder.FromHandlerResult(
+            result,
+            toolCall.ToolCallId,
+            ToolResultLimits,
+            toolCall.FunctionName
+        );
+        return ToolCallResultMessage.FromToolCallResult(
+            tcr,
+            role: Role.User,
+            fromAgent: toolCall.FromAgent,
+            generationId: toolCall.GenerationId
+        );
+    }
+
+    /// <summary>
+    /// Builds the error result the model gets back for a call that never ran (unknown function,
+    /// malformed arguments) or that threw. Goes through the same <see cref="ToolResultLimits"/>
+    /// as a successful result, so an exception message of arbitrary size cannot enter history
+    /// unbounded (#694).
+    /// </summary>
+    private ToolCallResultMessage BuildErrorResultMessage(ToolCallMessage toolCall, string errorJson)
+    {
+        var tcr = ToolResultLimits.Apply(
+            new ToolCallResult(toolCall.ToolCallId, errorJson) { ToolName = toolCall.FunctionName, IsError = true }
+        );
         return ToolCallResultMessage.FromToolCallResult(
             tcr,
             role: Role.User,
@@ -2388,6 +2388,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         CancellationToken ct
     )
     {
+        // Canonical form first. The bounded text is what history stores and replays, so it — not
+        // the raw delivery — drives the fingerprint, the identical-redelivery check and the
+        // conflict decision. A byte-equal redelivery bounds to the same text and stays idempotent.
+        var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks);
         var fingerprint = ComputeResolutionFingerprint(result, isError);
 
         if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out var inFlightFingerprint))
@@ -2412,10 +2416,36 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 );
             }
 
-            return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, ct);
+            return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, truncated, ct);
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, ct);
+        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
+    }
+
+    /// <summary>
+    /// Applies <see cref="MultiTurnAgentBase.ToolResultLimits"/> to a delivered resolution before
+    /// anything is derived from it. Returns whether something was cut.
+    /// </summary>
+    private bool TryBoundResolution(
+        string toolCallId,
+        ref string result,
+        ref IList<ToolResultContentBlock>? contentBlocks
+    )
+    {
+        if (!ToolResultLimits.TryApply(new ToolCallResult(toolCallId, result, contentBlocks), out var bounded))
+        {
+            return false;
+        }
+
+        Logger.LogWarning(
+            "Deferred tool result truncated: ToolCallId={ToolCallId}, OriginalBytes={OriginalBytes}, MaxResultBytes={MaxResultBytes}",
+            toolCallId,
+            Encoding.UTF8.GetByteCount(result),
+            ToolResultLimits.MaxResultBytes
+        );
+        result = bounded.Result;
+        contentBlocks = bounded.ContentBlocks;
+        return true;
     }
 
     /// <summary>
@@ -2434,6 +2464,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
+        bool truncated,
         CancellationToken ct
     )
     {
@@ -2525,7 +2556,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     if (existing.IsDeferred)
                     {
-                        return ApplyResolution(existing, result, isError);
+                        return ApplyResolution(existing, result, isError, truncated);
                     }
 
                     if (existing.Result == result && existing.IsError == isError)
@@ -2823,6 +2854,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
+        bool truncated,
         CancellationToken ct
     )
     {
@@ -2898,10 +2930,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             return (ResolveToolCallOutcome.Duplicate, null);
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, ct);
+        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
     }
 
-    private static ToolCallResultMessage ApplyResolution(ToolCallResultMessage existing, string result, bool isError)
+    private static ToolCallResultMessage ApplyResolution(
+        ToolCallResultMessage existing,
+        string result,
+        bool isError,
+        bool truncated
+    )
     {
         return existing with
         {
@@ -2911,6 +2948,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             ErrorCode = isError ? "deferred_resolution_error" : null,
             IsDeferred = false,
             ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            IsTruncated = truncated,
         };
     }
 

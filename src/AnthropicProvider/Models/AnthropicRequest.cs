@@ -383,6 +383,14 @@ public record AnthropicRequest
             // text (NotifyMessage is Role.User, so the caller maps this message to a user turn).
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = notifyMsg.Text });
         }
+        else if (message is AgentMessage agentMsg)
+        {
+            // Typed agent-to-agent message: its self-describing envelope is delivered as text in the role
+            // the collaboration layer stamped (Role.User by default). Without this arm the message added
+            // no content and was dropped, leaving an assistant-final history that the API rejects as a
+            // prefill when the message is the only new input of a restarted run (#688).
+            anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = agentMsg.Text });
+        }
         else if (message is ImageMessage imageMsg)
         {
             anthropicMessage.Content.Add(

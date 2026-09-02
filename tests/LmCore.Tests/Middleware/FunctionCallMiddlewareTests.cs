@@ -2044,4 +2044,58 @@ public class FunctionCallMiddlewareTests
         var sseResponse = string.Join("\n\n", chunks.Select(chunk => $"data: {chunk}"));
         return sseResponse + "\n\ndata: [DONE]\n\n";
     }
+
+    // #694 — the marker must be visible in the ToolsCallResultMessage the middleware emits,
+    // because that message is what gets persisted and replayed to the provider on later turns.
+    [Fact]
+    public async Task InvokeAsync_OversizedToolResult_EmitsBoundedResultWithMarkerAndFlag()
+    {
+        var oversized = new string('z', 100_000);
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["dump"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(oversized)),
+        };
+        var contracts = new[]
+        {
+            new FunctionContract { Name = "dump", Description = "Dumps a lot of text" },
+        };
+        var limits = new ToolResultLimits { MaxResultBytes = 1024 };
+        var middleware = new FunctionCallMiddleware(contracts, functionMap, resultLimits: limits);
+
+        var toolCallMessage = CreateToolCallMessage("dump", new { });
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+
+        var result = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
+        var toolCallResult = Assert.Single(resultMessage.ToolCallResults);
+        Assert.True(toolCallResult.IsTruncated);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(toolCallResult.Result) <= 1024);
+        Assert.StartsWith(oversized[..256], toolCallResult.Result, StringComparison.Ordinal);
+        Assert.Contains(ToolResultLimits.TruncationMarkerPrefix, toolCallResult.Result, StringComparison.Ordinal);
+        Assert.EndsWith(" of 100,000 bytes]", toolCallResult.Result, StringComparison.Ordinal);
+
+        // The flag survives the JSON round trip persisted history goes through.
+        var json = JsonSerializer.Serialize(toolCallResult);
+        Assert.Contains("\"is_truncated\":true", json, StringComparison.Ordinal);
+        Assert.True(JsonSerializer.Deserialize<ToolCallResult>(json).IsTruncated);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_SmallToolResult_IsNotFlaggedAndCarriesNoMarker()
+    {
+        var functionMap = CreateMockFunctionMap();
+        var middleware = new FunctionCallMiddleware(CreateMockFunctionContracts(), functionMap);
+        var toolCallMessage = CreateToolCallMessage("getWeather", new { location = "Seattle", unit = "celsius" });
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+
+        var result = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+
+        var toolCallResult = Assert.Single(
+            Assert.IsType<ToolsCallResultMessage>(Assert.Single(result)).ToolCallResults
+        );
+        Assert.False(toolCallResult.IsTruncated);
+        Assert.DoesNotContain(ToolResultLimits.TruncationMarkerPrefix, toolCallResult.Result, StringComparison.Ordinal);
+        Assert.DoesNotContain("is_truncated", JsonSerializer.Serialize(toolCallResult), StringComparison.Ordinal);
+    }
 }

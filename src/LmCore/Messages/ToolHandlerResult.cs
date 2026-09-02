@@ -4,7 +4,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// Payload carried by <see cref="ToolHandlerResult.Resolved"/>. Holds the data a tool
 /// handler produced — text, optional multi-modal blocks, error flags. Framework-controlled
 /// fields (<c>ToolCallId</c>, <c>IsDeferred</c>, timestamps) are stamped in by the loop
-/// via <see cref="ToolCallResultBuilder.FromHandlerResult"/>, not by handlers.
+/// via <see cref="ToolCallResultBuilder.FromHandlerResult(ToolHandlerResult, string?, ToolResultLimits, string?, ExecutionTarget)"/>, not by handlers.
 /// </summary>
 public readonly record struct ToolHandlerResultPayload(
     string Text,

@@ -16,6 +16,15 @@ namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 /// </summary>
 internal static class MessageMapper
 {
+    /// <summary>
+    ///     Hard cap the Responses API enforces on <c>function_call_output.output</c>: anything
+    ///     longer is rejected with <c>400 "string too long. Expected maximum length 10485760"</c>
+    ///     and fails the whole turn. Results are normally bounded much earlier by
+    ///     <see cref="ToolResultLimits.Default"/>; this clamp is the last line of defence for
+    ///     history persisted before that bound existed (#694).
+    /// </summary>
+    private static readonly ToolResultLimits s_functionCallOutputLimit = new() { MaxResultBytes = 10_485_760 };
+
     internal static ResponseCreateRequest BuildRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
     {
         var instructionsBuilder = new StringBuilder();
@@ -203,7 +212,7 @@ internal static class MessageMapper
                         {
                             Type = "function_call_output",
                             CallId = result.ToolCallId,
-                            Output = result.Result,
+                            Output = ClampFunctionCallOutput(result.Result),
                         }
                     );
                 }
@@ -229,7 +238,7 @@ internal static class MessageMapper
                     {
                         Type = "function_call_output",
                         CallId = singleResult.ToolCallId,
-                        Output = singleResult.Result,
+                        Output = ClampFunctionCallOutput(singleResult.Result),
                     }
                 );
                 break;
@@ -252,12 +261,40 @@ internal static class MessageMapper
                 );
                 break;
 
+            case AgentMessage agentMessage:
+                // Typed agent-to-agent message: the envelope is the model-facing text. Falling through to
+                // the default arm dropped it silently (#688).
+                inputItems.Add(
+                    new ResponseInputItem
+                    {
+                        Type = "message",
+                        Role = MapRole(agentMessage.Role),
+                        Content =
+                        [
+                            new ResponseInputContent
+                            {
+                                Type = agentMessage.Role == Role.Assistant ? "output_text" : "input_text",
+                                Text = agentMessage.Text,
+                            },
+                        ],
+                    }
+                );
+                break;
+
             default:
                 // Unsupported message types (e.g. UsageMessage on the input side) have no Responses
                 // input-side analog and are intentionally dropped.
                 break;
         }
     }
+
+    /// <summary>
+    ///     Clamps a persisted tool result to the Responses API's <c>function_call_output.output</c>
+    ///     limit. A result the LmCore bound already handled is far below this and passes through
+    ///     unchanged; only legacy oversized history gets cut, with the same marker text.
+    /// </summary>
+    private static string? ClampFunctionCallOutput(string? output) =>
+        output == null ? null : s_functionCallOutputLimit.BoundText(output);
 
     private static string MapRole(Role role)
     {
