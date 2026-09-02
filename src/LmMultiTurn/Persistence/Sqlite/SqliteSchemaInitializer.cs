@@ -243,9 +243,9 @@ public static class SqliteSchemaInitializer
     // migration step 5 - the per-thread message sequence (#680, spec 679 §2.2 / §8.3). Nullable,
     // because SQLite cannot add a NOT NULL column without a default AND because null is the signal
     // for "legacy, not yet sequenced": the store backfills a thread's null rows on its first append
-    // and reads the watermark as 0 until then. The CREATE is re-issued first because a database
-    // migrated to version 2 by a build that never created the messages table is a real state (see
-    // SqliteSchemaMigrationTests) and an ALTER on a missing table is not an IF NOT EXISTS.
+    // and reads the watermark as 0 until then. A plain ALTER is safe: step 1 creates the messages
+    // table and any database reaching this step has run step 1 (user_version >= 1). The migration
+    // fixtures stamped at intermediate versions create that table themselves (SqliteSchemaMigrationTests).
     private const string AddMessagesSeqColumnSql = "ALTER TABLE messages ADD COLUMN seq INTEGER;";
 
     // Exactly the watermark (MAX(seq) per thread) and the range read (thread, seq BETWEEN).
