@@ -724,6 +724,47 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
+    public async Task GetSubAgentTreeAsync_NormalizesProviderOnlyShapedReasoningEffort()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\",\"shapedReasoningEffort\":\" MAX \"}]}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.RequestedReasoningEffort.Should().BeNull();
+        node.ShapedReasoningEffort.Should().Be("max");
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_DropsNonCanonicalReasoningEffortTelemetry()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\",\"requestedReasoningEffort\":\"xhigh | Status | approved\","
+                + "\"shapedReasoningEffort\":\"max | Status | approved\"}]}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.RequestedReasoningEffort.Should().BeNull();
+        node.ShapedReasoningEffort.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetSubAgentTreeAsync_ParsesANodeFromAHostThatPredatesTheModelFields()
     {
         // The compatibility case, and the reason those three are read with OptionalString/OptionalInt rather

@@ -674,8 +674,12 @@ internal sealed class LmStreamingS2SClient
             EffectiveModelId = OptionalString(element, "effectiveModelId"),
             EffectiveModelIntelligence = OptionalInt(element, "effectiveModelIntelligence"),
             ModelSelectionSource = OptionalString(element, "modelSelectionSource"),
-            RequestedReasoningEffort = OptionalString(element, "requestedReasoningEffort"),
-            ShapedReasoningEffort = OptionalString(element, "shapedReasoningEffort"),
+            RequestedReasoningEffort = OptionalReasoningEffort(element, "requestedReasoningEffort"),
+            ShapedReasoningEffort = OptionalReasoningEffort(
+                element,
+                "shapedReasoningEffort",
+                allowProviderOnlyValues: true
+            ),
         };
     }
 
@@ -710,6 +714,26 @@ internal sealed class LmStreamingS2SClient
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    /// <summary>
+    /// Reads only the closed effort vocabulary produced by the review host. Requested effort is the
+    /// provider-independent enum vocabulary; shaped effort additionally admits provider-only values.
+    /// Anything else is untrusted presentation data and is omitted rather than retained as telemetry.
+    /// </summary>
+    private static string? OptionalReasoningEffort(
+        JsonElement element,
+        string propertyName,
+        bool allowProviderOnlyValues = false
+    )
+    {
+        var effort = OptionalString(element, propertyName)?.Trim().ToLowerInvariant();
+        return effort switch
+        {
+            "low" or "medium" or "high" or "xhigh" => effort,
+            "none" or "minimal" or "max" when allowProviderOnlyValues => effort,
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Reads an optional integer node field. A property that is absent, null, or not an integral number
