@@ -770,3 +770,30 @@ Switch to Math Helper mode, then ask:
 - "Use get_weather for Tokyo."
 
 Expected: the tool call should be rejected because the mode only enables `calculate`.
+
+---
+
+## Context / cost panel (#685) UI tests
+
+Drives the **Context** strip above the usage banner (one row per framework-owned agent + a
+"Total (all agents)" footer; collapsed by default, click **Context** or Tab to it and press Enter).
+Used by `playwright-scripts/context-cost-panel.mjs`.
+
+**Single agent with pressure** — `test-anthropic` runs as `claude-sonnet-4-5-20250929`, which is
+priced with a 200,000-token window, so the row shows a meter and `N% of 200,000 tokens (measured)`:
+
+<|instruction_start|>{"instruction_chain":[{"id":"t1","id_message":"Say hello","messages":[{"text":"Hello from the context panel check."}]}]}<|instruction_end|>
+
+Expected: one row (`Main agent`, `primary`), `Usage: 150 tokens`, `Cost: $0.0010 (public estimate,
+complete)`, `Fresh` / `Hot cache`; the total row repeats the tokens and cost and says `Usage in
+progress` / `Usage complete` (the endpoint's word). `GET /api/conversations/{threadId}/context`
+returns the same numbers. The panel never shows the prompt text.
+
+**Unknown window is not zero** — the same prompt on the `test` (Mock) provider runs as `test-model`,
+which has no configured window and persists no usage row. Expected: `Unknown window` with **no**
+meter (never `0%`), and `No usage recorded` for usage and cost (never `$0.0000`).
+
+**Parent + two sub-agents + total** — use "Two sub-agents → two distinct colored tabs" above on
+`test-anthropic`. Expected: three rows (`Main agent` first, then both sub-agent ids, `sub-agent`),
+`Total (all agents)` = 600 tokens / `$0.0042`, and a `?threadId=` reload renders the identical rows
+(the reload reads the endpoint; the live view merged the same values from `context_pressure` frames).

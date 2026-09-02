@@ -231,6 +231,62 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
         report.Total.UsageCompleteness.Should().BeNull();
     }
 
+    /// <summary>
+    ///     Spec 679 §4.3 shows every enum on the wire as its NAME. The web serializer that MVC uses
+    ///     (<c>JsonSerializerDefaults.Web</c>, no global enum converter) would otherwise ship
+    ///     <c>CostProvenance</c>, <c>CostCompleteness</c>, <c>UsageCompleteness</c> and
+    ///     <c>UsageExecutionKind</c> as integers, which a client cannot label without a copy of the C# enum
+    ///     order (#685). Pinned on the report types only: the persisted usage shapes are untouched.
+    /// </summary>
+    [Fact]
+    public void TheReport_SerializesItsEnumsByName_UnderTheWebDefaults()
+    {
+        var report = new ConversationContextReport
+        {
+            RootThreadId = Root,
+            GeneratedAtUtc = T0,
+            Agents =
+            [
+                new AgentContextRow
+                {
+                    AgentId = "root",
+                    ThreadId = Root,
+                    ExecutionKind = UsageExecutionKind.Primary,
+                    Freshness = ContextFreshness.Stale,
+                    Compaction = new AgentCompactionStatus { State = CompactionStates.None },
+                    Usage = new ExecutionUsageRow
+                    {
+                        ExecutionId = Root,
+                        CostProvenance = CostProvenance.PublicEstimate,
+                        EstimatedCostCompleteness = CostCompleteness.Partial,
+                    },
+                },
+            ],
+            Total = new ConversationCostTotal
+            {
+                CostProvenance = CostProvenance.ProviderReported,
+                CostCompleteness = CostCompleteness.Complete,
+                UsageCompleteness = UsageCompleteness.InProgress,
+            },
+        };
+
+        using var json = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(
+                report,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
+            )
+        );
+
+        var agent = json.RootElement.GetProperty("agents")[0];
+        agent.GetProperty("executionKind").GetString().Should().Be("Primary");
+        agent.GetProperty("usage").GetProperty("costProvenance").GetString().Should().Be("PublicEstimate");
+        agent.GetProperty("usage").GetProperty("estimatedCostCompleteness").GetString().Should().Be("Partial");
+        var total = json.RootElement.GetProperty("total");
+        total.GetProperty("costProvenance").GetString().Should().Be("ProviderReported");
+        total.GetProperty("costCompleteness").GetString().Should().Be("Complete");
+        total.GetProperty("usageCompleteness").GetString().Should().Be("InProgress");
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

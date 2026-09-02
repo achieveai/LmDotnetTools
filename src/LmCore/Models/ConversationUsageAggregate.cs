@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 /// <summary>
@@ -111,10 +113,13 @@ public sealed record ExecutionUsageRow
     ///     Which source the preferred figure rests on: <see cref="CostProvenance.ProviderReported" /> only when
     ///     every priced attempt was provider-reported, <see cref="CostProvenance.PublicEstimate" /> when any
     ///     attempt fell back to an estimate, <see cref="CostProvenance.Unavailable" /> when there is no figure.
+    ///     Serialized by name: this row exists only for the context report (spec 679 §4.3), never persisted.
     /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public CostProvenance CostProvenance { get; init; } = CostProvenance.Unavailable;
 
     /// <summary>Completeness of <see cref="EstimatedPublicCostMicros" />, folded like <see cref="ModelUsageRow" />.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public CostCompleteness EstimatedCostCompleteness { get; init; } = CostCompleteness.Unavailable;
 
     /// <summary>Number of distinct billable attempts folded into this row.</summary>

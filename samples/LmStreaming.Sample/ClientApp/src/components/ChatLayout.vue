@@ -17,11 +17,13 @@ import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
 import SubAgentListPanel from './SubAgentListPanel.vue';
 import TodoBoardPanel from './TodoBoardPanel.vue';
+import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useTodoBoard } from '@/composables/useTodoBoard';
+import { useContextReport } from '@/composables/useContextReport';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -106,6 +108,7 @@ const {
   cumulativeUsage,
   cumulativeCost,
   conversationTodo,
+  contextPressure,
   pendingMessages,
   pendingAuthRequests,
   dismissAuthRequest,
@@ -231,6 +234,21 @@ const {
 const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
   () => subAgentParentThreadId.value,
   () => conversationTodo.value
+);
+
+// Context/cost panel state (#685), hoisted like the board. Same start gate; the endpoint is
+// authoritative and re-read when the run goes idle (usage rows persist at run completion) or the
+// sub-agent roster changes (a new child gets its own row) — child loops publish their live frames to
+// their own sockets, not this one, so their rows only move on a re-read.
+const {
+  rows: contextRows,
+  total: contextTotal,
+  status: contextStatus,
+  generatedAtUtc: contextGeneratedAtUtc,
+} = useContextReport(
+  () => subAgentParentThreadId.value,
+  () => contextPressure.value,
+  () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
 );
 
 // Artifact preview (#583, PR 5): the board panel bubbles a chip's workspace-relative path up here,
@@ -922,6 +940,14 @@ onBeforeUnmount(() => {
           <div v-if="error" class="error-banner" data-testid="error-banner">
             {{ error }}
           </div>
+
+          <ContextCostPanel
+            v-if="subAgentParentThreadId"
+            :rows="contextRows"
+            :total="contextTotal"
+            :status="contextStatus"
+            :generated-at-utc="contextGeneratedAtUtc"
+          />
 
           <div
             v-if="cumulativeUsage.totalTokens > 0"
