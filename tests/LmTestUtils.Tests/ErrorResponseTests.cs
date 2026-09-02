@@ -291,14 +291,20 @@ public class ErrorResponseTests
     public async Task RespondWithTimeout_ShouldThrowTaskCanceledException()
     {
         // Arrange
+        // The mock delay is deliberately huge (30s) compared to the client timeout (50ms).
+        // TimeoutResponseProvider honours the request's CancellationToken (see
+        // MockHttpHandlerBuilder.TimeoutResponseProvider.CreateResponseAsync), so
+        // HttpClient's timeout cancels the token and the underlying Task.Delay throws
+        // TaskCanceledException immediately - this test does not race two independent
+        // timers against each other, so it cannot flake under CI load.
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithTimeout(100) // 100ms timeout
+            .RespondWithTimeout(30_000) // 30s mock delay - never expected to elapse
             .Build();
 
         using var client = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromMilliseconds(50), // Client timeout shorter than mock timeout
+            Timeout = TimeSpan.FromMilliseconds(50), // Client timeout, far shorter than the mock delay
         };
 
         // Act & Assert
