@@ -152,11 +152,22 @@ public static class SystemChatModes
                 SubAgentPrompt = m.SubAgentPrompt,
                 SubAgentPromptPlacement = RequireValidPlacement(m.SubAgentPromptPlacement),
                 SubAgentRequiredTools = m.SubAgentRequiredTools,
+                SubAgentReasoningEffort = m.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = m.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = m.DefaultSubAgentModelIntelligence,
                 IsSystemDefined = true,
                 CreatedAt = now,
                 UpdatedAt = now,
             })
             .ToList();
+
+        foreach (var mode in modes)
+        {
+            if (Services.ModeSubAgentPolicy.Validate(mode.ToAgentProfile()) is { } policyError)
+            {
+                throw new InvalidOperationException($"{PromptsFileName} mode '{mode.Id}': {policyError}");
+            }
+        }
 
         var duplicateIds = modes
             .GroupBy(m => m.Id, StringComparer.Ordinal)
@@ -265,5 +276,11 @@ public static class SystemChatModes
         public string? SubAgentPromptPlacement { get; init; }
 
         public List<string>? SubAgentRequiredTools { get; init; }
+
+        public string? SubAgentReasoningEffort { get; init; }
+
+        public Dictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
+
+        public int? DefaultSubAgentModelIntelligence { get; init; }
     }
 }

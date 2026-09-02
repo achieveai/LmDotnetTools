@@ -157,6 +157,124 @@ public sealed class ProgramReasoningExtraPropertiesTests
     }
 
     [Fact]
+    public void Conversation_root_explicit_xhigh_is_capability_shaped_for_responses_models()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.6-sol", "Sol", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            }
+        );
+
+        var props = BuildConversationRoot(registry, "gpt-5.6-sol", "gpt-5.6-sol", "xhigh");
+
+        var reasoning = props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().Be("xhigh");
+        reasoning.Summary.Should().Be("auto");
+    }
+
+    [Fact]
+    public void Conversation_root_xhigh_is_clamped_and_reported_as_the_exact_provider_effort()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.6-terra", "Terra", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high"],
+            }
+        );
+
+        var props = BuildConversationRoot(registry, "gpt-5.6-terra", "gpt-5.6-terra", "xhigh");
+
+        ReadConversationRootShapedEffort(props).Should().Be("high");
+    }
+
+    [Fact]
+    public void Conversation_root_explicit_empty_omits_reasoning_metadata()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.6-sol", "Sol", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            }
+        );
+
+        BuildConversationRoot(registry, "gpt-5.6-sol", "gpt-5.6-sol", string.Empty).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Conversation_root_invalid_persisted_effort_preserves_the_provider_default_shape()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.6-sol", "Sol", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            }
+        );
+
+        var props = BuildConversationRoot(registry, "gpt-5.6-sol", "gpt-5.6-sol", "turbo");
+
+        var reasoning = props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().BeNull();
+        reasoning
+            .Summary.Should()
+            .Be("auto", "a legacy invalid row must not suppress the provider's default reasoning shape");
+    }
+
+    [Fact]
+    public void Conversation_root_explicit_effort_on_non_copilot_anthropic_preserves_the_thinking_budget()
+    {
+        var props = BuildConversationRoot(RegistryWith(), "anthropic", "anthropic", "xhigh");
+
+        props.Should().ContainKey("Thinking");
+        props["Thinking"].Should().BeOfType<AnthropicThinking>();
+        props.Should().NotContainKey("OutputConfig", "direct Anthropic capabilities were not advertised for shaping");
+    }
+
+    [Fact]
+    public void Conversation_root_null_preserves_the_existing_provider_default_shape()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.6-sol", "Sol", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            }
+        );
+
+        var props = BuildConversationRoot(registry, "gpt-5.6-sol", "gpt-5.6-sol", requestedEffort: null);
+
+        var reasoning = props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().BeNull();
+        reasoning.Summary.Should().Be("auto");
+    }
+
+    private static string? ReadConversationRootShapedEffort(ImmutableDictionary<string, object?> properties)
+    {
+        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController).Assembly.GetType("Program");
+        programType.Should().NotBeNull();
+        var method = programType!.GetMethod("ReadShapedReasoningEffort", BindingFlags.NonPublic | BindingFlags.Static);
+        method.Should().NotBeNull("Program must report the exact effort placed on the root provider request");
+        return (string?)method!.Invoke(null, [properties]);
+    }
+
+    private static ImmutableDictionary<string, object?> BuildConversationRoot(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        string? requestedEffort
+    )
+    {
+        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController).Assembly.GetType("Program");
+        programType.Should().NotBeNull();
+        var method = programType!.GetMethod(
+            "BuildConversationReasoningExtraProperties",
+            BindingFlags.NonPublic | BindingFlags.Static
+        );
+        method.Should().NotBeNull("Program must expose conversation-root reasoning shaping");
+        return (ImmutableDictionary<string, object?>)
+            method!.Invoke(null, [providerRegistry, copilotModelKey, fallbackProviderId, requestedEffort, null])!;
+    }
+
+    [Fact]
     public void Controller_classic_copilot_anthropic_model_falls_back_to_thinking_budget()
     {
         // A classic Copilot Anthropic model advertises no selectable effort, so Copilot shaping is

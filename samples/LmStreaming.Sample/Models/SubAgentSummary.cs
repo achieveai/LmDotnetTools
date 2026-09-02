@@ -84,6 +84,14 @@ public sealed record SubAgentSummary
     /// <summary>Stable source label such as parent, spawn-model, spawn-tier, template-model, or template-tier.</summary>
     public string? ModelSelectionSource { get; init; }
 
+    /// <summary>Normalized effort requested before provider capability shaping.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RequestedReasoningEffort { get; init; }
+
+    /// <summary>Provider capability-shaped effort placed on the request, or null when omitted.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ShapedReasoningEffort { get; init; }
+
     /// <summary>
     ///     Schema version of the persisted row, shared with <see cref="CollaborationNodeRecord"/> so the
     ///     index file and the collaboration node record cannot drift apart silently.

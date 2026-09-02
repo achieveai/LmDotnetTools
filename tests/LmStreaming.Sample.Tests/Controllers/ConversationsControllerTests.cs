@@ -907,6 +907,28 @@ public class ConversationsControllerTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetCapabilities_AdvertisesRootReasoningEffortWithoutOverstatingStoreIdempotency(
+        bool supportsIdempotency
+    )
+    {
+        await using var pool = CreatePool();
+        IConversationStore store = supportsIdempotency
+            ? new InMemoryConversationStore()
+            : Mock.Of<IConversationStore>();
+        var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
+
+        var result = controller.GetCapabilities();
+
+        var response = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        response.SchemaVersion.Should().Be(1);
+        response.RootReasoningEffort.Should().BeTrue();
+        response.SpawnSuppression.Should().BeTrue();
+        response.MessageIdempotency.Should().Be(supportsIdempotency);
+    }
+
     [Fact]
     public async Task SwitchProvider_ReturnsConflict_WhenRunIsInProgress()
     {
@@ -1172,6 +1194,7 @@ public class ConversationsControllerTests
                 WorkspaceId = "ws-1",
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
+                ReasoningEffort = "xhigh",
             },
             CancellationToken.None
         );
@@ -1179,12 +1202,87 @@ public class ConversationsControllerTests
         var ok = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<ProvisionConversationResponse>(ok.Value);
         response.ThreadId.Should().StartWith("thread-");
+        response.ReasoningEffortAccepted.Should().BeTrue();
 
         var metadata = await store.LoadMetadataAsync(response.ThreadId, CancellationToken.None);
         metadata.Should().NotBeNull();
         metadata!.Properties![MultiTurnAgentPool.ProviderPropertyKey].Should().Be("test");
         metadata.Properties[MultiTurnAgentPool.WorkspacePropertyKey].Should().Be("ws-1");
         metadata.Properties[MultiTurnAgentPool.ModePropertyKey].Should().Be(SystemChatModes.DefaultModeId);
+        metadata.Properties[ConversationRootReasoningEffort.PropertyKey].Should().Be("xhigh");
+    }
+
+    [Fact]
+    public async Task Provision_PersistsAndAcknowledgesExplicitEmptyReasoningEffort()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                ReasoningEffort = string.Empty,
+            },
+            CancellationToken.None
+        );
+
+        var response = Assert.IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        response.ReasoningEffortAccepted.Should().BeTrue();
+        var metadata = await store.LoadMetadataAsync(response.ThreadId, CancellationToken.None);
+        metadata!.Properties.Should().ContainKey(ConversationRootReasoningEffort.PropertyKey);
+        metadata.Properties![ConversationRootReasoningEffort.PropertyKey].Should().Be(string.Empty);
+    }
+
+    [Theory]
+    [InlineData("turbo")]
+    [InlineData("2")]
+    [InlineData("Low,High")]
+    public async Task Provision_ReturnsBadRequest_AndDoesNotPersistUnsupportedReasoningEffort(string effort)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                ReasoningEffort = effort,
+            },
+            CancellationToken.None
+        );
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        JsonSerializer.Serialize(badRequest.Value).Should().Contain("reasoning_effort_invalid");
+        (await store.ListThreadsAsync(ct: CancellationToken.None)).Should().BeEmpty();
     }
 
     [Fact]

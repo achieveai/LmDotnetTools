@@ -55,9 +55,10 @@ internal sealed class CharacteristicsAgentFactory
 
         if (!characteristics.IsModelExplicitlySelected && !characteristics.IsModelTierResolved)
         {
-            var extraProperties = _parentCopilotModel is null
-                ? ImmutableDictionary<string, object?>.Empty
+            var shaped = _parentCopilotModel is null
+                ? new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null)
                 : ShapeReasoning(_parentCopilotModel, characteristics.Effort);
+            var extraProperties = shaped.ExtraProperties;
             // Copilot shaping is empty for a classic Copilot Anthropic parent (advertises no efforts) and for a
             // non-Copilot parent (_parentCopilotModel is null). In both cases the sub-agent reuses the parent
             // model/transport, so it should inherit the parent's OWN reasoning metadata (e.g. a classic
@@ -67,7 +68,7 @@ internal sealed class CharacteristicsAgentFactory
                 extraProperties = _parentReasoningExtraProperties;
             }
 
-            return new SubAgentProviderAgent(_parentAgent, extraProperties);
+            return new SubAgentProviderAgent(_parentAgent, extraProperties) { ShapedEffort = shaped.Effort };
         }
 
         if (string.IsNullOrWhiteSpace(characteristics.ModelId))
@@ -87,9 +88,11 @@ internal sealed class CharacteristicsAgentFactory
             return ParentFallback();
         }
 
-        return new SubAgentProviderAgent(_modelAgentFactory(model), ShapeReasoning(model, characteristics.Effort))
+        var shapedForModel = ShapeReasoning(model, characteristics.Effort);
+        return new SubAgentProviderAgent(_modelAgentFactory(model), shapedForModel.ExtraProperties)
         {
             OwnsAgent = true,
+            ShapedEffort = shapedForModel.Effort,
         };
     }
 
@@ -104,14 +107,11 @@ internal sealed class CharacteristicsAgentFactory
         }
     }
 
-    private ImmutableDictionary<string, object?> ShapeReasoning(
-        CopilotModelInfo model,
-        ReasoningEffort? requestedEffort
-    )
+    private ShapedReasoning ShapeReasoning(CopilotModelInfo model, ReasoningEffort? requestedEffort)
     {
         if (requestedEffort is null)
         {
-            return ImmutableDictionary<string, object?>.Empty;
+            return new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null);
         }
 
         var selectedEffort = CopilotReasoningShaper.SelectEffort(model, requestedEffort);
@@ -127,7 +127,7 @@ internal sealed class CharacteristicsAgentFactory
                 );
             }
 
-            return ImmutableDictionary<string, object?>.Empty;
+            return new ShapedReasoning(ImmutableDictionary<string, object?>.Empty, null);
         }
 
         if (
@@ -145,6 +145,8 @@ internal sealed class CharacteristicsAgentFactory
             );
         }
 
-        return CopilotReasoningShaper.Shape(model, requestedEffort);
+        return new ShapedReasoning(CopilotReasoningShaper.Shape(model, requestedEffort), selectedEffort);
     }
+
+    private sealed record ShapedReasoning(ImmutableDictionary<string, object?> ExtraProperties, string? Effort);
 }

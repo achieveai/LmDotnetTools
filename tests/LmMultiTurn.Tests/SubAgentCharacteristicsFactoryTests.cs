@@ -105,6 +105,116 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SpawnAsync_ConversationEffortFloorOverridesInheritedEffortOnParentModelReuse()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "shared-model",
+            inheritedEffort: ReasoningEffort.High,
+            conversationEffortFloor: ReasoningEffort.Xhigh
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics!.Effort.Should().Be(ReasoningEffort.Xhigh);
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ConversationEffortFloorSurvivesExplicitModelSelection()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            conversationEffortFloor: ReasoningEffort.Xhigh
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model");
+
+        receivedCharacteristics!.ModelId.Should().Be("spawn-model");
+        receivedCharacteristics.Effort.Should().Be(ReasoningEffort.Xhigh);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ConversationEffortFloorSurvivesTierSelection()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            conversationEffortFloor: ReasoningEffort.Xhigh,
+            tierModelResolver: tier => tier == 3 ? "tier-model" : null
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
+
+        receivedCharacteristics!.ModelId.Should().Be("tier-model");
+        receivedCharacteristics.Effort.Should().Be(ReasoningEffort.Xhigh);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_TemplateEffortOverridesConversationEffortFloor()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            Effort = ReasoningEffort.Low,
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            conversationEffortFloor: ReasoningEffort.Xhigh
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model");
+
+        receivedCharacteristics!.Effort.Should().Be(ReasoningEffort.Low);
+    }
+
+    [Fact]
     public async Task SpawnAsync_TemplateEffortOverridesInheritedEffort()
     {
         // "less thinking" wins: a template that lowered its own Effort keeps that value over the inherited floor.
@@ -312,6 +422,59 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
                 "Thinking",
                 "a tier-resolved model may use a different transport, so the controller's pre-shaped reasoning is not seeded"
             );
+    }
+
+    [Fact]
+    public async Task SpawnAsync_PlainPathCharacteristicsFactoryShapesFloorForTierResolvedModel()
+    {
+        GenerateReplyOptions? receivedOptions = null;
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent(options => receivedOptions = options);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Plain template factory must not run."),
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+            ConversationEffortFloor = ReasoningEffort.Xhigh,
+            TierModelResolver = tier => tier == 3 ? "tier-3-model" : null,
+            PlainPathCharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(
+                    providerAgent.Object,
+                    ImmutableDictionary<string, object?>.Empty.Add("Reasoning", "xhigh")
+                )
+                {
+                    OwnsAgent = true,
+                    ShapedEffort = "xhigh",
+                };
+            },
+        };
+        await using var manager = new SubAgentManager(
+            Mock.Of<IMultiTurnAgent>(),
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            LoggerFactory.CreateLogger<SubAgentManager>(),
+            parentModelId: "controller-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
+
+        receivedCharacteristics
+            .Should()
+            .Be(new SubAgentCharacteristics("tier-3-model", ReasoningEffort.Xhigh) { IsModelTierResolved = true });
+        receivedOptions.Should().NotBeNull();
+        receivedOptions!.ModelId.Should().Be("tier-3-model");
+        receivedOptions.ExtraProperties.Should().Contain("Reasoning", "xhigh");
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.RequestedReasoningEffort.Should().Be("xhigh");
+        snapshot.ShapedReasoningEffort.Should().Be("xhigh");
     }
 
     [Fact]
@@ -984,6 +1147,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         SubAgentTemplate template,
         string? parentModelId = null,
         ReasoningEffort? inheritedEffort = null,
+        ReasoningEffort? conversationEffortFloor = null,
         ImmutableDictionary<string, object?>? inheritedReasoning = null,
         Func<int, string?>? tierModelResolver = null,
         Func<string, IStreamingAgent>? tierAgentFactory = null,
@@ -994,6 +1158,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         {
             Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             InheritedEffort = inheritedEffort,
+            ConversationEffortFloor = conversationEffortFloor,
             InheritedReasoning = inheritedReasoning,
             TierModelResolver = tierModelResolver,
             TierAgentFactory = tierAgentFactory,

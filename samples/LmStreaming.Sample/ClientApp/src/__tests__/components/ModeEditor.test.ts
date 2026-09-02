@@ -61,7 +61,7 @@ describe('ModeEditor sub-agent prompt fragment', () => {
     expect(data.subAgentPromptPlacement).toBe('prepend');
   });
 
-  it('omits both fields when the fragment is empty', async () => {
+  it('writes an explicit null for both fields when the fragment is empty', async () => {
     const wrapper = mount(ModeEditor, { props: { mode: null, tools: [] } });
 
     await wrapper.get('[data-testid="mode-editor-name"]').setValue('New Mode');
@@ -69,7 +69,10 @@ describe('ModeEditor sub-agent prompt fragment', () => {
     await wrapper.get('form').trigger('submit');
 
     const data = lastSave(wrapper);
-    expect(data.subAgentPrompt).toBeUndefined();
+    // subAgentPrompt writes explicit null (the server's presence-aware contract reads an omitted
+    // key as "leave the stored fragment alone"). subAgentPromptPlacement has no persisted "clear"
+    // meaning of its own, so it stays omitted.
+    expect(data.subAgentPrompt).toBeNull();
     expect(data.subAgentPromptPlacement).toBeUndefined();
   });
 
@@ -91,6 +94,79 @@ describe('ModeEditor sub-agent prompt fragment', () => {
     const data = lastSave(wrapper);
     expect(data.subAgentPrompt).toBe('New fragment.');
     expect(data.subAgentPromptPlacement).toBe('prepend');
+  });
+
+  it('blanking an existing mode\'s fragment saves an explicit null, not omission', async () => {
+    // Omitting the key on update would preserve the mode's stored fragment (the server's
+    // presence-aware contract), so clearing it requires the literal JSON null to survive the wire.
+    const wrapper = mount(ModeEditor, {
+      props: {
+        mode: {
+          ...baseMode,
+          subAgentPrompt: 'Old fragment.',
+          subAgentPromptPlacement: 'prepend' as const,
+        },
+        tools: [],
+      },
+    });
+
+    await wrapper.get('[data-testid="mode-editor-subagent-prompt"]').setValue('');
+    await wrapper.get('form').trigger('submit');
+
+    const data = lastSave(wrapper);
+    expect(data.subAgentPrompt).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('subAgentPrompt' in wire).toBe(true);
+    expect(wire.subAgentPrompt).toBeNull();
+  });
+});
+
+describe('ModeEditor description', () => {
+  it('blanking an existing mode\'s description saves an explicit null, not omission', async () => {
+    // baseMode.description is 'A user mode'. Omitting the key on update would preserve it (the
+    // server's presence-aware contract), so clearing requires the literal JSON null.
+    const wrapper = mount(ModeEditor, { props: { mode: baseMode, tools: [] } });
+
+    await wrapper.get('#mode-description').setValue('');
+    await wrapper.get('form').trigger('submit');
+
+    const data = lastSave(wrapper);
+    expect(data.description).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('description' in wire).toBe(true);
+    expect(wire.description).toBeNull();
+  });
+
+  it('keeps a non-empty description unchanged on save', async () => {
+    const wrapper = mount(ModeEditor, { props: { mode: baseMode, tools: [] } });
+
+    await wrapper.get('form').trigger('submit');
+
+    expect(lastSave(wrapper).description).toBe('A user mode');
+  });
+});
+
+describe('ModeEditor sub-agent routing policy', () => {
+  it('preserves policy fields that the form does not render when editing a mode', async () => {
+    const policy = {
+      subAgentReasoningEffort: 'xhigh',
+      subAgentModelIntelligenceByType: {
+        'code-reviewer:architecture-review': 5,
+        'code-reviewer:test-coverage-review': 3,
+      },
+      defaultSubAgentModelIntelligence: 3,
+    };
+    const wrapper = mount(ModeEditor, {
+      props: {
+        mode: { ...baseMode, ...policy },
+        tools: [],
+      },
+    });
+
+    await wrapper.get('[data-testid="mode-editor-name"]').setValue('Renamed Mode');
+    await wrapper.get('form').trigger('submit');
+
+    expect(lastSave(wrapper)).toMatchObject(policy);
   });
 });
 
@@ -189,16 +265,18 @@ describe('ModeEditor required sub-agent tools', () => {
     expect(lastSave(wrapper).subAgentRequiredTools).toEqual(['claim-task', 'list-tasks']);
   });
 
-  it('omits the field entirely when nothing is picked — unset means "not enforced"', async () => {
+  it('writes an explicit null when nothing is picked — unset means "not enforced"', async () => {
     const wrapper = mount(ModeEditor, { props: { mode: null, tools: catalog } });
     await fillRequired(wrapper);
 
     await wrapper.get('form').trigger('submit');
 
-    expect('subAgentRequiredTools' in lastSave(wrapper)).toBe(false);
+    expect(lastSave(wrapper).subAgentRequiredTools).toBeNull();
   });
 
-  it('deselecting the last required tool saves back to unset, not an empty list', async () => {
+  it('deselecting the last required tool saves an explicit null, not an omitted key', async () => {
+    // The server's presence-aware update contract preserves the stored selection when the key is
+    // omitted, so disabling enforcement after unchecking everything requires the literal null.
     const wrapper = mount(ModeEditor, {
       props: {
         mode: { ...baseMode, subAgentRequiredTools: ['claim-task'] },
@@ -209,7 +287,11 @@ describe('ModeEditor required sub-agent tools', () => {
     await requiredSection(wrapper).get('[data-testid="tool-claim-task"]').setValue(false);
     await wrapper.get('form').trigger('submit');
 
-    expect('subAgentRequiredTools' in lastSave(wrapper)).toBe(false);
+    const data = lastSave(wrapper);
+    expect(data.subAgentRequiredTools).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('subAgentRequiredTools' in wire).toBe(true);
+    expect(wire.subAgentRequiredTools).toBeNull();
   });
 
   it('preserves stored pattern ids the catalog cannot render (e.g. tasks:* from a copied mode)', async () => {
@@ -238,8 +320,36 @@ describe('ModeEditor required sub-agent tools', () => {
     await wrapper.get('form').trigger('submit');
 
     const data = lastSave(wrapper);
-    // A fresh mode with everything ticked keeps enabledTools undefined ("all tools").
-    expect(data.enabledTools).toBeUndefined();
+    // A fresh mode with everything ticked writes an explicit null for enabledTools ("all tools").
+    expect(data.enabledTools).toBeNull();
     expect(data.subAgentRequiredTools).toEqual(['claim-task']);
+  });
+
+  it('re-ticking every Enabled Tool on an edited mode writes an explicit null, not omission', async () => {
+    // baseMode starts with a narrower enabledTools: ['get_weather'] — an explicit selection, not
+    // the "all tools" default. Ticking the remaining catalog tool (`web_search` is built-in and
+    // excluded; `claim-task`/`list-tasks` are in the tasks group) must serialize an explicit null,
+    // not silently preserve the old narrower list via an omitted key.
+    const wrapper = mount(ModeEditor, {
+      props: {
+        mode: { ...baseMode, enabledTools: ['get_weather'] },
+        tools: catalog,
+      },
+    });
+
+    // Enabled Tools renders before Required Sub-agent Tools in the template, so index 0 is the
+    // Enabled Tools picker's checkbox for a tasks-group tool that also appears in the required
+    // picker (both non-built-in, non-sandbox groups).
+    const enabledClaimTask = wrapper.findAll('[data-testid="tool-claim-task"]')[0];
+    const enabledListTasks = wrapper.findAll('[data-testid="tool-list-tasks"]')[0];
+    await enabledClaimTask.setValue(true);
+    await enabledListTasks.setValue(true);
+    await wrapper.get('form').trigger('submit');
+
+    const data = lastSave(wrapper);
+    expect(data.enabledTools).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('enabledTools' in wire).toBe(true);
+    expect(wire.enabledTools).toBeNull();
   });
 });

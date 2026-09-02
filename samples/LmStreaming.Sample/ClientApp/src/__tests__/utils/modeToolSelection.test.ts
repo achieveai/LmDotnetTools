@@ -178,15 +178,27 @@ describe('selectionFromMode', () => {
 });
 
 describe('selectionToModeFields', () => {
-  it('leaves enabledTools undefined when every unqualified tool is ticked', () => {
-    // undefined means "all, including tools added later"; an exhaustive list would freeze the mode
-    // to today's catalog.
+  it('writes an explicit null for enabledTools when every unqualified tool is ticked', () => {
+    // Explicit null means "all, including tools added later" under the server's presence-aware
+    // update contract; an exhaustive list would freeze the mode to today's catalog, and an
+    // omitted key would instead mean "leave the stored allowlist alone".
     const fields = selectionToModeFields(
       ['web_search', 'calculate', 'add-task'],
       catalog
     );
 
-    expect(fields.enabledTools).toBeUndefined();
+    expect(fields.enabledTools).toBeNull();
+  });
+
+  it('serializes the all-ticked enabledTools as a present, explicit null — not an omitted key', () => {
+    // The server's ChatModeCreateUpdate is presence-aware: JSON.stringify drops undefined-valued
+    // keys but keeps an explicit null, and that distinction is exactly what "all tools including
+    // ones added later" vs. "leave the stored allowlist alone" hinges on.
+    const fields = selectionToModeFields(['web_search', 'calculate', 'add-task'], catalog);
+
+    const wire = JSON.parse(JSON.stringify(fields));
+    expect('enabledTools' in wire).toBe(true);
+    expect(wire.enabledTools).toBeNull();
   });
 
   it('writes an explicit enabledTools once anything is unticked', () => {
@@ -318,7 +330,7 @@ describe('selectionToModeFields', () => {
     // change what it does.
     const fields = selectionToModeFields(selectionFromMode(mode({}), catalog), catalog);
 
-    expect(fields.enabledTools).toBeUndefined();
+    expect(fields.enabledTools).toBeNull();
     expect(fields.enabledCapabilityTools).toEqual(['subagents:Agent']);
   });
 });

@@ -570,6 +570,42 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_diff_only_path_uses_the_configured_review_effort()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewReasoningEffort = "review-effort" }
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ReasoningEfforts.Should().ContainSingle().Which.Should().Be("review-effort");
+    }
+
+    [Fact]
+    public async Task Reviewed_s2s_path_uses_the_configured_tool_assisted_effort()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                ReviewReasoningEffort = "review-effort",
+                ToolAssistedReasoningEffort = "tool-effort",
+                ReviewSubAgentBarrierQuietSeconds = 1,
+            }
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ReasoningEfforts.Should().ContainSingle().Which.Should().Be("tool-effort");
+    }
+
+    [Fact]
     public async Task Reviewed_drives_the_provisional_turn_then_an_authoritative_synthesis_turn_on_one_agent()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);

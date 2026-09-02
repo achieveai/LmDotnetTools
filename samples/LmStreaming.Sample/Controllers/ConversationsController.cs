@@ -270,6 +270,21 @@ public class ConversationsController(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (
+            request.ReasoningEffort is { Length: > 0 } reasoningEffort
+            && !ConversationRootReasoningEffort.TryParse(reasoningEffort, out _)
+        )
+        {
+            return BadRequest(
+                new
+                {
+                    error = "reasoning_effort_invalid",
+                    code = "reasoning_effort_invalid",
+                    detail = "ReasoningEffort must be empty or one of: low, medium, high, xhigh.",
+                }
+            );
+        }
+
         var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
         if (workspace == null)
         {
@@ -336,6 +351,13 @@ public class ConversationsController(
                     propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
                 }
 
+                // Null means no caller override. Empty is intentionally persisted: it is the explicit
+                // "omit effort" value and must remain distinguishable from an absent property.
+                if (request.ReasoningEffort is not null)
+                {
+                    propertiesBuilder[ConversationRootReasoningEffort.PropertyKey] = request.ReasoningEffort;
+                }
+
                 if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
                 {
                     propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
@@ -365,7 +387,13 @@ public class ConversationsController(
             ct
         );
 
-        return Ok(new ProvisionConversationResponse { ThreadId = threadId });
+        return Ok(
+            new ProvisionConversationResponse
+            {
+                ThreadId = threadId,
+                ReasoningEffortAccepted = request.ReasoningEffort is not null,
+            }
+        );
     }
 
     /// <summary>
@@ -919,6 +947,7 @@ public class ConversationsController(
                 SchemaVersion = 1,
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
+                RootReasoningEffort = true,
             }
         );
 

@@ -52,6 +52,10 @@ export interface SubAgentSummary {
   effectiveModelIntelligence?: number | null;
   /** Stable winning input: parent, spawn-model, spawn-tier, template-model, or template-tier. */
   modelSelectionSource?: string | null;
+  /** Normalized effort requested before provider capability shaping. */
+  requestedReasoningEffort?: string | null;
+  /** Provider capability-shaped effort placed on the request; absent when omitted. */
+  shapedReasoningEffort?: string | null;
   /** Persisted parent thread id; required for recursive graph nodes. */
   parentThreadId?: string | null;
   /** Distance from the recursive request root. */

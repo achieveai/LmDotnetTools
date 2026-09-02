@@ -49,6 +49,83 @@ public sealed class WorkspaceWorkflowWiringTests
     }
 
     [Fact]
+    public void WorkflowControllerPolicy_InheritsConversationWideEffortAndTypeRouting()
+    {
+        Func<string, SubAgentSpawnModelSelection?> typePolicy = type =>
+            type == "code-reviewer:security" ? new SubAgentSpawnModelSelection(null, 5, "type-policy") : null;
+        var conversationOptions = new SubAgentOptions
+        {
+            Templates = BuiltInSubAgentTemplates.Create(FakeAgent),
+            ConversationEffortFloor = ReasoningEffort.Xhigh,
+            SpawnTypeModelSelectionResolver = typePolicy,
+        };
+        var controllerOptions = RestrictedControllerOptions();
+
+        var applied = global::Program.ApplyConversationSubAgentPolicyToController(
+            controllerOptions,
+            conversationOptions
+        );
+
+        applied.ConversationEffortFloor.Should().Be(ReasoningEffort.Xhigh);
+        applied.SpawnTypeModelSelectionResolver.Should().BeSameAs(typePolicy);
+        applied
+            .SpawnTypeModelSelectionResolver!("code-reviewer:security")
+            .Should()
+            .Be(new SubAgentSpawnModelSelection(null, 5, "type-policy"));
+    }
+
+    [Fact]
+    public void WorkflowOnlyMode_KeepsRootDelegationClosedAndCarriesPolicyToController()
+    {
+        var mode = new AgentProfile(
+            "workflow-only",
+            "Workflow only",
+            "Run workflows.",
+            EnabledCapabilityTools: ["workflow:StartWorkflowAgent"]
+        )
+        {
+            SubAgentReasoningEffort = "xhigh",
+            SubAgentModelIntelligenceByType = new Dictionary<string, int> { ["code-reviewer:architecture-review"] = 5 },
+        };
+        var caps = ModeCapabilities.Resolve(mode.EnabledCapabilityTools);
+        var conversationOptions = global::Program.ApplySubAgentToolNarrowing(
+            global::Program.ApplyModeSubAgentPolicy(
+                new SubAgentOptions { Templates = BuiltInSubAgentTemplates.Create(FakeAgent) },
+                mode
+            ),
+            caps
+        );
+
+        caps.SubAgents.Should().BeFalse();
+        caps.StartWorkflowTools.Should().BeTrue();
+        conversationOptions.Should().NotBeNull();
+        conversationOptions!.ExposedToolNames.Should().BeEmpty("the root mode did not select Agent tools");
+
+        var controllerOptions = global::Program.ApplyConversationSubAgentPolicyToController(
+            RestrictedControllerOptions(),
+            conversationOptions
+        );
+        controllerOptions.ConversationEffortFloor.Should().Be(ReasoningEffort.Xhigh);
+        controllerOptions
+            .SpawnTypeModelSelectionResolver!("code-reviewer:architecture-review")
+            .Should()
+            .Be(new SubAgentSpawnModelSelection(null, 5, "type-policy"));
+    }
+
+    [Fact]
+    public void WorkflowControllerPolicy_WithNoConversationOptions_PreservesControllerDefaults()
+    {
+        var controllerOptions = RestrictedControllerOptions();
+
+        var applied = global::Program.ApplyConversationSubAgentPolicyToController(
+            controllerOptions,
+            conversationOptions: null
+        );
+
+        applied.Should().BeSameAs(controllerOptions);
+    }
+
+    [Fact]
     public void ControllerTemplates_AreInheritAll_AndAcceptedByWorkflowManager_WithStructuralExclusion()
     {
         var templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent);

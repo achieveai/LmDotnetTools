@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -33,6 +34,7 @@ public sealed class CodeReviewDaemonModeSpawnTests : IAsyncLifetime
 
     private readonly Mock<IMultiTurnAgent> _parentMock = new();
     private readonly List<SubAgentManager> _managers = [];
+    private SubAgentCharacteristics? _routedCharacteristics;
 
     public Task InitializeAsync()
     {
@@ -83,6 +85,59 @@ public sealed class CodeReviewDaemonModeSpawnTests : IAsyncLifetime
     /// #623 warning fires — proving the assertion above is answered by the yaml field, not by the
     /// harness.
     /// </summary>
+    [Fact]
+    public async Task ShippedReviewMode_AppliesXhighAndAuthoritativeTierRoutingAtTheAgentToolBoundary()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId)!.ToAgentProfile();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["code-reviewer:architecture-review"] = RoutedTemplate(),
+            },
+            MaxConcurrentSubAgents = 5,
+            TierModelResolver = tier =>
+                tier switch
+                {
+                    1 => "gpt-5.6-luna",
+                    3 => "gpt-5.6-terra",
+                    5 => "gpt-5.6-sol",
+                    _ => null,
+                },
+        };
+        options = global::Program.ApplyModeSubAgentPolicy(options, mode);
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source
+        );
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().Single(f => f.Contract.Name == "Agent").Handler;
+
+        _ = await handler(
+            JsonSerializer.Serialize(
+                new
+                {
+                    subagent_type = "architecture-review",
+                    prompt = "review architecture",
+                    model = "gpt-5.6-luna",
+                    modelIntelligence = 1,
+                    run_in_background = true,
+                }
+            ),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        _routedCharacteristics.Should().NotBeNull();
+        _routedCharacteristics!.ModelId.Should().Be("gpt-5.6-sol");
+        _routedCharacteristics.Effort.Should().Be(ReasoningEffort.Xhigh);
+        _routedCharacteristics.IsModelTierResolved.Should().BeTrue();
+    }
+
     [Fact]
     public async Task SameSpawn_WithTheRequiredToolsFieldStripped_LosesTheBoardToolsAndWarns()
     {
@@ -136,6 +191,22 @@ public sealed class CodeReviewDaemonModeSpawnTests : IAsyncLifetime
         _managers.Add(manager);
         return manager;
     }
+
+    private SubAgentTemplate RoutedTemplate() =>
+        new()
+        {
+            Name = "architecture-review",
+            SystemPrompt = "Review architecture.",
+            AgentFactory = () => Mock.Of<IStreamingAgent>(),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                _routedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(
+                    Mock.Of<IStreamingAgent>(),
+                    ImmutableDictionary<string, object?>.Empty
+                );
+            },
+        };
 
     private SubAgentTemplate RestrictedTemplate() =>
         new()

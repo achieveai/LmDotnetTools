@@ -435,6 +435,8 @@ public sealed class AgentHierarchyService(
             EffectiveModelId = s.EffectiveModelId,
             EffectiveModelIntelligence = s.EffectiveModelIntelligence,
             ModelSelectionSource = s.ModelSelectionSource,
+            RequestedReasoningEffort = s.RequestedReasoningEffort,
+            ShapedReasoningEffort = s.ShapedReasoningEffort,
         };
 
     /// <summary>

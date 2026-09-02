@@ -114,7 +114,7 @@ public sealed class ChatModeSubAgentPromptPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_CanClearTheFragment()
+    public async Task Update_WithoutFragmentFields_PreservesThem()
     {
         var store = CreateStoreWithFile(null);
         var created = await store.CreateModeAsync(
@@ -130,6 +130,38 @@ public sealed class ChatModeSubAgentPromptPersistenceTests : IDisposable
             created.Id,
             new ChatModeCreateUpdate { Name = "Clearable", SystemPrompt = "primary" }
         );
+
+        updated.SubAgentPrompt.Should().Be("temp");
+        updated.SubAgentPromptPlacement.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Update_ExplicitNull_ClearsTheFragment()
+    {
+        var store = CreateStoreWithFile(null);
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "Clearable",
+                SystemPrompt = "primary",
+                SubAgentPrompt = "temp",
+                SubAgentPromptPlacement = "append",
+            }
+        );
+        const string Json = """
+            {
+              "name": "Clearable",
+              "systemPrompt": "primary",
+              "subAgentPrompt": null,
+              "subAgentPromptPlacement": null
+            }
+            """;
+        var update = JsonSerializer.Deserialize<ChatModeCreateUpdate>(
+            Json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        )!;
+
+        var updated = await store.UpdateModeAsync(created.Id, update);
 
         updated.SubAgentPrompt.Should().BeNull();
         updated.SubAgentPromptPlacement.Should().BeNull();

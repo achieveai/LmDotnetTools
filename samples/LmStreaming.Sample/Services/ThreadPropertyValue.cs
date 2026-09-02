@@ -28,13 +28,19 @@ internal static class ThreadPropertyValue
     /// </summary>
     public static string? AsString(object? raw)
     {
-        var extracted = raw switch
+        var extracted = AsStringPreservingEmpty(raw);
+        return string.IsNullOrWhiteSpace(extracted) ? null : extracted.Trim();
+    }
+
+    /// <summary>
+    /// Returns the exact string carried by <paramref name="raw"/>, including an explicit empty value, or
+    /// <c>null</c> when it is absent or not a string. Use only where empty and absent have distinct semantics.
+    /// </summary>
+    public static string? AsStringPreservingEmpty(object? raw) =>
+        raw switch
         {
             string s => s,
             JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
             _ => null,
         };
-
-        return string.IsNullOrWhiteSpace(extracted) ? null : extracted.Trim();
-    }
 }

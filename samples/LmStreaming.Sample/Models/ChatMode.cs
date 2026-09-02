@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace LmStreaming.Sample.Models;
 
 /// <summary>
@@ -90,6 +92,25 @@ public record ChatMode
     public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
 
     /// <summary>
+    /// Optional conversation-wide reasoning effort for sub-agents. Null preserves existing behavior;
+    /// supported values are validated where modes are loaded or written.
+    /// </summary>
+    public string? SubAgentReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Authoritative model-intelligence tier keyed by canonical registered <c>subagent_type</c>.
+    /// Null means the mode declares no type-keyed policy.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
+
+    /// <summary>
+    /// Tier used for canonical <c>code-reviewer:*</c> types not present in
+    /// <see cref="SubAgentModelIntelligenceByType"/>. Other type families retain their caller/template
+    /// routing so a review-mode fallback cannot override unrelated children.
+    /// </summary>
+    public int? DefaultSubAgentModelIntelligence { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -115,6 +136,9 @@ public record ChatMode
             SubAgentPrompt = SubAgentPrompt,
             SubAgentPromptPlacement = SubAgentPromptPlacement,
             SubAgentRequiredTools = SubAgentRequiredTools,
+            SubAgentReasoningEffort = SubAgentReasoningEffort,
+            SubAgentModelIntelligenceByType = SubAgentModelIntelligenceByType,
+            DefaultSubAgentModelIntelligence = DefaultSubAgentModelIntelligence,
         };
 
     /// <summary>
@@ -134,15 +158,38 @@ public record ChatMode
 /// </summary>
 public record ChatModeCreateUpdate
 {
+    private string? _description;
+    private IReadOnlyList<string>? _enabledTools;
+    private IReadOnlyList<string>? _enabledBuiltInTools;
+    private IReadOnlyList<string>? _enabledCapabilityTools;
+    private string? _subAgentPrompt;
+    private string? _subAgentPromptPlacement;
+    private IReadOnlyList<string>? _subAgentRequiredTools;
+    private string? _subAgentReasoningEffort;
+    private IReadOnlyDictionary<string, int>? _subAgentModelIntelligenceByType;
+    private int? _defaultSubAgentModelIntelligence;
+
     /// <summary>
     /// Display name of the mode.
     /// </summary>
     public required string Name { get; init; }
 
     /// <summary>
-    /// Optional description of what this mode does.
+    /// Optional description of what this mode does. Omission preserves the stored description on update;
+    /// explicit JSON <c>null</c> clears it.
     /// </summary>
-    public string? Description { get; init; }
+    public string? Description
+    {
+        get => _description;
+        init
+        {
+            _description = value;
+            DescriptionIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool DescriptionIsSet { get; private init; }
 
     /// <summary>
     /// The system prompt used when this mode is active.
@@ -150,44 +197,154 @@ public record ChatModeCreateUpdate
     public required string SystemPrompt { get; init; }
 
     /// <summary>
-    /// List of enabled tool names. If null, all tools are enabled.
+    /// List of enabled tool names. If null, all tools are enabled. Omission preserves the stored allowlist
+    /// on update; explicit JSON <c>null</c> enables all tools.
     /// </summary>
-    public IReadOnlyList<string>? EnabledTools { get; init; }
+    public IReadOnlyList<string>? EnabledTools
+    {
+        get => _enabledTools;
+        init
+        {
+            _enabledTools = value;
+            EnabledToolsIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool EnabledToolsIsSet { get; private init; }
 
     /// <summary>
     /// Server-side built-in tool names (e.g. <c>web_search</c>). See
     /// <see cref="ChatMode.EnabledBuiltInTools"/>.
     /// </summary>
     /// <remarks>
-    /// Absent from this DTO until now, which meant every save through the Modes editor silently
-    /// dropped the mode's built-in selection — a copy of Workspace Agent kept <c>web_search</c> only
-    /// until its first edit.
+    /// Presence-aware on update: omission preserves the stored selection, while explicit JSON
+    /// <c>null</c> clears it. Create treats omission and explicit null alike.
     /// </remarks>
-    public IReadOnlyList<string>? EnabledBuiltInTools { get; init; }
+    public IReadOnlyList<string>? EnabledBuiltInTools
+    {
+        get => _enabledBuiltInTools;
+        init
+        {
+            _enabledBuiltInTools = value;
+            EnabledBuiltInToolsIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool EnabledBuiltInToolsIsSet { get; private init; }
 
     /// <summary>
     /// Qualified sandbox/sub-agent/workflow selections. See
-    /// <see cref="ChatMode.EnabledCapabilityTools"/>.
+    /// <see cref="ChatMode.EnabledCapabilityTools"/>. Omission preserves the stored selection on update.
     /// </summary>
-    public IReadOnlyList<string>? EnabledCapabilityTools { get; init; }
+    public IReadOnlyList<string>? EnabledCapabilityTools
+    {
+        get => _enabledCapabilityTools;
+        init
+        {
+            _enabledCapabilityTools = value;
+            EnabledCapabilityToolsIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool EnabledCapabilityToolsIsSet { get; private init; }
 
     /// <summary>
-    /// Per-mode sub-agent prompt fragment. See <see cref="ChatMode.SubAgentPrompt"/>.
+    /// Per-mode sub-agent prompt fragment. See <see cref="ChatMode.SubAgentPrompt"/>. Omission preserves
+    /// the stored fragment on update; explicit JSON <c>null</c> clears it.
     /// </summary>
-    public string? SubAgentPrompt { get; init; }
+    public string? SubAgentPrompt
+    {
+        get => _subAgentPrompt;
+        init
+        {
+            _subAgentPrompt = value;
+            SubAgentPromptIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool SubAgentPromptIsSet { get; private init; }
 
     /// <summary>
     /// Fragment placement, <c>"prepend"</c> or <c>"append"</c> (null = append). See
     /// <see cref="ChatMode.SubAgentPromptPlacement"/>. An invalid value is refused with 400 at the
-    /// CRUD boundary so it can never be persisted.
+    /// CRUD boundary so it can never be persisted. Omission preserves the stored placement on update.
     /// </summary>
-    public string? SubAgentPromptPlacement { get; init; }
+    public string? SubAgentPromptPlacement
+    {
+        get => _subAgentPromptPlacement;
+        init
+        {
+            _subAgentPromptPlacement = value;
+            SubAgentPromptPlacementIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool SubAgentPromptPlacementIsSet { get; private init; }
 
     /// <summary>
     /// Tools guaranteed to every sub-agent in this mode. See
-    /// <see cref="ChatMode.SubAgentRequiredTools"/>. Null/empty = not enforced.
+    /// <see cref="ChatMode.SubAgentRequiredTools"/>. Omission preserves the stored selection on update;
+    /// explicit JSON <c>null</c> disables enforcement.
     /// </summary>
-    public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
+    public IReadOnlyList<string>? SubAgentRequiredTools
+    {
+        get => _subAgentRequiredTools;
+        init
+        {
+            _subAgentRequiredTools = value;
+            SubAgentRequiredToolsIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool SubAgentRequiredToolsIsSet { get; private init; }
+
+    /// <summary>Conversation-wide child reasoning effort. See <see cref="ChatMode.SubAgentReasoningEffort"/>.</summary>
+    public string? SubAgentReasoningEffort
+    {
+        get => _subAgentReasoningEffort;
+        init
+        {
+            _subAgentReasoningEffort = value;
+            SubAgentReasoningEffortIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool SubAgentReasoningEffortIsSet { get; private init; }
+
+    /// <summary>Canonical child-type routing map. See <see cref="ChatMode.SubAgentModelIntelligenceByType"/>.</summary>
+    public IReadOnlyDictionary<string, int>? SubAgentModelIntelligenceByType
+    {
+        get => _subAgentModelIntelligenceByType;
+        init
+        {
+            _subAgentModelIntelligenceByType = value;
+            SubAgentModelIntelligenceByTypeIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool SubAgentModelIntelligenceByTypeIsSet { get; private init; }
+
+    /// <summary>Fallback child tier. See <see cref="ChatMode.DefaultSubAgentModelIntelligence"/>.</summary>
+    public int? DefaultSubAgentModelIntelligence
+    {
+        get => _defaultSubAgentModelIntelligence;
+        init
+        {
+            _defaultSubAgentModelIntelligence = value;
+            DefaultSubAgentModelIntelligenceIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool DefaultSubAgentModelIntelligenceIsSet { get; private init; }
 }
 
 /// <summary>

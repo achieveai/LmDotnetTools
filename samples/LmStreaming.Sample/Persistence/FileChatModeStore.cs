@@ -75,14 +75,14 @@ public sealed class FileChatModeStore : IChatModeStore
                 Description = mode.Description,
                 SystemPrompt = mode.SystemPrompt,
                 EnabledTools = mode.EnabledTools,
-                // Both of these were absent from the DTO and so were dropped on every create/update:
-                // a mode could not keep its server-side built-ins (web_search), and had no way to
-                // record a sandbox/sub-agent/workflow selection at all.
                 EnabledBuiltInTools = mode.EnabledBuiltInTools,
                 EnabledCapabilityTools = mode.EnabledCapabilityTools,
                 SubAgentPrompt = mode.SubAgentPrompt,
                 SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
                 SubAgentRequiredTools = mode.SubAgentRequiredTools,
+                SubAgentReasoningEffort = mode.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligence,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -131,14 +131,31 @@ public sealed class FileChatModeStore : IChatModeStore
             var updatedMode = existing with
             {
                 Name = mode.Name,
-                Description = mode.Description,
+                Description = mode.DescriptionIsSet ? mode.Description : existing.Description,
                 SystemPrompt = mode.SystemPrompt,
-                EnabledTools = mode.EnabledTools,
-                EnabledBuiltInTools = mode.EnabledBuiltInTools,
-                EnabledCapabilityTools = mode.EnabledCapabilityTools,
-                SubAgentPrompt = mode.SubAgentPrompt,
-                SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
-                SubAgentRequiredTools = mode.SubAgentRequiredTools,
+                EnabledTools = mode.EnabledToolsIsSet ? mode.EnabledTools : existing.EnabledTools,
+                EnabledBuiltInTools = mode.EnabledBuiltInToolsIsSet
+                    ? mode.EnabledBuiltInTools
+                    : existing.EnabledBuiltInTools,
+                EnabledCapabilityTools = mode.EnabledCapabilityToolsIsSet
+                    ? mode.EnabledCapabilityTools
+                    : existing.EnabledCapabilityTools,
+                SubAgentPrompt = mode.SubAgentPromptIsSet ? mode.SubAgentPrompt : existing.SubAgentPrompt,
+                SubAgentPromptPlacement = mode.SubAgentPromptPlacementIsSet
+                    ? mode.SubAgentPromptPlacement
+                    : existing.SubAgentPromptPlacement,
+                SubAgentRequiredTools = mode.SubAgentRequiredToolsIsSet
+                    ? mode.SubAgentRequiredTools
+                    : existing.SubAgentRequiredTools,
+                SubAgentReasoningEffort = mode.SubAgentReasoningEffortIsSet
+                    ? mode.SubAgentReasoningEffort
+                    : existing.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByTypeIsSet
+                    ? mode.SubAgentModelIntelligenceByType
+                    : existing.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligenceIsSet
+                    ? mode.DefaultSubAgentModelIntelligence
+                    : existing.DefaultSubAgentModelIntelligence,
                 UpdatedAt = now,
             };
 
@@ -207,6 +224,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 // Carried across for the same reason as the capability selection above: a copy of a
                 // board-centric mode must keep guaranteeing the board tools to its sub-agents.
                 SubAgentRequiredTools = sourceMode.SubAgentRequiredTools,
+                SubAgentReasoningEffort = sourceMode.SubAgentReasoningEffort,
+                SubAgentModelIntelligenceByType = sourceMode.SubAgentModelIntelligenceByType,
+                DefaultSubAgentModelIntelligence = sourceMode.DefaultSubAgentModelIntelligence,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

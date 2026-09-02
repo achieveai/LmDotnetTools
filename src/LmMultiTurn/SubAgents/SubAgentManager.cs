@@ -38,6 +38,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <param name="EffectiveModelId">Concrete model selected after applying spawn, template, and parent precedence.</param>
 /// <param name="EffectiveModelIntelligence">Tier that selected the model, or null for non-tier selection.</param>
 /// <param name="ModelSelectionSource">Stable label identifying the winning selection input.</param>
+/// <param name="RequestedReasoningEffort">Normalized effort requested before provider capability shaping.</param>
+/// <param name="ShapedReasoningEffort">Effort placed on the provider request, or null when omitted.</param>
 public sealed record SubAgentSnapshot(
     string AgentId,
     string? Name,
@@ -49,14 +51,18 @@ public sealed record SubAgentSnapshot(
     DateTimeOffset? TerminalAtUtc = null,
     string? EffectiveModelId = null,
     int? EffectiveModelIntelligence = null,
-    string ModelSelectionSource = "unknown"
+    string ModelSelectionSource = "unknown",
+    string? RequestedReasoningEffort = null,
+    string? ShapedReasoningEffort = null
 );
 
-/// <summary>Final model-routing decision captured when a sub-agent provider is built.</summary>
+/// <summary>Final model and reasoning-routing decision captured when a sub-agent provider is built.</summary>
 public sealed record SubAgentModelRouting(
     string? EffectiveModelId,
     int? EffectiveModelIntelligence,
-    string SelectionSource
+    string SelectionSource,
+    string? RequestedReasoningEffort = null,
+    string? ShapedReasoningEffort = null
 );
 
 /// <summary>
@@ -470,6 +476,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver =>
         _options.SpawnModelSelectionResolver;
 
+    /// <summary>The live template catalog used to canonicalize a requested sub-agent type.</summary>
+    internal IReadOnlyDictionary<string, SubAgentTemplate> Templates => _source.Templates;
+
+    /// <summary>Host authority for model selection keyed by a canonical sub-agent type.</summary>
+    internal Func<string, SubAgentSpawnModelSelection?>? SpawnTypeModelSelectionResolver =>
+        _options.SpawnTypeModelSelectionResolver;
+
     /// <summary>
     /// Spawn a new sub-agent from a named template.
     /// When <paramref name="runInBackground"/> is false (default), blocks until the
@@ -489,7 +502,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         int? modelIntelligence = null,
         string? spawningToolCallId = null,
         string? role = null,
-        string? description = null
+        string? description = null,
+        string? modelSelectionSource = null
     )
     {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
@@ -577,6 +591,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 addTools,
                 removeTools,
                 modelIntelligence,
+                modelSelectionSource,
                 lineage,
                 runInBackground,
                 gateGuard,
@@ -615,6 +630,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             AddTools = addTools,
             RemoveTools = removeTools,
             ModelIntelligence = modelIntelligence,
+            ModelSelectionSource = modelSelectionSource,
             Lineage = lineage,
             RunInBackground = runInBackground,
             CallerCancellation = runInBackground ? CancellationToken.None : ct,
@@ -685,6 +701,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? addTools,
         string[]? removeTools,
         int? modelIntelligence,
+        string? modelSelectionSource,
         AgentLineage lineage,
         bool runInBackground,
         GateReleaseGuard gateGuard,
@@ -708,6 +725,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 addTools,
                 removeTools,
                 modelIntelligence,
+                modelSelectionSource,
                 lineage,
                 task,
                 effectiveName
@@ -723,9 +741,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Template = template,
                 ModelOverride = model,
                 ModelIntelligence = modelIntelligence,
+                AuthoritativeModelSelectionSource = modelSelectionSource,
                 EffectiveModelId = routing.EffectiveModelId,
                 EffectiveModelIntelligence = routing.EffectiveModelIntelligence,
                 ModelSelectionSource = routing.SelectionSource,
+                RequestedReasoningEffort = routing.RequestedReasoningEffort,
+                ShapedReasoningEffort = routing.ShapedReasoningEffort,
                 AddTools = addTools,
                 RemoveTools = removeTools,
                 Store = store,
@@ -739,7 +760,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     + "requested model {RequestedModel}, requested tier {RequestedModelIntelligence}, "
                     + "template model {TemplateModel}, template tier {TemplateModelIntelligence}, "
                     + "effective model {EffectiveModelId}, effective tier {EffectiveModelIntelligence}, "
-                    + "source {RoutingSelectionSource}",
+                    + "source {RoutingSelectionSource}, requested effort {RequestedReasoningEffort}, "
+                    + "shaped effort {ShapedReasoningEffort}",
                 agentId,
                 effectiveName,
                 templateName,
@@ -749,7 +771,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template.ModelIntelligence,
                 routing.EffectiveModelId,
                 routing.EffectiveModelIntelligence,
-                routing.SelectionSource
+                routing.SelectionSource,
+                routing.RequestedReasoningEffort,
+                routing.ShapedReasoningEffort
             );
 
             if (TestBeforeAgentRegistrationAsync is { } beforeRegistration)
@@ -914,6 +938,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     queued.AddTools,
                     queued.RemoveTools,
                     queued.ModelIntelligence,
+                    queued.ModelSelectionSource,
                     queued.Lineage,
                     queued.RunInBackground,
                     gateGuard,
@@ -1590,6 +1615,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         state.AddTools,
                         state.RemoveTools,
                         state.ModelIntelligence,
+                        state.AuthoritativeModelSelectionSource,
                         // The rebuilt agent is the same sub-agent, so it keeps the lineage captured
                         // when it was first spawned rather than acquiring a new one from whatever run
                         // happens to be in flight now.
@@ -1676,6 +1702,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 state.EffectiveModelId = replacementRouting.EffectiveModelId;
                 state.EffectiveModelIntelligence = replacementRouting.EffectiveModelIntelligence;
                 state.ModelSelectionSource = replacementRouting.SelectionSource;
+                state.RequestedReasoningEffort = replacementRouting.RequestedReasoningEffort;
+                state.ShapedReasoningEffort = replacementRouting.ShapedReasoningEffort;
 
                 // Presentation-only: atomically install the replacement as the live Agent AND wake any
                 // external observer whose subscription was bound to the now-disposed previous instance so
@@ -1825,7 +1853,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                     TerminalAtUtc: null,
                     EffectiveModelId: null,
                     EffectiveModelIntelligence: null,
-                    ModelSelectionSource: "pending"
+                    ModelSelectionSource: "pending",
+                    RequestedReasoningEffort: null,
+                    ShapedReasoningEffort: null
                 )
             );
         }
@@ -1843,7 +1873,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                     TerminalAtUtc: state.TerminalAtUtc,
                     EffectiveModelId: state.EffectiveModelId,
                     EffectiveModelIntelligence: state.EffectiveModelIntelligence,
-                    ModelSelectionSource: state.ModelSelectionSource
+                    ModelSelectionSource: state.ModelSelectionSource,
+                    RequestedReasoningEffort: state.RequestedReasoningEffort,
+                    ShapedReasoningEffort: state.ShapedReasoningEffort
                 )
             );
         }
@@ -2674,6 +2706,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         public string[]? AddTools { get; init; }
         public string[]? RemoveTools { get; init; }
         public int? ModelIntelligence { get; init; }
+        public string? ModelSelectionSource { get; init; }
         public required AgentLineage Lineage { get; init; }
         public CancellationToken CallerCancellation { get; init; }
 
@@ -2689,17 +2722,33 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? modelOverride,
         int? modelIntelligence,
         string? tierResolvedModel,
-        string? effectiveModelId
+        string? effectiveModelId,
+        ReasoningEffort? requestedReasoningEffort = null,
+        string? shapedReasoningEffort = null,
+        string? modelSelectionSource = null
     )
     {
+        var requestedEffort = requestedReasoningEffort?.ToString().ToLowerInvariant();
         if (!string.IsNullOrWhiteSpace(modelOverride))
         {
-            return new SubAgentModelRouting(effectiveModelId, null, "spawn-model");
+            return new SubAgentModelRouting(
+                effectiveModelId,
+                null,
+                modelSelectionSource ?? "spawn-model",
+                requestedEffort,
+                shapedReasoningEffort
+            );
         }
 
         if (modelIntelligence is { } spawnTier && tierResolvedModel is not null)
         {
-            return new SubAgentModelRouting(effectiveModelId, spawnTier, "spawn-tier");
+            return new SubAgentModelRouting(
+                effectiveModelId,
+                spawnTier,
+                modelSelectionSource ?? "spawn-tier",
+                requestedEffort,
+                shapedReasoningEffort
+            );
         }
 
         // The operator's conversation-wide default, ABOVE the template's own frontmatter. See
@@ -2710,20 +2759,38 @@ public sealed class SubAgentManager : IAsyncDisposable
         // in the record — which is exactly how this knob stayed inert without anyone noticing (#529).
         if (!string.IsNullOrWhiteSpace(_options.DefaultSubAgentModelId))
         {
-            return new SubAgentModelRouting(effectiveModelId, null, "conversation-default");
+            return new SubAgentModelRouting(
+                effectiveModelId,
+                null,
+                "conversation-default",
+                requestedEffort,
+                shapedReasoningEffort
+            );
         }
 
         if (template.IsModelExplicitlySelected)
         {
-            return new SubAgentModelRouting(effectiveModelId, null, "template-model");
+            return new SubAgentModelRouting(
+                effectiveModelId,
+                null,
+                "template-model",
+                requestedEffort,
+                shapedReasoningEffort
+            );
         }
 
         if (template.IsModelTierResolved)
         {
-            return new SubAgentModelRouting(effectiveModelId, template.ModelIntelligence, "template-tier");
+            return new SubAgentModelRouting(
+                effectiveModelId,
+                template.ModelIntelligence,
+                "template-tier",
+                requestedEffort,
+                shapedReasoningEffort
+            );
         }
 
-        return new SubAgentModelRouting(effectiveModelId, null, "parent");
+        return new SubAgentModelRouting(effectiveModelId, null, "parent", requestedEffort, shapedReasoningEffort);
     }
 
     /// <summary>
@@ -2741,6 +2808,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? addTools,
         string[]? removeTools,
         int? modelIntelligence,
+        string? modelSelectionSource,
         AgentLineage lineage,
         string? task = null,
         string? spawnName = null
@@ -2827,6 +2895,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         var effectiveModel = !string.IsNullOrWhiteSpace(modelOverride)
             ? modelOverride
             : tierResolvedModel ?? conversationDefaultModel;
+        var isModelTierResolved = template.IsModelTierResolved || tierResolvedModel is not null;
+        // A template-authored effort remains the most specific choice. The conversation floor is
+        // orthogonal to model routing and therefore survives spawn/template model and tier selection;
+        // the characteristics factory capability-shapes it for whichever model won. Only when neither
+        // exists do we apply the older parent-inheritance rule, which is intentionally suppressed by a
+        // task-specific model choice (see SubAgentOptions.InheritedEffort).
+        var requestedReasoningEffort =
+            template.Effort
+            ?? _options.ConversationEffortFloor
+            ?? (
+                !string.IsNullOrWhiteSpace(modelOverride) || template.IsModelExplicitlySelected || isModelTierResolved
+                    ? null
+                    : _options.InheritedEffort
+            );
 
         if (TestAgentFactoryOverride != null)
         {
@@ -2844,7 +2926,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                         effectiveModel,
                         _parentModelId,
                         _parentMaxToken
-                    )?.ModelId
+                    )?.ModelId,
+                    requestedReasoningEffort,
+                    modelSelectionSource: modelSelectionSource
                 )
             );
         }
@@ -2859,6 +2943,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         IStreamingAgent providerAgent;
         IStreamingAgent? ownedProviderAgent = null;
         IConversationStore? store = null;
+        string? shapedReasoningEffort = null;
 
         try
         {
@@ -2877,31 +2962,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // A per-spawn tier that resolved to a concrete model counts as a tier-resolved model for
                 // this spawn (in addition to a template that was itself tier-authored), so the
                 // characteristics gate builds a real provider for it rather than handing back the parent.
-                var isModelTierResolved = template.IsModelTierResolved || tierResolvedModel is not null;
-                // Inherit the parent's reasoning floor ONLY when this sub-agent made no model choice of its
-                // own (parent-model reuse). A template that lowered its Effort keeps that value; one that
-                // pins or tier-resolves a model is left un-nudged — "less thinking or a different model"
-                // overrides the inherited floor (see SubAgentOptions.InheritedEffort).
-                //
-                // A CONVERSATION DEFAULT is deliberately excluded from that suppression, which is why this
-                // cannot reuse modelExplicitlySelected above. The floor is dropped for a per-spawn or
-                // per-template choice because something made a deliberate, task-specific decision to run
-                // this child differently. An operator setting one model for every sub-agent in the
-                // conversation has expressed no such per-task intent — they changed WHICH model reviews,
-                // not how hard it thinks — and InheritedEffort is the abstract, re-shaped-per-child-model
-                // knob (unlike InheritedReasoning), so carrying it across to a different model is safe.
-                // Suppressing it here would quietly trade a model upgrade for an effort downgrade.
-                var effectiveEffort =
-                    template.Effort
-                    ?? (
-                        !string.IsNullOrWhiteSpace(modelOverride)
-                        || template.IsModelExplicitlySelected
-                        || isModelTierResolved
-                            ? null
-                            : _options.InheritedEffort
-                    );
                 var provider = characteristicsFactory(
-                    new SubAgentCharacteristics(modelId, effectiveEffort)
+                    new SubAgentCharacteristics(modelId, requestedReasoningEffort)
                     {
                         IsModelExplicitlySelected = modelExplicitlySelected,
                         IsModelTierResolved = isModelTierResolved,
@@ -2909,6 +2971,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 );
                 providerAgent = provider.Agent;
                 ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
+                shapedReasoningEffort = provider.ShapedEffort;
 
                 if (provider.UseParentModel && defaultOptions is not null)
                 {
@@ -2948,32 +3011,67 @@ public sealed class SubAgentManager : IAsyncDisposable
                     && !string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
                         ? defaultOptions.ModelId
                     : null;
-                if (!string.IsNullOrWhiteSpace(plainProviderModel) && _options.TierAgentFactory is { } tierAgentFactory)
+                if (_options.PlainPathCharacteristicsAgentFactory is { } plainCharacteristicsFactory)
                 {
-                    providerAgent = tierAgentFactory(plainProviderModel);
-                    ownedProviderAgent = providerAgent;
+                    var provider = plainCharacteristicsFactory(
+                        new SubAgentCharacteristics(defaultOptions?.ModelId, requestedReasoningEffort)
+                        {
+                            IsModelExplicitlySelected =
+                                !string.IsNullOrWhiteSpace(modelOverride)
+                                || conversationDefaultModel is not null
+                                || template.IsModelExplicitlySelected,
+                            IsModelTierResolved = isModelTierResolved,
+                        }
+                    );
+                    providerAgent = provider.Agent;
+                    ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
+                    shapedReasoningEffort = provider.ShapedEffort;
+
+                    if (provider.UseParentModel && defaultOptions is not null)
+                    {
+                        defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
+                    }
+
+                    if (provider.ExtraProperties.Count > 0)
+                    {
+                        var requestExtraProperties =
+                            defaultOptions?.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
+                        defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                        {
+                            ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
+                        };
+                    }
                 }
                 else
                 {
-                    providerAgent = template.AgentFactory();
-                }
-
-                // A plain-path delegate (a template with no characteristics factory — e.g. a WorkflowAgent
-                // controller's transparent delegate) inherits the parent's PRE-SHAPED reasoning so it thinks
-                // like the launching conversation. Applied only when the delegate reuses the parent model (no
-                // explicit, per-spawn-tier, OR template-tier model — a different model may use a different
-                // transport than the shaped metadata targets) and carries no reasoning of its own, so a template
-                // that set ExtraProperties still wins.
-                if (
-                    _options.InheritedReasoning is { Count: > 0 } inheritedReasoning
-                    && string.IsNullOrWhiteSpace(plainProviderModel)
-                    && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0)
-                )
-                {
-                    defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                    if (
+                        !string.IsNullOrWhiteSpace(plainProviderModel)
+                        && _options.TierAgentFactory is { } tierAgentFactory
+                    )
                     {
-                        ExtraProperties = inheritedReasoning,
-                    };
+                        providerAgent = tierAgentFactory(plainProviderModel);
+                        ownedProviderAgent = providerAgent;
+                    }
+                    else
+                    {
+                        providerAgent = template.AgentFactory();
+                    }
+
+                    // Legacy plain-path hosts can still seed pre-shaped reasoning for a delegate that reuses
+                    // its parent's model. A selected model may use a different transport, so this fallback is
+                    // intentionally skipped there; hosts that need per-model shaping use the characteristics
+                    // factory above.
+                    if (
+                        _options.InheritedReasoning is { Count: > 0 } inheritedReasoning
+                        && string.IsNullOrWhiteSpace(plainProviderModel)
+                        && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0)
+                    )
+                    {
+                        defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                        {
+                            ExtraProperties = inheritedReasoning,
+                        };
+                    }
                 }
             }
 
@@ -3122,7 +3220,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Capture the FINAL resolved model and the winning selection input together. This is the
                 // authoritative presentation record; callers must not reconstruct routing from the LLM's raw
                 // Agent arguments because workflow authority may have replaced placeholder values.
-                BuildRouting(template, modelOverride, modelIntelligence, tierResolvedModel, defaultOptions?.ModelId)
+                BuildRouting(
+                    template,
+                    modelOverride,
+                    modelIntelligence,
+                    tierResolvedModel,
+                    defaultOptions?.ModelId,
+                    requestedReasoningEffort,
+                    shapedReasoningEffort,
+                    modelSelectionSource
+                )
             );
         }
         catch

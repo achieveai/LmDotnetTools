@@ -90,7 +90,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         OnJson(
             HttpMethod.Get,
             "conversations/capabilities",
-            "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true}"
+            "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true}"
         );
 
     /// <summary>Number of requests observed whose URL contains <paramref name="urlContains"/>.</summary>

@@ -743,6 +743,22 @@ public class SubAgentToolProvider : IFunctionProvider
         return sb.ToString();
     }
 
+    private SubAgentSpawnModelSelection? ResolveTypeModelSelection(
+        Func<string, SubAgentSpawnModelSelection?> resolver,
+        string requestedType
+    )
+    {
+        if (SubAgentManager.TryResolveTemplateName(requestedType, _manager.Templates, out var resolvedType, out _))
+        {
+            return resolver(resolvedType);
+        }
+
+        // Let the manager produce the canonical unknown/ambiguous-type error. Do not apply a fallback
+        // policy to a type that will never spawn; that would make routing telemetry claim a decision
+        // for an invalid request.
+        return null;
+    }
+
     private async Task<ToolHandlerResult> HandleAgentToolAsync(
         string argsJson,
         ToolCallContext context,
@@ -772,7 +788,13 @@ public class SubAgentToolProvider : IFunctionProvider
         var name = GetOptionalString(root, "name");
         var model = GetOptionalString(root, "model");
         var modelIntelligence = GetOptionalInt(root, "modelIntelligence");
-        if (_manager.SpawnModelSelectionResolver?.Invoke(name) is { } authoritativeSelection)
+        var authoritativeSelection =
+            (
+                _manager.SpawnTypeModelSelectionResolver is { } typeResolver
+                    ? ResolveTypeModelSelection(typeResolver, subagentType)
+                    : null
+            ) ?? _manager.SpawnModelSelectionResolver?.Invoke(name);
+        if (authoritativeSelection is not null)
         {
             model = authoritativeSelection.Model;
             modelIntelligence = authoritativeSelection.ModelIntelligence;
@@ -814,7 +836,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 // subscriber sees a sub-agent appear with a parent run but no reason.
                 context.ToolCallId,
                 role,
-                description
+                description,
+                modelSelectionSource: authoritativeSelection?.SelectionSource
             );
 
             return ToolHandlerResult.FromText(result);

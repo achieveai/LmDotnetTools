@@ -1328,6 +1328,13 @@ try
                         "false",
                         StringComparison.OrdinalIgnoreCase
                     );
+                // Deterministic mock-workflow testing: expose the workflow tool family for scripted providers
+                // even in a mode that did not select it. Resolve this before the sub-agent catalog gate below,
+                // because workflow delegates need that catalog's type routing and effort policy too.
+                if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
+                {
+                    workspaceWorkflowEnabled = true;
+                }
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -1520,14 +1527,35 @@ try
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
 
-                    // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
-                    // testable helper so the per-provider wiring is regression-guarded; see
-                    // ProgramReasoningExtraPropertiesTests. Discovered Copilot models map by transport,
-                    // and adaptive-thinking models opt out of the classic thinking budget request.
-                    var extraProperties = BuildReasoningExtraProperties(
+                    // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
+                    // effort is read from durable conversation metadata here, at the request-options build
+                    // boundary, so it survives pool eviction and host restart. Null preserves the pre-existing
+                    // provider default shape; empty explicitly omits effort; non-empty values are capability-
+                    // shaped for the discovered model.
+                    var requestedRootEffort = ConversationRootReasoningEffort
+                        .ReadAsync(conversationStore, threadId)
+                        .GetAwaiter()
+                        .GetResult();
+                    var rootReasoningLogger = loggerFactory.CreateLogger("LmStreaming.Sample.RootReasoning");
+                    var extraProperties = BuildConversationReasoningExtraProperties(
+                        providerRegistry,
+                        isCopilotBackedModel ? copilotModelInfo.Id : normalizedProviderId,
                         normalizedProviderId,
-                        isCopilotBackedModel ? copilotModelInfo.Transport : null,
-                        isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking
+                        requestedRootEffort,
+                        onUnsupportedEffort: effort =>
+                            rootReasoningLogger.LogWarning(
+                                "Root reasoning effort {RequestedReasoningEffort} cannot be capability-shaped for "
+                                    + "provider {ProviderId}; preserving the provider's default reasoning shape",
+                                effort,
+                                normalizedProviderId
+                            )
+                    );
+                    rootReasoningLogger.LogInformation(
+                        "Root reasoning configuration for thread {ThreadId}: requested effort "
+                            + "{RequestedReasoningEffort}, shaped effort {ShapedReasoningEffort}",
+                        threadId,
+                        requestedRootEffort,
+                        ReadShapedReasoningEffort(extraProperties)
                     );
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
@@ -1575,27 +1603,32 @@ try
                     // list) resolves to ModeCapabilities.LegacyDefaults, whose SubAgents is true, so
                     // every mode that predates capability selection keeps the Agent tool it has
                     // always had.
-                    var subAgentOptions = !caps.SubAgents
-                        ? null
-                        : BuildSubAgentOptionsAsync(
-                                isTestMode,
-                                sp.GetRequiredService<ITestAgentBuilder>(),
-                                loggerFactory,
-                                subAgentFactory,
-                                characteristicsAgentFactory,
-                                sandboxSession,
-                                sp.GetRequiredService<WorkspaceSubAgentLoader>(),
-                                sp.GetRequiredService<MarketplaceSubAgentLoader>(),
-                                sp.GetRequiredService<IWorkspaceStore>(),
-                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"),
-                                // The profile carries the mode's sub-agent prompt fragment (#610);
-                                // `mode` and `effectiveMode` hold identical fragment fields (the
-                                // `with` clauses above only rewrite SystemPrompt), so pass the
-                                // unaugmented profile.
-                                mode
-                            )
-                            .GetAwaiter()
-                            .GetResult();
+                    // Workflow controllers spawn delegates through the same catalog and mode policy even when
+                    // the root mode deliberately hides the ordinary Agent tool family. Build the options for
+                    // either consumer; ApplySubAgentToolNarrowing below still keeps the root surface closed when
+                    // caps.SubAgents is false.
+                    var subAgentOptions =
+                        !caps.SubAgents && !workspaceWorkflowEnabled
+                            ? null
+                            : BuildSubAgentOptionsAsync(
+                                    isTestMode,
+                                    sp.GetRequiredService<ITestAgentBuilder>(),
+                                    loggerFactory,
+                                    subAgentFactory,
+                                    characteristicsAgentFactory,
+                                    sandboxSession,
+                                    sp.GetRequiredService<WorkspaceSubAgentLoader>(),
+                                    sp.GetRequiredService<MarketplaceSubAgentLoader>(),
+                                    sp.GetRequiredService<IWorkspaceStore>(),
+                                    loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"),
+                                    // The profile carries the mode's sub-agent prompt fragment (#610);
+                                    // `mode` and `effectiveMode` hold identical fragment fields (the
+                                    // `with` clauses above only rewrite SystemPrompt), so pass the
+                                    // unaugmented profile.
+                                    mode
+                                )
+                                .GetAwaiter()
+                                .GetResult();
 
                     if (subAgentOptions is not null)
                     {
@@ -1658,8 +1691,8 @@ try
                     // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
                     // overrides the floor (SubAgentManager). The parent "can think" when it has classic
                     // reasoning metadata OR is an adaptive Copilot model (which reasons via output_config.effort
-                    // and therefore carries no classic extraProperties). The plain-path counterpart
-                    // (InheritedReasoning) is seeded on the controller's own options, not here.
+                    // and therefore carries no classic extraProperties). Workflow plain-path delegates use the
+                    // controller's characteristics factory, which shapes the final selected model separately.
                     var parentCanThink =
                         !extraProperties.IsEmpty || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
                     if (subAgentOptions is not null && parentCanThink)
@@ -1718,17 +1751,6 @@ try
                         NotifyWaitStore = isTestMode ? notifyWaitStore : null,
                         ThreadId = isTestMode ? threadId : null,
                     };
-
-                    // Deterministic mock-workflow testing: enable the workflow tool family for the SCRIPTED
-                    // mock providers (test / test-anthropic) in default mode WITHOUT a sandbox. The workflow
-                    // wiring below is sandbox-independent (it uses subAgentFactory / subAgentOptions / the
-                    // late-bound agent — never sandboxSession), and delegates inherit the conversation's mock
-                    // tools via the transparency snapshot. Scoped strictly to test providers, so a real-provider
-                    // default conversation never gets an unsandboxed WorkflowManager.
-                    if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
-                    {
-                        workspaceWorkflowEnabled = true;
-                    }
 
                     // Wire the StartWorkflowAgent tool family onto the conversation registry (Workspace Agent
                     // mode). Declared before the loop ctor so the launch tools are registered before the
@@ -1789,16 +1811,27 @@ try
                                     .. WorkflowToolProvider.AllToolNames,
                                     .. StartWorkflowToolProvider.ToolNames,
                                 ],
-                                // Controller delegates take the PLAIN path (CreateWorkflowControllerTemplates
-                                // sets CharacteristicsAgentFactory = null) and run on the controller's own model,
-                                // so they inherit its already-transport-shaped reasoning (Option A: High floor).
-                                // Keyed off `providerId` — the run's provider — so a preferred-provider run's
-                                // delegates think on that provider's transport. For Copilot, providerId == model id.
-                                InheritedReasoning = BuildControllerReasoningExtraProperties(
-                                    providerRegistry,
-                                    providerId,
-                                    providerId
-                                ),
+                                // Controller delegates take the plain template path, but their final model can
+                                // still differ by canonical type policy or workflow-unit tier. Shape reasoning
+                                // only after that model wins, using its own transport rather than a dictionary
+                                // pre-shaped for the controller.
+                                PlainPathCharacteristicsAgentFactory = characteristics =>
+                                {
+                                    var selectedModel = string.IsNullOrWhiteSpace(characteristics.ModelId)
+                                        ? providerId
+                                        : characteristics.ModelId;
+                                    var reasoning = BuildControllerReasoningExtraProperties(
+                                        providerRegistry,
+                                        selectedModel,
+                                        selectedModel,
+                                        characteristics.Effort ?? ReasoningEffort.High
+                                    );
+                                    return new SubAgentProviderAgent(agentFactory(selectedModel), reasoning)
+                                    {
+                                        OwnsAgent = true,
+                                        ShapedEffort = ReadShapedReasoningEffort(reasoning),
+                                    };
+                                },
                                 // Route a delegate's modelIntelligence tier (forwarded by the controller from the
                                 // composed unit) to a concrete model via the same host tier ladder. Controller
                                 // delegates take the PLAIN path, so a tier that resolves to a CROSS-transport model
@@ -1828,7 +1861,12 @@ try
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
                             // nested workflow tab survives a page reload (live streaming works regardless).
-                            return ApplyDefaultSubAgentStore(outputTokenPolicy.ApplyDelegated(opts), conversationStore);
+                            return ApplyDefaultSubAgentStore(
+                                outputTokenPolicy.ApplyDelegated(
+                                    ApplyConversationSubAgentPolicyToController(opts, subAgentOptions)
+                                ),
+                                conversationStore
+                            );
                         }
 
                         var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
@@ -2668,6 +2706,83 @@ public partial class Program
     }
 
     /// <summary>
+    /// Builds the root conversation's reasoning metadata from its persisted optional effort. A null request
+    /// preserves the host's existing provider-specific reasoning shape. Empty explicitly omits the request.
+    /// Recognized non-empty values are capability-shaped for discovered Copilot models. Unknown persisted
+    /// values and providers without an advertised effort surface preserve their provider-default shape and
+    /// invoke <paramref name="onUnsupportedEffort"/> rather than silently weakening reasoning.
+    /// </summary>
+    internal static ImmutableDictionary<string, object?> BuildConversationReasoningExtraProperties(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        string? requestedEffort,
+        Action<string>? onUnsupportedEffort = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(providerRegistry);
+
+        if (requestedEffort is null)
+        {
+            if (
+                !string.IsNullOrWhiteSpace(copilotModelKey)
+                && providerRegistry.TryGetCopilotModel(copilotModelKey, out var model)
+            )
+            {
+                return BuildReasoningExtraProperties(
+                    fallbackProviderId,
+                    model.Transport,
+                    model.SupportsAdaptiveThinking
+                );
+            }
+
+            return BuildReasoningExtraProperties(fallbackProviderId);
+        }
+
+        if (requestedEffort.Length == 0)
+        {
+            return ImmutableDictionary<string, object?>.Empty;
+        }
+
+        if (!ConversationRootReasoningEffort.TryParse(requestedEffort, out var parsedEffort))
+        {
+            onUnsupportedEffort?.Invoke(requestedEffort);
+            return BuildConversationReasoningExtraProperties(
+                providerRegistry,
+                copilotModelKey,
+                fallbackProviderId,
+                requestedEffort: null
+            );
+        }
+
+        if (!string.IsNullOrWhiteSpace(copilotModelKey) && providerRegistry.TryGetCopilotModel(copilotModelKey, out _))
+        {
+            return BuildControllerReasoningExtraProperties(
+                providerRegistry,
+                copilotModelKey,
+                fallbackProviderId,
+                parsedEffort
+            );
+        }
+
+        onUnsupportedEffort?.Invoke(requestedEffort);
+        return BuildReasoningExtraProperties(fallbackProviderId);
+    }
+
+    /// <summary>
+    /// Reports the exact provider capability-shaped effort represented by root reasoning metadata.
+    /// The result is a safe configuration token, not reasoning content.
+    /// </summary>
+    internal static string? ReadShapedReasoningEffort(ImmutableDictionary<string, object?> extraProperties) =>
+        extraProperties.TryGetValue("Reasoning", out var reasoning)
+        && reasoning is ResponseReasoningOptions { Effort: { } responsesEffort }
+            ? responsesEffort
+        : extraProperties.TryGetValue("OutputConfig", out var outputConfig)
+        && outputConfig is AnthropicOutputConfig { Effort: { } anthropicEffort }
+            ? anthropicEffort
+        : null;
+
+    /// <summary>
     ///     Builds the reasoning metadata for a StartWorkflowAgent CONTROLLER loop (and its plain-path
     ///     delegates), shaped for the controller's own model so the orchestrator thinks at the parent's
     ///     level instead of running un-nudged (the observed "acts as dumb as it acts" starvation). The
@@ -3295,6 +3410,26 @@ public partial class Program
             : null;
 
     /// <summary>
+    /// Carries conversation-wide review policy into a workflow controller's delegate options. The
+    /// controller keeps ownership of workflow-local name routing, metadata, and gates; only the
+    /// conversation's type-based routing authority and reasoning floor cross this boundary.
+    /// </summary>
+    internal static SubAgentOptions ApplyConversationSubAgentPolicyToController(
+        SubAgentOptions controllerOptions,
+        SubAgentOptions? conversationOptions
+    )
+    {
+        ArgumentNullException.ThrowIfNull(controllerOptions);
+        return conversationOptions is null
+            ? controllerOptions
+            : controllerOptions with
+            {
+                ConversationEffortFloor = conversationOptions.ConversationEffortFloor,
+                SpawnTypeModelSelectionResolver = conversationOptions.SpawnTypeModelSelectionResolver,
+            };
+    }
+
+    /// <summary>
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
     /// </summary>
@@ -3502,7 +3637,11 @@ public partial class Program
         if (sandboxSession is null)
         {
             return ApplyCharacteristicsAgentFactory(
-                ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode, logger),
+                ApplyModeSubAgentPolicy(
+                    ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode, logger),
+                    mode,
+                    logger
+                ),
                 characteristicsAgentFactory
             );
         }
@@ -3523,13 +3662,68 @@ public partial class Program
         // Folded AFTER enrichment so the fragment lands on every tier uniformly — built-in,
         // workspace-discovered, and marketplace templates alike.
         return ApplyCharacteristicsAgentFactory(
-            ApplyModeRequiredTools(
-                ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
+            ApplyModeSubAgentPolicy(
+                ApplyModeRequiredTools(
+                    ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
+                    mode,
+                    logger
+                ),
                 mode,
                 logger
             ),
             characteristicsAgentFactory
         );
+    }
+
+    /// <summary>
+    /// Applies a mode's conversation-wide child reasoning floor and authoritative
+    /// <c>subagent_type</c>-to-tier policy. Null fields leave the options untouched. The type map
+    /// and fallback are captured into immutable snapshots so later user-mode updates affect only
+    /// newly built conversations.
+    /// </summary>
+    internal static SubAgentOptions ApplyModeSubAgentPolicy(
+        SubAgentOptions options,
+        AgentProfile mode,
+        Microsoft.Extensions.Logging.ILogger? logger = null
+    )
+    {
+        var applied = options;
+        if (!string.IsNullOrWhiteSpace(mode.SubAgentReasoningEffort))
+        {
+            if (ConversationRootReasoningEffort.TryParse(mode.SubAgentReasoningEffort, out var effort))
+            {
+                applied = applied with { ConversationEffortFloor = effort };
+            }
+            else
+            {
+                logger?.LogWarning(
+                    "Mode {ModeId} has unsupported SubAgentReasoningEffort {ReasoningEffort}; the child effort floor is omitted",
+                    mode.Id,
+                    mode.SubAgentReasoningEffort
+                );
+            }
+        }
+
+        var routing = mode.SubAgentModelIntelligenceByType;
+        var fallbackTier = mode.DefaultSubAgentModelIntelligence;
+        if (routing is not null || fallbackTier is not null)
+        {
+            var snapshot = routing is null
+                ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, int>(routing, StringComparer.OrdinalIgnoreCase);
+            applied = applied with
+            {
+                SpawnTypeModelSelectionResolver = subagentType =>
+                    snapshot.TryGetValue(subagentType, out var tier)
+                        ? new SubAgentSpawnModelSelection(null, tier, "type-policy")
+                    : fallbackTier is { } fallback
+                    && subagentType.StartsWith("code-reviewer:", StringComparison.OrdinalIgnoreCase)
+                        ? new SubAgentSpawnModelSelection(null, fallback, "type-policy-default")
+                    : null,
+            };
+        }
+
+        return applied;
     }
 
     /// <summary>
@@ -4272,12 +4466,10 @@ public partial class Program
     ///     <see cref="SubAgentOptions.NonInheritedToolNames" /> - that one governs the children.
     /// </remarks>
     internal static SubAgentOptions? ApplySubAgentToolNarrowing(SubAgentOptions? options, ModeCapabilities caps) =>
-        options is not null && caps.SubAgentToolAllowList is { } allowList
-            ? options with
-            {
-                ExposedToolNames = allowList,
-            }
-            : options;
+        options is null ? null
+        : !caps.SubAgents ? options with { ExposedToolNames = new HashSet<string>(StringComparer.Ordinal) }
+        : caps.SubAgentToolAllowList is { } allowList ? options with { ExposedToolNames = allowList }
+        : options;
 
     /// <summary>
     ///     Builds the system-prompt suffix that tells a sandbox-backed agent where its workspace is and

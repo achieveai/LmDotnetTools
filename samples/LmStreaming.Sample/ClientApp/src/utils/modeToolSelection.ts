@@ -14,8 +14,8 @@ import {
  * shows one list. These helpers are the only place that translation happens, so the rules are
  * stated once and can be tested without mounting a component:
  *
- * - `enabledTools` - unqualified, non-built-in tools. `undefined` means "all", including tools
- *   added to the catalog later.
+ * - `enabledTools` - unqualified, non-built-in tools. Omission on update preserves the mode's stored
+ *   allowlist; explicit `null` means "all", including tools added to the catalog later.
  * - `enabledBuiltInTools` - server-side built-ins. `undefined` falls back to `enabledTools`, which
  *   is why the editor always writes it explicitly once the user has saved.
  * - `enabledCapabilityTools` - qualified `group:tool` ids. `undefined` means "the legacy defaults"
@@ -145,7 +145,7 @@ export function selectionFromMode(
 
 /** The three persisted fields implied by a flat selection. */
 export interface ModeToolFields {
-  enabledTools?: string[];
+  enabledTools?: string[] | null;
   enabledBuiltInTools?: string[];
   enabledCapabilityTools?: string[];
 }
@@ -153,11 +153,12 @@ export interface ModeToolFields {
 /**
  * Projects the editor's flat selection back onto the three persisted fields.
  *
- * `enabledTools` is left undefined when every unqualified non-built-in tool is ticked, preserving
- * the "all tools, including ones added later" meaning that a full explicit list would quietly lose.
- * The other two are written explicitly: `enabledBuiltInTools` because leaving it undefined would
- * re-enable the enabledTools fallback, and `enabledCapabilityTools` because undefined there means
- * "legacy defaults" rather than "what the user just chose".
+ * `enabledTools` is written as an explicit `null` when every unqualified non-built-in tool is
+ * ticked, so the server's presence-aware update contract reads it as "all tools, including ones
+ * added later" rather than "leave the stored allowlist alone" — the meaning an omitted key would
+ * have on update. The other two are written explicitly: `enabledBuiltInTools` because leaving it
+ * undefined would re-enable the enabledTools fallback, and `enabledCapabilityTools` because
+ * undefined there means "legacy defaults" rather than "what the user just chose".
  *
  * `current` is the mode being edited, and it is what makes a selection the catalog could not show
  * survive a save. Two shapes of that:
@@ -223,7 +224,7 @@ export function selectionToModeFields(
       unqualifiedCount === 0
         ? current?.enabledTools
         : enabledTools.length === unqualifiedCount
-          ? undefined
+          ? null
           : enabledTools,
     enabledBuiltInTools: builtInCount === 0 ? current?.enabledBuiltInTools : enabledBuiltInTools,
     // No `qualifiedCount === 0` special case: when the catalog shows no qualified rows at all,

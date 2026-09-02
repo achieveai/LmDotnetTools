@@ -223,6 +223,13 @@ public record ProvisionConversationRequest
     /// </para>
     /// </summary>
     public string? SubAgentModelId { get; init; }
+
+    /// <summary>
+    /// Optional reasoning effort for the conversation's root agent. <c>null</c> preserves the host/provider
+    /// default. An explicit empty string requests that the host omit reasoning effort for models that reject
+    /// the field. Non-empty values are capability-shaped before reaching the provider.
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
 }
 
 /// <summary>
@@ -232,6 +239,12 @@ public record ProvisionConversationRequest
 public record ProvisionConversationResponse
 {
     public required string ThreadId { get; init; }
+
+    /// <summary>
+    /// True when this host recognized the root reasoning-effort contract. A caller that supplied a
+    /// non-null effort can use this acknowledgement to reject a pre-contract host that silently ignored it.
+    /// </summary>
+    public bool ReasoningEffortAccepted { get; init; }
 }
 
 /// <summary>
@@ -261,6 +274,13 @@ public record ConversationCapabilitiesResponse
     /// specific conversation's agent can enforce it is still decided per send.
     /// </summary>
     public required bool SpawnSuppression { get; init; }
+
+    /// <summary>
+    /// True when <see cref="ProvisionConversationRequest.ReasoningEffort"/> is understood and persisted before
+    /// the hosted root agent is built. Callers check this side-effect-free capability before provisioning so an
+    /// older host cannot mint an unusable orphan conversation merely to reveal that it ignored the field.
+    /// </summary>
+    public required bool RootReasoningEffort { get; init; }
 }
 
 /// <summary>

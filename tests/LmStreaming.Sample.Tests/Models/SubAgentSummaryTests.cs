@@ -278,6 +278,24 @@ public sealed class SubAgentSummaryTests
     }
 
     [Fact]
+    public void ReasoningProvenance_PublishesTheNamesTheDaemonParses()
+    {
+        var json = JsonSerializer
+            .SerializeToNode(
+                SubAgentSummary.FromDirectoryEntry(Entry()) with
+                {
+                    RequestedReasoningEffort = "xhigh",
+                    ShapedReasoningEffort = "high",
+                },
+                Web
+            )!
+            .AsObject();
+
+        json["requestedReasoningEffort"]!.GetValue<string>().Should().Be("xhigh");
+        json["shapedReasoningEffort"]!.GetValue<string>().Should().Be("high");
+    }
+
+    [Fact]
     public void Pre244Json_StillDeserializes()
     {
         // Byte-for-byte the shape a pre-#244 build wrote into the tab index.

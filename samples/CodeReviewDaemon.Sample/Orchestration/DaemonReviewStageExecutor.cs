@@ -4049,8 +4049,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
         // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
-        // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
-        var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
+        // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort. S2S also
+        // runs tool-assisted on the review host, although BuildToolContextAsync deliberately returns null
+        // because the daemon does not own that host-side tool context.
+        var effort =
+            toolContext is not null || _options.UseS2SReviewAgent
+                ? _options.ToolAssistedReasoningEffort
+                : _options.ReviewReasoningEffort;
         // On the S2S path pass the LmStreaming workspace this run prepared (cached at ReviewAsync entry) so the
         // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
         // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh

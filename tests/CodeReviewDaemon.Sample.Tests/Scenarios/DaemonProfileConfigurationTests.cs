@@ -50,6 +50,18 @@ public sealed class DaemonProfileConfigurationTests
             );
     }
 
+    [Theory]
+    [InlineData("appsettings.achieveai.json")]
+    [InlineData("appsettings.mcqdb.json")]
+    public void The_shipped_review_profiles_leave_child_model_selection_to_the_mode_policy(string profileFileName)
+    {
+        var options = BindDaemonOptions(profileFileName);
+
+        options.SubAgentModelId.Should().BeEmpty("the code-review mode now routes each canonical subagent_type");
+        options.ReviewReasoningEffort.Should().Be("xhigh");
+        options.ToolAssistedReasoningEffort.Should().Be("xhigh");
+    }
+
     /// <summary>
     /// Binds a shipped profile's <c>CodeReviewDaemon</c> section through the same
     /// <see cref="ConfigurationBuilder"/> + typed <see cref="CodeReviewDaemonOptions"/> path the daemon

@@ -715,7 +715,9 @@ public sealed class WorkflowRuntime
     internal SubAgentSpawnModelSelection? ResolveSpawnModelSelection(string? name)
     {
         var unit = ResolveSpawnUnit(name);
-        return unit is null ? null : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+        return unit is null
+            ? null
+            : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence, SelectionSource: "workflow-unit");
     }
 
     /// <summary>

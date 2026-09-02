@@ -109,6 +109,19 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
             );
     }
 
+    [Theory]
+    [InlineData("xhigh")]
+    [InlineData("")]
+    public async Task RootReasoningEffort_survives_the_production_stores_json_round_trip(string effort)
+    {
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        var store = await SeedAsync(threadId, (ConversationRootReasoningEffort.PropertyKey, effort));
+
+        var read = await ConversationRootReasoningEffort.ReadAsync(store, threadId);
+
+        read.Should().Be(effort);
+    }
+
     [Fact]
     public async Task Absent_properties_still_read_as_null_after_a_round_trip()
     {
@@ -118,5 +131,6 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
         (await SystemPromptAugmenter.ReadAppendixAsync(store, threadId)).Should().BeNull();
         (await SystemPromptAugmenter.ComposeAsync(store, threadId, "MODE PROMPT")).Should().Be("MODE PROMPT");
         (await ConversationSubAgentModel.ReadAsync(store, threadId)).Should().BeNull();
+        (await ConversationRootReasoningEffort.ReadAsync(store, threadId)).Should().BeNull();
     }
 }

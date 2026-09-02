@@ -199,15 +199,30 @@ public sealed class MarketplaceSubAgentLoader
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(logger);
 
+        var previewFallbackCount = 0;
         foreach (var (key, template) in catalog)
         {
-            if (!existing.TryAdd(key, template))
+            if (existing.TryAdd(key, template))
+            {
+                previewFallbackCount++;
+            }
+            else
             {
                 logger.LogInformation(
                     "Marketplace sub-agent {Name} is already provided by a built-in or workspace file; keeping the existing template.",
                     key
                 );
             }
+        }
+
+        if (previewFallbackCount > 0)
+        {
+            logger.LogWarning(
+                "Using {MarketplaceSubAgentCount} metadata-poor marketplace preview sub-agent template(s); "
+                    + "full inline discovery did not supply those templates, so authored model, effort, tools, "
+                    + "and instruction-body metadata are unavailable.",
+                previewFallbackCount
+            );
         }
     }
 }

@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+
 namespace LmStreaming.Sample.Services;
 
 /// <summary>
@@ -39,4 +41,65 @@ internal static class ModeSubAgentPrompt
     /// </summary>
     public static string Fold(string templatePrompt, string fragment, string? placement) =>
         placement == Prepend ? $"{fragment}\n\n{templatePrompt}" : $"{templatePrompt}\n\n{fragment}";
+}
+
+/// <summary>Validation shared by system-mode yaml and user-mode CRUD.</summary>
+internal static class ModeSubAgentPolicy
+{
+    public static string? Validate(AgentProfile mode) =>
+        Validate(
+            mode.SubAgentReasoningEffort,
+            mode.SubAgentModelIntelligenceByType,
+            mode.DefaultSubAgentModelIntelligence
+        );
+
+    public static string? Validate(
+        string? reasoningEffort,
+        IReadOnlyDictionary<string, int>? tiersByType,
+        int? defaultTier
+    )
+    {
+        if (
+            reasoningEffort is not null
+            && (
+                string.IsNullOrWhiteSpace(reasoningEffort)
+                || !ConversationRootReasoningEffort.TryParse(reasoningEffort, out _)
+            )
+        )
+        {
+            return $"Invalid subAgentReasoningEffort '{reasoningEffort}'. Valid values: low, medium, high, xhigh.";
+        }
+
+        if (defaultTier is <= 0)
+        {
+            return $"Invalid defaultSubAgentModelIntelligence '{defaultTier}'. The tier must be positive.";
+        }
+
+        if (tiersByType is null)
+        {
+            return null;
+        }
+
+        var canonicalTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (subagentType, tier) in tiersByType)
+        {
+            if (string.IsNullOrWhiteSpace(subagentType))
+            {
+                return "Invalid subAgentModelIntelligenceByType entry: subagent_type must not be blank.";
+            }
+
+            if (!canonicalTypes.Add(subagentType))
+            {
+                return $"Invalid subAgentModelIntelligenceByType entry '{subagentType}': "
+                    + "subagent_type keys must be unique under case-insensitive matching.";
+            }
+
+            if (tier <= 0)
+            {
+                return $"Invalid subAgentModelIntelligenceByType tier '{tier}' for '{subagentType}'. The tier must be positive.";
+            }
+        }
+
+        return null;
+    }
 }
