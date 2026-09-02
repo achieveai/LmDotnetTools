@@ -161,6 +161,14 @@ public sealed record ContextObservation
             ? (double)(MeasuredInputTokens ?? EstimatedInputTokens) / (WindowTokens.Value - ReserveTokens)
             : null;
 
+    /// <summary>
+    ///     Whether the request was sent with prompt caching on (#681; §4.4). Read back to decide whether a
+    ///     cache temperature is meaningful for this loop; null when the loop did not say.
+    /// </summary>
+    [JsonPropertyName("prompt_caching_enabled")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PromptCachingEnabled { get; init; }
+
     /// <summary>The checkpoint the view was built on, when one was active.</summary>
     [JsonPropertyName("active_checkpoint_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

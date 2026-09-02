@@ -221,6 +221,7 @@ public static class LifecycleSerializer
             LifecycleEventTypes.ToolCompleted => typeof(ToolCompletedPayload),
             LifecycleEventTypes.RunCompleted => typeof(RunCompletedPayload),
             LifecycleEventTypes.SandboxCreated => typeof(SandboxCreatedPayload),
+            LifecycleEventTypes.ContextMeasured => typeof(ContextMeasuredPayload),
             _ => null,
         };
 

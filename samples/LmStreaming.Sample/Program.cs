@@ -756,6 +756,9 @@ try
         // so flat-rate Copilot ids resolve to null cost ("unavailable") — the correct state — while any
         // model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
+        // #681: the same Pricing:Models entries may carry MaxContextTokens; AddLmConfig registers this
+        // resolver over that catalog. Null only for a container that never registered LmConfig.
+        var capacityResolver = sp.GetService<IModelCapacityResolver>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
@@ -858,7 +861,16 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
-                var lifecycleServices = context.LifecycleServices;
+                // The capacity resolver rides on the lifecycle bundle so every loop built below — and every
+                // sub-agent spawned from one — sizes its context against the model's window (#681). A bundle
+                // minted here for the purpose publishes nothing and stores nothing, so the loop's lifecycle
+                // behaviour is unchanged; it only gains the window.
+                var lifecycleServices = capacityResolver is null
+                    ? context.LifecycleServices
+                    : (context.LifecycleServices ?? new MultiTurnLifecycleServices()) with
+                    {
+                        CapacityResolver = capacityResolver,
+                    };
                 // Anchor the model to the real current date. Injected once at the single mode entry
                 // point so every derived system prompt (workspace suffix, medical context, etc.)
                 // carries it. Without it, models fall back to a training-era date, distrust

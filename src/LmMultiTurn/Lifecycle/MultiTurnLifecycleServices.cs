@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Approval;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -81,6 +82,20 @@ public sealed record MultiTurnLifecycleServices
 
     /// <summary>The model the loop was configured with, when the host knows it.</summary>
     public string? ModelId { get; init; }
+
+    /// <summary>
+    /// Sizes a request before dispatch for the per-generation context observation (#681). Null uses
+    /// <see cref="DefaultContextTokenEstimator"/>. Rides on the bundle so a spawned agent inherits it
+    /// through <see cref="ForSpawnedAgent"/> and no loop constructor grows a parameter for it.
+    /// </summary>
+    public IContextTokenEstimator? ContextTokenEstimator { get; init; }
+
+    /// <summary>
+    /// Answers how large a model's window is, so an observation can carry a utilization. Null leaves
+    /// the window unknown: the observation is still taken and persisted, its utilization is null, and
+    /// no <c>context_pressure</c> frame is broadcast — a gauge with no scale has nothing to show.
+    /// </summary>
+    public IModelCapacityResolver? CapacityResolver { get; init; }
 
     /// <summary>
     /// The clock stamped onto events and durable records. Defaults to

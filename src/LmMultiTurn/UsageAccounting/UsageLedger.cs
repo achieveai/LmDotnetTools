@@ -92,7 +92,13 @@ public sealed class UsageLedger : IUsageSink
         // sink never blocks concurrent usage updates on this ledger. Forwarding the merged (cumulative)
         // record keeps the same ProviderAttemptId, so the parent re-merges idempotently and re-stamps its
         // own root id/revision — cumulative streaming updates collapse to one billable record there too.
-        _forwardTo?.RecordUsage(merged);
+        // The forwarded copy names THIS ledger's root as its parent execution when it had none (#681): inside
+        // this ledger a Primary record is the root's own turn, but in the parent conversation it is the spend of
+        // a nested execution - a workflow controller's own turns - and must fold onto that execution's row, not
+        // the parent's. Descendant records already carry their own parent and pass through unchanged.
+        _forwardTo?.RecordUsage(
+            merged.ParentExecutionId is null ? merged with { ParentExecutionId = RootConversationId } : merged
+        );
 
         // Notify observers (e.g. the owning loop, which broadcasts a live usage frame to the parent run's
         // subscribers) that the folded aggregate changed. Fired OUTSIDE the lock with an InProgress snapshot;

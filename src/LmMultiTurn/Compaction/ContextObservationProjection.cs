@@ -41,8 +41,8 @@ public static class ContextObservationProjection
 
     /// <summary>
     ///     Appends <paramref name="observation" /> to the thread's ring (keeping the newest
-    ///     <paramref name="historyLength" />) and makes it the latest. A no-op when either key holds a
-    ///     schema this build does not understand.
+    ///     <paramref name="historyLength" />) - or replaces the ring's tail when it is the same generation -
+    ///     and makes it the latest. A no-op when either key holds a schema this build does not understand.
     /// </summary>
     public static Task RecordAsync(
         IConversationStore store,
@@ -76,7 +76,24 @@ public static class ContextObservationProjection
                 }
 
                 var ring = RingFromMetadata(existing) ?? new ObservationRing();
-                var observations = ring.Observations.Append(observation).ToList();
+                var observations = ring.Observations.ToList();
+
+                // One entry per generation (#681): a generation is observed estimated before dispatch and
+                // measured after the provider's usage arrives, and the later observation supersedes the
+                // earlier one in place. Only the tail is compared - an older generation re-observed out of
+                // order is a different record, not a correction.
+                if (
+                    observations.Count > 0
+                    && string.Equals(observations[^1].GenerationId, observation.GenerationId, StringComparison.Ordinal)
+                )
+                {
+                    observations[^1] = observation;
+                }
+                else
+                {
+                    observations.Add(observation);
+                }
+
                 if (observations.Count > historyLength)
                 {
                     observations.RemoveRange(0, observations.Count - historyLength);

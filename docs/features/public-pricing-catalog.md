@@ -55,6 +55,8 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
       "CacheAccounting": "Additive",
       "EffectiveDate": "2026-09-02",
       "_source": "https://vendor.example/pricing",
+      "MaxContextTokens": 200000,
+      "MaxOutputTokens": 64000,
       "Aliases": ["<another id the model is stamped with>"]
     }
   }
@@ -66,6 +68,7 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
 - `CacheAccounting`: `SubsetOfInput` (default) or `Additive`.
 - `EffectiveDate`: `yyyy-MM-dd`.
 - `_source`: vendor URL, ignored by the binder.
+- `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Absent = window unknown (no gauge, no compaction pressure). Present-but-not-positive rejects the whole entry.
 
 LmConfig JSON catalogs (`PricingConfig`) carry the same fields as `cache_read_per_million`, `cache_write_5m_per_million`, `cache_write_1h_per_million`, `reasoning_per_million`, `cache_accounting`, `effective_date`. Two routes sharing a model name must agree on every field or the name is dropped as conflicting.
 
@@ -83,6 +86,15 @@ Notes:
 
 - OpenAI publishes no cache-write price for `gpt-4o`; cache writes are not billed separately, and the record carries none, so the category stays absent rather than zero.
 - Reasoning is billed as output by both vendors; `ReasoningPerMillion` is left null.
+
+Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09-02 against the vendor model page in `_window_source`:
+
+| Model id | Window | Max output | Source |
+|---|---|---|---|
+| `gpt-4o` | 128,000 | 16,384 | https://developers.openai.com/api/docs/models/gpt-4o |
+| `claude-sonnet-4-5-20250929` | 200,000 | 64,000 | https://platform.claude.com/docs/en/models/sonnet-4-5/overview |
+
+`claude-sonnet-4-20250514` carries no window: its model page no longer resolves, so there is nothing to cite. It still prices; its context observations simply report no utilization.
 
 ## Deliberately unpriced
 

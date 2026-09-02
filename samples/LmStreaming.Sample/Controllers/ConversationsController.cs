@@ -7,9 +7,11 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -715,6 +717,91 @@ public class ConversationsController(
 
         var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct);
         return usage is null ? NotFound() : Ok(usage);
+    }
+
+    /// <summary>
+    /// Returns the conversation's context report (#681): one row per agent — the root and every persisted
+    /// descendant — carrying its latest context observation (estimated or measured input against the
+    /// model's window), freshness, cache temperature, compaction state and per-execution usage, plus the
+    /// root cost total. Content-free: the payload names sizes and ids, never the rows they measure.
+    /// </summary>
+    /// <remarks>
+    /// Read from durable state, so it answers the same after a restart or reconnect; a pooled loop's
+    /// in-memory observation wins over the persisted one for its own row and reads <c>Fresh</c>. The
+    /// roster is the persisted descendant scan, so a sub-agent that never persisted a thread has no row.
+    /// Returns the existence-hiding 404 only for a thread neither the store nor the pool knows.
+    /// </remarks>
+    [HttpGet("{threadId}/context")]
+    public async Task<IActionResult> GetContext(string threadId, CancellationToken ct = default)
+    {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        if (!agentPool.HasAgent(threadId) && await store.LoadMetadataAsync(threadId, ct) is null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        var descendants = await descendantScanner.ScanAsync(threadId, ct);
+        var agentIdByThread = descendants.ToDictionary(d => d.ThreadId, d => d.AgentId, StringComparer.Ordinal);
+        var parentByThread = descendants.ToDictionary(d => d.ThreadId, d => d.ParentThreadId, StringComparer.Ordinal);
+        var roster = descendants
+            .Select(d => new AgentExecutionRef(
+                threadId,
+                d.ThreadId,
+                d.AgentId,
+                ParentAgentId: d.ParentThreadId is null || d.ParentThreadId == threadId
+                    ? AgentExecutionRef.RootAgentId
+                    : agentIdByThread.GetValueOrDefault(d.ParentThreadId)
+                        ?? AgentExecutionRef.AgentIdFromThreadId(d.ParentThreadId),
+                d.Kind == SubAgentSummary.WorkflowTabKind
+                    ? UsageExecutionKind.WorkflowController
+                    : UsageExecutionKind.SubAgent
+            ))
+            .ToList();
+
+        // Live lookup walks the parent chain: the root loop is pooled, every descendant hangs off its
+        // parent's SubAgentManager. Memoised so a deep roster resolves each ancestor once.
+        var liveLoops = new Dictionary<string, MultiTurnAgentLoop?>(StringComparer.Ordinal);
+        MultiTurnAgentLoop? LiveLoop(string id)
+        {
+            if (liveLoops.TryGetValue(id, out var known))
+            {
+                return known;
+            }
+
+            MultiTurnAgentLoop? loop = null;
+            if (id == threadId)
+            {
+                loop = agentPool.TryGet(id, out var pooled) ? pooled as MultiTurnAgentLoop : null;
+            }
+            else if (parentByThread.GetValueOrDefault(id) is { } parentId && parentId != id)
+            {
+                var manager = LiveLoop(parentId)?.SubAgentManager;
+                loop =
+                    manager is not null && manager.TryGetAgent(AgentExecutionRef.AgentIdFromThreadId(id), out var child)
+                        ? child as MultiTurnAgentLoop
+                        : null;
+            }
+
+            liveLoops[id] = loop;
+            return loop;
+        }
+
+        var report = await ConversationContextReport.BuildAsync(
+            store,
+            threadId,
+            roster,
+            new ConversationContextReportOptions
+            {
+                TimeProvider = timeProvider,
+                LiveObservation = id => LiveLoop(id)?.LatestContextObservation,
+            },
+            ct
+        );
+        return Ok(report);
     }
 
     /// <summary>

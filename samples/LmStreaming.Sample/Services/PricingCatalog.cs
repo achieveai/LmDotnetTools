@@ -1,4 +1,5 @@
 using System.Globalization;
+using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Pricing;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -36,6 +37,8 @@ namespace LmStreaming.Sample.Services;
 ///           "CacheAccounting": "Additive",
 ///           "EffectiveDate": "2026-09-02",
 ///           "_source": "https://vendor.example/pricing",
+///           "MaxContextTokens": 200000,
+///           "MaxOutputTokens": 64000,
 ///           "Aliases": [ "&lt;another name the same model answers to&gt;" ]
 ///         }
 ///       }
@@ -49,6 +52,9 @@ namespace LmStreaming.Sample.Services;
 ///         (Anthropic: <c>input_tokens</c> excludes them); it changes the arithmetic, so a misspelt value
 ///         rejects the entry rather than falling back. <c>EffectiveDate</c> (<c>yyyy-MM-dd</c>) and
 ///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
+///         <c>MaxContextTokens</c> / <c>MaxOutputTokens</c> (#681) are the model's window and output
+///         ceiling; they feed <see cref="IModelCapacityResolver" /> so a per-generation context observation
+///         can carry a utilization. Optional: an entry without them still prices and simply shows no gauge.
 ///     </para>
 ///     <para>
 ///         <b>What is shipped in this repository's appsettings, and why only that.</b> Rates are an
@@ -183,6 +189,8 @@ public static class PricingCatalog
                 || !TryReadCategoryRate(entry, "ReasoningPerMillion", rejected, out var reasoning)
                 || !TryReadCacheAccounting(entry, rejected, out var cacheAccounting)
                 || !TryReadEffectiveDate(entry, rejected, out var effectiveDate)
+                || !TryReadTokenLimit(entry, "MaxContextTokens", rejected, out var maxContextTokens)
+                || !TryReadTokenLimit(entry, "MaxOutputTokens", rejected, out var maxOutputTokens)
             )
             {
                 continue;
@@ -217,6 +225,18 @@ public static class PricingCatalog
                 new ModelConfig
                 {
                     Id = entry.Key,
+                    // A window is carried as token_limits so LmConfig's own ModelCapacityConfigResolver (which
+                    // AddLmConfig registers over this catalog) answers it under the id and every alias.
+                    Capabilities = maxContextTokens is null
+                        ? null
+                        : new ModelCapabilities
+                        {
+                            TokenLimits = new TokenLimits
+                            {
+                                MaxContextTokens = maxContextTokens.Value,
+                                MaxOutputTokens = maxOutputTokens ?? 0,
+                            },
+                        },
                     Providers =
                     [
                         .. names.Select(name => new ProviderConfig
@@ -310,6 +330,38 @@ public static class PricingCatalog
         }
 
         rate = value;
+        return true;
+    }
+
+    /// <summary>
+    ///     Reads an optional token limit (#681). Absent yields null — the window is then unknown and no
+    ///     utilization is reported. Present must be a positive whole number; anything else is the same
+    ///     operator typo as an unusable rate and rejects the entry the same way.
+    /// </summary>
+    private static bool TryReadTokenLimit(
+        IConfigurationSection entry,
+        string key,
+        ICollection<string>? rejected,
+        out int? limit
+    )
+    {
+        limit = null;
+        var raw = entry[key];
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+        {
+            rejected?.Add(
+                $"'{entry.Key}' has {key}='{raw}'; a token limit may be omitted, but one that is present must "
+                    + "be a positive whole number"
+            );
+            return false;
+        }
+
+        limit = parsed;
         return true;
     }
 

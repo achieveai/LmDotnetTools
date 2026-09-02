@@ -16,6 +16,7 @@ using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
@@ -55,6 +56,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
 
+    // Per-generation context observation (#681). The ordinal is loop-local and monotonic across restarts:
+    // seeded lazily from the persisted latest observation on the first generation after a restart, then
+    // advanced in memory. Only the run loop's single sequential turn path touches it; the latest
+    // observation is read by hosts from other threads, hence the volatile accessor.
+    private long _generationOrdinal;
+    private bool _generationOrdinalSeeded;
+    private ContextObservation? _latestContextObservation;
+
     /// <summary>
     /// Names of the tools that declare at least one required parameter, snapshot at construction from
     /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
@@ -88,6 +97,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Exposed so a host can fold an out-of-band descendant loop's usage into this conversation's total.
     /// </summary>
     public IUsageSink? UsageSink => UsageLedger;
+
+    /// <summary>
+    /// The loop's most recent context observation (#681): estimated before the current generation was
+    /// dispatched, measured once its usage arrived. Null before the first generation. A host reading the
+    /// persisted observation reports this one as <i>fresh</i> when the loop is alive to vouch for it.
+    /// </summary>
+    public ContextObservation? LatestContextObservation => Volatile.Read(ref _latestContextObservation);
 
     /// <inheritdoc />
     /// <remarks>
@@ -1777,6 +1793,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // knowable and settled — earlier is a guess, later is history.
         await ReportContextLoadedAsync(runId, generationId, messagesToSend, ct);
 
+        // Size the request against the model's window before it goes out (#681). Same snapshot as the
+        // provider receives, so the estimate describes the request and not a history that moved on.
+        await ObserveContextAsync(runId, generationId, messagesToSend, usage: null, ct);
+
         var attempt = new TurnAttemptState(generationId);
 
         try
@@ -1805,6 +1825,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 }
 
                 ObserveTurnMessage(runId, generationId, msg);
+
+                // The provider's own count for the request that just went out replaces the estimate.
+                if (msg is UsageMessage usageMessage)
+                {
+                    await ObserveContextAsync(runId, generationId, messagesToSend, usageMessage, ct);
+                }
 
                 // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
                 if (msg is ToolCallMessage toolCall)
@@ -1891,6 +1917,145 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         return new TurnExecutionResult(attempt);
+    }
+
+    /// <summary>
+    /// Records one context observation for the generation (#681; spec 679 §4.1–4.2): estimated from the
+    /// request when <paramref name="usage"/> is null, measured from the provider's usage otherwise. The
+    /// observation is kept in memory, persisted under the thread's metadata (one ring entry per
+    /// generation — the measured one supersedes the estimate), published as <c>context_measured</c>, and
+    /// broadcast as a transient <c>context_pressure</c> frame when the window is known.
+    /// </summary>
+    /// <remarks>
+    /// Observation never breaks the thing being observed: a store or publisher failure is logged and the
+    /// turn proceeds. Cancellation is the caller's and is not swallowed.
+    /// </remarks>
+    private async Task ObserveContextAsync(
+        string runId,
+        string generationId,
+        IReadOnlyList<IMessage> request,
+        UsageMessage? usage,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            var previous = Volatile.Read(ref _latestContextObservation);
+            var sameGeneration =
+                previous is not null && string.Equals(previous.GenerationId, generationId, StringComparison.Ordinal);
+            var ordinal = sameGeneration ? previous!.GenerationOrdinal : await NextGenerationOrdinalAsync(ct);
+
+            var modelId = LifecycleServices.ModelId ?? DefaultOptions.ModelId;
+            if (string.IsNullOrEmpty(modelId))
+            {
+                modelId = "unknown";
+            }
+
+            var capacity = LifecycleServices.CapacityResolver?.Resolve(modelId);
+            var estimated = sameGeneration
+                ? previous!.EstimatedInputTokens
+                : (LifecycleServices.ContextTokenEstimator ?? DefaultContextTokenEstimator.Instance).Estimate(request);
+            long? measured = usage is null ? null : MeasuredInputTokens(usage.Usage);
+
+            var observation = new ContextObservation
+            {
+                ThreadId = ThreadId,
+                AgentId = ObservationAgentId(),
+                RunId = runId,
+                GenerationId = generationId,
+                GenerationOrdinal = ordinal,
+                ObservedAtUtc = LifecycleServices.TimeProvider.GetUtcNow(),
+                EffectiveModelId = modelId,
+                EstimatedInputTokens = estimated,
+                MeasuredInputTokens = measured,
+                Provenance = measured is null ? MeasurementProvenance.Estimated : MeasurementProvenance.Measured,
+                WindowTokens = capacity?.WindowTokens,
+                // §5.2: the reserve is what the loop asked the model to keep for output; the catalog's
+                // ceiling stands in only when the loop set no budget of its own.
+                ReserveTokens = DefaultOptions.MaxToken ?? capacity?.MaxOutputTokens ?? 0,
+                PromptCachingEnabled = DefaultOptions.PromptCaching != PromptCachingMode.Off,
+                // The execution view and its active checkpoint arrive with the cut (#683); until then the
+                // request is the whole canonical history.
+                RowsInView = request.Count,
+            };
+            Volatile.Write(ref _latestContextObservation, observation);
+
+            if (Store is { } store)
+            {
+                await ContextObservationProjection.RecordAsync(store, observation, ct: ct);
+            }
+
+            _ = await Lifecycle.ContextMeasuredAsync(observation, ct);
+
+            if (capacity is not null)
+            {
+                await PublishToAllAsync(
+                    ContextPressureMessage.FromObservation(observation) with
+                    {
+                        FromAgent = observation.AgentId,
+                    },
+                    ct
+                );
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogWarning(
+                ex,
+                "Context observation for run {RunId} generation {GenerationId} failed; the turn proceeds unobserved",
+                runId,
+                generationId
+            );
+        }
+    }
+
+    /// <summary>
+    /// The next loop-local generation ordinal, continuing from the persisted latest observation the first
+    /// time it is asked after construction so cooldown arithmetic (§5.4) survives a restart.
+    /// </summary>
+    private async ValueTask<long> NextGenerationOrdinalAsync(CancellationToken ct)
+    {
+        if (!_generationOrdinalSeeded)
+        {
+            if (Store is { } store)
+            {
+                var persisted = await ContextObservationProjection.LoadLatestAsync(store, ThreadId, ct);
+                if (persisted is not null)
+                {
+                    _generationOrdinal = Math.Max(_generationOrdinal, persisted.GenerationOrdinal);
+                }
+            }
+
+            _generationOrdinalSeeded = true;
+        }
+
+        return ++_generationOrdinal;
+    }
+
+    /// <summary>
+    /// <c>root</c>, or the sub-agent id — from lineage when the host wired lifecycle, else from the thread
+    /// id the SubAgentManager stamps on a child loop, so a child without a lifecycle bundle is still not
+    /// reported as the root.
+    /// </summary>
+    private string ObservationAgentId() =>
+        LifecycleServices.Lineage.SubAgentId
+        ?? (
+            ThreadId.StartsWith(AgentExecutionRef.SubAgentThreadIdPrefix, StringComparison.Ordinal)
+                ? AgentExecutionRef.AgentIdFromThreadId(ThreadId)
+                : AgentExecutionRef.RootAgentId
+        );
+
+    /// <summary>
+    /// The request's measured size from the provider's usage: input plus cache creation, plus cache reads
+    /// when the provider reports them ADDITIVELY (Anthropic's <c>input_tokens</c> excludes them, and it
+    /// is the provider that surfaces <c>cache_creation_input_tokens</c>) rather than as a subset of input.
+    /// </summary>
+    private static long MeasuredInputTokens(Usage usage)
+    {
+        var additiveCacheAccounting = usage.ExtraProperties.ContainsKey("cache_creation_input_tokens");
+        return usage.PromptTokens
+            + usage.GetExtraProperty<int>("cache_creation_input_tokens")
+            + (additiveCacheAccounting ? usage.TotalCachedTokens : 0);
     }
 
     /// <summary>
