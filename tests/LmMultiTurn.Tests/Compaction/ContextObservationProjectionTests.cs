@@ -145,4 +145,67 @@ public sealed class ContextObservationProjectionTests : IAsyncLifetime
         history[1].MeasuredInputTokens.Should().Be(2_222);
         (await ContextObservationProjection.LoadLatestAsync(store, Thread))!.MeasuredInputTokens.Should().Be(2_222);
     }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task Record_ForTheSameGeneration_KeepsBothAuthorsFields_InEitherOrder(string kind)
+    {
+        // One generation has two independent authors: the loop measures it (#681) and the policy stamps its
+        // decision on it (#684; spec 679 §5.5). Neither carries the other's fields, so whichever writes
+        // second must supersede without blanking the first.
+        var store = _harness.Open(kind);
+
+        var policy = Measurement(1) with
+        {
+            ActiveCheckpointId = "cp-9",
+            Decision = new CompactionDecisionSummary
+            {
+                Decision = "Warn",
+                Tokens = 9_000,
+                Window = 200_000,
+                Reserve = 10_000,
+                CacheTemperature = CacheTemperature.Hot,
+            },
+        };
+        var measurement = Measurement(1) with
+        {
+            MeasuredInputTokens = 4_444,
+            Provenance = MeasurementProvenance.Measured,
+            PromptCachingEnabled = true,
+        };
+
+        await ContextObservationProjection.RecordAsync(store, policy);
+        await ContextObservationProjection.RecordAsync(store, measurement);
+
+        var afterMeasurement = (await ContextObservationProjection.LoadLatestAsync(store, Thread))!;
+        afterMeasurement.MeasuredInputTokens.Should().Be(4_444);
+        afterMeasurement.Provenance.Should().Be(MeasurementProvenance.Measured);
+        afterMeasurement.PromptCachingEnabled.Should().BeTrue();
+        afterMeasurement.Decision!.Decision.Should().Be("Warn", "the loop's measurement must not erase the decision");
+        afterMeasurement.ActiveCheckpointId.Should().Be("cp-9");
+
+        // The reverse order must hold too: the policy writing last keeps the measurement it never took.
+        await ContextObservationProjection.RecordAsync(store, policy);
+
+        var afterPolicy = (await ContextObservationProjection.LoadLatestAsync(store, Thread))!;
+        afterPolicy.Decision!.Decision.Should().Be("Warn");
+        afterPolicy.MeasuredInputTokens.Should().Be(4_444, "the decision must not erase the measurement");
+        afterPolicy.Provenance.Should().Be(MeasurementProvenance.Measured);
+        afterPolicy.PromptCachingEnabled.Should().BeTrue();
+
+        (await ContextObservationProjection.LoadHistoryAsync(store, Thread))
+            .Should()
+            .ContainSingle("all three writes describe one generation");
+    }
+
+    /// <summary>One generation's observation carrying neither author's optional fields.</summary>
+    private static ContextObservation Measurement(long ordinal) =>
+        Observation(ordinal) with
+        {
+            ActiveCheckpointId = null,
+            Decision = null,
+            MeasuredInputTokens = null,
+            Provenance = MeasurementProvenance.Estimated,
+            PromptCachingEnabled = null,
+        };
 }

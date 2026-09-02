@@ -537,7 +537,12 @@ public class CompactionLoopTests
 
         h.Decisions.Should().BeEmpty();
         h.Publisher.EventTypes.Should().NotContain(t => t.StartsWith("compaction_", StringComparison.Ordinal));
-        (await ContextObservationProjection.LoadLatestAsync(h.Store, Thread)).Should().BeNull();
+
+        // #681 observes every generation whether or not compaction runs, so the absence to assert here is
+        // the decision stamped on that observation (§5.5), not the observation itself.
+        var observed = await ContextObservationProjection.LoadLatestAsync(h.Store, Thread);
+        observed.Should().NotBeNull("#681 measures every generation regardless of compaction mode");
+        observed!.Decision.Should().BeNull("Off evaluates no policy, so it stamps no decision");
     }
 
     [Fact]

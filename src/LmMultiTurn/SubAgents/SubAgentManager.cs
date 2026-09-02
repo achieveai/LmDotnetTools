@@ -3332,7 +3332,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
                 collaboration: childCollaboration,
                 descendantQuestionSink: _descendantQuestionSink,
-                compaction: _childOptions.Compaction
+                compaction: ChildOptions.Compaction
             );
 
             // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
