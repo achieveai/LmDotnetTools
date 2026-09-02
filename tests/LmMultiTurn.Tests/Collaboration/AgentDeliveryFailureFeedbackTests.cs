@@ -182,23 +182,44 @@ public class AgentDeliveryFailureFeedbackTests
     }
 
     [Fact]
-    public async Task NotifyAbandonedObligations_TellsOnlyTheSendersOfMessagesAimedAtTheAgentThatLeft()
+    public async Task NotifyAbandonedObligations_TellsTheSenderOfAQuestionTheDepartingAgentTookWithIt()
     {
         var (sender, senderEndpoint) = BuildPair(new FakeEndpoint(AgentDeliveryDisposition.Delivered));
         var bundle = sender.Bundle;
         var toTarget = bundle.TrySend(SenderId, "target", AgentMessageType.Question).MessageId!;
-        var fromTarget = bundle.TrySend(TargetId, "sender", AgentMessageType.Question).MessageId!;
 
         await bundle.NotifyAbandonedObligationsAsync(bundle.RetireAgent(TargetId, "stopped"), TargetId);
 
-        // RetireAgent closes BOTH directions. Notifying the outbound half would deliver to the agent
-        // being retired — restarting the very agent that just left.
+        // Retirement closes the obligation; without this the asker is simply never told, and waits on
+        // an answer the ledger already knows can never come.
         var notice = NoticeIn(senderEndpoint)!;
         notice.Should().NotBeNull();
-        notice.Body.Should().Contain(toTarget).And.NotContain(fromTarget);
-        senderEndpoint
-            .Received.Count(m => m.AgentMessageType == AgentMessageType.DeliveryFailure)
-            .Should()
-            .Be(1, "only one of the two abandoned messages was addressed to the agent that left");
+        notice.Body.Should().Contain(toTarget).And.Contain(AgentCollaborationBundle.TargetLeftReasonCode);
+    }
+
+    [Fact]
+    public async Task NotifyAbandonedObligations_NeverNotifiesTheDepartingAgentAboutItsOwnQuestions()
+    {
+        var targetEndpoint = new FakeEndpoint(AgentDeliveryDisposition.Delivered);
+        var (sender, senderEndpoint) = BuildPair(targetEndpoint);
+        var bundle = sender.Bundle;
+        var toTarget = bundle.TrySend(SenderId, "target", AgentMessageType.Question).MessageId!;
+        _ = bundle.TrySend(TargetId, "sender", AgentMessageType.Question).MessageId!;
+
+        // Abandoned WITHOUT retiring, so the departing agent's directory entry still reads 'running'.
+        // That is what makes this a test of the ToAgentId filter and not of the liveness gate: with the
+        // filter removed, the second message's sender IS the departing agent and it would be delivered
+        // to — waking, and under a real endpoint restarting, the agent that is on its way out.
+        List<string> abandoned =
+        [
+            .. bundle.Ledger.AbandonMessagesFor(TargetId, AgentCollaborationBundle.TargetLeftReasonCode),
+            .. bundle.Ledger.AbandonMessagesFrom(TargetId, AgentCollaborationBundle.SenderLeftReasonCode),
+        ];
+        abandoned.Should().HaveCount(2, "both directions are closed, and only one of them may be notified");
+
+        await bundle.NotifyAbandonedObligationsAsync(abandoned, TargetId);
+
+        NoticeIn(targetEndpoint).Should().BeNull();
+        NoticeIn(senderEndpoint)!.Body.Should().Contain(toTarget);
     }
 }
