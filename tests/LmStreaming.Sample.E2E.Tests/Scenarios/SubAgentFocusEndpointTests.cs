@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;

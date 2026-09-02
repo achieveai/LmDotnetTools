@@ -2185,11 +2185,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// </summary>
     private string ObservationAgentId() =>
         LifecycleServices.Lineage.SubAgentId
-        ?? (
-            ThreadId.StartsWith(AgentExecutionRef.SubAgentThreadIdPrefix, StringComparison.Ordinal)
-                ? AgentExecutionRef.AgentIdFromThreadId(ThreadId)
-                : AgentExecutionRef.RootAgentId
-        );
+        ?? (SubAgentThreadIds.TryGetAgentId(ThreadId, out var agentId) ? agentId : AgentExecutionRef.RootAgentId);
 
     /// <summary>
     /// The request's measured size from the provider's usage: input plus cache creation, plus cache reads

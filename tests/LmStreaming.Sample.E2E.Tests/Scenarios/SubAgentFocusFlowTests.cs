@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;

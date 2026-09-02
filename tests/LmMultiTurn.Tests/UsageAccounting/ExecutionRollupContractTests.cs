@@ -58,14 +58,18 @@ public sealed class ExecutionRollupContractTests : IAsyncLifetime
     [Fact]
     public void DirectSubAgentSink_FoldsIntoTheSubAgentsOwnRow()
     {
-        // The SubAgentManager relay records a descendant's usage under the sub-agent's OWN thread id.
+        // The SubAgentManager relay records a descendant's usage under the sub-agent's OWN thread id, which
+        // since #705 is scoped: subagent-{12 hex digest of the root}-agent-N. Built through the production
+        // minter so the rollup's agent-id read is exercised on the shape the manager actually emits (#730).
+        var childThreadId = SubAgentThreadIds.For(Root, SubAgentThreadIds.AgentIdFor(1));
+        childThreadId.Should().StartWith(SubAgentThreadIds.Prefix).And.EndWith("-agent-1");
         var ledger = new UsageLedger(Root);
         ledger.RecordUsage(Record(Usage("gen-1", 100, 40), Root, UsageExecutionKind.Primary, "model-A"));
-        ledger.RecordUsage(Record(Usage("gen-7", 500, 20), "subagent-agent-1", UsageExecutionKind.SubAgent, "model-B"));
+        ledger.RecordUsage(Record(Usage("gen-7", 500, 20), childThreadId, UsageExecutionKind.SubAgent, "model-B"));
 
         var rows = ConversationUsageAggregate.FoldByExecution(ledger.SnapshotRecords());
 
-        rows.Select(r => r.ExecutionId).Should().Equal(Root, "subagent-agent-1");
+        rows.Select(r => r.ExecutionId).Should().Equal(Root, childThreadId);
         var child = rows[1];
         child.ExecutionKinds.Should().Equal(UsageExecutionKind.SubAgent);
         child.InputTokens.Should().Be(500);

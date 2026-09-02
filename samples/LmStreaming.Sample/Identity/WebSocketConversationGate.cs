@@ -1,7 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
-using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Persistence;
 
 namespace LmStreaming.Sample.Identity;
