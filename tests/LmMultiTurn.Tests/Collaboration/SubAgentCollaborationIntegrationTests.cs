@@ -1728,9 +1728,13 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         busyRow.GetProperty("reason").GetString().Should().Be(AgentCollaborationMessenger.TargetBusyRetryReasonCode);
         busyRow.GetProperty("retryable").GetBoolean().Should().BeTrue();
 
+        // A message that has NOT failed says nothing about retrying. 'retryable: false' here would be
+        // read by anyone who skims past 'state' as "this one cannot be sent again", which is the
+        // opposite of the truth: it is in flight and the sender should simply wait.
         var liveRow = rows[toLive.Result.MessageId!];
         liveRow.GetProperty("state").GetString().Should().Be("delivered");
         liveRow.GetProperty("reason").ValueKind.Should().Be(JsonValueKind.Null);
+        liveRow.GetProperty("retryable").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     [Fact]

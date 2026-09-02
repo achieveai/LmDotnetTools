@@ -1463,7 +1463,14 @@ public class SubAgentToolProvider : IFunctionProvider
                             // Stated per row rather than left to be inferred from the reason code: the
                             // sender's next move is either "send it again" or "find someone else", and
                             // that is the whole difference between the two failure classes.
-                            ["retryable"] = AgentCollaborationMessenger.IsRetryable(entry.ReasonCode),
+                            //
+                            // Null, NOT false, for a message that has not failed. A row still in flight
+                            // has no retry question to answer, and 'false' beside it is read by anyone
+                            // skimming past 'state' as "this one can never be sent again" — the exact
+                            // opposite of "wait, it is still going".
+                            ["retryable"] = entry.ReasonCode is null
+                                ? null
+                                : AgentCollaborationMessenger.IsRetryable(entry.ReasonCode),
                             ["admitted_at"] = entry.AdmittedAt.ToString("o"),
                         }
                 ),
