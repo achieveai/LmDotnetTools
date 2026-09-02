@@ -141,23 +141,94 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </summary>
     public IDisposable SuppressSpawning() => new SpawnSuppressionScope(this);
 
+    /// <summary>
+    /// This provider's tools, rebuilt only when an input to that surface has changed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>ToolCallInjectionMiddleware</c> re-invokes the function-set factory on every LLM call, so
+    /// this ran once per turn — rebuilding every descriptor, including the template catalog text the
+    /// spawn tool embeds — from inputs that change perhaps twice in a whole session. The middleware
+    /// contract is unchanged (the factory IS still invoked per call); the memo lives here, where the
+    /// inputs are, rather than in the registry, which cannot see a provider's internal state.
+    /// </para>
+    /// <para>
+    /// Exactly two things can vary under one provider instance, and both are the key:
+    /// <see cref="MutableSubAgentTemplateSource.Templates"/>, whose snapshot REFERENCE is an exact
+    /// freshness token because <c>TryRegister</c>/<c>Upsert</c> publish a new immutable dictionary,
+    /// and <see cref="IsSpawningSuppressed"/>. The other inputs to the shape —
+    /// <see cref="SubAgentManager.Collaboration"/> (hence <c>CanDelegate</c>),
+    /// <see cref="SubAgentManager.AvailableModelIds"/>, and <c>_exposedToolNames</c> — are fixed for
+    /// the lifetime of the manager and of this provider, so they cannot distinguish two builds by the
+    /// same instance. Anything that later makes one of them mutable must join the key here.
+    /// </para>
+    /// </remarks>
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
-        var shape = EmitShape();
-        return _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name));
+        // Captured once and threaded through the build so the descriptors published below are a pure
+        // function of the key they are stored under. Re-reading suppression inside the build instead
+        // would let a scope that opens and closes mid-build file a spawn-less surface under
+        // "not suppressed" — the one way a memo of this shape can under-grant a later turn.
+        var templates = _source.Templates;
+        var spawningSuppressed = IsSpawningSuppressed;
+
+        var memo = Volatile.Read(ref _descriptorMemo);
+        if (
+            memo is not null
+            && ReferenceEquals(memo.Templates, templates)
+            && memo.SpawningSuppressed == spawningSuppressed
+        )
+        {
+            return memo.Descriptors;
+        }
+
+        var shape = EmitShape(templates, spawningSuppressed);
+        IReadOnlyList<FunctionDescriptor> descriptors =
+        [
+            .. _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name)),
+        ];
+
+        // Last writer wins: two threads that miss together each build a surface that is correct for
+        // its own key, so whichever publishes second simply replaces an equally valid entry.
+        Volatile.Write(ref _descriptorMemo, new DescriptorMemo(templates, spawningSuppressed, descriptors));
+        return descriptors;
     }
+
+    /// <summary>
+    /// One published build of this provider's surface together with the inputs it was built from.
+    /// </summary>
+    /// <remarks>
+    /// A reference type rather than a tuple field because the slot is published with
+    /// <see cref="Volatile"/>: a multi-field struct cannot be written atomically, and a torn read
+    /// would pair one build's key with another build's descriptors.
+    /// </remarks>
+    private sealed record DescriptorMemo(
+        IReadOnlyDictionary<string, SubAgentTemplate> Templates,
+        bool SpawningSuppressed,
+        IReadOnlyList<FunctionDescriptor> Descriptors
+    );
+
+    private DescriptorMemo? _descriptorMemo;
 
     /// <summary>
     /// The tools this provider's collaboration shape emits, before any allow-list narrowing.
     /// </summary>
-    private IEnumerable<FunctionDescriptor> EmitShape()
+    /// <param name="templates">
+    /// The template snapshot the spawn descriptor's catalog is built from, passed in rather than
+    /// re-read so the emitted shape matches the key <see cref="GetFunctions"/> memoizes it under.
+    /// </param>
+    /// <param name="spawningSuppressed">The suppression state captured for the same reason.</param>
+    private IEnumerable<FunctionDescriptor> EmitShape(
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        bool spawningSuppressed
+    )
     {
         var collaboration = _manager.Collaboration;
         if (collaboration is null)
         {
-            if (!IsSpawningSuppressed)
+            if (!spawningSuppressed)
             {
-                yield return CreateAgentDescriptor(collaborationEnabled: false);
+                yield return CreateAgentDescriptor(templates, collaborationEnabled: false);
             }
 
             yield return CreateSendMessageDescriptor(collaborationEnabled: false);
@@ -170,9 +241,9 @@ public class SubAgentToolProvider : IFunctionProvider
         // it is the only one whose whole purpose is to delegate. Observation and messaging are how an
         // agent that cannot currently delegate still coordinates — withdrawing those would leave it
         // able to be asked questions it had no tool to answer.
-        if (collaboration.CanDelegate && !IsSpawningSuppressed)
+        if (collaboration.CanDelegate && !spawningSuppressed)
         {
-            yield return CreateAgentDescriptor(collaborationEnabled: true);
+            yield return CreateAgentDescriptor(templates, collaborationEnabled: true);
         }
 
         yield return CreateCheckAgentsDescriptor();
@@ -267,12 +338,17 @@ public class SubAgentToolProvider : IFunctionProvider
         }
     }
 
-    private FunctionDescriptor CreateAgentDescriptor(bool collaborationEnabled)
+    /// <param name="templates">
+    /// The live templates view, snapshotted once by <see cref="GetFunctions"/> so the catalog text and
+    /// the <c>subagent_type</c> enum list are consistent within this descriptor — and with the memo key
+    /// it is filed under — even when a <c>TryRegister</c> lands concurrently.
+    /// </param>
+    /// <param name="collaborationEnabled">Whether the collaboration shape's extra fields apply.</param>
+    private FunctionDescriptor CreateAgentDescriptor(
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        bool collaborationEnabled
+    )
     {
-        // Snapshot the live templates view once per descriptor build so the catalog text
-        // and the subagent_type enum list are consistent within this descriptor even when
-        // TryRegister lands concurrently.
-        var templates = _source.Templates;
         var typeList = string.Join(", ", templates.Keys);
 
         var contract = new FunctionContract

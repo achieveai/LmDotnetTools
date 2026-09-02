@@ -687,12 +687,29 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public void GetFunctions_CalledTwiceWithUnchangedInputs_ReturnsTheSameDescriptorInstances()
+    {
+        // ToolCallInjectionMiddleware re-invokes the function-set factory on EVERY LLM call, so this
+        // provider rebuilt the whole sub-agent surface — template catalog text and all — once per turn
+        // from inputs that change perhaps twice in a session. Serving the previous build while its
+        // inputs are unchanged is the win; GetFunctions_AfterTryRegister_ReflectsNewTemplate and
+        // SuppressSpawning_DropsOnlyTheSpawnContract are the mutation guards that it still rebuilds
+        // when they do change.
+        var first = _provider!.GetFunctions().ToList();
+        var second = _provider!.GetFunctions().ToList();
+
+        second.Should().Equal(first, (a, b) => ReferenceEquals(a, b));
+    }
+
+    [Fact]
     public void GetFunctions_AfterTryRegister_ReflectsNewTemplate()
     {
         // Mid-session activation contract (#77): when the discovery webhook registers a new
         // template into the shared source, the next GetFunctions() call must surface it in the
         // Agent tool's catalog. The ToolCallInjectionMiddleware re-invokes the function-set
-        // factory each request, so this provider must NOT cache its descriptor list.
+        // factory each request, so this provider must not serve a memoized descriptor list across
+        // a template change — the memo is keyed on the source's snapshot reference precisely so a
+        // TryRegister invalidates it.
         var beforeRegister = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent").Contract.Description!;
         beforeRegister.Should().NotContain("reviewer");
 
