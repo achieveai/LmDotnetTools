@@ -150,6 +150,16 @@ internal static class TranscriptRedactor
     public static string ArgsHash(string rawArgs) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonCanonicalizer.CanonicalizeArgs(rawArgs))));
 
+    /// <summary>
+    /// The digest OBJECT an archived call carries in place of its arguments. Idempotent: arguments
+    /// that are already a digest come back unchanged, which is what lets a redacted archive and the
+    /// raw store it was taken from score identically.
+    /// </summary>
+    public static string ArgsDigest(string args) =>
+        args.Contains(Fingerprints.RedactedArgsKey, StringComparison.Ordinal)
+            ? args
+            : new JsonObject { [Fingerprints.RedactedArgsKey] = ArgsHash(args) }.ToJsonString();
+
     private static void RedactArgs(JsonObject message)
     {
         if (!message.ContainsKey("function_args"))
@@ -157,8 +167,7 @@ internal static class TranscriptRedactor
             return;
         }
 
-        var raw = message["function_args"]?.GetValue<string>() ?? "";
-        message["function_args"] = new JsonObject { [Fingerprints.RedactedArgsKey] = ArgsHash(raw) }.ToJsonString();
+        message["function_args"] = ArgsDigest(message["function_args"]?.GetValue<string>() ?? "");
     }
 
     private static void RedactProse(JsonObject message)

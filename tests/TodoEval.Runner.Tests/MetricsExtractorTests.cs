@@ -54,7 +54,7 @@ public class MetricsExtractorTests
         storm.ThreadId.Should().Be("thread-storm");
         storm.Tool.Should().Be("add-note");
         storm.Count.Should().Be(3);
-        storm.Args.Should().Be("""{"noteText":"x","subtaskId":0,"taskId":"2.1"}""");
+        storm.Args.Should().Be(TranscriptRedactor.ArgsDigest("""{"noteText":"x","subtaskId":0,"taskId":"2.1"}"""));
 
         // Per-tool rows exist for all 15 tools, zero-call rows included.
         run.PerTool.Should().HaveCount(22, "15 task rows then 7 coordination rows");

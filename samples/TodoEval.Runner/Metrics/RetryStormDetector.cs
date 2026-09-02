@@ -11,6 +11,12 @@ internal sealed record RetryStorm
     public required string ThreadId { get; init; }
     public required string Tool { get; init; }
     public required int Count { get; init; }
+
+    /// <summary>
+    /// The call's argument DIGEST (<c>{"__argsSha256":"..."}</c>) over the canonical bytes, not the
+    /// arguments themselves: it identifies the retried call without publishing model-authored text
+    /// into the committed <c>runs.jsonl</c>.
+    /// </summary>
     public required string Args { get; init; }
 }
 
@@ -78,7 +84,12 @@ internal static class RetryStormDetector
             ThreadId = threadId,
             Tool = identity[..separator],
             Count = count,
-            Args = identity[(separator + 1)..],
+
+            // The digest, never the literal arguments. runs.jsonl is a COMMITTED artifact, so
+            // echoing model-authored arguments into it would leak exactly what the archive redacts
+            // - and would make the redacted archive score differently from the raw store it stands
+            // in for. The digest is over the canonical bytes, so it still identifies the call.
+            Args = TranscriptRedactor.ArgsDigest(identity[(separator + 1)..]),
         };
     }
 }

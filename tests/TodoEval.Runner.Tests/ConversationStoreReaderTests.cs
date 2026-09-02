@@ -77,13 +77,15 @@ public class ConversationStoreReaderTests
     {
         // The acceptance pin: a committed fixture conversation with a known 3x retry storm counts
         // as exactly ONE storm — the closing success used shuffled JSON key order, so this also
-        // pins arg canonicalization end to end.
+        // pins arg canonicalization end to end: the reported digest is the one taken over the
+        // CANONICAL bytes, which is why the shuffled call joins the same run.
         var thread = Load("thread-storm");
 
         var storm = thread.RetryStorms.Should().ContainSingle().Subject;
         storm.Count.Should().Be(3);
         storm.Tool.Should().Be("add-note");
-        storm.Args.Should().Be("""{"noteText":"x","subtaskId":0,"taskId":"2.1"}""");
+        storm.Args.Should().Be(TranscriptRedactor.ArgsDigest("""{"subtaskId":0,"taskId":"2.1","noteText":"x"}"""));
+        storm.Args.Should().NotContain("noteText");
     }
 
     [Fact]
