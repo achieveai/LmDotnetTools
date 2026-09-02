@@ -736,7 +736,8 @@ try
     // Public-cost pricing (#328/#378). This host is where a cost is actually stamped — the review daemon
     // runs no loop of its own and drives every review into a conversation here — so the catalog the
     // UsageLedger resolves against has to be composed and registered by THIS process. See PricingCatalog
-    // for the configuration shape and why no rates are shipped in the repository.
+    // for the configuration shape and docs/features/public-pricing-catalog.md for which rates are shipped
+    // (cited public list prices only, #682) and which ids are deliberately left unpriced.
     _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
     _ = builder.Services.AddSingleton(sp =>
@@ -751,8 +752,9 @@ try
         var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         // Conversation-wide usage cost (#196): resolves an estimated public cost per model when a rate is
-        // configured under "Pricing:Models". Empty by default, so flat-rate Copilot ids resolve to null
-        // cost ("unavailable") — the correct state — while any model with a configured rate gets a cost.
+        // configured under "Pricing:Models". The shipped section prices only the per-token API default ids,
+        // so flat-rate Copilot ids resolve to null cost ("unavailable") — the correct state — while any
+        // model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();

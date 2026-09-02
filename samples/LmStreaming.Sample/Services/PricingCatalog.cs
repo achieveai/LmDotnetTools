@@ -24,23 +24,42 @@ namespace LmStreaming.Sample.Services;
 ///     </para>
 ///     <code>
 ///     "Pricing": {
-///       "Version": "2026-08-01",
+///       "Version": "2026-09-02",
 ///       "Models": {
 ///         "&lt;catalog id&gt;": {
 ///           "PromptPerMillion": 3.0,
 ///           "CompletionPerMillion": 15.0,
+///           "CacheReadPerMillion": 0.30,
+///           "CacheWrite5mPerMillion": 3.75,
+///           "CacheWrite1hPerMillion": 6.0,
+///           "ReasoningPerMillion": null,
+///           "CacheAccounting": "Additive",
+///           "EffectiveDate": "2026-09-02",
+///           "_source": "https://vendor.example/pricing",
 ///           "Aliases": [ "&lt;another name the same model answers to&gt;" ]
 ///         }
 ///       }
 ///     }
 ///     </code>
 ///     <para>
-///         <b>Nothing is shipped in this repository's appsettings.</b> Rates are an operational fact with an
-///         expiry date, not a code constant: they are re-negotiated, they differ per account, and a wrong one
-///         is worse than an absent one because it is summed, reported and believed. An operator supplies them
-///         (OpenRouter's public listing is a reasonable source) in <c>appsettings.&lt;Environment&gt;.json</c>
-///         or via environment variables. With no section configured the catalog is empty and every cost
-///         resolves null — "unavailable", which is the honest state and exactly the behaviour before #378.
+///         The two base rates are required. The per-category rates (#682) are optional: a category left out
+///         is not priced at the base rate and not priced at zero — a record with tokens in it gets a
+///         <see cref="CostCompleteness.Partial" /> estimate naming the gap. <c>CacheAccounting</c> is
+///         <c>SubsetOfInput</c> (OpenAI: cached tokens are inside the prompt count) or <c>Additive</c>
+///         (Anthropic: <c>input_tokens</c> excludes them); it changes the arithmetic, so a misspelt value
+///         rejects the entry rather than falling back. <c>EffectiveDate</c> (<c>yyyy-MM-dd</c>) and
+///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
+///     </para>
+///     <para>
+///         <b>What is shipped in this repository's appsettings, and why only that.</b> Rates are an
+///         operational fact with an expiry date, not a code constant, and a wrong one is worse than an absent
+///         one because it is summed, reported and believed (#378). So the shipped section carries only public
+///         list prices copied from a vendor's own pricing page, each dated and cited — a cited, dated rate is
+///         not a guess — and only for the ids this sample's per-token API providers default to. Ids served
+///         over a subscription transport (Copilot, the Claude CLI, Codex) are deliberately absent: there is no
+///         per-token price to cite, so their cost resolves null, "unavailable", which is the honest state.
+///         The citation list lives in <c>docs/features/public-pricing-catalog.md</c>. Operators override or
+///         extend the section in <c>appsettings.&lt;Environment&gt;.json</c> or via environment variables.
 ///     </para>
 ///     <para>
 ///         <b>Cover the names the models actually answer to.</b> A usage record carries only
@@ -122,10 +141,14 @@ public static class PricingCatalog
 
     /// <summary>
     ///     Builds the <see cref="AppConfig" /> catalog from the <c>Pricing:Models</c> section. Each child key
-    ///     is a model id; an entry whose rates are not both USABLE is skipped, because half a rate cannot
+    ///     is a model id; an entry whose base rates are not both USABLE is skipped, because half a rate cannot
     ///     produce a cost and a zero substituted for the missing half would produce a wrong one. "Usable" is
     ///     present, finite and non-negative — see <see cref="IsUsableRate" /> for why zero is admitted and the
-    ///     other three are not. An absent section yields an empty catalog.
+    ///     other three are not. A category rate (#682) may be ABSENT — that is what makes an estimate Partial
+    ///     — but one that is present and unusable, an unknown <c>CacheAccounting</c>, or an unparseable
+    ///     <c>EffectiveDate</c> rejects the whole entry: dropping only the bad key would leave a Partial
+    ///     estimate that looks like a provider gap rather than an operator typo. An absent section yields an
+    ///     empty catalog.
     /// </summary>
     /// <param name="configuration">Host configuration to read <c>Pricing:Models</c> from.</param>
     /// <param name="rejected">
@@ -153,7 +176,29 @@ public static class PricingCatalog
                 continue;
             }
 
-            var pricing = new PricingConfig { PromptPerMillion = promptRate, CompletionPerMillion = completionRate };
+            if (
+                !TryReadCategoryRate(entry, "CacheReadPerMillion", rejected, out var cacheRead)
+                || !TryReadCategoryRate(entry, "CacheWrite5mPerMillion", rejected, out var cacheWrite5m)
+                || !TryReadCategoryRate(entry, "CacheWrite1hPerMillion", rejected, out var cacheWrite1h)
+                || !TryReadCategoryRate(entry, "ReasoningPerMillion", rejected, out var reasoning)
+                || !TryReadCacheAccounting(entry, rejected, out var cacheAccounting)
+                || !TryReadEffectiveDate(entry, rejected, out var effectiveDate)
+            )
+            {
+                continue;
+            }
+
+            var pricing = new PricingConfig
+            {
+                PromptPerMillion = promptRate,
+                CompletionPerMillion = completionRate,
+                CacheReadPerMillion = cacheRead,
+                CacheWrite5mPerMillion = cacheWrite5m,
+                CacheWrite1hPerMillion = cacheWrite1h,
+                ReasoningPerMillion = reasoning,
+                CacheAccounting = cacheAccounting,
+                EffectiveDate = effectiveDate,
+            };
 
             // One provider entry per name the model answers to, all carrying the SAME rate. The resolver
             // indexes provider model_names alongside the catalog id, so this is how an alias becomes
@@ -233,6 +278,95 @@ public static class PricingCatalog
     {
         value = rate.GetValueOrDefault();
         return rate.HasValue && double.IsFinite(value) && value >= 0;
+    }
+
+    /// <summary>
+    ///     Reads an optional per-category rate (#682). Absent is fine and yields null — the category is then
+    ///     reported as unpriced on any estimate that needs it. Present-but-unusable is the same operator error
+    ///     as an unusable base rate and is refused the same way.
+    /// </summary>
+    private static bool TryReadCategoryRate(
+        IConfigurationSection entry,
+        string key,
+        ICollection<string>? rejected,
+        out double? rate
+    )
+    {
+        rate = null;
+        var raw = entry[key];
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var parsed = entry.GetValue<double?>(key);
+        if (!IsUsableRate(parsed, out var value))
+        {
+            rejected?.Add(
+                $"'{entry.Key}' has {key}={Describe(parsed)}; a category rate may be omitted, but one that "
+                    + "is present must be finite and not negative"
+            );
+            return false;
+        }
+
+        rate = value;
+        return true;
+    }
+
+    /// <summary>
+    ///     Reads <c>CacheAccounting</c>: absent defaults to <see cref="CacheAccounting.SubsetOfInput" />, any
+    ///     other value must name a member exactly. The mode changes the arithmetic (Additive vs subset), so a
+    ///     misspelt value silently taking the default would price every Anthropic cache read twice.
+    /// </summary>
+    private static bool TryReadCacheAccounting(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out CacheAccounting accounting
+    )
+    {
+        accounting = CacheAccounting.SubsetOfInput;
+        var raw = entry["CacheAccounting"];
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        if (Enum.TryParse(raw, ignoreCase: true, out accounting) && Enum.IsDefined(accounting))
+        {
+            return true;
+        }
+
+        rejected?.Add(
+            $"'{entry.Key}' has CacheAccounting='{raw}'; expected one of "
+                + $"{string.Join(", ", Enum.GetNames<CacheAccounting>())}"
+        );
+        return false;
+    }
+
+    /// <summary>Reads <c>EffectiveDate</c> as an ISO <c>yyyy-MM-dd</c> date; absent yields null.</summary>
+    private static bool TryReadEffectiveDate(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out DateOnly? effectiveDate
+    )
+    {
+        effectiveDate = null;
+        var raw = entry["EffectiveDate"];
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        if (
+            DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+        )
+        {
+            effectiveDate = parsed;
+            return true;
+        }
+
+        rejected?.Add($"'{entry.Key}' has EffectiveDate='{raw}'; expected an ISO date (yyyy-MM-dd)");
+        return false;
     }
 
     /// <summary>Renders a rate for the operator, naming an absent one rather than printing an empty string.</summary>
