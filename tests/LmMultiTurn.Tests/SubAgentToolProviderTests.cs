@@ -836,6 +836,29 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         payload.ErrorCode.Should().Be("spawn_suppressed");
     }
 
+    /// <summary>
+    /// Arguments that are not valid JSON still reach the handler, so its own refusals answer first.
+    /// </summary>
+    /// <remarks>
+    /// The idempotency wrapper reads <c>idempotency_key</c> out of the arguments before the handler
+    /// runs, which puts a JSON parse in front of every guard the handler owns. Unparseable arguments
+    /// are a question for the handler, not for the wrapper: a key that cannot be read is simply no key,
+    /// and answering with a parse exception here would replace a coded refusal the model can act on
+    /// with an unhandled fault.
+    /// </remarks>
+    [Fact]
+    public async Task HandleAgentToolAsync_WithUnparseableArguments_StillRefusesThroughTheHandler()
+    {
+        var handler = GetHandler("Agent");
+
+        using var suppression = _provider!.SuppressSpawning();
+        var result = await handler("{not json", new ToolCallContext(), CancellationToken.None);
+
+        var payload = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be("spawn_suppressed");
+    }
+
     [Fact]
     public void SuppressSpawning_IsReentrantAndIdempotentOnDispose()
     {

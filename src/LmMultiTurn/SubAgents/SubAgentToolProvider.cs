@@ -908,12 +908,7 @@ public class SubAgentToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        string? key;
-        using (var doc = JsonDocument.Parse(argsJson))
-        {
-            key = GetOptionalString(doc.RootElement, "idempotency_key");
-        }
-
+        var key = ReadIdempotencyKey(argsJson);
         if (string.IsNullOrWhiteSpace(key))
         {
             return await work();
@@ -945,6 +940,29 @@ public class SubAgentToolProvider : IFunctionProvider
             // key wait on work that has already stopped.
             _idempotency.Abandon(claim!);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Reads the caller's idempotency key, or null when there is not one to read.
+    /// </summary>
+    /// <remarks>
+    /// Unparseable arguments are treated as "no key" rather than as an error. This guard runs in front
+    /// of every handler, so a parse exception thrown HERE would pre-empt the refusals the handler owns
+    /// — a suppressed spawn, an unknown subagent type — and turn a coded result the model can act on
+    /// into an unhandled fault. The handler parses the arguments itself and is the right place for that
+    /// complaint.
+    /// </remarks>
+    private static string? ReadIdempotencyKey(string argsJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(argsJson);
+            return GetOptionalString(doc.RootElement, "idempotency_key");
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
