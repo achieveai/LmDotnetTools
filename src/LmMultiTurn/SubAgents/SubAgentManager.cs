@@ -388,7 +388,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             return;
         }
 
-        _ = parent.Bundle.RetireAgent(agentId, status);
+        // Retirement closes the obligations; telling their senders is what stops one of them waiting on
+        // an answer that can no longer come. Not awaited: retirement runs on teardown paths that are
+        // synchronous by contract, and the notification never throws.
+        var abandoned = parent.Bundle.RetireAgent(agentId, status);
+        ObserveTaskFault(parent.Bundle.NotifyAbandonedObligationsAsync(abandoned, agentId));
         _ = admission.Lease.Release();
     }
 

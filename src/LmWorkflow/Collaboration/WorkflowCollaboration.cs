@@ -295,10 +295,15 @@ internal sealed class WorkflowControllerRegistration
             return;
         }
 
-        _ = Setup.Bundle.RetireAgent(
+        var abandoned = Setup.Bundle.RetireAgent(
             Setup.AgentId,
             succeeded ? AgentCollaborationStatuses.Completed : AgentCollaborationStatuses.Error
         );
+
+        // Closing the obligations is only half of leaving: an asker that is never told stays blocked on
+        // an answer this node can no longer give. Not awaited — teardown is synchronous by contract and
+        // the notification swallows its own failures.
+        _ = Setup.Bundle.NotifyAbandonedObligationsAsync(abandoned, Setup.AgentId);
         _endpoint.Detach();
         _ = _lease.Release();
     }

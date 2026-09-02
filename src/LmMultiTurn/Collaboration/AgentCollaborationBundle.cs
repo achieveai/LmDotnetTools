@@ -49,6 +49,20 @@ public sealed class AgentCollaborationBundle
     /// <summary>Reason recorded against messages abandoned because the agent that sent them left.</summary>
     public const string SenderLeftReasonCode = "sender_left";
 
+    /// <summary>
+    /// Sender identity stamped on notices the collaboration itself mints, rather than any agent.
+    /// </summary>
+    /// <remarks>
+    /// Reserved: it carries a colon, which no minted agent id contains, so no agent can be registered
+    /// under it and nothing can address a reply to it. A notice therefore reads as "the system is
+    /// telling you this" in the envelope, the transcript, and the UI, and not as a peer that could be
+    /// argued with.
+    /// </remarks>
+    public const string SystemSenderAgentId = "system:collaboration";
+
+    /// <summary>Human-facing name shown for <see cref="SystemSenderAgentId"/>.</summary>
+    public const string SystemSenderName = "collaboration";
+
     // One tail per target, so admissions for the same target hand over in the order they were admitted.
     // Keyed by canonical agent id, and therefore no larger than the directory itself.
     private readonly Dictionary<string, Task> _deliveryTails = new(StringComparer.Ordinal);
@@ -317,5 +331,106 @@ public sealed class AgentCollaborationBundle
                 .. Ledger.AbandonMessagesFrom(agentId, SenderLeftReasonCode),
             ];
         }
+    }
+
+    /// <summary>
+    /// Tells a sender that a message it was told had been accepted has reached a terminal state it never
+    /// asked for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This closes the gap that made "accepted" a lie: admission is synchronous and delivery is not, so
+    /// without a push the only record of a failure is a ledger entry the sender has no reason to look at.
+    /// A sender that asked a question would simply wait forever.
+    /// </para>
+    /// <para>
+    /// Two deliberate restrictions. The notice is NOT admitted to the ledger — it is news, not an
+    /// obligation, and admitting it would mean a failed notice notified about the notice. And it is only
+    /// delivered to a sender the directory still reports as <see cref="AgentCollaborationStatuses.Running"/>:
+    /// a finished agent's write endpoint restarts it, and spending a whole model run to tell an agent
+    /// that has already delivered its answer about a message it can no longer act on buys nothing. The
+    /// ledger keeps the record either way.
+    /// </para>
+    /// </remarks>
+    /// <param name="messageId">The message that will not arrive.</param>
+    /// <param name="reasonCode">The content-free code recorded against it.</param>
+    internal async Task NotifySenderOfDeliveryFailureAsync(string messageId, string reasonCode)
+    {
+        if (Ledger.Find(messageId) is not { } entry)
+        {
+            return;
+        }
+
+        if (Directory.FindById(entry.FromAgentId) is not { Status: AgentCollaborationStatuses.Running })
+        {
+            return;
+        }
+
+        if (Directory.GetWriteEndpoint(entry.FromAgentId) is not { } endpoint)
+        {
+            return;
+        }
+
+        var notice = AgentMessage.Create(
+            $"agentnotice-{Guid.NewGuid():N}",
+            AgentMessageType.DeliveryFailure,
+            SystemSenderAgentId,
+            SystemSenderName,
+            DescribeDeliveryFailure(entry, reasonCode)
+        );
+
+        try
+        {
+            _ = await endpoint.DeliverAsync(notice, CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // Best effort by construction. This runs on a background delivery task nobody awaits, and a
+            // sender that cannot even be told its message died is a sender whose own owner is already
+            // failing — propagating here would replace one lost notice with an unobserved fault.
+        }
+    }
+
+    /// <summary>
+    /// Tells the senders of the obligations an agent took to its grave, after it has been retired.
+    /// </summary>
+    /// <remarks>
+    /// Filtered to the messages addressed TO the agent that left, and it has to be:
+    /// <see cref="RetireAgent"/> also closes the messages that agent SENT, and notifying those would
+    /// deliver to — and so restart — the very agent being retired.
+    /// </remarks>
+    /// <param name="messageIds">What <see cref="RetireAgent"/> closed.</param>
+    /// <param name="retiredAgentId">The agent that left.</param>
+    internal async Task NotifyAbandonedObligationsAsync(IReadOnlyList<string> messageIds, string retiredAgentId)
+    {
+        ArgumentNullException.ThrowIfNull(messageIds);
+
+        foreach (var messageId in messageIds)
+        {
+            if (
+                Ledger.Find(messageId) is { } entry
+                && string.Equals(entry.ToAgentId, retiredAgentId, StringComparison.Ordinal)
+            )
+            {
+                // The entry's own recorded reason, not a second vocabulary: the notice and the outbound
+                // view a sender can pull must not disagree about why the same message died.
+                await NotifySenderOfDeliveryFailureAsync(messageId, entry.ReasonCode ?? TargetLeftReasonCode);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes the notice body: what died, who it was for, why, and what to do about it. Identifiers and
+    /// codes only — the message body was never in the ledger and must not appear here either.
+    /// </summary>
+    private string DescribeDeliveryFailure(AgentMessageLedgerEntry entry, string reasonCode)
+    {
+        var targetName = Directory.FindById(entry.ToAgentId)?.Name ?? entry.ToAgentId;
+        var recovery = AgentCollaborationMessenger.IsRetryable(reasonCode)
+            ? "It may work later: send it again once CheckAgents reports the target running."
+            : "It will never arrive. Call GetAgents and pick an agent that is still live, or continue without it.";
+
+        return $"Your {entry.MessageType} to '{targetName}' ({entry.ToAgentId}) was accepted but could not be "
+            + $"delivered (message_id '{entry.MessageId}', reason '{reasonCode}'). {recovery}";
     }
 }

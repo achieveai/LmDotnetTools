@@ -41,7 +41,32 @@ public sealed class AgentCollaborationMessenger
     /// <summary>Reason recorded when the target's owner refused without saying why.</summary>
     public const string RefusedReasonCode = "refused";
 
+    /// <summary>
+    /// Reason recorded when the target could not take the message now but might later — it is queued,
+    /// its input path is full, or its owner could not take a slot in time.
+    /// </summary>
+    /// <remarks>
+    /// The distinction this code carries is the whole point of splitting the failure arms: the endpoint
+    /// already knows whether a refusal is backpressure or an ending, and collapsing the two left a
+    /// sender with no way to tell "wait and resend" from "this will never work". The recovery is the
+    /// sender's, not the messenger's — a retry inside delivery would either double a tool call's latency
+    /// or hide a target that is genuinely wedged.
+    /// </remarks>
+    public const string TargetBusyRetryReasonCode = "target_busy_retry";
+
+    /// <summary>Reason recorded when the target can never take the message: it is gone, or its owner is.</summary>
+    public const string TargetGoneReasonCode = "target_gone";
+
     private readonly AgentCollaborationSetup _setup;
+
+    /// <summary>Whether a recorded delivery failure is one the sender could get past by trying again.</summary>
+    /// <remarks>
+    /// Deliberately a whitelist of the one retryable code rather than a blacklist of the permanent ones.
+    /// A future failure whose recoverability nobody has thought about reads as permanent, which costs a
+    /// sender one abandoned message; the other way round it would cost an unbounded retry loop.
+    /// </remarks>
+    public static bool IsRetryable(string? reasonCode) =>
+        string.Equals(reasonCode, TargetBusyRetryReasonCode, StringComparison.Ordinal);
 
     /// <summary>Creates a messenger that sends on behalf of one agent.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="setup"/> is null.</exception>
@@ -97,29 +122,63 @@ public sealed class AgentCollaborationMessenger
             var endpoint = _setup.Directory.GetWriteEndpoint(targetAgentId);
             if (endpoint is null)
             {
-                _ = ledger.MarkDeliveryFailed(messageId, NoEndpointReasonCode);
+                await SettleFailureAsync(messageId, NoEndpointReasonCode);
                 return;
             }
 
             var message = AgentMessage.Create(messageId, messageType, _setup.AgentId, _setup.Name, body, inResponseTo);
 
             var outcome = await endpoint.DeliverAsync(message, CancellationToken.None);
-            _ = outcome.IsDelivered
-                ? ledger.MarkDelivered(messageId)
-                : ledger.MarkDeliveryFailed(messageId, outcome.ReasonCode ?? RefusedReasonCode);
+            if (outcome.IsDelivered)
+            {
+                _ = ledger.MarkDelivered(messageId);
+                return;
+            }
+
+            await SettleFailureAsync(messageId, Classify(outcome));
         }
         catch (Exception)
         {
             // A delivery is never retried under the same identifier, so the failure has to be recorded
             // rather than propagated: this task is not awaited by the sender, and an unobserved fault
             // would leave the ledger entry open forever with nobody able to see why.
-            _ = ledger.MarkDeliveryFailed(messageId, DeliveryErrorReasonCode);
+            await SettleFailureAsync(messageId, DeliveryErrorReasonCode);
         }
         finally
         {
             // Return the slot the admission took. The inbox holds identifiers with no remove-by-id, so
             // this returns capacity rather than a specific entry — which is all the bound is for.
             _ = _setup.Directory.GetInbox(targetAgentId)?.TryDequeue(out _);
+        }
+    }
+
+    /// <summary>
+    /// Turns a hand-off the target's owner would not take into one of the two codes a sender can act on.
+    /// </summary>
+    /// <remarks>
+    /// The disposition, not the endpoint's own reason string, decides. Every endpoint already
+    /// distinguishes "not now" from "not ever" — that is what
+    /// <see cref="AgentDeliveryDisposition.Refused"/> versus <see cref="AgentDeliveryDisposition.Failed"/>
+    /// means — so mapping through the disposition gives one vocabulary for every endpoint that exists or
+    /// will exist, rather than a lookup table of reason strings that each new endpoint would have to be
+    /// added to.
+    /// </remarks>
+    private static string Classify(AgentDeliveryOutcome outcome) =>
+        outcome.Disposition == AgentDeliveryDisposition.Refused ? TargetBusyRetryReasonCode : TargetGoneReasonCode;
+
+    /// <summary>
+    /// Records a failed delivery and pushes the news back to the sender.
+    /// </summary>
+    /// <remarks>
+    /// The notification is inside the guard rather than beside it: <c>MarkDeliveryFailed</c> answers
+    /// false for a message that some other path already closed, and notifying anyway would tell a sender
+    /// twice about one message.
+    /// </remarks>
+    private async Task SettleFailureAsync(string messageId, string reasonCode)
+    {
+        if (_setup.Bundle.Ledger.MarkDeliveryFailed(messageId, reasonCode))
+        {
+            await _setup.Bundle.NotifySenderOfDeliveryFailureAsync(messageId, reasonCode);
         }
     }
 }
