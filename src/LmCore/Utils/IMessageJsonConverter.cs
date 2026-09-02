@@ -286,6 +286,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "agent";
         }
 
+        if (type == typeof(CompactionCheckpointMessage))
+        {
+            return CompactionCheckpointMessage.TypeDiscriminator;
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -323,6 +328,13 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             if (element.TryGetProperty("notify_kind", out _))
             {
                 return typeof(NotifyMessage);
+            }
+
+            // A compaction checkpoint's "text" is likewise its rendered envelope; without this guard a
+            // $type-less checkpoint row would rehydrate as a TextMessage and lose its manifest.
+            if (element.TryGetProperty("checkpoint_id", out _))
+            {
+                return typeof(CompactionCheckpointMessage);
             }
 
             // Same reasoning for an agent-to-agent message: its "text" is the rendered envelope, so
@@ -444,6 +456,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "agent" => typeof(AgentMessage),
             "conversation_usage" => typeof(ConversationUsageMessage),
             "conversation_todo" => typeof(ConversationTodoMessage),
+            CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
             _ => null,
         };
     }
