@@ -630,6 +630,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             _ = functionRegistry.AddProvider(new WaitToolProvider(_triggerRuntime));
         }
 
+        // RecallConversation (spec 679 §6): registered after the inheritable snapshot so a child never
+        // inherits this loop's instance (each child binds its own over its own thread), and only when
+        // compaction is at least in Warn mode. The tool list is static from here on: with no active
+        // checkpoint the tool answers nothing_compacted rather than appearing and disappearing.
+        if (_compaction is { IsEnabled: true })
+        {
+            _ = functionRegistry.AddProvider(
+                new RecallConversationToolProvider(
+                    threadId,
+                    store,
+                    () => _compaction.ActiveBoundarySeq,
+                    _compaction.Options.Recall
+                )
+            );
+        }
+
         // Build tool call components from registry
         var (toolCallMiddleware, finalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = finalHandlers;

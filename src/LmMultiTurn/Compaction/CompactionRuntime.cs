@@ -153,10 +153,9 @@ internal sealed class CompactionRuntime
 
     public long? ActiveBoundarySeq => _active?.Boundary.Seq;
 
-    /// <summary>The name the envelope's recall hint and the recall tool share (spec 679 §6).</summary>
-    public const string RecallToolName = "RecallConversation";
-
-    public CheckpointRenderOptions RenderOptions { get; } = new() { RecallToolName = RecallToolName };
+    /// <summary>The envelope's recall hint names the tool the loop registers (spec 679 §6).</summary>
+    public CheckpointRenderOptions RenderOptions { get; } =
+        new() { RecallToolName = RecallConversationToolProvider.ToolName };
 
     public long ReserveTokens =>
         (_host.DefaultOptions.MaxToken ?? MultiTurnAgentBase.DefaultMaxTokenFloor) + Options.ReserveMarginTokens;

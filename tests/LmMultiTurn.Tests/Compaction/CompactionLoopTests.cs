@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
 using Xunit;
@@ -40,6 +41,9 @@ public class CompactionLoopTests
     {
         public List<IReadOnlyList<IMessage>> Requests { get; } = [];
 
+        /// <summary>The tool names offered on each call, in call order.</summary>
+        public List<IReadOnlyList<string>> FunctionNames { get; } = [];
+
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -48,6 +52,7 @@ public class CompactionLoopTests
         {
             var request = messages.ToList();
             Requests.Add(request);
+            FunctionNames.Add([.. (options?.Functions ?? []).Select(f => f.Name)]);
             var reply = script(Requests.Count).Select(m => m.WithIds(options)).ToList();
             return Task.FromResult(Stream(reply));
         }
@@ -136,7 +141,8 @@ public class CompactionLoopTests
             CompactionOptions options,
             Func<string?, long?>? window = null,
             string? killSwitch = null,
-            InMemoryConversationStore? store = null
+            InMemoryConversationStore? store = null,
+            SubAgentOptions? subAgentOptions = null
         )
         {
             Agent = new ScriptedAgent(script);
@@ -169,6 +175,7 @@ public class CompactionLoopTests
                 defaultOptions: new GenerateReplyOptions { ModelId = Model, MaxToken = 100 },
                 store: Store,
                 lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
+                subAgentOptions: subAgentOptions,
                 compaction: Setup
             );
             _runTask = Loop.RunAsync(_cts.Token);
@@ -531,6 +538,129 @@ public class CompactionLoopTests
         h.Decisions.Should().BeEmpty();
         h.Publisher.EventTypes.Should().NotContain(t => t.StartsWith("compaction_", StringComparison.Ordinal));
         (await ContextObservationProjection.LoadLatestAsync(h.Store, Thread)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RecallTool_IsOfferedInWarnMode_NeverInOff_AndAnswersNothingCompactedWithoutACheckpoint()
+    {
+        await using var warn = new Harness(
+            call =>
+                call == 1
+                    ?
+                    [
+                        new ToolCallMessage
+                        {
+                            ToolCallId = "recall-1",
+                            FunctionName = RecallConversationToolProvider.ToolName,
+                            FunctionArgs = """{"query":"anything"}""",
+                            Role = Role.Assistant,
+                        },
+                    ]
+                    : [new TextMessage { Text = "done", Role = Role.Assistant }],
+            Options(CompactionMode.Warn),
+            _ => Window
+        );
+        await using var off = new Harness(EchoThenDone(1), Options(CompactionMode.Off), _ => Window);
+
+        (await warn.RunAsync("start")).IsError.Should().BeFalse();
+        (await off.RunAsync("start")).IsError.Should().BeFalse();
+
+        warn.Agent.FunctionNames.Should().OnlyContain(names => names.Contains(RecallConversationToolProvider.ToolName));
+        off.Agent.FunctionNames.Should().OnlyContain(names => !names.Contains(RecallConversationToolProvider.ToolName));
+        var answer = (await warn.StoredRowsAsync())
+            .OfType<ToolCallResultMessage>()
+            .Single(r => r.ToolCallId == "recall-1");
+        answer.Result.Should().Contain(RecallConversationToolProvider.NothingCompacted);
+    }
+
+    [Fact]
+    public async Task RecallRoundTrip_ReturnsACompactedRowVerbatim_AsAnOrdinaryTailRow()
+    {
+        // Corpus (j): after the checkpoint activates, the model recalls the compacted human row by
+        // keyword; the answer is a normal tool result in the tail and the next request carries it.
+        await using var h = new Harness(
+            call =>
+                call == 8
+                    ?
+                    [
+                        new ToolCallMessage
+                        {
+                            ToolCallId = "recall-1",
+                            FunctionName = RecallConversationToolProvider.ToolName,
+                            FunctionArgs = """{"query":"start"}""",
+                            Role = Role.Assistant,
+                        },
+                    ]
+                    : EchoThenDone(7)(call),
+            Options(CompactionMode.Compact),
+            _ => Window
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse();
+        var applied = h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Single();
+        var persisted = await h.Store.LoadMessagesAsync(Thread);
+        var answerRow = persisted.Single(p =>
+            p.Id == MessagePersistenceConverter.BuildToolResultPersistedId(Thread, "recall-1")
+        );
+        answerRow.Seq.Should().BeGreaterThan(applied.BoundarySeq!.Value, "the answer is a tail row");
+        var answer = (ToolCallResultMessage)MessagePersistenceConverter.FromPersistedMessage(answerRow);
+        answer.Result.Should().Contain($"\"boundary_seq\":{applied.BoundarySeq}");
+        answer.Result.Should().Contain("\"seq\":1").And.Contain("\"text\":\"start\"");
+
+        var next = h.Agent.Requests[8];
+        HasEnvelope(next).Should().BeTrue();
+        next.OfType<ToolsCallAggregateMessage>()
+            .Should()
+            .Contain(a =>
+                a.ToolsCallResult.ToolCallResults.Any(r => r.ToolCallId == "recall-1" && r.Result.Contains("\"seq\":1"))
+            );
+    }
+
+    [Fact]
+    public async Task ChildLoop_RegistersItsOwnRecallInstance_AndNeverInheritsTheParents()
+    {
+        var child = new ScriptedAgent(_ => [new TextMessage { Text = "child done", Role = Role.Assistant }]);
+        var subAgents = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+            {
+                ["echo"] = new SubAgentTemplate { SystemPrompt = "You echo.", AgentFactory = () => child },
+            },
+            DefaultConversationStoreFactory = _ => new InMemoryConversationStore(),
+        };
+        await using var h = new Harness(
+            EchoThenDone(0),
+            Options(CompactionMode.Warn),
+            _ => Window,
+            subAgentOptions: subAgents
+        );
+
+        var manager = h.Loop.SubAgentManager!;
+        manager
+            .GetInheritableToolSnapshot()
+            .Contracts.Select(c => c.Name)
+            .Should()
+            .Contain("Echo")
+            .And.NotContain(
+                RecallConversationToolProvider.ToolName,
+                "the parent's instance is bound to the parent's thread"
+            );
+
+        _ = await manager.SpawnAsync("echo", "say hi");
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (child.FunctionNames.Count == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        child.FunctionNames.Should().NotBeEmpty("the child ran a turn");
+        child
+            .FunctionNames[0]
+            .Should()
+            .Contain(RecallConversationToolProvider.ToolName, "the child registered its own instance");
+        child.FunctionNames[0].Should().Contain("Echo", "domain tools are still inherited");
     }
 
     [Theory]
