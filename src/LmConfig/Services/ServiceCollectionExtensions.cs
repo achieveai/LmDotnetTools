@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Pricing;
@@ -226,6 +227,11 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptions<AppConfig>>().Value,
                 CatalogPricingSource
             )
+        );
+        // #681: the same catalog carries token_limits; surface them for the per-generation context
+        // observation through LmCore's IModelCapacityResolver, again with TryAdd so a host's own wins.
+        services.TryAddSingleton<IModelCapacityResolver>(sp =>
+            ModelCapacityConfigResolver.FromAppConfig(sp.GetRequiredService<IOptions<AppConfig>>().Value)
         );
         // Ensure a single IHttpHandlerBuilder and attach the retry wrapper.
         var hbDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IHttpHandlerBuilder));
