@@ -2761,15 +2761,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Resolves the conversation store for a spawned child. A template's own
-    /// <see cref="SubAgentTemplate.ConversationStoreFactory"/> wins; otherwise the provenance-aware host
-    /// factory (#275) is preferred, invoked with THIS manager's own identity — the child's real parent
-    /// thread (<see cref="AgentLineage.ParentThreadId"/> is this manager's parent thread) and a describe
-    /// callback over this manager's own live roster — so a grandchild is attributed to its actual parent
-    /// and its snapshot resolves here, not against a root captured once. The describe is a LIVE callback
-    /// resolved at metadata-write time, not now: the child is not yet registered when its store is built,
-    /// but it is by the time the store first persists. Falls back to the plain
-    /// <summary>
     /// The store the root's ordinal counter (#705) is persisted through: the same host-supplied factories a
     /// child transcript resolves against, asked for the ROOT thread — a provenance-aware factory is handed a
     /// null parent so it stamps nothing (the root is nobody's child). Null when the host wired no store, in
