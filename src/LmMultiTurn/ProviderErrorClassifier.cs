@@ -123,30 +123,25 @@ internal static class ProviderErrorClassifier
     /// </summary>
     private static bool IsTransportAbort(Exception candidate)
     {
-        switch (candidate)
+        // A status-bearing HttpRequestException is a real answer from the server: only the gateway
+        // family (the proxy gave up on a huge request) keeps the transport shape; 4xx is not overflow.
+        return candidate switch
         {
-            case HttpIOException:
-            case SocketException:
-            case IOException:
-                return true;
-            case HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded }:
-            case HttpRequestException { HttpRequestError: HttpRequestError.ConnectionError }:
-                return true;
-            // A status-bearing HttpRequestException is a real answer from the server: only the gateway
-            // family (the proxy gave up on a huge request) keeps the transport shape; 4xx is not overflow.
-            case HttpRequestException
+            HttpIOException or SocketException or IOException => true,
+            HttpRequestException
+            {
+                HttpRequestError: HttpRequestError.ResponseEnded or HttpRequestError.ConnectionError,
+            } => true,
+            HttpRequestException
             {
                 StatusCode: HttpStatusCode.BadGateway
                     or HttpStatusCode.ServiceUnavailable
                     or HttpStatusCode.GatewayTimeout
-                    or HttpStatusCode.RequestTimeout
-            }:
-                return true;
-            case HttpRequestException { StatusCode: not null }:
-                return false;
-            default:
-                return ContainsAny(candidate.Message, s_transportAbortSignatures);
-        }
+                    or HttpStatusCode.RequestTimeout,
+            } => true,
+            HttpRequestException { StatusCode: not null } => false,
+            _ => ContainsAny(candidate.Message, s_transportAbortSignatures),
+        };
     }
 
     private static bool ContainsAny(string? message, string[] signatures)
