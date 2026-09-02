@@ -113,9 +113,7 @@ internal sealed class CompactionPolicy(CompactionOptions options)
     public const string HardReason = "hard";
     public const string EconomicReason = "economic";
 
-    private readonly CompactionOptions _options = options ?? throw new ArgumentNullException(nameof(options));
-
-    public CompactionOptions Options => _options;
+    public CompactionOptions Options { get; } = options ?? throw new ArgumentNullException(nameof(options));
 
     public CompactionDecision Evaluate(CompactionPolicyInput input)
     {
@@ -165,7 +163,7 @@ internal sealed class CompactionPolicy(CompactionOptions options)
         // Row 2: no capacity figure — nothing to compare against, but a huge request is still worth a warning.
         if (usable is null)
         {
-            return tokens > _options.WarnAbsoluteTokens
+            return tokens > Options.WarnAbsoluteTokens
                 ? Decide(CompactionDecisionKinds.Warn, CompactionSkipReasons.CapacityUnknown)
                 : Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.CapacityUnknown);
         }
@@ -182,12 +180,12 @@ internal sealed class CompactionPolicy(CompactionOptions options)
 
         // Death-spiral guard: the per-run cap holds even for the hard row, because a run that has
         // already compacted twice and is still over the line will not be saved by a third summary.
-        if (input.CompactionsThisRun >= _options.MaxCompactionsPerRun)
+        if (input.CompactionsThisRun >= Options.MaxCompactionsPerRun)
         {
             return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.MaxPerRun);
         }
 
-        var target = (long)(_options.TargetRatio * usable.Value);
+        var target = (long)(Options.TargetRatio * usable.Value);
         var compactKind = input.Mode switch
         {
             CompactionMode.Warn => CompactionDecisionKinds.Warn,
@@ -196,7 +194,7 @@ internal sealed class CompactionPolicy(CompactionOptions options)
         };
 
         // Row 4: hard threshold — economics and cooldown ignored.
-        if (tokens + reserve >= window!.Value * _options.HardRatio)
+        if (tokens + reserve >= window!.Value * Options.HardRatio)
         {
             return Decide(compactKind, HardReason, target);
         }
@@ -204,28 +202,28 @@ internal sealed class CompactionPolicy(CompactionOptions options)
         // Row 5: cooldown by generations or by the new-token floor (only meaningful after a checkpoint).
         if (
             cooldownRemaining is not null
-            || (input.NewTokensSinceCheckpoint is { } fresh && fresh < _options.CooldownNewTokens)
+            || (input.NewTokensSinceCheckpoint is { } fresh && fresh < Options.CooldownNewTokens)
         )
         {
             return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.Cooldown);
         }
 
         // Row 6: economic compaction.
-        if (utilization >= _options.CompactRatio)
+        if (utilization >= Options.CompactRatio)
         {
             var savings = PredictSavings(tokens, target, input.Economics);
-            if (savings is { } predicted && predicted < _options.MinPredictedSavingsMicros)
+            if (savings is { } predicted && predicted < Options.MinPredictedSavingsMicros)
             {
                 return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.BelowThreshold, savings: savings);
             }
 
-            if (savings is null && _options.MinPredictedSavingsMicros > 0)
+            if (savings is null && Options.MinPredictedSavingsMicros > 0)
             {
                 // An unpriced model cannot clear a positive economic floor.
                 return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.BelowThreshold);
             }
 
-            if (input.CacheTemperature == CacheTemperature.Hot && utilization < _options.HardRatio)
+            if (input.CacheTemperature == CacheTemperature.Hot && utilization < Options.HardRatio)
             {
                 return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.CacheHot, savings: savings);
             }
@@ -234,7 +232,7 @@ internal sealed class CompactionPolicy(CompactionOptions options)
         }
 
         // Row 7: warn band.
-        if (utilization >= _options.WarnRatio)
+        if (utilization >= Options.WarnRatio)
         {
             return Decide(CompactionDecisionKinds.Warn, null);
         }
@@ -257,9 +255,9 @@ internal sealed class CompactionPolicy(CompactionOptions options)
         }
 
         var removed = Math.Max(0, tokens - target);
-        var reuse = removed * _options.ExpectedFutureGenerations * economics.InputRatePerMillion;
+        var reuse = removed * Options.ExpectedFutureGenerations * economics.InputRatePerMillion;
         var summaryCost =
-            (removed * economics.InputRatePerMillion) + (_options.CheckpointTokenCap * economics.OutputRatePerMillion);
+            (removed * economics.InputRatePerMillion) + (Options.CheckpointTokenCap * economics.OutputRatePerMillion);
         var rewriteCost =
             economics.CachingEnabled && economics.CacheWriteRatePerMillion is { } writeRate ? target * writeRate : 0m;
         return (long)(reuse - summaryCost - rewriteCost);

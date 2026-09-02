@@ -100,7 +100,6 @@ internal sealed class CompactionRuntime
     private readonly List<Task> _inFlightPersists = [];
     private readonly object _gate = new();
 
-    private CompactionCheckpointMessage? _active;
     private long _generationOrdinal;
     private bool _ordinalSeeded;
     private DateTimeOffset? _lastActivity;
@@ -149,9 +148,9 @@ internal sealed class CompactionRuntime
     public CompactionOptions Options => _setup.Options;
 
     /// <summary>The checkpoint the view is built on, when one is active.</summary>
-    public CompactionCheckpointMessage? Active => _active;
+    public CompactionCheckpointMessage? Active { get; private set; }
 
-    public long? ActiveBoundarySeq => _active?.Boundary.Seq;
+    public long? ActiveBoundarySeq => Active?.Boundary.Seq;
 
     /// <summary>The envelope's recall hint names the tool the loop registers (spec 679 §6).</summary>
     public CheckpointRenderOptions RenderOptions { get; } =
@@ -175,7 +174,7 @@ internal sealed class CompactionRuntime
         lock (_gate)
         {
             _identities.AddOrUpdate(message, new RowIdentity { Id = persistedId });
-            _inFlightPersists.RemoveAll(t => t.IsCompleted);
+            _ = _inFlightPersists.RemoveAll(t => t.IsCompleted);
             _inFlightPersists.Add(append);
         }
     }
@@ -231,7 +230,7 @@ internal sealed class CompactionRuntime
     /// <summary>The request as the model should see it, or null when there is no active checkpoint (the raw history is the view).</summary>
     public IReadOnlyList<IMessage>? BuildView()
     {
-        if (!IsEnabled || _active is null)
+        if (!IsEnabled || Active is null)
         {
             return null;
         }
@@ -239,7 +238,7 @@ internal sealed class CompactionRuntime
         return AgentContextProjection.Default.Build(
             _host.SystemPrompt,
             Sequence(_host.HistorySnapshot()),
-            _active,
+            Active,
             RenderOptions
         );
     }
@@ -277,7 +276,7 @@ internal sealed class CompactionRuntime
                 .RollBackAsync(store, _host.ThreadId, CompactionFailureReasons.Killed, _clock.GetUtcNow(), ct)
                 .ConfigureAwait(false);
             state = state with { ActiveCheckpointId = null, ActiveBoundarySeq = null };
-            _active = null;
+            Active = null;
             replacement = RawRequest();
         }
         else if (store is not null && !killed)
@@ -302,9 +301,7 @@ internal sealed class CompactionRuntime
             LiveDeferredCount = _host.LiveDeferredCount(),
             GenerationOrdinal = ordinal,
             CooldownUntilGenerationOrdinal = state?.CooldownUntilGenerationOrdinal,
-            NewTokensSinceCheckpoint = _active is null
-                ? null
-                : Math.Max(0, tokens - _active.Stats.EstimatedTokensAfter),
+            NewTokensSinceCheckpoint = Active is null ? null : Math.Max(0, tokens - Active.Stats.EstimatedTokensAfter),
             CompactionsThisRun = _compactionsThisRun,
             CacheTemperature = ConversationActivity.ResolveCacheTemperature(
                 _lastActivity,
@@ -577,9 +574,9 @@ internal sealed class CompactionRuntime
 
         var roster = _host.Roster();
         var known = new HashSet<string>(roster.Select(a => a.AgentId), StringComparer.Ordinal);
-        if (_active is not null)
+        if (Active is not null)
         {
-            known.UnionWith(_active.Manifest.Agents.Select(a => a.AgentId));
+            known.UnionWith(Active.Manifest.Agents.Select(a => a.AgentId));
         }
 
         var checkpointId = "cp-" + Guid.NewGuid().ToString("N");
@@ -590,7 +587,7 @@ internal sealed class CompactionRuntime
             CheckpointId = checkpointId,
             Rows = rows,
             Cut = legal,
-            Previous = _active,
+            Previous = Active,
             Board = await ConversationTodoProjection.LoadAsync(store, _host.ThreadId, ct).ConfigureAwait(false),
             Roster = roster,
             KnownAgentIds = known,
@@ -634,7 +631,7 @@ internal sealed class CompactionRuntime
         }
 
         _host.AppendInMemory(checkpoint);
-        _active = checkpoint;
+        Active = checkpoint;
         _compactionsThisRun++;
         if (result.Usage is { } usage)
         {
@@ -869,11 +866,11 @@ internal sealed class CompactionRuntime
         var activeId = state?.ActiveCheckpointId;
         if (activeId is null)
         {
-            _active = null;
+            Active = null;
             return;
         }
 
-        if (_active?.CheckpointId == activeId)
+        if (Active?.CheckpointId == activeId)
         {
             return;
         }
@@ -881,7 +878,7 @@ internal sealed class CompactionRuntime
         var row = history.OfType<CompactionCheckpointMessage>().LastOrDefault(c => c.CheckpointId == activeId);
         if (row is not null)
         {
-            _active = row;
+            Active = row;
             return;
         }
 
@@ -889,7 +886,7 @@ internal sealed class CompactionRuntime
         _ = await CompactionStateProjection
             .RollBackAsync(store, _host.ThreadId, CheckpointReasons.RowMissing, _clock.GetUtcNow(), ct)
             .ConfigureAwait(false);
-        _active = null;
+        Active = null;
     }
 
     private static bool SameRow(IMessage converted, IMessage restored)
@@ -948,7 +945,7 @@ internal sealed class CompactionRuntime
                             Provenance = MeasurementProvenance.Estimated,
                             WindowTokens = WindowTokens,
                             ReserveTokens = ReserveTokens,
-                            ActiveCheckpointId = _active?.CheckpointId,
+                            ActiveCheckpointId = Active?.CheckpointId,
                             RowsInView = rowsInView,
                             Decision = decision.Summary,
                         },
