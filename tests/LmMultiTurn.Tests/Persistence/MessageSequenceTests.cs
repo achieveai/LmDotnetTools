@@ -124,6 +124,39 @@ public sealed class MessageSequenceTests : IAsyncLifetime
             .Equal(("ts50", 1L), ("ts100-idx0", 2L), ("ts100-idx1", 3L), ("new-1", 4L), ("new-2", 5L));
     }
 
+    [Fact]
+    public async Task Backfill_NumbersLegacyRowsThatTieOnTimestampAndIdx_InTheOrderTheyLoaded()
+    {
+        // The distinguishing case for the rowid tiebreak. (timestamp, message_order_idx) is not a
+        // total order over legacy rows: message_order_idx restarts per generation, and two generations
+        // can share a millisecond. The backfill numbers such ties by rowid; the load must break them the
+        // same way, or the order a reader saw before the first append is not the order Seq records
+        // after it (spec 679 §8.3: Seq is assigned in current load order). Ids are chosen so that
+        // neither lexical order nor reverse insertion order coincides with rowid order. Dropping the
+        // tiebreak happens to pass today (the sorter preserves the rowid-ordered scan it is fed), so
+        // what this pins is the contract SQL does not promise; reversing the tiebreak fails it.
+        var store = _harness.Open("sqlite");
+        _ = await store.GetMessageWatermarkAsync(Thread);
+        await _harness.InsertTiedLegacySqliteRowsAsync(
+            Thread,
+            ["z-first", "a-second", "m-third"],
+            timestamp: 100,
+            orderIdx: 0
+        );
+
+        var before = (await store.LoadMessagesAsync(Thread)).Select(m => m.Id).ToList();
+        before.Should().Equal(["z-first", "a-second", "m-third"], "ties load in insertion (rowid) order");
+
+        await store.AppendMessagesAsync(Thread, [ConversationStoreHarness.Row(Thread, "new", 200)]);
+
+        var after = await _harness.Reopen("sqlite").LoadMessagesAsync(Thread);
+        after
+            .Select(m => (m.Id, m.Seq))
+            .Should()
+            .Equal(("z-first", 1L), ("a-second", 2L), ("m-third", 3L), ("new", 4L));
+        after.Take(3).Select(m => m.Id).Should().Equal(before, "the backfill numbers ties in the order they loaded");
+    }
+
     [Theory]
     [MemberData(nameof(AllKinds))]
     public async Task LoadMessageRange_HonoursBothBounds_AndTheLimit(string kind)

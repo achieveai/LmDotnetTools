@@ -298,12 +298,15 @@ public sealed class SqliteConversationStore
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // Append order: sequenced rows first by seq, then any legacy rows (seq IS NULL) by the
-        // (timestamp, idx) order the backfill will later assign them - see MessageSequence.Order.
+        // (timestamp, idx, rowid) order the backfill will later assign them - see MessageSequence.Order
+        // and BackfillLegacySeqAsync. The rowid tiebreak is load-bearing: message_order_idx restarts per
+        // generation, so two legacy rows can tie on both keys, and the order a reader saw before the
+        // first append must be the order Seq records after it.
         using var command = connection.CreateCommand();
         command.CommandText = $"""
             {MessageSelectSql}
             WHERE thread_id = $thread_id
-            ORDER BY (seq IS NULL) ASC, seq ASC, timestamp ASC, message_order_idx ASC;
+            ORDER BY (seq IS NULL) ASC, seq ASC, timestamp ASC, message_order_idx ASC, rowid ASC;
             """;
         _ = command.Parameters.AddWithValue("$thread_id", threadId);
 

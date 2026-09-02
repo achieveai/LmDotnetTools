@@ -116,6 +116,46 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Inserts pre-Seq rows by raw SQL, in list order, so rowid order IS the list order and every
+    /// row shares one <paramref name="timestamp"/> and <paramref name="orderIdx"/>. SQLite only; the
+    /// caller has already opened the store so the schema exists.
+    /// </summary>
+    public async Task InsertTiedLegacySqliteRowsAsync(
+        string threadId,
+        IReadOnlyList<string> ids,
+        long timestamp,
+        int orderIdx
+    )
+    {
+        await using var connection = new SqliteConnection($"Data Source={_backing["sqlite"]}");
+        await connection.OpenAsync();
+        foreach (var id in ids)
+        {
+            var row = Row(threadId, id, timestamp, orderIdx);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO messages (
+                    id, thread_id, run_id, generation_id, message_order_idx,
+                    timestamp, message_type, role, message_json, seq
+                ) VALUES (
+                    $id, $thread_id, $run_id, $generation_id, $message_order_idx,
+                    $timestamp, $message_type, $role, $message_json, NULL
+                );
+                """;
+            _ = command.Parameters.AddWithValue("$id", row.Id);
+            _ = command.Parameters.AddWithValue("$thread_id", row.ThreadId);
+            _ = command.Parameters.AddWithValue("$run_id", row.RunId);
+            _ = command.Parameters.AddWithValue("$generation_id", row.GenerationId);
+            _ = command.Parameters.AddWithValue("$message_order_idx", row.MessageOrderIdx);
+            _ = command.Parameters.AddWithValue("$timestamp", row.Timestamp);
+            _ = command.Parameters.AddWithValue("$message_type", row.MessageType);
+            _ = command.Parameters.AddWithValue("$role", row.Role);
+            _ = command.Parameters.AddWithValue("$message_json", row.MessageJson);
+            _ = await command.ExecuteNonQueryAsync();
+        }
+    }
+
     /// <summary>A minimal text row. <see cref="PersistedMessage.Seq"/> is left for the store to assign.</summary>
     public static PersistedMessage Row(
         string threadId,
