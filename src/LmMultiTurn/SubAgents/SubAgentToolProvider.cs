@@ -1419,7 +1419,10 @@ public class SubAgentToolProvider : IFunctionProvider
     /// a conversation and every turn that calls this tool pays for the entire history in input tokens.
     /// The live half cannot grow: it is bounded by the root-wide capacity permit
     /// (<see cref="AgentCollaborationOptions.MaxTotalAgents"/>), which is why that same bound is the
-    /// cap here rather than a second number to keep in step with it.
+    /// cap here rather than a second number to keep in step with it. It is a bound on the tail, not a
+    /// routine saving: a row is roughly 340 bytes, so at the default permit of 32 the cap starts
+    /// trimming only past 32 total agents and holds the result near 11 KB from there on, while a
+    /// conversation that never exceeds 32 pays about 40 bytes MORE for the three count fields.
     /// </para>
     /// <para>
     /// The cap trims the RETAINED tail only. Dropping a live agent would be the one failure mode worth
@@ -1428,8 +1431,14 @@ public class SubAgentToolProvider : IFunctionProvider
     /// the overrun honestly rather than silently hiding one.
     /// </para>
     /// <para>
-    /// Both halves keep the directory's ordinal <c>agent_id</c> order, so repeated calls at an
-    /// unchanged directory read identically instead of shuffling.
+    /// Both halves keep the order <see cref="AgentCollaborationDirectory.Snapshot"/> already imposes:
+    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. That is LEXICOGRAPHIC, not numeric —
+    /// <c>agent-10</c> sorts before <c>agent-9</c> — so which retained rows survive the cap is stable
+    /// but unrelated to recency. Determinism is the property being relied on here (repeated calls at an
+    /// unchanged directory read identically instead of shuffling), and it is enough, because the
+    /// omitted rows are finished agents the caller cannot address either way. Preferring the most
+    /// recently retired rows would be a better listing; it needs a retirement order the directory does
+    /// not currently carry.
     /// </para>
     /// </remarks>
     private static List<AgentDirectoryEntry> SelectListedAgents(
