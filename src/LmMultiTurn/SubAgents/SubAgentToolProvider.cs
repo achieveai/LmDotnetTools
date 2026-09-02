@@ -1126,7 +1126,10 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return failureCode
             is AgentMessageFailureCodes.UnknownCorrelation
-                or AgentMessageFailureCodes.CorrelationClosed
+                or AgentMessageFailureCodes.CorrelationAnswered
+                or AgentMessageFailureCodes.CorrelationReplyInFlight
+                or AgentMessageFailureCodes.CorrelationDeliveryFailed
+                or AgentMessageFailureCodes.CorrelationAbandoned
                 or AgentMessageFailureCodes.CorrelationNotAddressedToSender
                 or AgentMessageFailureCodes.CorrelationDoesNotExpectReply
                 or AgentMessageFailureCodes.CorrelationNotADelegation;
@@ -1154,7 +1157,19 @@ public class SubAgentToolProvider : IFunctionProvider
             AgentMessageFailureCodes.SelfDelivery => "You cannot send a message to yourself.",
             AgentMessageFailureCodes.InvalidSender => "Your agent is no longer active, so it cannot send new messages.",
             AgentMessageFailureCodes.UnknownCorrelation => "The 'in_response_to' message_id is not one you received.",
-            AgentMessageFailureCodes.CorrelationClosed => "That message has already been answered.",
+            // Four ways to be closed, four different next moves. Collapsing them is what sent a model
+            // retrying an id that could never be admitted again.
+            AgentMessageFailureCodes.CorrelationAnswered =>
+                "That message has already been answered. Send a new 'question' if you have more to say.",
+            AgentMessageFailureCodes.CorrelationReplyInFlight =>
+                "Another answer to that message is already on its way. Wait for it, or check with "
+                    + "CheckAgents before answering again.",
+            AgentMessageFailureCodes.CorrelationDeliveryFailed =>
+                "That message never reached its target, so answering it changes nothing. Send what you "
+                    + "have to say as a new message instead.",
+            AgentMessageFailureCodes.CorrelationAbandoned =>
+                "That exchange ended when the agent on the other side left. Call GetAgents and pick an "
+                    + "agent that is still live.",
             AgentMessageFailureCodes.CorrelationNotAddressedToSender =>
                 "That message was not addressed to you, so you cannot answer it.",
             AgentMessageFailureCodes.CorrelationDoesNotExpectReply =>

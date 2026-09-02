@@ -87,7 +87,7 @@ public class AgentMessageLedgerConcurrencyTests
                 .Where(result => !result.Succeeded)
                 .Should()
                 .OnlyContain(result =>
-                    result.FailureCode == AgentMessageFailureCodes.CorrelationClosed && result.MessageId == null
+                    result.FailureCode == AgentMessageFailureCodes.CorrelationReplyInFlight && result.MessageId == null
                 );
 
             // Admission is a claim, not a closure: the winner reserves the exclusive right to answer,
