@@ -209,7 +209,7 @@ public sealed class AgentTranscriptAccessTests
 
         var store = new InMemoryConversationStore();
         await store.AppendMessagesAsync(
-            $"subagent-{alphaId}",
+            SubAgentThreadIds.For(RootThread, alphaId),
             [
                 Persisted("m1", new ReasoningMessage { Reasoning = "private deliberation" }),
                 Persisted("m2", new TextMessage { Text = "the finding", Role = Role.Assistant }),
@@ -259,7 +259,7 @@ public sealed class AgentTranscriptAccessTests
         var registry = new WorkflowRunRegistry();
         var store = new InMemoryConversationStore();
         await store.AppendMessagesAsync(
-            $"subagent-{target}",
+            SubAgentThreadIds.For(RootThread, target),
             [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]
         );
 
@@ -329,7 +329,7 @@ public sealed class AgentTranscriptAccessTests
         var alphaId = await SpawnAsync(loop, "alpha");
         var store = new InMemoryConversationStore();
         await store.AppendMessagesAsync(
-            $"subagent-{alphaId}",
+            SubAgentThreadIds.For(RootThread, alphaId),
             [
                 Persisted("m1", new TextMessage { Text = "the early finding", Role = Role.Assistant }),
                 Persisted("m2", new ReasoningMessage { Reasoning = "private deliberation" }),
@@ -504,7 +504,7 @@ public sealed class AgentTranscriptAccessTests
 
         var alphasChildId = await SpawnAsync(alphaLoop, "alpha-child");
         await store.AppendMessagesAsync(
-            $"subagent-{alphasChildId}",
+            SubAgentThreadIds.For(RootThread, alphasChildId),
             [Persisted("m1", new TextMessage { Text = "the deep finding", Role = Role.Assistant })]
         );
 
@@ -572,7 +572,7 @@ public sealed class AgentTranscriptAccessTests
 
             var alphaId = await SpawnAsync(loopBeforeRestart, "alpha");
             await store.AppendMessagesAsync(
-                $"subagent-{alphaId}",
+                SubAgentThreadIds.For(RootThread, alphaId),
                 [Persisted("m1", new TextMessage { Text = "alpha's finding", Role = Role.Assistant })]
             );
 
@@ -752,7 +752,7 @@ public sealed class AgentTranscriptAccessTests
                 _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
                 alphaId = await SpawnAsync(loop, "alpha");
                 await store.AppendMessagesAsync(
-                    $"subagent-{alphaId}",
+                    SubAgentThreadIds.For(RootThread, alphaId),
                     [
                         Persisted("m1", new ReasoningMessage { Reasoning = "private deliberation" }),
                         Persisted("m2", new TextMessage { Text = "the finding", Role = Role.Assistant }),

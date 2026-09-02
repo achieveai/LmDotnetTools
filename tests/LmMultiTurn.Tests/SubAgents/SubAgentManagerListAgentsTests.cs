@@ -113,7 +113,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         finisher.TemplateName.Should().Be("finisher");
         finisher.Task.Should().Be("finish the report");
         finisher.Status.Should().Be(SubAgentStatus.Completed);
-        finisher.ThreadId.Should().Be($"subagent-{finisherId}");
+        finisher.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, finisherId));
         finisher
             .LastActivityUtc.Should()
             .NotBeNull("the finisher produced an assistant turn, so its turn buffer is non-empty");
@@ -123,7 +123,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         runner.TemplateName.Should().Be("runner");
         runner.Task.Should().Be("keep running");
         runner.Status.Should().Be(SubAgentStatus.Running);
-        runner.ThreadId.Should().Be($"subagent-{runnerId}");
+        runner.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, runnerId));
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
 
         manager.TryGetAgent(agentId, out var byId).Should().BeTrue();
         byId.Should().NotBeNull();
-        byId!.ThreadId.Should().Be($"subagent-{agentId}");
+        byId!.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId));
 
         manager.TryGetAgent("alpha", out var byName).Should().BeTrue();
         byName.Should().NotBeNull();
@@ -170,7 +170,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             var idx = Interlocked.Increment(ref agentCallCount);
             var agent = new FakeMultiTurnAgent
             {
-                ThreadId = $"subagent-{agentId}",
+                ThreadId = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),
                 SubscribeImpl = (_, ct) =>
                     idx == 1
                         ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
@@ -335,7 +335,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         storeMock.Verify(
             s =>
                 s.UpdateMetadataAsync(
-                    $"subagent-{agentId}",
+                    SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),
                     It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
                     It.IsAny<CancellationToken>()
                 ),
@@ -385,10 +385,10 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         manager.TestAgentFactoryOverride = (agentId, _) =>
             new FakeMultiTurnAgent
             {
-                // Mirrors the real subagent-{agentId} thread-id convention (PersistTerminalStateAsync
+                // Mirrors the real subagent-{scope}-{agentId} thread-id convention (PersistTerminalStateAsync
                 // reads it straight off state.Agent.ThreadId); the fake's default "fake-thread" would
                 // otherwise mismatch the id the manager registers this state under.
-                ThreadId = $"subagent-{agentId}",
+                ThreadId = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),
                 SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown),
             };
 
@@ -402,7 +402,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         storeMock.Verify(
             s =>
                 s.UpdateMetadataAsync(
-                    $"subagent-{agentId}",
+                    SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),
                     It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
                     It.IsAny<CancellationToken>()
                 ),

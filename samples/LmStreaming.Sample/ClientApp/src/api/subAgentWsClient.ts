@@ -63,6 +63,7 @@ export interface SubAgentWsCallbacks {
 export function connectSubAgent(
   parentThreadId: string,
   agentId: string,
+  childThreadId: string,
   callbacks: SubAgentWsCallbacks
 ): Promise<WebSocketConnection> {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -71,9 +72,10 @@ export function connectSubAgent(
     `${wsProtocol}//${wsHost}/ws/subagent` +
     `?parentThreadId=${encodeURIComponent(parentThreadId)}&agentId=${encodeURIComponent(agentId)}`;
 
-  // The connection's threadId is the child's thread id (matches the SubAgentSummary.threadId
-  // convention) so callers can correlate it with rehydrated history.
-  const childThreadId = `subagent-${agentId}`;
+  // The connection's threadId is the child's thread id, taken from the roster (SubAgentSummary.threadId)
+  // rather than composed here: since #705 it is `subagent-{scope}-{agentId}`, scoped to the ROOT
+  // conversation, and only the server knows the scope. It has to equal what the server stamps on the
+  // frames so callers can correlate the stream with rehydrated history.
   const connectionId = generateConnectionId();
 
   log.info('Connecting to sub-agent stream', { parentThreadId, agentId, childThreadId });

@@ -150,13 +150,13 @@ public sealed class SubAgentFocusFlowTests
 
         summary.GetProperty("agentId").GetString().Should().Be(agentId);
         summary.GetProperty("template").GetString().Should().Be("bg_worker");
-        summary.GetProperty("threadId").GetString().Should().Be($"subagent-{agentId}");
+        summary.GetProperty("threadId").GetString().Should().Be(SubAgentThreadIds.For(threadId, agentId));
         summary.GetProperty("status").GetString().Should().NotBeNullOrWhiteSpace();
 
         // 4) Persistence / replay source: the child's own thread has a non-empty persisted transcript
         //    (the history a focused view replays from). Proves the wired default sub-agent store captured
-        //    the child's run under subagent-{agentId}.
-        var childThreadId = $"subagent-{agentId}";
+        //    the child's run under the thread the roster names (subagent-{scope}-{agentId}, #705).
+        var childThreadId = summary.GetProperty("threadId").GetString()!;
         using var messagesResponse = await http.GetAsync($"/api/conversations/{childThreadId}/messages");
         messagesResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 

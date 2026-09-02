@@ -28,6 +28,12 @@ public sealed record AgentLineage
     /// <summary>The thread of the agent that spawned this one.</summary>
     public string? ParentThreadId { get; init; }
 
+    /// <summary>
+    /// The root conversation of the hierarchy this agent belongs to: the parent's own root, or the
+    /// parent itself when the parent is top-level. Sub-agent ordinals (#705) are numbered under it.
+    /// </summary>
+    public string? RootThreadId { get; init; }
+
     /// <summary>The run, on the parent thread, that spawned this agent.</summary>
     public string? ParentRunId { get; init; }
 

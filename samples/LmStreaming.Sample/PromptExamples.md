@@ -357,6 +357,15 @@ Expected:
 - **#689** — the root's second `SendMessage` pill (the `task_update`) is an error whose result says
   `You have no open delegated task` and names the next valid action.
 
+### One more background sub-agent after a restart (gamma, ordinal id continuation)
+
+The alpha shape (one text-only background worker), renamed `gamma` so the third ordinal is
+attributable by name. Used by `playwright-scripts/subagent-ordinal-ids.mjs` phase 2 (run AFTER a
+backend restart) to prove the sub-agent id counter continues at `agent-3` instead of re-minting
+`agent-1`.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-gamma","id_message":"Spawn one more background worker","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"researcher","name":"gamma","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"g1\",\"messages\":[{\"text\":\"Gamma reporting: third worker online after restart.\"}]}]}<|instruction_end|>"}}]}]},{"id":"gamma-done","id_message":"Wrap up","messages":[{"text":"Spawned gamma in the background."}]}]}<|instruction_end|>
+
 ---
 
 ## Wait / Trigger (Park-and-Wake)

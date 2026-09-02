@@ -384,10 +384,16 @@ public sealed class ChatWebSocketManager
             agentId
         );
 
+        // The child's transcript thread (#705: subagent-{scope}-{agentId}, the scope being the root
+        // conversation's digest, inherited by a nested parent; a pre-#705 id resolves to its old shape).
+        // Formed from the parent the client named, so it is right whether the parent is the root or a
+        // sub-agent — and it is the id the client correlates frames against (SubAgentSummary.threadId).
+        var childThreadId = SubAgentThreadIds.For(parentThreadId, agentId);
+
         // Register before resolution so every outbound frame (including the subagent_unavailable
         // error below) flows through the connection's single gated write path, mirroring
         // HandleConnectionAsync which registers before agent resolution.
-        var connection = _connectionRegistry.Register($"subagent-{agentId}", webSocket);
+        var connection = _connectionRegistry.Register(childThreadId, webSocket);
         try
         {
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -437,7 +443,7 @@ public sealed class ChatWebSocketManager
                 // A nested delegate spawned BY a running controller: stream it through the controller's
                 // own SubAgentManager, same as a top-level sub-agent (restart-spanning, follow-ups relay).
                 // Branch order is safe: the run branch above treats agentId as a workflowId, and an opaque
-                // workflowId never collides with a delegate's 12-char id, so control falls through here.
+                // workflowId never collides with a delegate's ordinal id (agent-N), so control falls through here.
                 subAgentManager = nestedManager;
                 stream = nestedManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
             }
@@ -456,7 +462,7 @@ public sealed class ChatWebSocketManager
                 // reintroduce as a timing difference exactly the existence oracle the withholding
                 // closes (the same equalisation ConversationAuthorizer.EqualizeGrantLookupAsync makes
                 // on the REST refusal paths).
-                var persisted = await _conversationStore.LoadMessagesAsync($"subagent-{agentId}", connectionCts.Token);
+                var persisted = await _conversationStore.LoadMessagesAsync(childThreadId, connectionCts.Token);
                 if (persisted.Count == 0 || !mayReplayPersistedTranscript)
                 {
                     _logger.LogWarning(
@@ -580,7 +586,7 @@ public sealed class ChatWebSocketManager
     {
         try
         {
-            await PumpMessagesToClientAsync(connection, source, $"subagent-{agentId}", recordWriter: null, ct);
+            await PumpMessagesToClientAsync(connection, source, connection.ThreadId, recordWriter: null, ct);
         }
         catch (OperationCanceledException)
         {

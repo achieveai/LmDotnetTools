@@ -327,6 +327,13 @@ public record SubAgentOptions
     public Func<string, IFunctionProvider?>? ChildToolProviderFactory { get; init; }
 
     /// <summary>
+    /// The ordinal sequence behind <c>agent-1</c>, <c>agent-2</c>, … for the ROOT conversation (#705).
+    /// Null at the root: the root's manager creates the allocator and hands it down through
+    /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.
+    /// </summary>
+    internal SubAgentOrdinalAllocator? OrdinalAllocator { get; init; }
+
+    /// <summary>
     /// The options a spawned child's OWN loop runs on. Everything the host configured — templates,
     /// limits, model selection/validation, tool inheritance, per-agent providers — is preserved, but the
     /// three workflow-local spawn-authority hooks are cleared, because they belong to ONE host at ONE level

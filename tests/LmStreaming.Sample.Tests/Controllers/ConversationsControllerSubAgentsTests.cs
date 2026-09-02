@@ -276,7 +276,7 @@ public sealed class ConversationsControllerSubAgentsTests
         alpha.Template.Should().Be("worker");
         alpha.Task.Should().Be("first task");
         alpha.Status.Should().Be("running");
-        alpha.ThreadId.Should().Be($"subagent-{alphaId}");
+        alpha.ThreadId.Should().Be(SubAgentThreadIds.For(threadId, alphaId));
         alpha
             .GetType()
             .GetProperty("EffectiveModelId")
@@ -293,7 +293,7 @@ public sealed class ConversationsControllerSubAgentsTests
         beta.Template.Should().Be("worker");
         beta.Task.Should().Be("second task");
         beta.Status.Should().Be("running");
-        beta.ThreadId.Should().Be($"subagent-{betaId}");
+        beta.ThreadId.Should().Be(SubAgentThreadIds.For(threadId, betaId));
     }
 
     [Fact]

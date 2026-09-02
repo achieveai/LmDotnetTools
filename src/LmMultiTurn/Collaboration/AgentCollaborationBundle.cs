@@ -98,6 +98,24 @@ public sealed class AgentCollaborationBundle
     /// <summary>What is outstanding between them.</summary>
     public AgentMessageLedger Ledger { get; }
 
+    private readonly object _ordinalsGate = new();
+    private SubAgents.SubAgentOrdinalAllocator? _ordinals;
+
+    /// <summary>
+    /// The one ordinal sequence (#705: <c>agent-1</c>, <c>agent-2</c>, …) for this collaboration. Root-owned
+    /// like everything else here: the first manager in the hierarchy to ask creates it, every later one
+    /// — a child's own manager, or a manager rebuilt over the same collaboration — shares it, so no two
+    /// agents in the directory can ever be minted the same id.
+    /// </summary>
+    internal SubAgents.SubAgentOrdinalAllocator GetOrCreateOrdinals(Func<SubAgents.SubAgentOrdinalAllocator> create)
+    {
+        ArgumentNullException.ThrowIfNull(create);
+        lock (_ordinalsGate)
+        {
+            return _ordinals ??= create();
+        }
+    }
+
     /// <summary>
     /// Resolves a target and admits a message to it, or refuses with one content-free code.
     /// </summary>

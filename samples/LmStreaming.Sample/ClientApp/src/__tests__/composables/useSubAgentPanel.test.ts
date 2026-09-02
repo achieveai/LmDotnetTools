@@ -84,7 +84,7 @@ beforeEach(() => {
   convMocks.loadConversationMessages.mockReset();
 
   convMocks.loadConversationMessages.mockResolvedValue([]);
-  wsSubMocks.connectSubAgent.mockImplementation(async (parentThreadId: string, agentId: string, callbacks: any) => {
+  wsSubMocks.connectSubAgent.mockImplementation(async (parentThreadId: string, agentId: string, _childThreadId: string, callbacks: any) => {
     const connection = {
       socket: { readyState: WebSocket.OPEN },
       connectionId: `sa-${captured.length + 1}`,
@@ -201,7 +201,7 @@ describe('useSubAgentPanel — focus & transcript', () => {
     await focusFirst(panel);
 
     expect(convMocks.loadConversationMessages).toHaveBeenCalledWith('subagent-a1');
-    expect(wsSubMocks.connectSubAgent).toHaveBeenCalledWith('parent-1', 'a1', expect.any(Object));
+    expect(wsSubMocks.connectSubAgent).toHaveBeenCalledWith('parent-1', 'a1', 'subagent-a1', expect.any(Object));
     expect(panel.focusedAgentId.value).toBe('a1');
     expect(panel.isFocusedStreaming.value).toBe(true);
 
@@ -321,7 +321,7 @@ describe('useSubAgentPanel — focus & transcript', () => {
       },
     ]);
     // The server delivers `done` immediately on connect (completed child: history is via REST, not the socket).
-    wsSubMocks.connectSubAgent.mockImplementation(async (parentThreadId: string, agentId: string, callbacks: any) => {
+    wsSubMocks.connectSubAgent.mockImplementation(async (parentThreadId: string, agentId: string, _childThreadId: string, callbacks: any) => {
       const connection = {
         socket: { readyState: WebSocket.OPEN },
         connectionId: `sa-${captured.length + 1}`,
@@ -401,7 +401,7 @@ describe('useSubAgentPanel — hardening', () => {
     const a1Conn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a1', threadId: 'subagent-a1', isConnected: true };
     const a2Conn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a2', threadId: 'subagent-a2', isConnected: true };
     let openA1: (() => void) | undefined;
-    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, callbacks: any) => {
+    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, _childThreadId: string, callbacks: any) => {
       if (agentId === 'a1') {
         return new Promise((resolve) => {
           openA1 = () => {
@@ -444,7 +444,7 @@ describe('useSubAgentPanel — hardening', () => {
     const secondConn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a1-2', threadId: 'subagent-a1', isConnected: true };
     let openFirst: (() => void) | undefined;
     let call = 0;
-    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, callbacks: any) => {
+    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, _childThreadId: string, callbacks: any) => {
       call += 1;
       if (call === 1) {
         return new Promise((resolve) => {
@@ -688,7 +688,7 @@ describe('useSubAgentPanel — lifecycle invalidation & handoff (PR #209)', () =
       return [];
     });
     wsSubMocks.connectSubAgent.mockImplementation(
-      async (parentThreadId: string, agentId: string, callbacks: any) => {
+      async (parentThreadId: string, agentId: string, _childThreadId: string, callbacks: any) => {
         order.push('connect');
         const connection = {
           socket: { readyState: WebSocket.OPEN },

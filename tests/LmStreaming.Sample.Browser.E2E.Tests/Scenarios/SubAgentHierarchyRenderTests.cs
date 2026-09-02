@@ -181,11 +181,25 @@ public sealed class SubAgentHierarchyRenderTests
         rows.Should().OnlyContain(row => row.Readable == "true");
         (await page.GetByTestId("subagent-transcript-locked").CountAsync()).Should().Be(0);
 
-        // --- The raw-thread guard, from the client that would be used to bypass it -----------------
-        var refusal = await FetchAsync(
-            page,
-            $"/api/conversations/subagent-{helper.AgentId}/messages?viewer={helper.AgentId}"
+        // The sidebar only lists what it loaded at startup, so the thread this session just created is
+        // read from the listing the client itself uses. Agent-owned threads are excluded from it by
+        // design, which is why the single entry is unambiguously the human's conversation.
+        var threadId = await page.EvaluateAsync<string>(
+            """
+            async () => {
+              const list = await (await fetch('/api/conversations?limit=50')).json();
+              return list.length === 1 ? list[0].threadId : '';
+            }
+            """
         );
+        threadId.Should().NotBeEmpty("exactly one non-agent conversation exists in this session");
+
+        // The helper's own transcript thread: subagent-{scope}-{agentId}, scoped to the human's
+        // conversation (#705) — the raw id a bypass would have to name.
+        var helperThreadId = SubAgentThreadIds.For(threadId, helper.AgentId);
+
+        // --- The raw-thread guard, from the client that would be used to bypass it -----------------
+        var refusal = await FetchAsync(page, $"/api/conversations/{helperThreadId}/messages?viewer={helper.AgentId}");
 
         refusal
             .Status.Should()
@@ -202,23 +216,10 @@ public sealed class SubAgentHierarchyRenderTests
 
         // Control: the SAME url without the machine identity keeps its legacy behaviour, which proves
         // the refusal above is about who asked rather than about the route being broken.
-        var legacy = await FetchAsync(page, $"/api/conversations/subagent-{helper.AgentId}/messages");
+        var legacy = await FetchAsync(page, $"/api/conversations/{helperThreadId}/messages");
         legacy.Status.Should().Be(200);
 
         // --- The grandchild's message, in the human's own conversation -----------------------------
-        // The sidebar only lists what it loaded at startup, so the thread this session just created is
-        // read from the listing the client itself uses. Agent-owned threads are excluded from it by
-        // design, which is why the single entry is unambiguously the human's conversation.
-        var threadId = await page.EvaluateAsync<string>(
-            """
-            async () => {
-              const list = await (await fetch('/api/conversations?limit=50')).json();
-              return list.length === 1 ? list[0].threadId : '';
-            }
-            """
-        );
-        threadId.Should().NotBeEmpty("exactly one non-agent conversation exists in this session");
-
         // Persisted, never streamed (see the class remarks), so it is waited FOR over HTTP and then
         // read off the reloaded DOM.
         await WaitForPersistedAgentMessageAsync(page, threadId, TimeSpan.FromSeconds(30));

@@ -82,7 +82,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// The options handed to each spawned child's own loop: this manager's options minus the spawn
     /// authority that belongs to THIS level only. Computed once because it is the same for every child.
     /// </summary>
-    private readonly SubAgentOptions _childOptions;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly ILogger _logger;
     private readonly MultiTurnLifecycleServices _lifecycleServices;
@@ -186,6 +185,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal Func<string, SubAgentTemplate, IConversationStore?>? TestConversationStoreOverride { get; set; }
 
+    /// <summary>Metadata key on the ROOT thread holding the next sub-agent ordinal (#705).</summary>
+    internal const string NextOrdinalProperty = SubAgentOrdinalAllocator.NextOrdinalProperty;
+
+    /// <summary>
+    /// The options a child's own loop (and therefore its own manager) is built on — exposed so a test
+    /// can stand up a nested manager exactly the way a spawned child would.
+    /// </summary>
+    internal SubAgentOptions ChildOptions { get; }
+
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
 
@@ -213,6 +221,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// them already knows the agent id. Empty whenever collaboration is off.
     /// </remarks>
     private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The ordinal sequence (#705) for the ROOT conversation this manager belongs to — created here at the
+    /// root, inherited by every descendant's manager through <see cref="ChildOptions"/>.
+    /// </summary>
+    private readonly SubAgentOrdinalAllocator _ordinals;
 
     /// <summary>What the collaboration granted a spawn: the child's own handle, and its capacity slot.</summary>
     private sealed record SubAgentAdmission(AgentCollaborationSetup Child, AgentCapacityLease Lease);
@@ -422,9 +436,23 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
         _options = options;
-        _childOptions = options.ForChildLoop();
         _source = source;
         _logger = logger ?? NullLogger.Instance;
+        // #705: one ordinal sequence per ROOT conversation. A root manager (no inherited allocator) starts
+        // it, keyed by its own parent's thread and persisted on that thread's metadata; a child's manager
+        // receives the root's instance through the options its loop was built on, so a grandchild is
+        // agent-N in the same sequence as its uncle. Under collaboration the sequence is ALSO parked on
+        // the root-owned bundle, so a manager that reaches the same collaboration by any other route (a
+        // manager rebuilt for the same root, a child's manager built from scratch) still shares it — the
+        // directory rejects a duplicate id, so two sequences on one collaboration would fail spawns.
+        _ordinals =
+            options.OrdinalAllocator
+            ?? collaboration?.Bundle.GetOrCreateOrdinals(CreateRootOrdinals)
+            ?? CreateRootOrdinals();
+
+        SubAgentOrdinalAllocator CreateRootOrdinals() =>
+            new(parentAgent.ThreadId, ResolveOrdinalStore(options, parentAgent.ThreadId), _logger);
+        ChildOptions = options.ForChildLoop() with { OrdinalAllocator = _ordinals };
         _usageSink = usageSink;
         _persistUsageAsync = persistUsageAsync;
         // The parent's model, inherited by sub-agents whose template/override sets none (see
@@ -541,15 +569,21 @@ public sealed class SubAgentManager : IAsyncDisposable
         templateName = resolvedName;
         var template = templates[resolvedName];
 
-        // A spawned agent's id has TWO parts, mirroring the workflow controller's identity: a per-spawn
-        // guid (uniqueness) and a conversation tag derived from the parent (launching) conversation's
-        // thread id. The tag is deterministic (same conversation -> same tag) and content-free, so ids
-        // born in different conversations are visibly distinct and never confused, while the guid keeps
-        // each spawn unique. Guid stays FIRST so the readable-name suffix (agentId[..6]) and any short
-        // display slice remain per-spawn distinct rather than collapsing onto a shared conversation prefix.
-        var agentId = Guid.NewGuid().ToString("N")[..12] + "-" + ConversationTag(_parentAgent.ThreadId);
+        ct.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+
+        // #705: the id IS the ordinal — agent-1, agent-2, … in spawn order under the ROOT conversation,
+        // so a person can read it and the model can name it. The allocator is shared down the hierarchy
+        // and persists its counter on the root thread, so a restart continues the sequence rather than
+        // starting over. Cross-conversation uniqueness is the transcript thread id's job (see
+        // SubAgentThreadIds), never the agent id's. Allocated AFTER the cheap rejections above so an
+        // unknown template or a disposed manager never burns a number; a spawn the collaboration refuses
+        // below still does (numbers are never reused), which keeps that gap rare rather than impossible.
+        var ordinal = await _ordinals.AllocateAsync(ct);
+        var agentId = SubAgentThreadIds.AgentIdFor(ordinal);
         var lineage = new AgentLineage
         {
+            RootThreadId = _ordinals.RootThreadId,
             ParentThreadId = _parentAgent.ThreadId,
             ParentRunId = _parentAgent.CurrentRunId,
             SpawningToolCallId = spawningToolCallId,
@@ -558,12 +592,9 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         // Every spawned agent gets a human-readable handle. When the caller omits `name`
         // (a controller/loop that forgot, or a direct spawn), derive a readable one from the
-        // resolved template so the agent never surfaces in telemetry - or as a SendMessage
-        // target - as a bare guid. An explicitly supplied name is always kept verbatim.
-        var effectiveName = string.IsNullOrWhiteSpace(name) ? DeriveReadableName(templateName, agentId) : name;
-
-        ct.ThrowIfCancellationRequested();
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+        // resolved template and the ordinal, so the agent surfaces in telemetry - and as a
+        // SendMessage target - as e.g. `reviewer-2`. An explicitly supplied name is always kept verbatim.
+        var effectiveName = string.IsNullOrWhiteSpace(name) ? DeriveReadableName(templateName, ordinal) : name;
 
         // Admission to the collaboration happens BEFORE the concurrency permit and before the defer
         // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
@@ -1220,11 +1251,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Builds a short, human-readable handle for a sub-agent whose caller did not supply a
     /// <c>name</c>. Uses the resolved template's last <c>':'</c> segment (dropping any plugin prefix,
-    /// e.g. <c>code-reviewer:performance-review</c> -&gt; <c>performance-review</c>) plus a short slice
-    /// of the agent id for uniqueness, so the agent surfaces in telemetry and is addressable by
-    /// SendMessage as e.g. <c>performance-review-1a2b3c</c> rather than a bare guid.
+    /// e.g. <c>code-reviewer:performance-review</c> -&gt; <c>performance-review</c>) plus the agent's
+    /// ordinal (#705), so the agent surfaces in telemetry and is addressable by SendMessage as e.g.
+    /// <c>performance-review-3</c> — the same number its id carries.
     /// </summary>
-    private static string DeriveReadableName(string templateName, string agentId)
+    private static string DeriveReadableName(string templateName, int ordinal)
     {
         var role = LastSegment(templateName);
         if (string.IsNullOrWhiteSpace(role))
@@ -1232,8 +1263,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             role = "agent";
         }
 
-        var suffix = agentId.Length >= 6 ? agentId[..6] : agentId;
-        return $"{role}-{suffix}";
+        return $"{role}-{ordinal}";
     }
 
     /// <summary>
@@ -1928,7 +1958,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     TemplateName: queued.TemplateName,
                     Task: queued.Task,
                     Status: SubAgentStatus.Queued,
-                    ThreadId: $"subagent-{queued.AgentId}",
+                    ThreadId: ChildThreadId(queued.AgentId),
                     LastActivityUtc: null,
                     TerminalAtUtc: null,
                     EffectiveModelId: null,
@@ -2739,11 +2769,38 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// and its snapshot resolves here, not against a root captured once. The describe is a LIVE callback
     /// resolved at metadata-write time, not now: the child is not yet registered when its store is built,
     /// but it is by the time the store first persists. Falls back to the plain
+    /// <summary>
+    /// The store the root's ordinal counter (#705) is persisted through: the same host-supplied factories a
+    /// child transcript resolves against, asked for the ROOT thread — a provenance-aware factory is handed a
+    /// null parent so it stamps nothing (the root is nobody's child). Null when the host wired no store, in
+    /// which case ordinals are numbered in-process only. A template's own factory is deliberately not
+    /// consulted: it scopes one template's transcripts, not the conversation.
+    /// </summary>
+    private static IConversationStore? ResolveOrdinalStore(SubAgentOptions options, string? rootThreadId)
+    {
+        if (string.IsNullOrWhiteSpace(rootThreadId))
+        {
+            return null;
+        }
+
+        return options.DefaultConversationStoreFactory?.Invoke(rootThreadId)
+            ?? options.ProvenanceAwareConversationStoreFactory?.Invoke(rootThreadId, null, _ => null);
+    }
+
+    /// <summary>
+    /// Resolves the conversation store for a spawned child. A template's own
+    /// <see cref="SubAgentTemplate.ConversationStoreFactory"/> wins; otherwise the provenance-aware host
+    /// factory (#275) is preferred, invoked with THIS manager's own identity — the child's real parent
+    /// thread (<see cref="AgentLineage.ParentThreadId"/> is this manager's parent thread) and a describe
+    /// callback over this manager's own live roster — so a grandchild is attributed to its actual parent
+    /// and its snapshot resolves here, not against a root captured once. The describe is a LIVE callback
+    /// resolved at metadata-write time, not now: the child is not yet registered when its store is built,
+    /// but it is by the time the store first persists. Falls back to the plain
     /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> for hosts that set only that one.
     /// </summary>
     private IConversationStore? ResolveChildStore(string agentId, SubAgentTemplate template, AgentLineage lineage)
     {
-        var childThreadId = SubAgentThreadId(agentId);
+        var childThreadId = ChildThreadId(agentId);
 
         if (template.ConversationStoreFactory is { } templateStoreFactory)
         {
@@ -3199,7 +3256,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // so nothing else ever gives it a tenant - and an untenanted row is indistinguishable
             // from a missing one once Identity:Enforce is on.
             await AgentThreadOwnership
-                .InheritAsync(store, lineage.ParentThreadId, SubAgentThreadId(agentId), CancellationToken.None)
+                .InheritAsync(store, lineage.ParentThreadId, ChildThreadId(agentId), CancellationToken.None)
                 .ConfigureAwait(false);
 
             // Build a fresh FunctionRegistry with filtered parent tools. `enabledSet` was resolved (and
@@ -3264,7 +3321,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             var childLoop = new MultiTurnAgentLoop(
                 providerAgent,
                 registry,
-                threadId: SubAgentThreadId(agentId),
+                threadId: ChildThreadId(agentId),
                 // Explicit tool-control overload: a child always gets both browser-hosted client
                 // tools (matching the always-true behavior of the back-compat overload), but that
                 // overload has no descendantQuestionSink parameter — the child's questions must
@@ -3279,7 +3336,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
                 // Not _options: a child runs its own delegations, so it must not inherit the spawn
                 // authority this level's host holds over ITS spawns (see ForChildLoop).
-                subAgentOptions: childParticipatesInCollaboration ? _childOptions : null,
+                subAgentOptions: childParticipatesInCollaboration ? ChildOptions : null,
                 subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
                 lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
                 collaboration: childCollaboration,
@@ -4740,45 +4797,26 @@ public sealed class SubAgentManager : IAsyncDisposable
             // one canonical ProviderAttemptId with the sub-agent's own-loop usage capture, which keys under
             // this same thread id. Two id-spaces for one provider call would be a cross-conversation dedup
             // landmine (#196, BUG 3).
-            SubAgentThreadId(state.AgentId),
+            ChildThreadId(state.AgentId),
             UsageExecutionKind.SubAgent,
             state.EffectiveModelId ?? _parentModelId
         );
 
     /// <summary>
-    /// Builds the conversation thread id for a sub-agent's own loop from its agent id. Centralized so the
-    /// sub-agent loop construction and the descendant usage relay stamp the SAME id, keeping one canonical
-    /// <see cref="UsageRecord.ProviderAttemptId"/> per provider call across the own-loop and relay paths.
+    /// The transcript thread id of one of THIS manager's children. Centralized so the child loop
+    /// construction, the child store, the ownership stamp, and the descendant usage relay all stamp the
+    /// SAME id, keeping one canonical <see cref="UsageRecord.ProviderAttemptId"/> per provider call across
+    /// the own-loop and relay paths.
     /// </summary>
-    internal static string SubAgentThreadId(string agentId) => $"subagent-{agentId}";
+    private string ChildThreadId(string agentId) => SubAgentThreadId(_parentAgent.ThreadId, agentId);
 
     /// <summary>
-    /// Derives the fixed-width (8 hex) conversation tag that scopes a spawned sub-agent's id to the
-    /// LAUNCHING conversation, from the parent agent's thread id. Deterministic (same parent thread id
-    /// always yields the same tag, so it is stable across a conversation and its resumes) and content-free
-    /// (a hash, not the raw id — sub-agent ids are compact handles that nest and are never resumed by id,
-    /// so a compact digest is preferred over the raw conversation id used for the resumable controller
-    /// thread). A null/empty parent thread id (e.g. a CLI-backed parent with no thread) yields a stable
-    /// zero tag so the id shape is uniform. Uses FNV-1a/32 — no cryptographic strength is needed, only a
-    /// deterministic, well-distributed short digest.
+    /// The transcript thread id of sub-agent <paramref name="agentId"/> spawned from the agent whose thread
+    /// is <paramref name="parentThreadId"/> — <c>subagent-{scope}-{agentId}</c>, the scope being the root
+    /// conversation's digest (#705). See <see cref="SubAgentThreadIds.For"/>.
     /// </summary>
-    internal static string ConversationTag(string? parentThreadId)
-    {
-        const uint FnvOffsetBasis = 2166136261;
-        const uint FnvPrime = 16777619;
-
-        var hash = FnvOffsetBasis;
-        if (!string.IsNullOrEmpty(parentThreadId))
-        {
-            foreach (var c in parentThreadId)
-            {
-                hash ^= c;
-                hash *= FnvPrime;
-            }
-        }
-
-        return hash.ToString("x8");
-    }
+    internal static string SubAgentThreadId(string? parentThreadId, string agentId) =>
+        SubAgentThreadIds.For(parentThreadId, agentId);
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
