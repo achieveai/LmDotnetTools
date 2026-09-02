@@ -40,6 +40,7 @@ const AGENT_MESSAGE_HEADINGS: Record<AgentMessageType, string> = {
   TaskUpdate: 'Agent update',
   Steer: 'Agent steered',
   Response: 'Agent replied',
+  DeliveryFailure: 'Message undelivered',
 };
 
 /** Human-friendly heading per well-known kind; unknown kinds show the raw kind string. */
