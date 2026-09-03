@@ -310,24 +310,36 @@ internal static class ResultsWriter
         }
 
         sb.AppendLine();
-        var work = runs.Select(r => r.StartupWork).FirstOrDefault(w => w is not null);
-        if (work is null)
+        var works = runs.Select(r => r.StartupWork).OfType<StartupWork>().ToList();
+        if (works.Count == 0)
         {
             sb.AppendLine(
-                "No subagents.startupWork block was stamped, so this run's construction and directory work "
+                "No subagents.startupWork block was stamped, so this sweep's construction and directory work "
                     + "is UNMEASURED here - not zero. The host opts in through SubAgentOptions.Instrumentation."
             );
             return;
         }
 
+        // Summed across runs, so this row shares a denominator with the per-spawn table above it.
+        // Reporting the FIRST run's block instead would print one run's counts directly beneath a
+        // sweep-wide total under a matching "Spawns" column, and a threshold read off that row would
+        // be low by the number of runs - the same misreporting the per-thread roll-up already cost us,
+        // one level up.
+        sb.AppendLine(
+            $"Summed over the {works.Count} of {runs.Count} run(s) that carried a stamp. Each run contributes "
+                + "one de-duplicated observation, so these are sweep totals, not per-run figures."
+        );
+        sb.AppendLine();
         sb.AppendLine(
             "| Spawns | Rebuilt | Tool-registry ms | Context fan-out ms | Catalog builds | Catalog bytes | Listings | entries | bytes |"
         );
         sb.AppendLine("|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         sb.AppendLine(
-            $"| {work.Spawns} | {work.Reconstructions} | {work.SpawnToolRegistryMs} | {work.SpawnContextFanOutMs} "
-                + $"| {work.TemplateCatalogBuilds} | {work.TemplateCatalogBytes} | {work.DirectoryListings} "
-                + $"| {work.DirectoryListingEntries} | {work.DirectoryListingBytes} |"
+            $"| {works.Sum(w => w.Spawns)} | {works.Sum(w => w.Reconstructions)} "
+                + $"| {works.Sum(w => w.SpawnToolRegistryMs)} | {works.Sum(w => w.SpawnContextFanOutMs)} "
+                + $"| {works.Sum(w => w.TemplateCatalogBuilds)} | {works.Sum(w => w.TemplateCatalogBytes)} "
+                + $"| {works.Sum(w => w.DirectoryListings)} | {works.Sum(w => w.DirectoryListingEntries)} "
+                + $"| {works.Sum(w => w.DirectoryListingBytes)} |"
         );
     }
 

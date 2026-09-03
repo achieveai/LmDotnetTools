@@ -54,6 +54,64 @@ public class ResultsWriterTests
             Validity = RunValidity.From(2, 1, valid ? [] : ["subagent-x"], []),
         };
 
+    /// <summary>
+    /// The startup-cost row is a sweep total, like the per-spawn table it sits under.
+    /// </summary>
+    /// <remarks>
+    /// Reporting the first run's block here instead would put one run's counts directly beneath a
+    /// sweep-wide total under a matching <c>Spawns</c> column, so a threshold read off the row would be
+    /// low by the run count. The two runs below carry deliberately different values, so a first-wins
+    /// regression prints 2 and this test fails on the number rather than on the row being absent.
+    /// </remarks>
+    [Fact]
+    public void StartupCost_SumsAcrossRuns_RatherThanReportingTheFirstRun()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [
+                Run("model-a", 0, true, 4, 0, 0) with
+                {
+                    StartupWork = Work(spawns: 2, catalogBuilds: 3, catalogBytes: 1000),
+                },
+                Run("model-a", 1, true, 4, 0, 0) with
+                {
+                    StartupWork = Work(spawns: 5, catalogBuilds: 7, catalogBytes: 2000),
+                },
+            ],
+            []
+        );
+
+        summary.Should().Contain("Summed over the 2 of 2 run(s) that carried a stamp");
+        summary.Should().Contain("| 7 | 0 | 0 | 0 | 10 | 3000 | 0 | 0 | 0 |");
+    }
+
+    /// <summary>
+    /// A run without a stamp is skipped, and the denominator says so rather than reading as a zero.
+    /// </summary>
+    [Fact]
+    public void StartupCost_ReportsHowManyRunsCarriedAStamp()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [
+                Run("model-a", 0, true, 4, 0, 0),
+                Run("model-a", 1, true, 4, 0, 0) with
+                {
+                    StartupWork = Work(spawns: 5, catalogBuilds: 7, catalogBytes: 2000),
+                },
+            ],
+            []
+        );
+
+        summary.Should().Contain("Summed over the 1 of 2 run(s) that carried a stamp");
+    }
+
+    private static StartupWork Work(int spawns, int catalogBuilds, long catalogBytes) =>
+        new()
+        {
+            Spawns = spawns,
+            TemplateCatalogBuilds = catalogBuilds,
+            TemplateCatalogBytes = catalogBytes,
+        };
+
     [Fact]
     public void Summary_RollsUpPerModel()
     {
