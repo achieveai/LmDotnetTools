@@ -110,8 +110,20 @@ public sealed record CollaborationNodeRecord
     /// <summary>Schema version this build writes.</summary>
     public const int CurrentSchemaVersion = 1;
 
+    /// <summary>
+    /// The JSON member every persisted collaboration document carries its schema version under.
+    /// </summary>
+    /// <remarks>
+    /// Named once and shared because the forward-compatibility guard in a projection reads this member
+    /// off the RAW document — it has to work on a version too new to deserialize — while the record
+    /// writes it through <c>[JsonPropertyName]</c>. Two spellings of the same member would leave the
+    /// guard reading a property that is never written, so it would report "unversioned" for every blob
+    /// and happily overwrite a newer build's data.
+    /// </remarks>
+    public const string SchemaVersionPropertyName = "schema_version";
+
     /// <summary>Schema version of this row.</summary>
-    [JsonPropertyName("schema_version")]
+    [JsonPropertyName(SchemaVersionPropertyName)]
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
     /// <summary>Canonical identifier of the agent.</summary>
@@ -163,6 +175,19 @@ public sealed record CollaborationNodeRecord
     /// <summary>Lifecycle status at the time the row was written.</summary>
     [JsonPropertyName("status")]
     public required string Status { get; init; }
+
+    /// <summary>
+    /// When the agent was admitted to the directory, when that instant is known.
+    /// </summary>
+    /// <remarks>
+    /// Read only by the restart operator trace, so an operator reading "these agents did not survive"
+    /// can tell a run that had barely started from one that had been going for an hour. Nullable
+    /// because it is not part of addressing: a row written by a build that did not record it, or
+    /// projected from a snapshot with no registration instant, still reconciles identically.
+    /// </remarks>
+    [JsonPropertyName("spawned_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? SpawnedAt { get; init; }
 
     /// <summary>Projects a live snapshot into its persisted form.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>
