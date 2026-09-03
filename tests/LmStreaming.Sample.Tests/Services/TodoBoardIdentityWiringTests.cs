@@ -115,6 +115,131 @@ public sealed class TodoBoardIdentityWiringTests
         resolved.AgentId.Should().Be(SubAgentThreadIds.AgentIdFor(1));
     }
 
+    /// <summary>
+    ///     The state after a restart: a fresh collaboration for the same root, holding only the live
+    ///     root, into which the previous process's agent rows have been reconciled as tombstones.
+    /// </summary>
+    private static AgentCollaborationSetup RestartedRootWithTombstonedAgentOne(string rootThreadId, string agentName)
+    {
+        var previous = RootHoldingAgentOne(rootThreadId, agentName);
+        var persisted = previous.Directory.SnapshotRecords();
+
+        var restarted = AgentCollaborationSetup.CreateRoot(
+            new AgentCollaborationOptions(),
+            collaborationId: rootThreadId,
+            agentId: rootThreadId,
+            name: "conversation"
+        );
+        restarted.Directory.TryRegister(restarted.Context, "conversation", "running").Succeeded.Should().BeTrue();
+
+        foreach (var record in persisted.Where(r => !string.Equals(r.AgentId, rootThreadId, StringComparison.Ordinal)))
+        {
+            restarted.Directory.MarkInvalidated(record).Should().BeTrue();
+        }
+
+        return restarted;
+    }
+
+    [Fact]
+    public void AnAgentLostToARestart_IsUnreachableRatherThanUnknown()
+    {
+        // #676's tombstone seam: Resolve answers target_not_live, and the board has to hear "gone",
+        // not "never existed" — the two lead to different recovery actions.
+        var restarted = RestartedRootWithTombstonedAgentOne(RootA, "alpha");
+
+        var resolved = TodoBoardIdentityWiring.Resolve(restarted.Directory, RootA, SubAgentThreadIds.AgentIdFor(1));
+
+        resolved.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unreachable);
+    }
+
+    [Fact]
+    public void AnAgentLostToARestart_StillCarriesACanonicalIdentity()
+    {
+        // A tombstone resolves with a NULL directory entry, so the identity has to be asked for
+        // separately. Resolving by DISPLAY NAME is the case that discriminates: answering with the
+        // target would key this agent under "alpha" after a restart and under agent-1 before one, and
+        // answering with nothing would make the board refuse an agent it can name.
+        var restarted = RestartedRootWithTombstonedAgentOne(RootA, "alpha");
+
+        var resolved = TodoBoardIdentityWiring.Resolve(restarted.Directory, RootA, "alpha");
+
+        resolved.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unreachable);
+        resolved.CanonicalName.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+    }
+
+    [Fact]
+    public void ANameSharedByTwoAgentsLostToARestart_IsRefusedRatherThanGuessed()
+    {
+        // The one path #676 opens that has no single answer: the name is ambiguous among tombstones, so
+        // the directory reports AmbiguousName with no live entry behind it and the candidate listing —
+        // which reads live registrations — comes back empty. The refusal must survive an empty list.
+        var previous = RootHoldingAgentOne(RootA, "alpha");
+        var second = previous.Context.CreateChild(
+            SubAgentThreadIds.AgentIdFor(2),
+            AgentKind.SubAgent,
+            "worker",
+            "does the work"
+        );
+        previous.Directory.TryRegister(second, "alpha", "running").Succeeded.Should().BeTrue();
+
+        var restarted = AgentCollaborationSetup.CreateRoot(
+            new AgentCollaborationOptions(),
+            collaborationId: RootA,
+            agentId: RootA,
+            name: "conversation"
+        );
+        restarted.Directory.TryRegister(restarted.Context, "conversation", "running").Succeeded.Should().BeTrue();
+        foreach (
+            var record in previous
+                .Directory.SnapshotRecords()
+                .Where(r => !string.Equals(r.AgentId, RootA, StringComparison.Ordinal))
+        )
+        {
+            restarted.Directory.MarkInvalidated(record).Should().BeTrue();
+        }
+
+        var board = new TaskManager();
+        _ = board.AddTask("Wire the SSE endpoint");
+        TodoBoardIdentityWiring.Attach(board, restarted, RootA);
+
+        var result = board.ClaimTask("1", "alpha");
+
+        result.IsError.Should().BeTrue();
+        board.GetTasks().Single().Assignee.Should().BeNull();
+    }
+
+    [Fact]
+    public void ARestartTombstoneInAnotherRoot_DoesNotMakeThisRootsAgentUnreachable()
+    {
+        // Scoping still applies to tombstones: MarkInvalidated keys on (collaboration, agent id), and
+        // the reference carrying another root's scope must not reach this root's live agent-1 either.
+        var rootA = RootHoldingAgentOne(RootA, "alpha");
+        _ = RestartedRootWithTombstonedAgentOne(RootB, "beta");
+
+        var resolved = TodoBoardIdentityWiring.Resolve(
+            rootA.Directory,
+            RootA,
+            SubAgentThreadIds.For(RootB, SubAgentThreadIds.AgentIdFor(1))
+        );
+
+        resolved.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unknown);
+        resolved.AgentId.Should().BeNull();
+    }
+
+    [Fact]
+    public void AttachedToABoard_AnAgentLostToARestartOwnsItsClaimUnderItsCanonicalId()
+    {
+        var restarted = RestartedRootWithTombstonedAgentOne(RootA, "alpha");
+        var board = new TaskManager();
+        _ = board.AddTask("Wire the SSE endpoint");
+        TodoBoardIdentityWiring.Attach(board, restarted, RootA);
+
+        var result = board.ClaimTask("1", SubAgentThreadIds.AgentIdFor(1));
+
+        result.IsError.Should().BeFalse();
+        board.GetTasks().Single().Assignee.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+    }
+
     [Fact]
     public void AContestedNameReportsEveryCandidate()
     {

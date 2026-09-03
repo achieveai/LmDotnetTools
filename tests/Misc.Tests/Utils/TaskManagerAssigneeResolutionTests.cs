@@ -166,6 +166,27 @@ public class TaskManagerAssigneeResolutionTests
     }
 
     [Fact]
+    public void UnreachableWithNoResolvedIdentity_IsRefused()
+    {
+        // #676 made a restarted-away agent resolvable as not-live, and a tombstone carries no directory
+        // entry — so a resolver can now legitimately report "not reachable" while being unable to name
+        // the agent. Recording that would put the caller's raw text back in the ownership key, which is
+        // the exact free-text ownership this whole feature removes.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => new TaskManager.AssigneeResolution(
+            null,
+            null,
+            TaskManager.AssigneeLiveness.Unreachable
+        );
+
+        var result = board.ClaimTask(taskId, "ghost");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("assignee_unknown");
+        board.GetTasks().Single().Assignee.Should().BeNull();
+    }
+
+    [Fact]
     public void WithNoResolver_TheRawNameStillDecidesOwnership()
     {
         // The board must keep working with no collaboration layer wired at all.

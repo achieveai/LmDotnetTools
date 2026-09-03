@@ -1297,7 +1297,22 @@ Examples:
             );
         }
 
-        canonical = resolution.CanonicalName ?? resolution.AgentId ?? probe;
+        // A liveness answer with no identity behind it cannot decide ownership. Falling back to the
+        // caller's text here would put a display name back in the ownership key — the exact thing the
+        // resolver exists to remove — and #676 made this reachable rather than theoretical: a restart
+        // tombstone resolves to "not live" with no directory entry to name. Same code as an unmatched
+        // name, because the board's answer is the same in both cases (it will not record this
+        // assignee); only the sentence differs, so a host branching on the code is unaffected.
+        if (resolution.CanonicalName is null && resolution.AgentId is null)
+        {
+            return FunctionResult.Error(
+                AssigneeUnknownCode,
+                $"Error: '{probe}' could not be resolved to an agent identity, so the board will not "
+                    + "record it as the owner. Pass the agent id."
+            );
+        }
+
+        canonical = resolution.CanonicalName ?? resolution.AgentId!;
         return null;
     }
 

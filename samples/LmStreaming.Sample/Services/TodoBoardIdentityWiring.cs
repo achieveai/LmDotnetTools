@@ -83,14 +83,25 @@ public static class TodoBoardIdentityWiring
             );
         }
 
-        return resolution.FailureCode == AgentDirectoryFailureCodes.AmbiguousName
-            ? new TaskManager.AssigneeResolution(
+        return resolution.FailureCode switch
+        {
+            AgentDirectoryFailureCodes.AmbiguousName => new TaskManager.AssigneeResolution(
                 null,
                 null,
                 TaskManager.AssigneeLiveness.Unknown,
                 CandidatesNamed(directory, target)
-            )
-            : new TaskManager.AssigneeResolution(null, null, TaskManager.AssigneeLiveness.Unknown);
+            ),
+
+            // #676: the agent existed, and a restart took it away. "Gone" and "never existed" lead to
+            // different recovery actions, so the distinction has to survive the trip to the board.
+            // The identifier is asked for separately because a tombstone resolves to a null entry by
+            // construction — and it is the identifier rather than the target, so an agent referred to
+            // by display name after a restart is keyed the same way it was keyed before one.
+            AgentDirectoryFailureCodes.TargetNotLive when directory.InvalidatedAgentId(target) is { } goneAgentId =>
+                new TaskManager.AssigneeResolution(goneAgentId, goneAgentId, TaskManager.AssigneeLiveness.Unreachable),
+
+            _ => new TaskManager.AssigneeResolution(null, null, TaskManager.AssigneeLiveness.Unknown),
+        };
     }
 
     /// <summary>
