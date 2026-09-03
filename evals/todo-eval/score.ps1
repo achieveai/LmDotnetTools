@@ -53,7 +53,7 @@ $WaitTools = @('WaitAgent', 'WaitForAgents')
 $RowOrder = @($TaskTools) + @($CoordinationTools)
 
 $Schema = 'todo-eval/score@2'
-$SpecVersion = 'todo-eval/metrics-spec@2'
+$SpecVersion = 'todo-eval/metrics-spec@3'
 $StormThreshold = 3
 $UnclassifiedErrorCode = 'unclassified'
 $RedactedArgsKey = '__argsSha256'
