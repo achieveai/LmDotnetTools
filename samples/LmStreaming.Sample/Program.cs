@@ -2134,6 +2134,20 @@ try
                         );
                     }
 
+                    // #672: the board stops taking an assignee's word for who they are. Every path that
+                    // writes an owner asks the collaboration directory to turn the name into an agent
+                    // identifier, so ownership is compared on one stable string rather than on whatever
+                    // text a model typed. Attached AFTER the reconciliation above, so an agent a restart
+                    // took away is already tombstoned and reads as not-live rather than as never having
+                    // existed — and after board hydration, which restores owners directly and must not be
+                    // re-validated against a directory that no longer holds last process's agents.
+                    // Nothing is wired when the host has not opted into collaboration: with no resolver
+                    // the board behaves exactly as it did before.
+                    if (rootCollaboration is not null)
+                    {
+                        TodoBoardIdentityWiring.Attach(taskManager, rootCollaboration, threadId);
+                    }
+
                     // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
                     // live conversation_todo frame to this conversation's subscribers, exactly as the
                     // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after

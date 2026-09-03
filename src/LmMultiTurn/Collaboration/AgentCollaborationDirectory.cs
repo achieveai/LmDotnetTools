@@ -490,6 +490,39 @@ public sealed class AgentCollaborationDirectory
         );
     }
 
+    /// <summary>
+    /// The canonical identifier of the agent a <see cref="AgentDirectoryFailureCodes.TargetNotLive"/>
+    /// target names, or null when no single tombstoned agent answers to it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Separate from <see cref="Resolve"/> rather than folded into it, because a tombstone must keep
+    /// resolving to a null entry: every existing caller reads a non-null entry as "there is an agent
+    /// here to talk to", and there is not.
+    /// </para>
+    /// <para>
+    /// A caller that records ownership needs the identifier and not the target it happened to type, or
+    /// the same agent is keyed under its display name after a restart and under its identifier before
+    /// one — which is the aliasing that keying on (scope, agent id) exists to prevent.
+    /// </para>
+    /// </remarks>
+    /// <param name="target">An identifier or display name that resolved as not live.</param>
+    public string? InvalidatedAgentId(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return null;
+        }
+
+        if (_invalidatedById.ContainsKey(target))
+        {
+            return target;
+        }
+
+        // An ambiguous name has no single answer; reporting either agent would be a guess at ownership.
+        return _invalidatedByName.TryGetValue(target, out var binding) && !binding.IsAmbiguous ? binding.AgentId : null;
+    }
+
     /// <summary>Every registered agent, ordered by canonical identifier so listings are stable.</summary>
     public IReadOnlyList<AgentDirectoryEntry> Snapshot()
     {
