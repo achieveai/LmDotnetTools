@@ -2,19 +2,103 @@ using TodoEval.Runner.Sweep;
 
 namespace TodoEval.Runner.Metrics;
 
-/// <summary>Per-tool call/error tallies while merging threads.</summary>
+/// <summary>Per-tool call/error tallies while merging threads, plus the failures' error codes.</summary>
 internal sealed record ToolStats
 {
     public int Calls { get; init; }
     public int Errors { get; init; }
+
+    /// <summary>Failure count per stable error code; <c>unclassified</c> when the result named none.</summary>
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
+
+    public ToolStats Merge(ToolStats other) =>
+        new()
+        {
+            Calls = Calls + other.Calls,
+            Errors = Errors + other.Errors,
+            ErrorCodes = CountMap.Merge([ErrorCodes, other.ErrorCodes]),
+        };
 }
 
-/// <summary>One <c>perTool</c> row of the score object: calls, errors, errorRate rounded to 4dp.</summary>
+/// <summary>
+/// One <c>perTool</c> row of the score object: calls, errors, errorRate rounded to 4dp, the tool's
+/// family, and the failures broken down by error code.
+/// </summary>
 internal sealed record PerToolScore
 {
     public int Calls { get; init; }
     public int Errors { get; init; }
     public double ErrorRate { get; init; }
+
+    /// <summary><c>task</c> or <c>coordination</c> - the only two families that get a row.</summary>
+    public required string Family { get; init; }
+
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
+}
+
+/// <summary>
+/// What a run's coordination construction cost, stamped by <c>SubAgentInstrumentationProjection</c>
+/// under <c>subagents.startupWork</c> and read back offline here. The mirror of
+/// <c>SubAgentStartupWork</c>; every field is a COUNT, not a verdict. #670 measures this cost so
+/// #671-#676 can be judged against it, and measuring it does not pre-judge any of it as a defect.
+/// </summary>
+internal sealed record StartupWork
+{
+    public int Spawns { get; init; }
+    public int Reconstructions { get; init; }
+    public long SpawnToolRegistryMs { get; init; }
+    public long SpawnContextFanOutMs { get; init; }
+    public long SpawnTotalMs { get; init; }
+    public int TemplateCatalogBuilds { get; init; }
+    public long TemplateCatalogBytes { get; init; }
+    public int DirectoryListings { get; init; }
+    public long DirectoryListingEntries { get; init; }
+    public long DirectoryListingBytes { get; init; }
+}
+
+/// <summary>
+/// One sub-agent construction's phase timings, the mirror of <c>SubAgentSpawnTiming</c>, stamped
+/// under <c>subagents.spawnTimings</c>.
+/// </summary>
+internal sealed record SpawnTiming
+{
+    public string AgentId { get; init; } = "";
+    public string Template { get; init; } = "";
+    public long ToolRegistryMs { get; init; }
+    public long ContextFanOutMs { get; init; }
+    public long TotalMs { get; init; }
+    public int InheritedToolCount { get; init; }
+    public int ToolCatalogBytes { get; init; }
+
+    /// <summary>
+    /// True when this rebuilt a FINISHED agent rather than spawning a new one. Both pay the same
+    /// construction cost, so a run's re-construction share is invisible without the flag.
+    /// </summary>
+    public bool Reconstructed { get; init; }
+}
+
+/// <summary>
+/// The score object's <c>openObligations</c> block. The number is read from a field coordination
+/// results do not carry yet (#673 adds it), so the count of results that DID carry one travels with
+/// it: without that, a reader cannot tell "no obligations were open" from "nothing reported any".
+/// </summary>
+internal sealed record OpenObligationsReport
+{
+    public const string NotYetEmittedNote =
+        "No coordination result carried an openObligations field: this build does not emit one yet "
+        + "(#673). The zero means NOT REPORTED, not 'none were open'.";
+
+    public required int LastObserved { get; init; }
+    public required int ResultsCarryingField { get; init; }
+    public string? Note { get; init; }
+
+    public static OpenObligationsReport From(int lastObserved, int resultsCarryingField) =>
+        new()
+        {
+            LastObserved = lastObserved,
+            ResultsCarryingField = resultsCarryingField,
+            Note = resultsCarryingField == 0 ? NotYetEmittedNote : null,
+        };
 }
 
 /// <summary>The score object's validity block (metrics-spec.md, "Validity preconditions").</summary>
@@ -67,7 +151,7 @@ internal sealed record RunValidity
 /// </summary>
 internal sealed record RunMetrics
 {
-    public string Schema { get; init; } = "todo-eval/score@1";
+    public string Schema { get; init; } = TodoEval.Runner.Metrics.Fingerprints.Schema;
 
     // --- sweep facts -------------------------------------------------------------------
     public required string RunKey { get; init; }
@@ -89,11 +173,39 @@ internal sealed record RunMetrics
     public int TotalToolCalls { get; init; }
     public int TaskToolCalls { get; init; }
     public int TaskToolErrors { get; init; }
+
+    /// <summary>The coordination twins of <c>taskToolCalls</c>/<c>taskToolErrors</c>.</summary>
+    public int CoordinationToolCalls { get; init; }
+
+    public int CoordinationToolErrors { get; init; }
     public int UnpairedToolCalls { get; init; }
 
-    /// <summary>All 15 task tools, zero-call rows included, in the spec's tool order.</summary>
+    /// <summary>
+    /// All 22 rows - the 15 task tools then the 7 coordination tools, zero-call rows included, in
+    /// the spec's declared order.
+    /// </summary>
     public IReadOnlyDictionary<string, PerToolScore> PerTool { get; init; } =
         new Dictionary<string, PerToolScore>(StringComparer.Ordinal);
+
+    /// <summary>Every failure in the run rolled up by error code, across both families.</summary>
+    public CountMap ErrorCodes { get; init; } = CountMap.Empty;
+
+    /// <summary>How the run's wait calls ended, keyed by result status or error code.</summary>
+    public CountMap WaitOutcomes { get; init; } = CountMap.Empty;
+
+    public OpenObligationsReport OpenObligations { get; init; } = OpenObligationsReport.From(0, 0);
+
+    /// <summary>Token attribution from the persisted usage records (metrics-spec.md, "Usage").</summary>
+    public UsageReport Usage { get; init; } = new();
+
+    /// <summary>Per-spawn cost the host measured, one row per sub-agent the run spawned.</summary>
+    public IReadOnlyList<SpawnTiming> SpawnTimings { get; init; } = [];
+
+    /// <summary>Host-side startup and directory work, or null when the host stamped none.</summary>
+    public StartupWork? StartupWork { get; init; }
+
+    /// <summary>Corpus / spec / evaluator hashes this row was EXTRACTED under.</summary>
+    public FingerprintSet? Fingerprints { get; init; }
 
     public int RetryStormCount { get; init; }
     public IReadOnlyList<RetryStorm> RetryStorms { get; init; } = [];
@@ -179,7 +291,8 @@ internal static class MetricsExtractor
     public static SweepMetrics Extract(
         string conversationsDir,
         IReadOnlyList<RunManifestEntry> manifest,
-        BoardShapeExpectation? expectedBoard
+        BoardShapeExpectation? expectedBoard,
+        FingerprintSet? fingerprints = null
     )
     {
         var threads = ConversationStoreReader.LoadAllThreads(conversationsDir);
@@ -202,14 +315,16 @@ internal static class MetricsExtractor
                 IsSubAgentThread = t.IsSubAgentThread,
                 TotalToolCalls = t.TotalToolCalls,
                 TaskToolCalls = t.TaskToolCallCount,
-                TaskToolErrors = t.PerTaskTool.Values.Sum(s => s.Errors),
+                TaskToolErrors = t
+                    .PerTool.Where(kvp => ToolFamilies.Classify(kvp.Key) == ToolFamily.Task)
+                    .Sum(kvp => kvp.Value.Errors),
                 FabricatedComplianceSuspect = t.FabricatedComplianceSuspect,
             })
             .ToList();
 
         return new SweepMetrics
         {
-            Runs = [.. manifest.Select(entry => ExtractRun(entry, groups, expectedBoard))],
+            Runs = [.. manifest.Select(entry => ExtractRun(entry, groups, expectedBoard, fingerprints))],
             UnattributedThreads = unattributed,
         };
     }
@@ -217,11 +332,13 @@ internal static class MetricsExtractor
     private static RunMetrics ExtractRun(
         RunManifestEntry entry,
         IReadOnlyDictionary<string, IReadOnlyList<ConversationStoreReader.ThreadData>> groups,
-        BoardShapeExpectation? expectedBoard
+        BoardShapeExpectation? expectedBoard,
+        FingerprintSet? fingerprints
     )
     {
         var baseMetrics = new RunMetrics
         {
+            Fingerprints = fingerprints,
             RunKey = entry.RunKey,
             Model = entry.Model,
             SeedIndex = entry.SeedIndex,
@@ -247,22 +364,23 @@ internal static class MetricsExtractor
             };
         }
 
-        // Merge per-tool tallies across the run's threads; all 15 tools present, zero rows too.
+        // Merge per-tool tallies across the run's threads; all 22 rows present, zero rows too.
         var merged = new Dictionary<string, ToolStats>(StringComparer.Ordinal);
         foreach (var thread in group)
         {
-            foreach (var (tool, stats) in thread.PerTaskTool)
+            foreach (var (tool, stats) in thread.PerTool)
             {
-                var current = merged.TryGetValue(tool, out var existing) ? existing : new ToolStats();
-                merged[tool] = new ToolStats
-                {
-                    Calls = current.Calls + stats.Calls,
-                    Errors = current.Errors + stats.Errors,
-                };
+                merged[tool] = (merged.TryGetValue(tool, out var current) ? current : new ToolStats()).Merge(stats);
             }
         }
 
         var perTool = BuildPerTool(merged);
+        var taskRows = FamilyRows(perTool, ToolFamily.Task);
+        var coordinationRows = FamilyRows(perTool, ToolFamily.Coordination);
+        var usage = UsageReader.Rollup(
+            [.. group.SelectMany(t => UsageReader.ParseRecords(t.UsageRecordsJson))],
+            group.ToDictionary(t => t.ThreadId, t => t.GenerationIds, StringComparer.Ordinal)
+        );
         var storms = group.SelectMany(t => t.RetryStorms).ToList();
         var vanishes = group.SelectMany(t => t.BoardIdVanishes).ToList();
         var blockRecorded = group.Any(t => t.BlockRecorded);
@@ -285,15 +403,35 @@ internal static class MetricsExtractor
                 : expectedBoard.Evaluate(flat, blockRecorded, blockCleared);
         }
 
+        // One sink measures the WHOLE run, and every collaborating thread stamps that same running
+        // snapshot onto its own metadata (SubAgentOptions.ForChildLoop shares the instance on purpose).
+        // These stamps are therefore repeats of ONE series, not per-thread parts of it: concatenating
+        // them multiplied the run's spawn cost by the thread count, and taking the first roll-up took a
+        // sub-agent's mid-run one, because `subagent-` sorts before `thread-`. Take the single richest
+        // stamp, and take BOTH artifacts from that one thread so they cannot disagree - the same reason
+        // SaveAsync snapshots them together under one lock.
+        var stamp = RichestStamp(group);
+
         return baseMetrics with
         {
             Threads = group.Count,
             SubAgentCount = subAgents.Count,
             TotalToolCalls = group.Sum(t => t.TotalToolCalls),
-            TaskToolCalls = perTool.Values.Sum(s => s.Calls),
-            TaskToolErrors = perTool.Values.Sum(s => s.Errors),
+            TaskToolCalls = taskRows.Sum(r => r.Calls),
+            TaskToolErrors = taskRows.Sum(r => r.Errors),
+            CoordinationToolCalls = coordinationRows.Sum(r => r.Calls),
+            CoordinationToolErrors = coordinationRows.Sum(r => r.Errors),
             UnpairedToolCalls = group.Sum(t => t.UnpairedToolCalls),
             PerTool = perTool,
+            ErrorCodes = CountMap.Merge(perTool.Values.Select(r => r.ErrorCodes)),
+            WaitOutcomes = CountMap.Merge(group.Select(t => t.WaitOutcomes)),
+            OpenObligations = OpenObligationsReport.From(
+                group.Select(t => t.OpenObligationsLastObserved).LastOrDefault(),
+                group.Sum(t => t.OpenObligationResults)
+            ),
+            Usage = usage,
+            SpawnTimings = stamp.Timings,
+            StartupWork = stamp.Work,
             RetryStormCount = storms.Count,
             RetryStorms = storms,
             BoardIdVanished = BoardIdVanishedReport.From(vanishes),
@@ -309,15 +447,16 @@ internal static class MetricsExtractor
     }
 
     /// <summary>
-    /// Every task tool gets a row — zero-call tools included — in the spec's declared tool order,
-    /// with errorRate rounded to 4 decimal places (0 when the tool was never called).
+    /// Every task tool and every coordination tool gets a row - zero-call tools included - in the
+    /// spec's declared order, with errorRate rounded to 4 decimal places (0 when the tool was never
+    /// called).
     /// </summary>
     private static IReadOnlyDictionary<string, PerToolScore> BuildPerTool(
         IReadOnlyDictionary<string, ToolStats> tallies
     )
     {
         var result = new Dictionary<string, PerToolScore>(StringComparer.Ordinal);
-        foreach (var tool in TaskTools.All)
+        foreach (var tool in ToolFamilies.RowOrder)
         {
             var stats = tallies.TryGetValue(tool, out var found) ? found : new ToolStats();
             result[tool] = new PerToolScore
@@ -325,9 +464,75 @@ internal static class MetricsExtractor
                 Calls = stats.Calls,
                 Errors = stats.Errors,
                 ErrorRate = stats.Calls > 0 ? Math.Round((double)stats.Errors / stats.Calls, 4) : 0,
+                Family = ToolFamilies.Name(ToolFamilies.Classify(tool)),
+                ErrorCodes = stats.ErrorCodes,
             };
         }
 
         return result;
     }
+
+    private static IReadOnlyList<PerToolScore> FamilyRows(
+        IReadOnlyDictionary<string, PerToolScore> perTool,
+        ToolFamily family
+    ) => [.. perTool.Where(kvp => ToolFamilies.Classify(kvp.Key) == family).Select(kvp => kvp.Value)];
+
+    /// <summary>
+    /// The one thread stamp that saw the most of the run, with its timings and roll-up kept together.
+    /// Ties keep ordinal thread order, so two equally complete stamps still extract deterministically.
+    /// </summary>
+    private static (IReadOnlyList<SpawnTiming> Timings, StartupWork? Work) RichestStamp(
+        IEnumerable<ConversationStoreReader.ThreadData> threads
+    )
+    {
+        var best = threads
+            .Select(t => (Timings: SpawnTimingsOf(t), Work: StartupWorkOf(t)))
+            .Where(s => s.Work is not null || s.Timings.Count > 0)
+            .OrderByDescending(s => Observations(s.Work))
+            .FirstOrDefault();
+
+        return (best.Timings ?? [], best.Work);
+    }
+
+    /// <summary>
+    /// How much of the run a stamp saw. Mirrors the host-side watermark
+    /// (<c>SubAgentInstrumentationProjection.Observations</c>), so the extractor ranks stamps by the same
+    /// measure the host used to decide which snapshot was safe to persist.
+    /// </summary>
+    private static long Observations(StartupWork? work) =>
+        work is null ? -1 : work.Spawns + (long)work.TemplateCatalogBuilds + work.DirectoryListings;
+
+    private static IReadOnlyList<SpawnTiming> SpawnTimingsOf(ConversationStoreReader.ThreadData thread) =>
+        ReadStamp<List<SpawnTiming>>(thread.SpawnTimingsJson) ?? [];
+
+    private static StartupWork? StartupWorkOf(ConversationStoreReader.ThreadData thread) =>
+        ReadStamp<StartupWork>(thread.StartupWorkJson);
+
+    /// <summary>
+    /// Deserializes one host stamp. Both are written by the host as JSON STRINGS inside
+    /// <c>metadata.json</c>'s properties bag, and a malformed or older-shaped stamp must cost the
+    /// run its timings, never its whole extraction.
+    /// </summary>
+    private static T? ReadStamp<T>(string? json)
+        where T : class
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<T>(json, StampOptions);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions StampOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
 }

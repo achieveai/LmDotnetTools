@@ -14,6 +14,12 @@ internal sealed record CliOptions
     public string? EnvFile { get; init; }
     public bool AllowMissingModels { get; init; }
 
+    /// <summary>
+    /// Archive the conversation store VERBATIM instead of redacting it. The raw archive carries
+    /// model prose, so it belongs in an off-repo instance directory and never in a commit.
+    /// </summary>
+    public bool ArchiveRaw { get; init; }
+
     /// <summary>When set, no sweep runs: metrics are re-extracted from this archived sweep directory.</summary>
     public string? ExtractOnlyDir { get; init; }
 
@@ -37,6 +43,8 @@ internal sealed record CliOptions
           --host-publish-dir <dir>   Pre-published LmStreaming.Sample binaries to copy instead of publishing
           --env-file <path>          .env handed to the host (LMSTREAMING_ENV_FILE) for provider keys
           --allow-missing-models     Skip models the host does not offer instead of failing the sweep
+          --archive-raw              Archive transcripts verbatim (NOT metric-preserving-redacted).
+                                     The result carries model prose - keep it off-repo.
           --extract-only <sweepDir>  Re-run metrics extraction over an archived sweep (no host, no runs)
           --help                     This text
 
@@ -61,6 +69,9 @@ internal sealed record CliOptions
                     break;
                 case "--allow-missing-models":
                     options = options with { AllowMissingModels = true };
+                    break;
+                case "--archive-raw":
+                    options = options with { ArchiveRaw = true };
                     break;
                 case "--config":
                     options = options with { ConfigPath = TakeValue(args, ref i) };
@@ -127,6 +138,7 @@ internal sealed record CliOptions
             MaxParallelRuns = MaxParallelRuns ?? config.MaxParallelRuns,
             PerRunTimeoutMinutes = PerRunTimeoutMinutes ?? config.PerRunTimeoutMinutes,
             AllowMissingModels = AllowMissingModels || config.AllowMissingModels,
+            ArchiveRaw = ArchiveRaw || config.ArchiveRaw,
             Host = host,
         };
         merged.Validate();

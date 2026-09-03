@@ -28,7 +28,20 @@ internal static class ConversationStoreReader
 {
     private const string SubAgentParentKey = "sample.subAgentOf";
     private const string TodoBoardKey = "todo.board";
+
+    /// <summary>
+    /// Per-spawn phase timings, stamped by <c>SubAgentInstrumentationProjection</c> on whichever
+    /// thread owns the spawning loop. Library-owned (<c>subagents.*</c>), like <c>usage.records</c>,
+    /// rather than host-owned (<c>sample.*</c>) - the sample only opts in.
+    /// </summary>
+    public const string SpawnTimingsKey = "subagents.spawnTimings";
+
+    /// <summary>Run-level construction and directory work, stamped on the same threads.</summary>
+    public const string StartupWorkKey = "subagents.startupWork";
     public const string SubAgentDirPrefix = "subagent-";
+
+    /// <summary>The error code reported when a failing result names none (metrics-spec.md).</summary>
+    public const string UnclassifiedErrorCode = "unclassified";
 
     // Fabricated-compliance heuristic, verbatim from metrics-spec.md. Only ever applied to
     // sub-agent threads with zero task-tool calls, so a truthful report of real board work can
@@ -51,8 +64,11 @@ internal static class ConversationStoreReader
 
         public required int UnpairedToolCalls { get; init; }
 
-        /// <summary>Per task tool (calls, errors); only the 15 task tools appear.</summary>
-        public required IReadOnlyDictionary<string, ToolStats> PerTaskTool { get; init; }
+        /// <summary>
+        ///     Per tool (calls, errors, errors by code). Only the <c>task</c> and <c>coordination</c>
+        ///     families get a row; <c>other</c> tools count in <see cref="TotalToolCalls" /> alone.
+        /// </summary>
+        public required IReadOnlyDictionary<string, ToolStats> PerTool { get; init; }
 
         public required IReadOnlyList<RetryStorm> RetryStorms { get; init; }
 
@@ -63,6 +79,39 @@ internal static class ConversationStoreReader
         public required bool BlockExplicitlyCleared { get; init; }
 
         public required int TaskToolCallCount { get; init; }
+
+        /// <summary>Calls to the 7 coordination tools, the coordination twin of <see cref="TaskToolCallCount" />.</summary>
+        public required int CoordinationToolCallCount { get; init; }
+
+        /// <summary>
+        ///     The thread's distinct generation ids - the keys the usage reader's best-effort turn
+        ///     join matches a record's attempt key against.
+        /// </summary>
+        public required IReadOnlyCollection<string> GenerationIds { get; init; }
+
+        /// <summary>Raw <c>usage.records</c> property value from <c>metadata.json</c>, or null when absent.</summary>
+        public string? UsageRecordsJson { get; init; }
+
+        /// <summary>Raw <c>subagents.spawnTimings</c> property value, or null when nothing stamped one.</summary>
+        public string? SpawnTimingsJson { get; init; }
+
+        /// <summary>Raw <c>subagents.startupWork</c> property value, or null when nothing stamped one.</summary>
+        public string? StartupWorkJson { get; init; }
+
+        /// <summary>
+        ///     How each <c>WaitAgent</c>/<c>WaitForAgents</c> call ended, keyed by the result's
+        ///     <c>status</c> (or its error code). Empty on every build before #673/#674 emit those
+        ///     states - a real counter reading zero, not a hardcoded zero.
+        /// </summary>
+        public required CountMap WaitOutcomes { get; init; }
+
+        /// <summary>
+        ///     The last <c>openObligations</c> value any coordination result carried, and how many
+        ///     results carried the field at all. Zero/zero until #673 starts emitting it.
+        /// </summary>
+        public required int OpenObligationsLastObserved { get; init; }
+
+        public required int OpenObligationResults { get; init; }
 
         /// <summary>True when this is a tool-less sub-agent thread whose assistant text still claims board work.</summary>
         public required bool FabricatedComplianceSuspect { get; init; }
@@ -139,7 +188,7 @@ internal static class ConversationStoreReader
     internal static ThreadData LoadThread(string threadDir)
     {
         var threadId = Path.GetFileName(threadDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        var (parentThreadId, todoBoardJson) = ReadMetadata(Path.Combine(threadDir, "metadata.json"));
+        var metadata = ReadMetadata(Path.Combine(threadDir, "metadata.json"));
 
         using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(threadDir, "messages.json")));
         if (doc.RootElement.ValueKind != JsonValueKind.Array)
@@ -148,7 +197,7 @@ internal static class ConversationStoreReader
         }
 
         // Pass 1 (spec): pair results by tool_call_id, within this thread only, first result wins.
-        var resultById = new Dictionary<string, (string Text, bool IsErrorFlag)>(StringComparer.Ordinal);
+        var resultById = new Dictionary<string, ResultFacts>(StringComparer.Ordinal);
         foreach (var envelope in doc.RootElement.EnumerateArray())
         {
             if (GetString(envelope, "messageType") != "ToolCallResultMessage")
@@ -163,10 +212,7 @@ internal static class ConversationStoreReader
                     var callId = GetString(inner.RootElement, "tool_call_id");
                     if (!string.IsNullOrEmpty(callId) && !resultById.ContainsKey(callId))
                     {
-                        var isErrorFlag =
-                            inner.RootElement.TryGetProperty("is_error", out var flag)
-                            && flag.ValueKind == JsonValueKind.True;
-                        resultById[callId] = (ResultText(inner.RootElement), isErrorFlag);
+                        resultById[callId] = ResultFacts.Read(inner.RootElement);
                     }
                 }
             }
@@ -179,9 +225,11 @@ internal static class ConversationStoreReader
         var totalToolCalls = 0;
         var unpairedToolCalls = 0;
         var taskToolCalls = 0;
+        var coordinationToolCalls = 0;
         var blockRecorded = false;
         var blockExplicitlyCleared = false;
-        var assistantTexts = new List<string>();
+        var claimSignals = new List<(bool Verb, bool Noun)>();
+        var coordination = new CoordinationOutcomes();
         var ledger = new BoardIdLedger();
         var vanishes = new List<BoardIdVanish>();
 
@@ -213,10 +261,10 @@ internal static class ConversationStoreReader
                     messageType == "TextMessage"
                     && inner is not null
                     && string.Equals(GetString(envelope, "role"), "Assistant", StringComparison.OrdinalIgnoreCase)
-                    && GetString(inner.RootElement, "text") is { } text
+                    && ClaimSignals(inner.RootElement) is { } signals
                 )
                 {
-                    assistantTexts.Add(text);
+                    claimSignals.Add(signals);
                 }
 
                 if (messageType != "ToolCallMessage" || inner is null)
@@ -228,25 +276,45 @@ internal static class ConversationStoreReader
                 var callId = GetString(inner.RootElement, "tool_call_id");
                 totalToolCalls++;
 
-                (string Text, bool IsErrorFlag) result = ("", false);
+                var result = ResultFacts.None;
                 var hasResult = !string.IsNullOrEmpty(callId) && resultById.TryGetValue(callId, out result);
                 if (!hasResult)
                 {
                     unpairedToolCalls++;
                 }
 
-                // Defensive union per metrics-spec.md: is_error == true OR the "Error:" text
-                // prefix. The text prefix is the primary signal (production records
-                // is_error: false on textual errors); the flag is honoured in case the store
-                // ever starts setting it.
-                var isError = hasResult && (result.IsErrorFlag || IsErrorText(result.Text));
+                var family = ToolFamilies.Classify(tool);
 
-                if (!TaskTools.Contains(tool))
+                // Defensive union per metrics-spec.md: is_error == true OR the "Error:" text
+                // prefix. The text prefix is the primary signal for the task family (production
+                // records is_error: false on textual errors); the flag is honoured in case the
+                // store ever starts setting it. A coordination refusal carries NO "Error:" prefix
+                // - it is is_error plus an error_code - so the code's presence is a third disjunct
+                // THERE ONLY, which leaves the 15 task tools' historical counts (and their
+                // comparability with the archived baseline) untouched.
+                var isError =
+                    hasResult
+                    && (
+                        result.IsErrorFlag
+                        || IsErrorText(result.Text)
+                        || (family == ToolFamily.Coordination && result.ErrorCode is not null)
+                    );
+
+                if (family == ToolFamily.Other)
                 {
                     continue;
                 }
 
-                taskToolCalls++;
+                if (family == ToolFamily.Task)
+                {
+                    taskToolCalls++;
+                }
+                else
+                {
+                    coordinationToolCalls++;
+                    coordination.Record(tool, result, isError);
+                }
+
                 if (!perTool.TryGetValue(tool, out var stats))
                 {
                     stats = new ToolStatsBuilder();
@@ -257,11 +325,34 @@ internal static class ConversationStoreReader
                 if (isError)
                 {
                     stats.Errors++;
+
+                    // A coordination refusal ALWAYS lands in the tally, falling back to
+                    // "unclassified" when the code is missing, so a reader can never confuse "no
+                    // refusals" with "refusals we failed to classify". A task error is tallied only
+                    // when it really carries a code: the 15 board tools report errors as "Error:"
+                    // text today, and blanketing them as unclassified would bury the coordination
+                    // taxonomy under a hundred meaningless rows.
+                    var code = result.ErrorCode ?? (family == ToolFamily.Coordination ? UnclassifiedErrorCode : null);
+                    if (code is not null)
+                    {
+                        stats.ErrorCodes[code] = stats.ErrorCodes.TryGetValue(code, out var seen) ? seen + 1 : 1;
+                    }
                 }
 
                 var rawArgs = GetString(inner.RootElement, "function_args");
                 var canonical = JsonCanonicalizer.CanonicalizeArgs(rawArgs ?? "");
+
+                // Coordination calls join the storm walk on the same terms as task calls. The walk's
+                // own isError guard IS the polling exemption: a repeated call whose result is a
+                // non-error (status running/timeout/question_received) is an observation and can
+                // never extend a run.
                 walk.Add(new StormWalkItem(RetryStormDetector.MakeIdentity(tool, canonical), isError, hasResult));
+
+                // Everything below is board bookkeeping and applies to the task family alone.
+                if (family == ToolFamily.Coordination)
+                {
+                    continue;
+                }
 
                 // Board-loss watch (#621 Part B). Same discrimination line as the server detector: a
                 // not-found naming an id THIS thread minted and never deleted is a lost row; anything
@@ -309,25 +400,38 @@ internal static class ConversationStoreReader
         var fabricated =
             threadId.StartsWith(SubAgentDirPrefix, StringComparison.OrdinalIgnoreCase)
             && taskToolCalls == 0
-            && assistantTexts.Any(t => ClaimVerb.IsMatch(t) && ClaimNoun.IsMatch(t));
+            && claimSignals.Any(c => c.Verb && c.Noun);
 
         return new ThreadData
         {
             ThreadId = threadId,
-            ParentThreadId = parentThreadId,
-            TodoBoardJson = todoBoardJson,
+            ParentThreadId = metadata.ParentThreadId,
+            TodoBoardJson = metadata.TodoBoardJson,
             TurnCount = generationIds.Count,
             TotalToolCalls = totalToolCalls,
             UnpairedToolCalls = unpairedToolCalls,
-            PerTaskTool = perTool.ToDictionary(
+            PerTool = perTool.ToDictionary(
                 kvp => kvp.Key,
-                kvp => new ToolStats { Calls = kvp.Value.Calls, Errors = kvp.Value.Errors },
+                kvp => new ToolStats
+                {
+                    Calls = kvp.Value.Calls,
+                    Errors = kvp.Value.Errors,
+                    ErrorCodes = CountMap.From(kvp.Value.ErrorCodes),
+                },
                 StringComparer.Ordinal
             ),
             RetryStorms = RetryStormDetector.Walk(threadId, walk),
             BlockRecorded = blockRecorded,
             BlockExplicitlyCleared = blockExplicitlyCleared,
             TaskToolCallCount = taskToolCalls,
+            CoordinationToolCallCount = coordinationToolCalls,
+            GenerationIds = generationIds,
+            UsageRecordsJson = metadata.UsageRecordsJson,
+            SpawnTimingsJson = metadata.SpawnTimingsJson,
+            StartupWorkJson = metadata.StartupWorkJson,
+            WaitOutcomes = coordination.WaitOutcomes,
+            OpenObligationsLastObserved = coordination.OpenObligationsLastObserved,
+            OpenObligationResults = coordination.OpenObligationResults,
             FabricatedComplianceSuspect = fabricated,
             BoardIdVanishes = vanishes,
         };
@@ -337,15 +441,31 @@ internal static class ConversationStoreReader
     internal static bool IsErrorText(string resultText) =>
         resultText.TrimStart().StartsWith("Error:", StringComparison.Ordinal);
 
-    /// <summary>The result's text: the string value itself, or compact JSON for a non-string value.</summary>
-    private static string ResultText(JsonElement inner)
+    /// <summary>
+    /// The fabricated-compliance signals for one assistant <c>TextMessage</c>. A raw transcript is
+    /// matched with the spec's two regexes; a REDACTED transcript carries the same two booleans
+    /// (plus a length) in place of the text, so the heuristic survives redaction unchanged. Returns
+    /// null when the message carries no text at all.
+    /// </summary>
+    private static (bool Verb, bool Noun)? ClaimSignals(JsonElement inner)
     {
-        if (!inner.TryGetProperty("result", out var result))
+        if (!inner.TryGetProperty("text", out var text))
         {
-            return "";
+            return null;
         }
 
-        return result.ValueKind == JsonValueKind.String ? result.GetString() ?? "" : result.GetRawText();
+        if (text.ValueKind == JsonValueKind.String)
+        {
+            var raw = text.GetString() ?? "";
+            return (ClaimVerb.IsMatch(raw), ClaimNoun.IsMatch(raw));
+        }
+
+        return text.ValueKind == JsonValueKind.Object
+            ? (
+                text.TryGetProperty("claimVerbMatch", out var verb) && verb.ValueKind == JsonValueKind.True,
+                text.TryGetProperty("claimNounMatch", out var noun) && noun.ValueKind == JsonValueKind.True
+            )
+            : null;
     }
 
     private static bool HasNonEmptyBlockedBy(string? rawArgs)
@@ -396,11 +516,21 @@ internal static class ConversationStoreReader
             ? value.GetString()
             : null;
 
-    private static (string? ParentThreadId, string? TodoBoardJson) ReadMetadata(string metadataPath)
+    /// <summary>The properties a thread's <c>metadata.json</c> contributes to the metrics.</summary>
+    internal sealed record ThreadMetadata
+    {
+        public string? ParentThreadId { get; init; }
+        public string? TodoBoardJson { get; init; }
+        public string? UsageRecordsJson { get; init; }
+        public string? SpawnTimingsJson { get; init; }
+        public string? StartupWorkJson { get; init; }
+    }
+
+    private static ThreadMetadata ReadMetadata(string metadataPath)
     {
         if (!File.Exists(metadataPath))
         {
-            return (null, null);
+            return new ThreadMetadata();
         }
 
         using var doc = JsonDocument.Parse(File.ReadAllText(metadataPath));
@@ -409,29 +539,176 @@ internal static class ConversationStoreReader
             || properties.ValueKind != JsonValueKind.Object
         )
         {
-            return (null, null);
+            return new ThreadMetadata();
         }
 
-        string? parent = null;
-        string? board = null;
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var property in properties.EnumerateObject())
         {
-            if (property.NameEquals(SubAgentParentKey) && property.Value.ValueKind == JsonValueKind.String)
-            {
-                parent = property.Value.GetString();
-            }
-            else if (property.NameEquals(TodoBoardKey) && property.Value.ValueKind == JsonValueKind.String)
-            {
-                board = property.Value.GetString();
-            }
+            // Every one of these is written by the host as a JSON STRING; an archive rewritten by a
+            // tool that inlined one as an object must keep parsing, so both shapes are accepted.
+            values[property.Name] =
+                property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString()
+                : property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array ? property.Value.GetRawText()
+                : null;
         }
 
-        return (parent, board);
+        return new ThreadMetadata
+        {
+            ParentThreadId = Value(values, SubAgentParentKey),
+            TodoBoardJson = Value(values, TodoBoardKey),
+            UsageRecordsJson = Value(values, UsageReader.RecordsPropertyKey),
+            SpawnTimingsJson = Value(values, SpawnTimingsKey),
+            StartupWorkJson = Value(values, StartupWorkKey),
+        };
+
+        static string? Value(IReadOnlyDictionary<string, string?> values, string key) =>
+            values.TryGetValue(key, out var value) ? value : null;
+    }
+
+    /// <summary>
+    /// The wait/obligation counters one thread accumulates. They read zero on every build before
+    /// #673/#674 emit those states, which is a measured zero rather than a hardcoded one - the day
+    /// the host starts emitting a status or an openObligations field, these numbers move on their
+    /// own with no further change here.
+    /// </summary>
+    private sealed class CoordinationOutcomes
+    {
+        private readonly Dictionary<string, int> _waitOutcomes = new(StringComparer.Ordinal);
+
+        public CountMap WaitOutcomes => CountMap.From(_waitOutcomes);
+        public int OpenObligationsLastObserved { get; private set; }
+        public int OpenObligationResults { get; private set; }
+
+        public void Record(string tool, ResultFacts result, bool isError)
+        {
+            if (result.TryReadNumber("openObligations", out var open))
+            {
+                OpenObligationsLastObserved = open;
+                OpenObligationResults++;
+            }
+
+            if (tool is not ("WaitAgent" or "WaitForAgents"))
+            {
+                return;
+            }
+
+            var outcome =
+                isError ? result.ErrorCode ?? UnclassifiedErrorCode
+                : result.TryReadString("status", out var status) ? status
+                : "ok";
+            _waitOutcomes[outcome] = _waitOutcomes.TryGetValue(outcome, out var seen) ? seen + 1 : 1;
+        }
     }
 
     private sealed class ToolStatsBuilder
     {
         public int Calls;
         public int Errors;
+        public readonly Dictionary<string, int> ErrorCodes = new(StringComparer.Ordinal);
     }
+}
+
+/// <summary>
+/// Everything one paired <c>ToolCallResultMessage</c> contributes: the result text, the persisted
+/// <c>is_error</c> flag, and the stable error code the score object classifies failures by.
+/// </summary>
+/// <remarks>
+/// Error code per metrics-spec.md, in order: the result message's own <c>error_code</c>
+/// (what <c>ToolHandlerResult.FromError(text, code)</c> persists), else a <c>code</c> property when
+/// the result itself parses to a JSON object, else none - which the caller reports as
+/// <c>unclassified</c> rather than omitting, so a reader who skips the definitions still sees that
+/// the failure happened and was simply not classifiable.
+/// </remarks>
+internal readonly record struct ResultFacts(string Text, bool IsErrorFlag, string? ErrorCode)
+{
+    public static readonly ResultFacts None = new("", false, null);
+
+    public static ResultFacts Read(JsonElement resultMessage)
+    {
+        var text = ResultText(resultMessage);
+        var isErrorFlag =
+            resultMessage.TryGetProperty("is_error", out var flag) && flag.ValueKind == JsonValueKind.True;
+
+        string? code = null;
+        if (
+            resultMessage.TryGetProperty("error_code", out var errorCode)
+            && errorCode.ValueKind == JsonValueKind.String
+        )
+        {
+            code = errorCode.GetString();
+        }
+
+        return new ResultFacts(text, isErrorFlag, code ?? ReadResultProperty(text, "code"));
+    }
+
+    /// <summary>Reads a string property out of a result whose text is a JSON object.</summary>
+    public bool TryReadString(string propertyName, out string value)
+    {
+        value = ReadResultProperty(Text, propertyName) ?? "";
+        return value.Length > 0;
+    }
+
+    /// <summary>Reads an integer property out of a result whose text is a JSON object.</summary>
+    public bool TryReadNumber(string propertyName, out int value)
+    {
+        value = 0;
+        if (!LooksLikeJsonObject(Text))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(Text);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(propertyName, out var found)
+                && found.ValueKind == JsonValueKind.Number
+                && found.TryGetInt32(out value);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The result's text: the string value itself, or compact JSON for a non-string value.</summary>
+    private static string ResultText(JsonElement resultMessage)
+    {
+        if (!resultMessage.TryGetProperty("result", out var result))
+        {
+            return "";
+        }
+
+        return result.ValueKind == JsonValueKind.String ? result.GetString() ?? "" : result.GetRawText();
+    }
+
+    private static string? ReadResultProperty(string text, string propertyName)
+    {
+        if (!LooksLikeJsonObject(text))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            return
+                doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(propertyName, out var found)
+                && found.ValueKind == JsonValueKind.String
+                ? found.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Cheap gate before parsing. Most results are prose, and handing every one of them to
+    /// JsonDocument.Parse just to catch the exception is the hot path of a whole-sweep extraction.
+    /// </summary>
+    private static bool LooksLikeJsonObject(string text) => text.TrimStart().StartsWith('{');
 }

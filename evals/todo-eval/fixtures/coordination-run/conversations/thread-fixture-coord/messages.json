@@ -1,0 +1,188 @@
+[
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r1",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"Agent\",\"function_args\":\"{\\\"task\\\":\\\"own workstream 1\\\",\\\"template\\\":\\\"general-purpose\\\"}\",\"tool_call_id\":\"call_co_0001\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r1",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0001\",\"result\":\"Spawned agent agent-1.\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r1",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"SendMessage\",\"function_args\":\"{\\\"message\\\":\\\"start\\\",\\\"to\\\":\\\"agent-1\\\"}\",\"tool_call_id\":\"call_co_0002\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r1",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0002\",\"result\":\"{\\\"messageId\\\":\\\"m1\\\",\\\"status\\\":\\\"accepted\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r2",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"WaitForAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-9\\\"],\\\"timeoutSeconds\\\":30}\",\"tool_call_id\":\"call_co_0003\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r2",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0003\",\"result\":\"No agent named 'agent-9' is registered.\",\"is_error\":true,\"error_code\":\"unknown_agent\"}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r2",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"WaitForAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-9\\\"],\\\"timeoutSeconds\\\":30}\",\"tool_call_id\":\"call_co_0004\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r2",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0004\",\"result\":\"No agent named 'agent-9' is registered.\",\"is_error\":true,\"error_code\":\"unknown_agent\"}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r2",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"WaitForAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-9\\\"],\\\"timeoutSeconds\\\":30}\",\"tool_call_id\":\"call_co_0005\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r2",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0005\",\"result\":\"No agent named 'agent-9' is registered.\",\"is_error\":true,\"error_code\":\"unknown_agent\"}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"]}\",\"tool_call_id\":\"call_co_0006\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0006\",\"result\":\"{\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"}],\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"]}\",\"tool_call_id\":\"call_co_0007\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0007\",\"result\":\"{\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"}],\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"]}\",\"tool_call_id\":\"call_co_0008\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0008\",\"result\":\"{\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"}],\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"]}\",\"tool_call_id\":\"call_co_0009\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0009\",\"result\":\"{\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"}],\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"]}\",\"tool_call_id\":\"call_co_0010\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0010\",\"result\":\"{\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"}],\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"GetAgents\",\"function_args\":\"{}\",\"tool_call_id\":\"call_co_0011\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0011\",\"result\":\"{\\\"entries\\\":2,\\\"agents\\\":[{\\\"id\\\":\\\"agent-1\\\"},{\\\"id\\\":\\\"agent-2\\\"}]}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgent\",\"function_args\":\"{\\\"agent\\\":\\\"agent-1\\\"}\",\"tool_call_id\":\"call_co_0012\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0012\",\"result\":\"{\\\"status\\\":\\\"running\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"WaitAgent\",\"function_args\":\"{\\\"agent\\\":\\\"agent-1\\\",\\\"timeoutSeconds\\\":5}\",\"tool_call_id\":\"call_co_0013\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0013\",\"result\":\"{\\\"status\\\":\\\"timeout\\\"}\",\"is_error\":false}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"SendMessage\",\"function_args\":\"{\\\"message\\\":\\\"deeper\\\",\\\"to\\\":\\\"agent-3\\\"}\",\"tool_call_id\":\"call_co_0014\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0014\",\"result\":\"{\\\"code\\\":\\\"depth_limit\\\",\\\"message\\\":\\\"Sub-agents may not spawn at this depth.\\\"}\",\"is_error\":true}"
+  },
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r3",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"CheckAgent\",\"function_args\":\"{\\\"agent\\\":\\\"agent-7\\\"}\",\"tool_call_id\":\"call_co_0015\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "r3",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0015\",\"result\":\"That agent is gone.\",\"is_error\":true}"
+  },
+  {
+    "messageType": "TextMessage",
+    "generationId": "r4",
+    "role": "Assistant",
+    "messageJson": "{\"text\":\"I spawned one agent and it is working the board.\"}"
+  }
+]

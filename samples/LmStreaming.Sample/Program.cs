@@ -3656,6 +3656,14 @@ public partial class Program
             return null;
         }
 
+        // #670: a FRESH sink per conversation, so a run's measurements are that run's. The library
+        // stamps the snapshot into the conversation's own metadata, which is what makes the eval able
+        // to read a run's coordination cost back offline from an archived store rather than from logs.
+        baseOptions = baseOptions with
+        {
+            Instrumentation = new SubAgentInstrumentation(),
+        };
+
         if (sandboxSession is null)
         {
             return ApplyCharacteristicsAgentFactory(

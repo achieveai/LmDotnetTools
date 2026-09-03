@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using TodoEval.Runner;
 using TodoEval.Runner.Metrics;
 using TodoEval.Runner.Sweep;
@@ -67,8 +68,17 @@ internal static class EvalProgram
         var manifestPath = Path.Combine(sweepDir, "runs-manifest.jsonl");
         IReadOnlyList<RunManifestEntry> manifest;
 
+        // Frozen BEFORE the first run: these name the corpus and the measurement contract the models
+        // actually faced, and nothing later in this method may recompute them.
+        var ranUnder = FingerprintSet.Compute(evalDir);
+        var startedUtc = DateTimeOffset.UtcNow;
+        long publishMs;
+        long readyMs;
+
         await using (var host = await EvalHostProcess.StartAsync(config.Host, repoRoot, instanceDir, sweepDir, log, ct))
         {
+            publishMs = host.PublishMs;
+            readyMs = host.ReadyMs;
             using var http = new HttpClient { BaseAddress = host.BaseAddress, Timeout = TimeSpan.FromMinutes(2) };
             var client = new EvalHostClient(http);
 
@@ -95,8 +105,34 @@ internal static class EvalProgram
         // (the host was fresh), and the archived copy is what makes a committed baseline
         // re-extractable offline.
         var archivedConversations = Path.Combine(sweepDir, "conversations");
-        CopyTree(Path.Combine(instanceDir, "conversations"), archivedConversations);
+        var liveConversations = Path.Combine(instanceDir, "conversations");
+        if (config.ArchiveRaw)
+        {
+            log.WriteLine("[warn] --archive-raw: the archived transcripts carry model prose. Keep them off-repo.");
+            CopyTree(liveConversations, archivedConversations);
+        }
+        else
+        {
+            TranscriptRedactor.CopyRedacted(liveConversations, archivedConversations);
+        }
+
         TryDeleteTree(instanceDir, log);
+
+        new SweepManifest
+        {
+            GitSha = Fingerprints.GitSha(repoRoot),
+            RunnerVersion = RunnerVersion,
+            RanUnder = ranUnder,
+            ExtractedUnder = FingerprintSet.Compute(evalDir),
+            Models = config.Models,
+            Seeds = config.Seeds,
+            PerRunTimeoutMinutes = config.PerRunTimeoutMinutes,
+            StartupWork = new HostStartupWork { HostPublishMs = publishMs, HostReadyMs = readyMs },
+            StartedUtc = startedUtc,
+            FinishedUtc = DateTimeOffset.UtcNow,
+            ConversationsRedacted = !config.ArchiveRaw,
+        }.Write(sweepDir);
+        log.WriteLine($"[sweep] wrote {Path.Combine(sweepDir, SweepManifest.FileName)}");
 
         Extract(sweepDir, archivedConversations, manifest, config, log);
         return ComputeExitCode(manifest);
@@ -133,6 +169,22 @@ internal static class EvalProgram
 
         var manifest = RunManifestEntry.ReadJsonl(manifestPath);
         Extract(sweepDir, Path.Combine(sweepDir, "conversations"), manifest, config, log);
+
+        // Re-extraction stamps what it ran UNDER without touching what the sweep ran under: a later
+        // reader compares the two and sees whether the corpus or a measurement constant has moved.
+        if (SweepManifest.Read(sweepDir) is { } archived)
+        {
+            var evalDir = ResolvePath(config.EvalDir, repoRoot);
+            (archived with { ExtractedUnder = FingerprintSet.Compute(evalDir) }).Write(sweepDir);
+        }
+        else
+        {
+            log.WriteLine(
+                $"[warn] '{sweepDir}' has no {SweepManifest.FileName}: it predates the fingerprint "
+                    + "manifest, so nothing pins the corpus and contract its numbers were produced under."
+            );
+        }
+
         return 0;
     }
 
@@ -149,7 +201,12 @@ internal static class EvalProgram
         var expectedBoardPath = Path.Combine(evalDir, "expected-board.json");
         var expectedBoard = File.Exists(expectedBoardPath) ? BoardShapeExpectation.Load(expectedBoardPath) : null;
 
-        var metrics = MetricsExtractor.Extract(conversationsDir, manifest, expectedBoard);
+        var metrics = MetricsExtractor.Extract(
+            conversationsDir,
+            manifest,
+            expectedBoard,
+            FingerprintSet.Compute(evalDir)
+        );
         var runsPath = Path.Combine(sweepDir, "runs.jsonl");
         var summaryPath = Path.Combine(sweepDir, "summary.md");
         ResultsWriter.WriteRunsJsonl(runsPath, metrics.Runs);
@@ -198,6 +255,13 @@ internal static class EvalProgram
             ? remaining
             : throw new InvalidOperationException("No configured model is available on the host; nothing to sweep.");
     }
+
+    /// <summary>The Runner build's own version, recorded as provenance and NEVER hashed (#670).</summary>
+    private static string RunnerVersion =>
+        typeof(EvalProgram)
+            .Assembly.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+        ?? "unknown";
 
     /// <summary>
     /// Repo root for resolving relative paths (eval dir, host project): the nearest ancestor of the

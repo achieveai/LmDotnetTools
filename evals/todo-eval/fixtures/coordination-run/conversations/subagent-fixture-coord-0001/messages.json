@@ -1,0 +1,20 @@
+[
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "s1",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"add-task\",\"function_args\":\"{\\\"title\\\":\\\"Workstream 1\\\"}\",\"tool_call_id\":\"call_co_0016\"}"
+  },
+  {
+    "messageType": "ToolCallResultMessage",
+    "generationId": "s1",
+    "role": "Tool",
+    "messageJson": "{\"tool_call_id\":\"call_co_0016\",\"result\":\"Added task 1: Workstream 1\",\"is_error\":false}"
+  },
+  {
+    "messageType": "TextMessage",
+    "generationId": "s1",
+    "role": "Assistant",
+    "messageJson": "{\"text\":\"Added the workstream task.\"}"
+  }
+]

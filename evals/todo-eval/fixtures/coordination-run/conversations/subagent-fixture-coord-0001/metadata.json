@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "sample.subAgentOf": "thread-fixture-coord",
+    "sample.subAgentTask": "Own workstream 1 and report back when every subtask is complete.",
+    "sample.subAgentName": "workstream-1",
+    "usage.records": "[{\"ProviderAttemptId\":\"subagent-fixture-coord-0001:s1\",\"ExecutionKind\":1,\"ParentExecutionId\":\"subagent-fixture-coord-0001\",\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":400,\"OutputTokens\":100,\"CacheReadTokens\":0,\"CacheWriteTokens\":0,\"ReasoningTokens\":0,\"TotalTokens\":500},{\"ProviderAttemptId\":\"thread-fixture-coord:r1\",\"ExecutionKind\":0,\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":1200,\"OutputTokens\":300,\"CacheReadTokens\":900,\"CacheWriteTokens\":100,\"ReasoningTokens\":50,\"TotalTokens\":1500}]",
+    "subagents.spawnTimings": "[{\"AgentId\":\"agent-1\",\"Template\":\"general-purpose\",\"ToolRegistryMs\":37,\"ContextFanOutMs\":12,\"TotalMs\":61,\"InheritedToolCount\":21,\"ToolCatalogBytes\":18432,\"Reconstructed\":false}]",
+    "subagents.startupWork": "{\"Spawns\":1,\"Reconstructions\":0,\"SpawnToolRegistryMs\":37,\"SpawnContextFanOutMs\":12,\"SpawnTotalMs\":61,\"TemplateCatalogBuilds\":4,\"TemplateCatalogBytes\":8600,\"DirectoryListings\":0,\"DirectoryListingEntries\":0,\"DirectoryListingBytes\":0}"
+  }
+}

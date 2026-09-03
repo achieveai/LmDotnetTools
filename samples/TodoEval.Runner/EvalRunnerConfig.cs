@@ -57,6 +57,12 @@ internal sealed record EvalRunnerConfig
     /// </summary>
     public bool AllowMissingModels { get; init; }
 
+    /// <summary>
+    /// When true the archived <c>conversations/</c> tree is a verbatim copy. Default false: the
+    /// committed archive is metric-preserving-redacted (metrics-spec.md, "Redaction").
+    /// </summary>
+    public bool ArchiveRaw { get; init; }
+
     private static readonly JsonSerializerOptions ReadOptions = new()
     {
         PropertyNameCaseInsensitive = true,

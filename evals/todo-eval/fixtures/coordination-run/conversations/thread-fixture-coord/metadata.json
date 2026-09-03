@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "todo.board": "{\"Tasks\":[{\"status\":\"Completed\",\"notes\":[{\"text\":\"done\"}],\"subTasks\":[{\"status\":\"Completed\",\"notes\":[{\"text\":\"done\"}],\"subTasks\":[]}]}]}",
+    "usage.records": "[{\"ProviderAttemptId\":\"thread-fixture-coord:r1\",\"ExecutionKind\":0,\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":1200,\"OutputTokens\":300,\"CacheReadTokens\":900,\"CacheWriteTokens\":100,\"ReasoningTokens\":50,\"TotalTokens\":1500},{\"ProviderAttemptId\":\"thread-fixture-coord:derived:8f21\",\"ExecutionKind\":0,\"RootConversationId\":\"thread-fixture-coord\",\"InputTokens\":60,\"OutputTokens\":10,\"TotalTokens\":70}]",
+    "subagents.startupWork": "{\"Spawns\":3,\"Reconstructions\":1,\"SpawnToolRegistryMs\":91,\"SpawnContextFanOutMs\":30,\"SpawnTotalMs\":174,\"TemplateCatalogBuilds\":11,\"TemplateCatalogBytes\":47300,\"DirectoryListings\":1,\"DirectoryListingEntries\":2,\"DirectoryListingBytes\":412}",
+    "subagents.spawnTimings": "[{\"AgentId\":\"agent-1\",\"Template\":\"general-purpose\",\"ToolRegistryMs\":37,\"ContextFanOutMs\":12,\"TotalMs\":61,\"InheritedToolCount\":21,\"ToolCatalogBytes\":18432,\"Reconstructed\":false},{\"AgentId\":\"agent-2\",\"Template\":\"general-purpose\",\"ToolRegistryMs\":29,\"ContextFanOutMs\":9,\"TotalMs\":55,\"InheritedToolCount\":21,\"ToolCatalogBytes\":18432,\"Reconstructed\":false},{\"AgentId\":\"agent-3\",\"Template\":\"general-purpose\",\"ToolRegistryMs\":25,\"ContextFanOutMs\":9,\"TotalMs\":58,\"InheritedToolCount\":21,\"ToolCatalogBytes\":18432,\"Reconstructed\":true}]"
+  }
+}
