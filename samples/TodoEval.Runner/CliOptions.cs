@@ -23,6 +23,13 @@ internal sealed record CliOptions
     /// <summary>When set, no sweep runs: metrics are re-extracted from this archived sweep directory.</summary>
     public string? ExtractOnlyDir { get; init; }
 
+    /// <summary>
+    /// Archived baseline sweep to compare this run against (#677). Usable with a live sweep or with
+    /// <see cref="ExtractOnlyDir"/>; the comparison refuses before it publishes any number the two
+    /// sweeps are not entitled to share.
+    /// </summary>
+    public string? CompareBaselineDir { get; init; }
+
     public bool ShowHelp { get; init; }
 
     public const string HelpText = """
@@ -46,15 +53,26 @@ internal sealed record CliOptions
           --archive-raw              Archive transcripts verbatim (NOT metric-preserving-redacted).
                                      The result carries model prose - keep it off-repo.
           --extract-only <sweepDir>  Re-run metrics extraction over an archived sweep (no host, no runs)
+          --compare <baselineDir>    Compare this sweep against an archived baseline sweep and write
+                                     comparison.json plus a Before/after section in summary.md.
+                                     Works with a live sweep or with --extract-only.
           --help                     This text
 
         Exit codes:
           0  the sweep produced at least one Completed run and no run hit a harness error
-             (extract-only: extraction succeeded)
+             (extract-only: extraction succeeded); with --compare, the comparison was accepted
+             and no deterministic gate failed
           1  a run failed with a harness error, or the sweep itself failed to run
           2  invalid command line
           3  no run completed - every run timed out, errored, or was interrupted; the archive
              is written but must not gate anything as a successful baseline
+          4  --compare: a deterministic gate failed
+          5  --compare: the comparison was REFUSED - the two sweeps do not share a corpus, a
+             metrics-spec revision or an evaluator, or one of them is too thin or too faulty to
+             compare. A refusal is never reported as a pass.
+
+        The sweep's own outcome outranks the comparison: a sweep that broke (1) or completed
+        nothing (3) reports that, because its comparison would mean nothing either way.
         """;
 
     public static CliOptions Parse(string[] args)
@@ -106,6 +124,9 @@ internal sealed record CliOptions
                     break;
                 case "--extract-only":
                     options = options with { ExtractOnlyDir = TakeValue(args, ref i) };
+                    break;
+                case "--compare":
+                    options = options with { CompareBaselineDir = TakeValue(args, ref i) };
                     break;
                 default:
                     throw new ArgumentException($"Unknown argument '{args[i]}'. Try --help.");

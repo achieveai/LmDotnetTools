@@ -55,7 +55,12 @@ public class HostSweepSmokeTests
                 },
             };
 
-            var exitCode = await EvalProgram.RunSweepAsync(config, TextWriter.Null, CancellationToken.None);
+            var exitCode = await EvalProgram.RunSweepAsync(
+                config,
+                compareBaselineDir: null,
+                TextWriter.Null,
+                CancellationToken.None
+            );
 
             exitCode.Should().Be(0);
             var sweepDir = Directory.EnumerateDirectories(resultsDir).Should().ContainSingle().Subject;
