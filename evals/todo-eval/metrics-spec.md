@@ -6,12 +6,15 @@ metric is computed from the conversation store on disk plus one final board snap
 the #619 harness reimplements this same spec in C# with its own tests. When the two
 disagree, this document is the contract.
 
-**Revision `todo-eval/metrics-spec@2`, emitting `todo-eval/score@2`.** Revision 2 adds the
+**Revision `todo-eval/metrics-spec@3`, emitting `todo-eval/score@2`.** Revision 2 added the
 #670 evidence layer: the coordination tool family and its refusal codes, wait outcomes,
 token usage, sub-agent spawn timings and host startup work, the three fingerprints that
 say whether two sweeps may be compared at all, and the redacted transcript forms a
-committed archive carries. Every one of those is read from the store on disk; nothing here
-needs a live host.
+committed archive carries. Revision 3 (#677) changes no measurement: it turns the success
+thresholds below from prose into the machine-readable gate list the comparer evaluates, and
+states when two sweeps may be compared at all. The score payload shape is unchanged, so the
+emitted schema stays `todo-eval/score@2`. Every one of these is read from the store on disk;
+nothing here needs a live host.
 
 ## Inputs
 
@@ -481,7 +484,7 @@ threshold may be set from a number on this page. Real figures live in an archive
                    "DirectoryListings": 1, "DirectoryListingEntries": 2,
                    "DirectoryListingBytes": 412 },
   "fingerprints": { "taskCorpusHash": "...", "specHash": "...", "evaluatorHash": "...",
-                    "specVersion": "todo-eval/metrics-spec@2" },
+                    "specVersion": "todo-eval/metrics-spec@3" },
   "retryStormCount": 0,
   "retryStorms": [ { "threadId": "...", "tool": "add-note", "count": 4,
                      "args": "{\"__argsSha256\":\"...\"}" } ],
@@ -510,14 +513,102 @@ threshold may be set from a number on this page. Real figures live in an archive
 `perTool` always carries all 22 rows — 15 task tools then 7 coordination tools, including
 zero-call rows — so a reader who skips the definitions still sees which tools never ran.
 
-## Success thresholds (targets from #621, evaluated post-fix vs the archived baseline)
+## Comparing two sweeps
 
-| Metric | Baseline (investigation, Aug 21-30 store) | Target after API fix |
-| --- | --- | --- |
-| `add-note` error rate (F1 family) | 65% of all add-note calls failed | **< 5%** |
-| Retry storms (3+ identical failing calls) | one 48x storm, several 2-5x | **0** |
-| Completion rate | — (established by the baseline sweep) | no worse than baseline |
-| Turns to completion | — (established by the baseline sweep) | no worse than baseline |
+A before/after comparison is only meaningful between two sweeps that were asked the same
+thing and whose numbers were produced by the same evaluator. The comparer therefore either
+**refuses** and publishes its reason, or compares and publishes every row below. It never
+publishes a partial number set.
 
-The thresholds bind the post-fix sweep (#621), not any single smoke run; a smoke run only
-has to produce a well-formed score object.
+### When a comparison refuses
+
+Checked in this order; the first match is the reported cause, so the reason names the most
+specific difference rather than a downstream hash it also moved.
+
+| # | Refusal | Reads | Fires when |
+| --- | --- | --- | --- |
+| 1 | `ManifestMissing` | — | Either directory lacks `sweep-manifest.json` or `runs.jsonl`. An archive from before the fingerprint manifest cannot say what produced its numbers. |
+| 2 | `CorpusHashDiffers` | `ranUnder.taskCorpusHash` | The two sweeps were asked different things: `task.md`, `mode.json` or `expected-board.json` moved between the runs. |
+| 3 | `SpecVersionDiffers` | `extractedUnder.specVersion` | The two sets of numbers were extracted under different revisions of this document. |
+| 4 | `EvaluatorHashDiffers` | `extractedUnder.evaluatorHash` | Same revision, but a measurement-defining constant differs between the two extractions. |
+| 5 | `CoverageBelowMinimum` | both sweeps | Completed runs / total runs is below **50%** in either sweep. |
+| 6 | `FaultRateAboveMaximum` | both sweeps | Harness faults (`harness_error`, `timeout`, `interrupted`) exceed **25%** of runs in either sweep. |
+
+Rows 5 and 6 are **comparability bounds, not quality targets**: they say a sweep is too thin
+or too broken to characterise itself. "Did completion improve" is a gate, below, and is
+never double-counted here. Both bounds are engineering pins, not values derived from
+evidence.
+
+Ordering 3 before 4 is load-bearing. A revision bump moves `specVersion`, `specHash` **and**
+`evaluatorHash` together, so checking the evaluator hash first would mask every bump behind
+it and leave `SpecVersionDiffers` permanently unreachable. `EvaluatorHashDiffers` stays
+reachable on its own: the tool vocabularies and the retry-storm threshold feed the evaluator
+hash without touching the revision.
+
+**Task type** needs no refusal of its own — `mode.json` is one of the three corpus files, so
+a different task type is already a different `taskCorpusHash`.
+
+### `ranUnder` versus `extractedUnder`
+
+The manifest records the fingerprint triple twice: `ranUnder` is frozen when the sweep runs,
+`extractedUnder` is recomputed on every `--extract-only`. The refusals read them
+asymmetrically, and the asymmetry is the point:
+
+- The **corpus** refusal reads `ranUnder`, because that is the only recording of what the
+  model actually faced. `extractedUnder.taskCorpusHash` is recomputed from the corpus on
+  disk *now*, so two sweeps re-extracted on one checkout always share it and a corpus
+  refusal reading it could never fire.
+- The **spec** and **evaluator** refusals read `extractedUnder`, because that is what says
+  whether the two sets of numbers were produced by the same evaluator.
+- A `ranUnder` spec or evaluator difference is published as **contract drift and never
+  refuses**. Both archives are re-scored by today's identical evaluator, which is exactly
+  what lets this document reach a new revision without forcing a baseline re-run.
+
+Re-extracting an archive requires its `conversations/` directory. An archive that has none —
+`results/baseline-2026-08-30` and `results/postfix-2026-08-30` are both pre-#670 and have
+none — cannot be re-extracted in place, and running `--extract-only` against it would
+overwrite its `runs.jsonl` with zeros.
+
+## Success thresholds (evaluated post-fix vs the archived baseline)
+
+Each row is one gate the comparer evaluates from the same rolled-up figures the before/after
+table prints, so the verdict and the numbers beneath it cannot disagree. Baseline-derived is
+the rule; only the two figures #621 states as numbers are absolute, and a worse baseline
+never raises an absolute ceiling.
+
+| Gate id | Direction | Threshold | Not measurable when |
+| --- | --- | --- | --- |
+| `task-tool-error-rate` | at most | baseline | Either sweep made no board tool call |
+| `coordination-tool-error-rate` | at most | baseline | Either sweep made no coordination call |
+| `board-id-vanished` | at most | baseline | — |
+| `completion-rate` | at least | baseline | No `expected-board.json` was supplied, so completion was never judged |
+| `average-turns` | at most | baseline | Either sweep has no runs |
+| `unknown-agent-waits` | at most | baseline | The baseline recorded no wait call at all |
+| `tool-calls-per-successful-run` | at most | baseline | Either sweep has no valid completed run |
+| `input-tokens-per-successful-run` | at most | baseline | No usage record was persisted with the comparable runs |
+| `tool-catalog-bytes-per-spawn` | at most | baseline | No spawn timing was stamped |
+| `add-note-error-rate` | at most | **0.05** (#621) | The candidate made no `add-note` call |
+| `retry-storms` | at most | **0** (#621) | — |
+| `open-obligations` | at most | **0** | Neither sweep emitted an obligation-reporting result |
+
+Baseline-derived gates compare against the archived sweep's own figure, so "no worse than
+baseline" is a number, not a judgement. `#621`'s original prose targets map onto this table
+as: `add-note` error rate **at most 5%** (65% in the Aug 21-30 investigation store), retry
+storms **0** (one 48x storm and several 2-5x in the same store), and completion rate and
+turns **no worse than the baseline sweep**.
+
+Three rules keep the verdict honest:
+
+1. **A rate over zero calls is undefined, not 0%.** Every gate whose denominator is empty,
+   whose baseline never recorded the signal, or whose evidence was never emitted reports
+   `NotMeasurable` — printed as UNPROVEN. It is never a pass, never sets "all gates passed",
+   and never fails the run; it is republished under "Contrary evidence" instead.
+2. **A pass by a hair is contrary evidence.** A baseline-derived gate whose actual sits
+   within 5% of its own threshold is flagged, so a reader is never told a metric improved
+   when it merely failed to get measurably worse. Meeting an absolute target is never
+   flagged, and a zero threshold has no proportional margin to sit inside.
+3. **Every metric that moved the wrong way is republished**, gated or not, so a summary
+   cannot report only the metrics that improved.
+
+The thresholds bind a post-fix sweep compared against an archived baseline, not any single
+smoke run; a smoke run only has to produce a well-formed score object.

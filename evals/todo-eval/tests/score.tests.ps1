@@ -506,6 +506,11 @@ try {
     Assert ($m13.fingerprints.taskCorpusHash -ne $m.fingerprints.taskCorpusHash) 'M13: perturbing task.md changes the corpus fingerprint'
     Assert ($m13.fingerprints.specHash -eq $m.fingerprints.specHash) 'M13: but not the spec fingerprint'
     Assert ($m13.fingerprints.evaluatorHash -eq $m.fingerprints.evaluatorHash) 'M13: nor the evaluator fingerprint'
+
+    # M14: the spec revision is pinned. It feeds specHash, which feeds evaluatorHash, and #677
+    # refuses a comparison whose two sides were extracted under different revisions - so the
+    # oracle and the C# twin must move to a new revision together or every comparison refuses.
+    Assert ($m.fingerprints.specVersion -eq 'todo-eval/metrics-spec@3') 'M14: the oracle emits metrics-spec@3'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

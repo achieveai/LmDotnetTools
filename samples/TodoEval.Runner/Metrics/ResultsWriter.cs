@@ -12,9 +12,15 @@ namespace TodoEval.Runner.Metrics;
 /// </summary>
 internal static class ResultsWriter
 {
+    public const string RunsFileName = "runs.jsonl";
+    public const string SummaryFileName = "summary.md";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Symmetric with the read side: CountMap has no public constructor, so an archived sweep's
+        // tallies cannot be deserialized without it.
+        Converters = { new CountMapJsonConverter() },
     };
 
     public static void WriteRunsJsonl(string path, IReadOnlyList<RunMetrics> runs)
@@ -23,22 +29,38 @@ internal static class ResultsWriter
         File.WriteAllLines(path, lines);
     }
 
+    /// <summary>
+    /// Reads an archived sweep's rows back. The inverse of <see cref="WriteRunsJsonl"/>, and the only
+    /// way a comparison can see a baseline that was extracted months ago.
+    /// </summary>
+    public static IReadOnlyList<RunMetrics> ReadRunsJsonl(string path) =>
+        [
+            .. File.ReadAllLines(path)
+                .Where(static line => !string.IsNullOrWhiteSpace(line))
+                .Select(line =>
+                    JsonSerializer.Deserialize<RunMetrics>(line, JsonOptions)
+                    ?? throw new InvalidOperationException($"A run row parsed to null in {path}: {line}")
+                ),
+        ];
+
     public static void WriteSummaryMarkdown(
         string path,
         IReadOnlyList<RunMetrics> runs,
-        IReadOnlyList<UnattributedThread> unattributedThreads
+        IReadOnlyList<UnattributedThread> unattributedThreads,
+        ComparisonReport? comparison = null
     )
     {
         File.WriteAllText(
             path,
-            BuildSummaryMarkdown(runs, unattributedThreads),
+            BuildSummaryMarkdown(runs, unattributedThreads, comparison),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
         );
     }
 
     internal static string BuildSummaryMarkdown(
         IReadOnlyList<RunMetrics> runs,
-        IReadOnlyList<UnattributedThread> unattributedThreads
+        IReadOnlyList<UnattributedThread> unattributedThreads,
+        ComparisonReport? comparison = null
     )
     {
         var sb = new StringBuilder();
@@ -61,6 +83,8 @@ internal static class ResultsWriter
             );
             sb.AppendLine();
         }
+
+        AppendComparison(sb, comparison);
 
         sb.AppendLine("## Per model");
         sb.AppendLine();
@@ -163,6 +187,10 @@ internal static class ResultsWriter
             }
         }
 
+        var aggregate = SweepAggregate.Of(runs);
+        AppendResidualErrors(sb, aggregate);
+        AppendContraryEvidence(sb, aggregate, comparison);
+
         sb.AppendLine();
         sb.AppendLine("## Unattributed threads");
         sb.AppendLine();
@@ -196,6 +224,195 @@ internal static class ResultsWriter
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// The verdict, printed before the numbers it judges. A refused comparison prints its reason and
+    /// NOTHING else: two sweeps that may not be compared publish no delta and no gate table.
+    /// </summary>
+    private static void AppendComparison(StringBuilder sb, ComparisonReport? comparison)
+    {
+        if (comparison is null)
+        {
+            return;
+        }
+
+        sb.AppendLine("## Before / after");
+        sb.AppendLine();
+        sb.AppendLine($"Baseline: `{comparison.BaselineDirectory}`");
+        sb.AppendLine($"Candidate: `{comparison.CandidateDirectory}`");
+        sb.AppendLine();
+
+        if (!comparison.Compared)
+        {
+            sb.AppendLine($"**REFUSED ({comparison.Refusal})** — {comparison.Reason}");
+            sb.AppendLine();
+            sb.AppendLine(
+                "No before/after number is published for a refused comparison: the two sweeps are not "
+                    + "entitled to share a scale."
+            );
+            sb.AppendLine();
+            return;
+        }
+
+        sb.AppendLine(comparison.Reason);
+        sb.AppendLine();
+        foreach (var drift in comparison.ContractDrift)
+        {
+            sb.AppendLine($"- {drift}");
+        }
+
+        if (comparison.ContractDrift.Count > 0)
+        {
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("| Metric | Baseline | Candidate | Change | Better | Moved |");
+        sb.AppendLine("|---|---:|---:|---:|---|---|");
+        foreach (var delta in comparison.Deltas ?? [])
+        {
+            sb.AppendLine(
+                $"| {delta.MetricId} | {Num(delta.Baseline)} | {Num(delta.Candidate)} | {Num(delta.Change)} "
+                    + $"| {Better(delta.Better)} | {(delta.MovedTheWrongWay ? "the wrong way" : "ok")} |"
+            );
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("### Gates");
+        sb.AppendLine();
+        sb.AppendLine(
+            "A gate nothing could measure is reported as `not measurable` — the criterion it covers is "
+                + "UNPROVEN, never passed."
+        );
+        sb.AppendLine();
+        sb.AppendLine("| Gate | Outcome | Actual | Threshold | Baseline | Description |");
+        sb.AppendLine("|---|---|---:|---:|---:|---|");
+        foreach (var gate in comparison.Gates ?? [])
+        {
+            sb.AppendLine(
+                $"| {gate.GateId} | {Outcome(gate)} | {Num(gate.Actual)} | {Num(gate.Threshold)} "
+                    + $"| {Num(gate.Baseline)} | {gate.Description} |"
+            );
+        }
+
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Every failure the sweep still carries, listed rather than summarised: a fix that halves an
+    /// error rate has still left every row printed here behind.
+    /// </summary>
+    private static void AppendResidualErrors(StringBuilder sb, SweepAggregate aggregate)
+    {
+        sb.AppendLine();
+        sb.AppendLine("## Residual errors");
+        sb.AppendLine();
+
+        var failing = aggregate
+            .PerTool.Where(kvp => kvp.Value.Errors > 0)
+            .OrderByDescending(kvp => kvp.Value.Errors)
+            .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .ToList();
+        if (failing.Count == 0 && aggregate.ErrorCodes.Count == 0)
+        {
+            sb.AppendLine("None: no tool row carries a failure and no error code remains in the sweep.");
+            return;
+        }
+
+        sb.AppendLine("| Tool | Family | Calls | Errors | Error rate | Codes |");
+        sb.AppendLine("|---|---|---:|---:|---:|---|");
+        foreach (var (tool, row) in failing)
+        {
+            var codes = string.Join(
+                ", ",
+                row.ErrorCodes.OrderBy(kvp => kvp.Key, StringComparer.Ordinal).Select(kvp => $"{kvp.Key}={kvp.Value}")
+            );
+            sb.AppendLine(
+                $"| {tool} | {row.Family} | {row.Calls} | {row.Errors} | {Rate(row.Errors, row.Calls)} | {codes} |"
+            );
+        }
+
+        AppendCountTable(sb, "Error codes still present", "Code", aggregate.ErrorCodes);
+    }
+
+    /// <summary>
+    /// Everything that argues against the headline. Printed even when empty, because a section that
+    /// disappears when there is nothing to say is indistinguishable from one nobody wrote.
+    /// </summary>
+    private static void AppendContraryEvidence(StringBuilder sb, SweepAggregate aggregate, ComparisonReport? comparison)
+    {
+        sb.AppendLine();
+        sb.AppendLine("## Contrary evidence");
+        sb.AppendLine();
+
+        List<string> lines = [];
+        foreach (var delta in (comparison?.Deltas ?? []).Where(d => d.MovedTheWrongWay))
+        {
+            lines.Add(
+                $"`{delta.MetricId}` moved the wrong way: {Num(delta.Baseline)} -> {Num(delta.Candidate)} "
+                    + $"({delta.Description})."
+            );
+        }
+
+        foreach (var gate in comparison?.Gates ?? [])
+        {
+            if (gate.Outcome == GateOutcome.NotMeasurable)
+            {
+                lines.Add($"`{gate.GateId}` is **not measurable**, so the criterion is UNPROVEN: {gate.Note}");
+            }
+            else if (gate.WithinMargin)
+            {
+                lines.Add(
+                    $"`{gate.GateId}` passed only within {DeterministicGates.PassMarginFraction:P0} of its "
+                        + $"threshold ({Num(gate.Actual)} against {Num(gate.Threshold)}): it did not get "
+                        + "measurably worse, which is not the same as an improvement."
+                );
+            }
+        }
+
+        foreach (var reason in aggregate.ValidityReasons)
+        {
+            lines.Add($"Validity: {reason}.");
+        }
+
+        if (aggregate.FabricatedComplianceSuspects.Count > 0)
+        {
+            lines.Add(
+                "Fabricated-compliance suspects (a triage pointer into the transcript, never a verdict): "
+                    + string.Join(", ", aggregate.FabricatedComplianceSuspects)
+                    + "."
+            );
+        }
+
+        if (lines.Count == 0)
+        {
+            sb.AppendLine(
+                "None: no reported metric moved the wrong way, every gate was measurable and cleared its "
+                    + "threshold by more than its margin, every run was valid, and no thread was flagged."
+            );
+            return;
+        }
+
+        foreach (var line in lines)
+        {
+            sb.AppendLine($"- {line}");
+        }
+    }
+
+    private static string Outcome(GateResult gate) =>
+        gate.Outcome switch
+        {
+            GateOutcome.Passed => gate.WithinMargin ? "pass (within margin)" : "pass",
+            GateOutcome.Failed => "**FAIL**",
+            _ => "not measurable",
+        };
+
+    private static string Better(GateDirection direction) => direction == GateDirection.AtMost ? "lower" : "higher";
+
+    /// <summary>Integral values print as integers so a count does not read as a measurement to 4dp.</summary>
+    private static string Num(double? value) =>
+        value is not { } number ? "n/a"
+        : Math.Abs(number % 1) < 1e-9 ? number.ToString("0", CultureInfo.InvariantCulture)
+        : number.ToString("0.####", CultureInfo.InvariantCulture);
 
     private static void AppendPerToolTable(StringBuilder sb, IReadOnlyList<RunMetrics> runs, IEnumerable<string> tools)
     {

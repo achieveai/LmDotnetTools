@@ -27,10 +27,10 @@ try
 
     if (options.ExtractOnlyDir is { } sweepDir)
     {
-        return EvalProgram.ExtractOnly(sweepDir, config, Console.Out);
+        return EvalProgram.ExtractOnly(sweepDir, config, options.CompareBaselineDir, Console.Out);
     }
 
-    return await EvalProgram.RunSweepAsync(config, Console.Out, CancellationToken.None);
+    return await EvalProgram.RunSweepAsync(config, options.CompareBaselineDir, Console.Out, CancellationToken.None);
 }
 catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException or DirectoryNotFoundException)
 {
@@ -41,7 +41,12 @@ catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundExcept
 /// <summary>Top-level flow: sweep + extract, or extract-only over an archived sweep.</summary>
 internal static class EvalProgram
 {
-    public static async Task<int> RunSweepAsync(EvalRunnerConfig config, TextWriter log, CancellationToken ct)
+    public static async Task<int> RunSweepAsync(
+        EvalRunnerConfig config,
+        string? compareBaselineDir,
+        TextWriter log,
+        CancellationToken ct
+    )
     {
         var repoRoot = FindRepoRoot();
         var evalDir = ResolvePath(config.EvalDir, repoRoot);
@@ -134,15 +139,16 @@ internal static class EvalProgram
         }.Write(sweepDir);
         log.WriteLine($"[sweep] wrote {Path.Combine(sweepDir, SweepManifest.FileName)}");
 
-        Extract(sweepDir, archivedConversations, manifest, config, log);
-        return ComputeExitCode(manifest);
+        var metrics = Extract(sweepDir, archivedConversations, manifest, config, log);
+        var comparison = CompareAndReport(sweepDir, compareBaselineDir, metrics, log);
+        return ComputeExitCode(manifest, comparison);
     }
 
     /// <summary>
     /// Exit code for a finished sweep (documented in <see cref="CliOptions.HelpText"/>): the
     /// archived baseline gates a merge through this value, so "nothing completed" must be loud.
     /// </summary>
-    internal static int ComputeExitCode(IReadOnlyList<RunManifestEntry> manifest)
+    internal static int ComputeExitCode(IReadOnlyList<RunManifestEntry> manifest, ComparisonReport? comparison = null)
     {
         if (manifest.Any(e => e.Status == RunOutcomes.HarnessError))
         {
@@ -151,10 +157,23 @@ internal static class EvalProgram
 
         // F-004: a sweep in which every run timed out / errored / was interrupted used to exit 0 —
         // a wrapper gating on the exit code would archive a fully failed sweep as a "baseline".
-        return manifest.Any(e => e.Status == RunOutcomes.Completed) ? 0 : 3;
+        // The sweep's own outcome outranks the comparison: a broken sweep's comparison means nothing.
+        return manifest.Any(e => e.Status == RunOutcomes.Completed) ? ComparisonExitCode(comparison) : 3;
     }
 
-    public static int ExtractOnly(string sweepDir, EvalRunnerConfig config, TextWriter log)
+    /// <summary>
+    /// The comparison's own exit codes; 0 when none was requested. A refusal is 5 and never 0 — a
+    /// wrapper that reads only the exit code must not mistake "these sweeps are not comparable" for
+    /// "the fix worked". An unmeasurable gate is neither: it cannot fail a run, and the report says
+    /// the criterion it covers is unproven.
+    /// </summary>
+    internal static int ComparisonExitCode(ComparisonReport? comparison) =>
+        comparison is null ? 0
+        : !comparison.Compared ? 5
+        : comparison.HasGateFailure ? 4
+        : 0;
+
+    public static int ExtractOnly(string sweepDir, EvalRunnerConfig config, string? compareBaselineDir, TextWriter log)
     {
         var repoRoot = FindRepoRoot();
         sweepDir = ResolvePath(sweepDir, repoRoot);
@@ -168,10 +187,11 @@ internal static class EvalProgram
         }
 
         var manifest = RunManifestEntry.ReadJsonl(manifestPath);
-        Extract(sweepDir, Path.Combine(sweepDir, "conversations"), manifest, config, log);
+        var metrics = Extract(sweepDir, Path.Combine(sweepDir, "conversations"), manifest, config, log);
 
         // Re-extraction stamps what it ran UNDER without touching what the sweep ran under: a later
         // reader compares the two and sees whether the corpus or a measurement constant has moved.
+        // This happens BEFORE the comparison, which reads extractedUnder to decide comparability.
         if (SweepManifest.Read(sweepDir) is { } archived)
         {
             var evalDir = ResolvePath(config.EvalDir, repoRoot);
@@ -185,10 +205,52 @@ internal static class EvalProgram
             );
         }
 
-        return 0;
+        return ComparisonExitCode(CompareAndReport(sweepDir, compareBaselineDir, metrics, log));
     }
 
-    private static void Extract(
+    /// <summary>
+    /// Compares this sweep against an archived baseline and writes the reports, then returns the
+    /// verdict (null when no comparison was asked for).
+    /// </summary>
+    /// <remarks>
+    /// The summary is written HERE rather than in <see cref="Extract"/> because it carries the
+    /// before/after and gate sections: writing it earlier would publish a report whose verdict is
+    /// missing, and a reader cannot tell that from a comparison that found nothing to say.
+    /// </remarks>
+    private static ComparisonReport? CompareAndReport(
+        string sweepDir,
+        string? compareBaselineDir,
+        SweepMetrics metrics,
+        TextWriter log
+    )
+    {
+        ComparisonReport? comparison = null;
+        if (compareBaselineDir is not null)
+        {
+            var baselineDir = ResolvePath(compareBaselineDir, FindRepoRoot());
+            comparison = SweepComparison.Compare(
+                SweepSnapshot.Load(baselineDir),
+                SweepSnapshot.WithRuns(sweepDir, metrics.Runs)
+            );
+            comparison.Write(sweepDir);
+            log.WriteLine($"[sweep] wrote {Path.Combine(sweepDir, ComparisonReport.FileName)}");
+            log.WriteLine(
+                comparison.Compared
+                    ? $"[compare] accepted against '{baselineDir}'; "
+                        + $"{comparison.Gates?.Count(g => g.Outcome == GateOutcome.Passed)} gate(s) passed, "
+                        + $"{comparison.Gates?.Count(g => g.Outcome == GateOutcome.Failed)} failed, "
+                        + $"{comparison.Gates?.Count(g => g.Outcome == GateOutcome.NotMeasurable)} not measurable."
+                    : $"[compare] REFUSED ({comparison.Refusal}): {comparison.Reason}"
+            );
+        }
+
+        var summaryPath = Path.Combine(sweepDir, ResultsWriter.SummaryFileName);
+        ResultsWriter.WriteSummaryMarkdown(summaryPath, metrics.Runs, metrics.UnattributedThreads, comparison);
+        log.WriteLine($"[sweep] wrote {summaryPath}");
+        return comparison;
+    }
+
+    private static SweepMetrics Extract(
         string sweepDir,
         string conversationsDir,
         IReadOnlyList<RunManifestEntry> manifest,
@@ -207,12 +269,9 @@ internal static class EvalProgram
             expectedBoard,
             FingerprintSet.Compute(evalDir)
         );
-        var runsPath = Path.Combine(sweepDir, "runs.jsonl");
-        var summaryPath = Path.Combine(sweepDir, "summary.md");
+        var runsPath = Path.Combine(sweepDir, ResultsWriter.RunsFileName);
         ResultsWriter.WriteRunsJsonl(runsPath, metrics.Runs);
-        ResultsWriter.WriteSummaryMarkdown(summaryPath, metrics.Runs, metrics.UnattributedThreads);
         log.WriteLine($"[sweep] wrote {runsPath}");
-        log.WriteLine($"[sweep] wrote {summaryPath}");
         if (metrics.UnattributedThreads.Count > 0)
         {
             log.WriteLine(
@@ -222,6 +281,8 @@ internal static class EvalProgram
                     + $"NOT in the per-run rows: {string.Join(", ", metrics.UnattributedThreads.Select(t => t.ThreadId))}"
             );
         }
+
+        return metrics;
     }
 
     private static async Task<IReadOnlyList<string>> CheckModelsAsync(

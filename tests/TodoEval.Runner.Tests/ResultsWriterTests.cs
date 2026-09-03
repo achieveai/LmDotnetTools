@@ -180,6 +180,118 @@ public class ResultsWriterTests
         summary.Should().Contain("None: every conversation thread is reachable");
     }
 
+    // --- #677 sections: before/after, residual errors, contrary evidence -------------------------
+
+    /// <summary>Compares two written sweeps through the real reader, writer and comparer.</summary>
+    private static (string Summary, ComparisonReport Report) Compare(
+        SweepFixture fixture,
+        IReadOnlyList<RunMetrics> baseline,
+        IReadOnlyList<RunMetrics> candidate
+    )
+    {
+        var report = SweepComparison.Compare(
+            SweepSnapshot.Load(fixture.Write("baseline", baseline)),
+            SweepSnapshot.Load(fixture.Write("candidate", candidate))
+        );
+        return (ResultsWriter.BuildSummaryMarkdown(candidate, [], report), report);
+    }
+
+    [Fact]
+    public void ResidualErrors_ListEveryNonZeroToolRowAndEveryCodeStillPresent()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [TestRuns.Run(addNoteCalls: 40, addNoteErrors: 3, errorCodes: ("board_row_missing", 3))],
+            []
+        );
+
+        summary.Should().Contain("## Residual errors");
+        summary.Should().Contain("| add-note | task | 40 | 3 |");
+        summary.Should().Contain("| board_row_missing | 3 |");
+    }
+
+    [Fact]
+    public void ResidualErrors_PrintNoneRatherThanBeingOmitted()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown([TestRuns.Run()], []);
+
+        summary.Should().Contain("## Residual errors");
+        summary.Should().Contain("None: no tool row carries a failure");
+    }
+
+    [Fact]
+    public void ContraryEvidence_ListsEveryMetricThatMovedTheWrongWay()
+    {
+        using var fixture = new SweepFixture();
+
+        var (summary, report) = Compare(
+            fixture,
+            [.. Enumerable.Range(0, 4).Select(i => TestRuns.Run(seed: i, turns: 10))],
+            [.. Enumerable.Range(0, 4).Select(i => TestRuns.Run(seed: i, turns: 20))]
+        );
+
+        report.Refusal.Should().Be(ComparisonRefusal.None);
+        summary.Should().Contain("## Contrary evidence");
+        summary.Should().Contain("average-turns");
+        summary.Should().Contain("moved the wrong way");
+    }
+
+    [Fact]
+    public void ContraryEvidence_ListsGatesThatCouldNotBeMeasured_NeverAsPasses()
+    {
+        using var fixture = new SweepFixture();
+        var runs = (IReadOnlyList<RunMetrics>)[.. Enumerable.Range(0, 4).Select(i => TestRuns.Run(seed: i))];
+
+        var (summary, report) = Compare(fixture, runs, runs);
+
+        report.Gates.Should().Contain(g => g.Outcome == GateOutcome.NotMeasurable);
+        report.AllGatesPassed.Should().BeFalse("an unmeasured gate is unproven, not passed");
+        report.HasGateFailure.Should().BeFalse();
+        summary.Should().Contain("not measurable");
+    }
+
+    [Fact]
+    public void ContraryEvidence_ListsValidityReasonsAndFabricatedComplianceSuspects()
+    {
+        var run = TestRuns.Run(valid: false);
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [run with { Validity = RunValidity.From(2, 1, ["subagent-x"], ["subagent-x"]) }],
+            []
+        );
+
+        summary.Should().Contain("## Contrary evidence");
+        summary.Should().Contain("subagent-x");
+        summary.Should().Contain("triage pointer");
+    }
+
+    [Fact]
+    public void ContraryEvidence_PrintsNoneRatherThanBeingOmitted()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown([TestRuns.Run()], []);
+
+        summary.Should().Contain("## Contrary evidence");
+        summary.Should().Contain("None: no reported metric moved the wrong way");
+    }
+
+    [Fact]
+    public void BeforeAfter_IsOmittedWithoutAComparison_AndCarriesTheRefusalInsteadOfNumbers()
+    {
+        using var fixture = new SweepFixture();
+        var runs = (IReadOnlyList<RunMetrics>)[.. Enumerable.Range(0, 4).Select(i => TestRuns.Run(seed: i))];
+
+        ResultsWriter.BuildSummaryMarkdown(runs, []).Should().NotContain("## Before / after");
+
+        var refused = SweepComparison.Compare(
+            SweepSnapshot.Load(fixture.Write("baseline", runs, SweepFixture.Prints(corpus: "ffff"))),
+            SweepSnapshot.Load(fixture.Write("candidate", runs))
+        );
+        var summary = ResultsWriter.BuildSummaryMarkdown(runs, [], refused);
+
+        summary.Should().Contain("## Before / after");
+        summary.Should().Contain("REFUSED");
+        summary.Should().Contain(nameof(ComparisonRefusal.CorpusHashDiffers));
+        summary.Should().NotContain("| Gate |", "a refused comparison publishes no gate table");
+    }
+
     [Fact]
     public void RunsJsonl_WritesOneScoreShapedLinePerRun()
     {

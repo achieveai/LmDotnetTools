@@ -28,7 +28,7 @@ internal static class Fingerprints
     public const string Schema = "todo-eval/score@2";
 
     /// <summary>The metrics-spec revision the schema belongs to.</summary>
-    public const string SpecVersion = "todo-eval/metrics-spec@2";
+    public const string SpecVersion = "todo-eval/metrics-spec@3";
 
     /// <summary>The key a redacted <c>function_args</c> carries in place of the arguments.</summary>
     public const string RedactedArgsKey = "__argsSha256";
