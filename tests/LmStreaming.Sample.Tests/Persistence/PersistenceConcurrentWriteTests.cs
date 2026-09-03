@@ -225,4 +225,43 @@ public sealed class PersistenceConcurrentWriteTests : IDisposable
         File.Exists(Path.Combine(legacyDirectory, "migration.json")).Should().BeTrue();
         File.Exists(Path.Combine(dir, "workspaces.json")).Should().BeFalse();
     }
+
+    /// <summary>
+    /// Pins the half of the shared helper these three call sites deliberately do NOT share. All three
+    /// write UTF-8 with no byte-order mark and always have; <c>AtomicFile.WriteJsonAsync</c> emits one,
+    /// so each stages its own bytes through <c>AtomicFile.WriteAsync</c> instead. Routing them at the
+    /// JSON overload would look like the tidier convergence and would silently rewrite the first three
+    /// bytes of every chat-modes file, workspace catalog, gateway manifest and migration marker already
+    /// on disk. Nothing else in the change would fail if that happened, so it is asserted here.
+    /// </summary>
+    [Fact]
+    public async Task AllThreeWriters_EmitUtf8WithoutAByteOrderMark()
+    {
+        var dir = Path.Combine(_root, "encoding");
+
+        var modes = new FileChatModeStore(Path.Combine(dir, "modes"));
+        _ = await modes.CreateModeAsync(new ChatModeCreateUpdate { Name = "Mode", SystemPrompt = "p" });
+
+        var workspaces = new FileWorkspaceStore(Path.Combine(dir, "workspaces"));
+        _ = await workspaces.CreateAsync(new WorkspaceCreate { Name = "Space" });
+
+        var resolution = await new GatewayWorkspaceCatalogResolver().ResolveAsync(
+            Path.Combine(dir, "catalog"),
+            GatewayWorkspaceCatalogIdentity.Create("http://remote:3000", "sample")
+        );
+
+        string[] written =
+        [
+            Path.Combine(dir, "modes", "chat-modes.json"),
+            Path.Combine(dir, "workspaces", "workspaces.json"),
+            resolution.ManifestPath,
+        ];
+
+        foreach (var file in written)
+        {
+            var head = await File.ReadAllBytesAsync(file);
+            head.Should().NotBeEmpty();
+            head.Take(3).Should().NotEqual([0xEF, 0xBB, 0xBF], $"'{file}' has always been written without a BOM");
+        }
+    }
 }
