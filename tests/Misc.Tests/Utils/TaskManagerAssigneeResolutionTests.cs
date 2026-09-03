@@ -129,6 +129,25 @@ public class TaskManagerAssigneeResolutionTests
     }
 
     [Fact]
+    public void ASingleCandidateIsNotAmbiguous()
+    {
+        // Pins the qualifier, not just the clause: a resolver that reports the one agent it matched
+        // has decided ownership, and refusing that would make Candidates unusable as an audit trail.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => new TaskManager.AssigneeResolution(
+            "agent-3",
+            "agent-3",
+            TaskManager.AssigneeLiveness.Live,
+            ["agent-3"]
+        );
+
+        var result = board.ClaimTask(taskId, "alpha");
+
+        result.IsError.Should().BeFalse();
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
     public void UnreachableAgent_StillOwnsTheClaim()
     {
         // Reachability is not authority: an agent that stopped responding keeps its lease so the
