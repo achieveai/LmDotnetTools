@@ -346,12 +346,32 @@ be measured.
 
 - `subagents.spawnTimings` — an array, one entry per sub-agent construction, with `AgentId`,
   `Template`, `ToolRegistryMs`, `ContextFanOutMs`, `TotalMs`, `InheritedToolCount`,
-  `ToolCatalogBytes` and `Reconstructed`. Concatenated across threads into `spawnTimings`.
+  `ToolCatalogBytes` and `Reconstructed`.
 - `subagents.startupWork` — one roll-up object: `Spawns`, `Reconstructions`,
   `SpawnToolRegistryMs`, `SpawnContextFanOutMs`, `SpawnTotalMs`, `TemplateCatalogBuilds`,
   `TemplateCatalogBytes`, `DirectoryListings`, `DirectoryListingEntries`,
-  `DirectoryListingBytes`. The first one found is reported as `startupWork`; `null` when no
-  thread carries it.
+  `DirectoryListingBytes`.
+
+**Both keys are run-wide, not per-thread, and a reader MUST take them from one thread only.**
+The sink is a single object shared by the root loop and every collaborating child (it is
+deliberately not cleared by `ForChildLoop`, so a grandchild's construction still counts), and
+each loop stamps *the whole shared snapshot* onto its own thread as it saves metadata. So an
+n-thread run archives n copies of the same measurement, each a prefix of the final one, and
+the copies differ only in how late that thread last wrote. Concatenating `spawnTimings` across
+threads multiplies every spawn by the number of threads that outlived it; summing `startupWork`
+does the same to every counter.
+
+The rule is therefore: **select the single richest stamp and report it verbatim** — never merge,
+concatenate or sum across threads. Richest means the greatest
+`Spawns + TemplateCatalogBuilds + DirectoryListings`; ties keep the first in the reader's
+existing thread order, and a thread carrying neither key is skipped. Both values come from that
+same stamp, so `spawnTimings` and `startupWork` always describe one consistent observation:
+taking the timings from one thread and the roll-up from another can report more array entries
+than `Spawns`. `spawnTimings` is `[]` and `startupWork` is `null` when no thread carries either.
+
+Because the two keys are written together in one atomic property-bag update, a thread carrying
+one and not the other cannot occur in a real store; a fixture that encodes that split is
+describing a state production cannot reach.
 
 `Reconstructed` separates a rebuilt finished agent from a fresh spawn: both pay the same
 construction cost, so a run's re-construction share is invisible without the flag.

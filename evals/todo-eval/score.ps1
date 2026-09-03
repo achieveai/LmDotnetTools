@@ -519,11 +519,18 @@ if (-not (Test-Path -LiteralPath $ConversationsDir -PathType Container)) {
 $fixtureData = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $Fixture -Raw) -AsHashtable -Depth 32
 $boardTasks = Get-BoardTasks -Path $BoardSnapshot
 
-$threadDirs = @(
-    Get-ChildItem -LiteralPath $ConversationsDir -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'messages.json') -PathType Leaf } |
-        Sort-Object Name
-)
+# Ordinal, like the C# twin's StringComparer.Ordinal, and NOT `Sort-Object Name`, which is a culture
+# comparer. This order is load-bearing rather than cosmetic: the richest-stamp selection below keeps
+# the FIRST thread at a tied observation count, so the two scorers can only agree on which stamp they
+# picked if they agree on the walk order first.
+$threadDirsByName = @{}
+foreach (
+    $d in Get-ChildItem -LiteralPath $ConversationsDir -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'messages.json') -PathType Leaf }
+) {
+    $threadDirsByName[$d.Name] = $d
+}
+$threadDirs = @(Sort-Ordinal -Values @($threadDirsByName.Keys) | ForEach-Object { $threadDirsByName[$_] })
 
 # --- walk the conversation store -------------------------------------------------------
 
