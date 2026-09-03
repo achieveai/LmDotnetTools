@@ -47,6 +47,47 @@ public class TaskManager : ITodoBoardSource
     }
 
     /// <summary>
+    ///     How reachable the agent behind an assignee name is, as reported by
+    ///     <see cref="AssigneeResolver" />.
+    /// </summary>
+    public enum AssigneeLiveness
+    {
+        /// <summary>The name resolved to an agent that is currently addressable.</summary>
+        Live,
+
+        /// <summary>The name resolved to a known agent that can no longer be reached.</summary>
+        Unreachable,
+
+        /// <summary>The name resolved to no agent at all under the caller's root conversation.</summary>
+        Unknown,
+    }
+
+    /// <summary>
+    ///     What the host's identity layer knows about one assignee name.
+    /// </summary>
+    /// <param name="AgentId">The canonical agent identifier, or null when nothing resolved.</param>
+    /// <param name="CanonicalName">
+    ///     The text to store as <see cref="TaskItem.Assignee" />, so the ordinal comparisons that decide
+    ///     ownership compare one stable identity rather than whatever the caller happened to type.
+    /// </param>
+    /// <param name="Liveness">Reachability of the resolved agent.</param>
+    /// <param name="Candidates">
+    ///     The agents a name matched when it matched more than one. More than one entry means the name
+    ///     cannot decide ownership; the board refuses rather than guessing which agent was meant.
+    /// </param>
+    /// <remarks>
+    ///     Deliberately carries no failure-code string: the codes below are this board's contract and
+    ///     live with the code that emits them, so the resolver reports facts and <c>TaskManager</c>
+    ///     alone maps them to <c>assignee_ambiguous</c> / <c>assignee_unknown</c>.
+    /// </remarks>
+    public readonly record struct AssigneeResolution(
+        string? AgentId,
+        string? CanonicalName,
+        AssigneeLiveness Liveness,
+        IReadOnlyList<string>? Candidates = null
+    );
+
+    /// <summary>
     ///     Stable, machine-readable reasons a tool call failed. They are part of these tools'
     ///     contract — a host may count or branch on them — so they follow the lower_snake_case
     ///     convention every other error code in this repository uses.
@@ -64,6 +105,8 @@ public class TaskManager : ITodoBoardSource
     private const string InvalidArtifactPathCode = "invalid_artifact_path";
     private const string BlockCycleCode = "block_cycle";
     private const string TaskHasIncompleteDescendantsCode = "task_has_incomplete_descendants";
+    private const string AssigneeAmbiguousCode = "assignee_ambiguous";
+    private const string AssigneeUnknownCode = "assignee_unknown";
 
     /// <summary>
     ///     One nesting level of indentation in <c>bulk-initialize</c>'s result echo. Two spaces per
@@ -171,6 +214,27 @@ public class TaskManager : ITodoBoardSource
     ///     contracts; those wire no logger either, so nothing is logged there regardless.
     /// </remarks>
     public string? ThreadId { get; set; }
+
+    /// <summary>
+    ///     Turns an assignee name into a stable agent identity, or reports that it cannot. Null — the
+    ///     default — leaves ownership decided by the raw text exactly as before.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A settable property wired by the host after construction, for the same reason
+    ///         <see cref="Logger" /> is: this type is reached through four construction routes and the
+    ///         board must keep working with no collaboration layer at all. It is a delegate rather than
+    ///         a direct call because <c>Misc</c> is a published package that references only
+    ///         LmConfig/LmCore/OpenAIProvider — the agent directory lives in LmMultiTurn, so the
+    ///         dependency has to point the other way.
+    ///     </para>
+    ///     <para>
+    ///         The host is responsible for scoping the lookup to the conversation this board belongs to.
+    ///         Agent identifiers are ordinals (<c>agent-1</c>, <c>agent-2</c>, …) numbered per root
+    ///         conversation, so the same name means different agents in different conversations.
+    ///     </para>
+    /// </remarks>
+    public Func<string, AssigneeResolution>? AssigneeResolver { get; set; }
 
     /// <summary>
     ///     Fires <see cref="OnChanged" /> when <paramref name="result" /> reports success, passing the
@@ -807,7 +871,14 @@ Examples:
                 );
             }
 
-            var trimmedAssignee = assignee.Trim();
+            // Same choke point as ApplyClaim, and for the same reason: the comparison below decides
+            // whether an existing lease is foreign, so both sides of it must be one stable identity.
+            if (ResolveAssignee(assignee, out var trimmedAssignee) is { } resolutionError)
+            {
+                return resolutionError;
+            }
+
+            trimmedAssignee = trimmedAssignee.Trim();
 
             // Assignment is for queued work; an active lease belongs to claim-task (Requirement
             // 8.3). A task InProgress under someone else stays theirs to finish unless their
@@ -1120,7 +1191,7 @@ Examples:
     ///     when it is asked to move a task to <see cref="TaskStatus.InProgress" /> on behalf of a
     ///     named agent. Must be called while holding <see cref="_sync" />.
     /// </summary>
-    private FunctionResult? ApplyClaim(PrivateTaskItem task, string agent, DateTimeOffset now, out string note)
+    private FunctionResult? ApplyClaim(PrivateTaskItem task, string rawAgent, DateTimeOffset now, out string note)
     {
         note = string.Empty;
 
@@ -1135,6 +1206,14 @@ Examples:
         if (RefuseIfBlocked(task) is { } blockedError)
         {
             return blockedError;
+        }
+
+        // Before the ownership comparison, not after: every string compared below has to be the same
+        // stable identity, or a lease held by "agent-3" reads as free to someone who typed the same
+        // agent's display name.
+        if (ResolveAssignee(rawAgent, out var agent) is { } resolutionError)
+        {
+            return resolutionError;
         }
 
         if (
@@ -1170,6 +1249,55 @@ Examples:
         task.Assignee = agent;
         task.ClaimedAt = now;
         task.CreatedAt ??= now;
+        return null;
+    }
+
+    /// <summary>
+    ///     Turns the assignee text a caller typed into the identity the board stores, or refuses it.
+    ///     Shared by every path that writes <see cref="PrivateTaskItem.Assignee" /> — <c>claim-task</c>,
+    ///     <c>assign-task</c>, and <c>update-task</c> moving a row to in-progress on an agent's behalf —
+    ///     so there is one place a name can decide ownership.
+    /// </summary>
+    /// <remarks>
+    ///     With no <see cref="AssigneeResolver" /> wired the text passes through untouched, which is the
+    ///     board's behaviour with no collaboration layer at all. With one wired, a name matching more
+    ///     than one agent and a name matching none are both refused: the first because the board cannot
+    ///     know which agent was meant, the second because agent ids are ordinals numbered per root
+    ///     conversation, so an unmatched name is as likely to be another conversation's agent as a typo.
+    /// </remarks>
+    /// <param name="rawAgent">The text the caller supplied.</param>
+    /// <param name="canonical">The identity to store; <paramref name="rawAgent" /> when nothing resolved it.</param>
+    /// <returns>The refusal, or null when <paramref name="canonical" /> may be used.</returns>
+    private FunctionResult? ResolveAssignee(string rawAgent, out string canonical)
+    {
+        canonical = rawAgent;
+        if (AssigneeResolver is not { } resolve)
+        {
+            return null;
+        }
+
+        var probe = rawAgent.Trim();
+        var resolution = resolve(probe);
+
+        if (resolution.Candidates is { Count: > 1 } candidates)
+        {
+            return FunctionResult.Error(
+                AssigneeAmbiguousCode,
+                $"Error: '{probe}' names {candidates.Count} agents ({string.Join(", ", candidates)}); "
+                    + "the board cannot tell which one owns the work. Pass the agent id instead."
+            );
+        }
+
+        if (resolution.Liveness == AssigneeLiveness.Unknown)
+        {
+            return FunctionResult.Error(
+                AssigneeUnknownCode,
+                $"Error: '{probe}' does not name an agent in this conversation. Agent ids are numbered "
+                    + "per conversation, so check the id with the sub-agent listing before assigning."
+            );
+        }
+
+        canonical = resolution.CanonicalName ?? resolution.AgentId ?? probe;
         return null;
     }
 
