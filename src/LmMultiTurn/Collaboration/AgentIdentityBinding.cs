@@ -48,6 +48,22 @@ public sealed record OpenObligationRecord
     [JsonPropertyName("task_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TaskId { get; init; }
+
+    /// <summary>Projects one open ledger entry into its persisted form.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>
+    public static OpenObligationRecord FromEntry(AgentMessageLedgerEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        return new OpenObligationRecord
+        {
+            MessageId = entry.MessageId,
+            FromAgentId = entry.FromAgentId,
+            ToAgentId = entry.ToAgentId,
+            MessageType = entry.MessageType,
+            AdmittedAt = entry.AdmittedAt,
+        };
+    }
 }
 
 /// <summary>

@@ -244,6 +244,12 @@ public sealed class AgentCollaborationDirectory
     /// rest of the invocation list on the first throw — letting a broken live push cost the durable
     /// write queued behind it.
     /// </para>
+    /// <para>
+    /// A subscriber must not block or do I/O. It is invoked synchronously on the thread that made the
+    /// change, and one of those threads holds the collaboration's delivery gate
+    /// (<see cref="AgentCollaborationBundle.RetireAgent"/> updates status under it), so a slow
+    /// subscriber would stall every send in the collaboration. Schedule the work and return.
+    /// </para>
     /// </remarks>
     public event Action? OnDirectoryChanged;
 
