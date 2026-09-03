@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Persistence;
@@ -170,12 +171,27 @@ public sealed class GatewayWorkspaceCatalogResolver
         }
     }
 
-    private static async Task WriteJsonAtomicAsync<T>(string path, T value, CancellationToken ct)
+    /// <summary>
+    /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
+    /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
+    /// <para>
+    /// The <c>migration.lock</c> held across <see cref="ResolveAsync"/> covers none of the staging path.
+    /// It is taken on a different file, so it serializes resolvers against each other and nothing against
+    /// anyone else holding one of these staging names — a leftover from a killed resolver included, which
+    /// under a deterministic name would wedge every subsequent resolve rather than one.
+    /// </para>
+    /// <para>
+    /// Serializes to a string and writes it WITHOUT a byte-order mark, which is what this resolver has
+    /// always written; <see cref="AtomicFile.WriteJsonAsync"/> emits one, so this path stages its own bytes
+    /// rather than rewriting existing manifests and migration markers for no gain.
+    /// </para>
+    /// </summary>
+    private static Task WriteJsonAtomicAsync<T>(string path, T value, CancellationToken ct)
     {
-        var tempPath = path + ".tmp";
+        // Serialize before staging so a serialization failure never creates a temp file to clean up.
         var json = JsonSerializer.Serialize(value, JsonOptions);
-        await File.WriteAllTextAsync(tempPath, json, ct);
-        File.Move(tempPath, path, overwrite: true);
+
+        return AtomicFile.WriteAsync(path, (tempPath, token) => File.WriteAllTextAsync(tempPath, json, token), ct);
     }
 }
 
