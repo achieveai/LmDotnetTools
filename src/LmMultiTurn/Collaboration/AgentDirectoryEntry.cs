@@ -180,10 +180,18 @@ public sealed record CollaborationNodeRecord
     /// When the agent was admitted to the directory, when that instant is known.
     /// </summary>
     /// <remarks>
-    /// Read only by the restart operator trace, so an operator reading "these agents did not survive"
-    /// can tell a run that had barely started from one that had been going for an hour. Nullable
-    /// because it is not part of addressing: a row written by a build that did not record it, or
-    /// projected from a snapshot with no registration instant, still reconciles identically.
+    /// <b>Nothing in this build reads it.</b> It is recorded because an admission instant cannot be
+    /// backfilled: a document written today by a build that does not capture it can never gain one, so
+    /// a later reader — a diagnostic asking how long the agents lost to a restart had been running —
+    /// would have no rows to read. Writing it now is what makes that answerable at all.
+    /// <para>
+    /// Deliberately absent from the operator trace, which stays identifiers and counts for the reasons
+    /// given on <see cref="RestartReconciliationReport.ToOperatorTrace"/>.
+    /// </para>
+    /// <para>
+    /// Nullable because it is not part of addressing: a row written by a build that did not record it,
+    /// or projected from a snapshot with no registration instant, still reconciles identically.
+    /// </para>
     /// </remarks>
     [JsonPropertyName("spawned_at")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

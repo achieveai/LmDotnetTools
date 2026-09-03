@@ -36,19 +36,6 @@ public sealed record OpenObligationRecord
     [JsonPropertyName("admitted_at")]
     public required DateTimeOffset AdmittedAt { get; init; }
 
-    /// <summary>
-    /// The board task this obligation was delegated against, when one was named.
-    /// </summary>
-    /// <remarks>
-    /// Null on every row this build writes: the ledger records what a message means, not what board row
-    /// prompted it. The member exists because a durable claim on the todo board is the other half of
-    /// "a claim cannot point at a vanished actor", and the board's own restart reconciliation (#672)
-    /// needs somewhere to record the link without a second persisted document.
-    /// </remarks>
-    [JsonPropertyName("task_id")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? TaskId { get; init; }
-
     /// <summary>Projects one open ledger entry into its persisted form.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>
     public static OpenObligationRecord FromEntry(AgentMessageLedgerEntry entry)
