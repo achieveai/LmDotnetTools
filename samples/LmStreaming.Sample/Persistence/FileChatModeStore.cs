@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Persistence;
@@ -262,15 +263,30 @@ public sealed class FileChatModeStore : IChatModeStore
         }
     }
 
-    private async Task SaveUserModesAsync(List<ChatMode> modes, CancellationToken ct)
+    /// <summary>
+    /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
+    /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
+    /// <para>
+    /// <see cref="_lock"/> covers none of that. It is a per-INSTANCE semaphore, so it serializes nothing
+    /// between two stores over one base directory and nothing at all across processes — while a plain
+    /// concurrent read of the modes file (which the mode picker issues constantly) is by itself enough to
+    /// make a Windows rename over the destination fail.
+    /// </para>
+    /// <para>
+    /// Serializes to a string and writes it WITHOUT a byte-order mark, which is what this store has always
+    /// written; <see cref="AtomicFile.WriteJsonAsync"/> emits one, so this path stages its own bytes rather
+    /// than rewriting every existing chat-modes file's encoding for no gain.
+    /// </para>
+    /// </summary>
+    private Task SaveUserModesAsync(List<ChatMode> modes, CancellationToken ct)
     {
-        // Write to temp file first, then rename for atomic operation
-        var tempFile = _modesFilePath + ".tmp";
+        // Serialize before staging so a serialization failure never creates a temp file to clean up.
         var json = JsonSerializer.Serialize(modes, JsonOptions);
 
-        await File.WriteAllTextAsync(tempFile, json, ct);
-
-        // Atomic rename
-        File.Move(tempFile, _modesFilePath, overwrite: true);
+        return AtomicFile.WriteAsync(
+            _modesFilePath,
+            (tempFile, token) => File.WriteAllTextAsync(tempFile, json, token),
+            ct
+        );
     }
 }

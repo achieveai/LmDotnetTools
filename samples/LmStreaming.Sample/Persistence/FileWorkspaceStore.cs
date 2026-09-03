@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Persistence;
@@ -243,15 +244,32 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         }
     }
 
-    private async Task SaveUserWorkspacesAsync(List<Workspace> workspaces, CancellationToken ct)
+    /// <summary>
+    /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
+    /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
+    /// <para>
+    /// <see cref="_lock"/> covers none of that. It is a per-INSTANCE semaphore, so it serializes nothing
+    /// between two stores over one catalog directory — which is what every request resolving a
+    /// per-gateway catalog constructs — and nothing at all across processes. A plain concurrent read of
+    /// the catalog (the workspace list is read on every page load) is by itself enough to make a Windows
+    /// rename over the destination fail.
+    /// </para>
+    /// <para>
+    /// Serializes to a string and writes it WITHOUT a byte-order mark, which is what this store has always
+    /// written; <see cref="AtomicFile.WriteJsonAsync"/> emits one, so this path stages its own bytes rather
+    /// than rewriting every existing catalog's encoding for no gain.
+    /// </para>
+    /// </summary>
+    private Task SaveUserWorkspacesAsync(List<Workspace> workspaces, CancellationToken ct)
     {
-        // Write to a temp file first, then rename for an atomic operation.
-        var tempFile = _workspacesFilePath + ".tmp";
+        // Serialize before staging so a serialization failure never creates a temp file to clean up.
         var json = JsonSerializer.Serialize(workspaces, JsonOptions);
 
-        await File.WriteAllTextAsync(tempFile, json, ct);
-
-        File.Move(tempFile, _workspacesFilePath, overwrite: true);
+        return AtomicFile.WriteAsync(
+            _workspacesFilePath,
+            (tempFile, token) => File.WriteAllTextAsync(tempFile, json, token),
+            ct
+        );
     }
 }
 
