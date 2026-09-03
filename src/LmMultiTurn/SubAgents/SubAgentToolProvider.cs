@@ -1452,13 +1452,17 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return failureCode switch
         {
-            // Two ways to be unreachable, kept apart because the recovery differs: a name that never
-            // resolved is a mistake to correct, while a resolved-but-retired agent is a real agent
-            // whose work is already over.
+            // Three ways to be unreachable, kept apart because the recovery differs: a name that never
+            // resolved is a mistake to correct, a resolved-but-retired agent is a real agent whose work
+            // is already over, and an agent lost to a restart is one whose work was never finished and
+            // which the model may legitimately want back. Only the third says "spawn it again".
             AgentDirectoryFailureCodes.NotFound =>
                 $"No agent matches '{target}'. Call GetAgents for current agent_ids.",
             AgentMessageFailureCodes.UnknownTarget =>
                 $"'{target}' has finished and can no longer be reached. Call GetAgents to see who is still live.",
+            AgentDirectoryFailureCodes.TargetNotLive =>
+                $"'{target}' existed before this session was restarted and is not running now. Spawn it "
+                    + "again with Agent, or call GetAgents for who is live.",
             AgentDirectoryFailureCodes.AmbiguousName =>
                 $"More than one agent is named '{target}'. Address it by agent_id instead.",
             AgentMessageFailureCodes.InboxFull =>

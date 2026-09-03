@@ -2113,6 +2113,27 @@ try
                         collaboration: rootCollaboration
                     );
 
+                    // #676: whatever the LAST process wrote about this root's agents is reconciled into
+                    // this collaboration, and the roster plus its open reply-bearing obligations are then
+                    // written down as the directory changes. Attached HERE, after the loop's constructor
+                    // has registered the root as live, so the restart trace cannot report the live root
+                    // as a casualty. In ownedResources so the same teardown that flushes the board —
+                    // eviction, provider/mode swap, shutdown — flushes the last roster too. Sync-over-
+                    // async matches the board hydration and sandbox wiring in this same factory.
+                    if (rootCollaboration is not null)
+                    {
+                        ownedResources.Add(
+                            CollaborationIdentityWiring
+                                .AttachAsync(
+                                    rootCollaboration,
+                                    conversationStore,
+                                    loggerFactory.CreateLogger("LmStreaming.Sample.CollaborationIdentity")
+                                )
+                                .GetAwaiter()
+                                .GetResult()
+                        );
+                    }
+
                     // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
                     // live conversation_todo frame to this conversation's subscribers, exactly as the
                     // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after

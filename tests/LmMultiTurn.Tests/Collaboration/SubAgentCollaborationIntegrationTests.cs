@@ -1031,6 +1031,60 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessage_ToAnAgentLostToARestart_SaysToSpawnItAgain()
+    {
+        // The third of the three ways to be unreachable, and the only one whose recovery is "make a new
+        // one". A wrong name wants correcting and a finished agent wants leaving alone; an agent this
+        // process never had wants replacing, and the model cannot work that out from "no agent matches".
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        AgentCollaborationRestartReconciler
+            .Reconcile(
+                root.Bundle,
+                new AgentIdentityBindingSet
+                {
+                    CollaborationId = root.Bundle.CollaborationId,
+                    RootAgentId = root.AgentId,
+                    CapturedAtUtc = DateTimeOffset.UnixEpoch,
+                    Agents =
+                    [
+                        new CollaborationNodeRecord
+                        {
+                            AgentId = "agent-99",
+                            CollaborationId = root.Bundle.CollaborationId,
+                            Name = "helper",
+                            ParentAgentId = root.AgentId,
+                            AncestorAgentIds = [root.AgentId],
+                            Kind = AgentKind.SubAgent,
+                            Role = "helper",
+                            Description = "helps",
+                            StructuralDepth = 1,
+                            DelegationDepth = 1,
+                            Status = AgentCollaborationStatuses.Running,
+                        },
+                    ],
+                }
+            )
+            .Invalidated.Should()
+            .ContainSingle("the refusal below is worthless if nothing was actually tombstoned");
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "hello",
+                msg_type = "question",
+            }
+        );
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentDirectoryFailureCodes.TargetNotLive);
+        payload.Text.Should().Contain("restarted").And.Contain("Agent").And.Contain("GetAgents");
+    }
+
+    [Fact]
     public async Task SendMessage_ToARetiredAgent_SaysItFinishedRatherThanThatItNeverExisted()
     {
         // The two refusals need different words: a wrong name is the sender's mistake to correct,

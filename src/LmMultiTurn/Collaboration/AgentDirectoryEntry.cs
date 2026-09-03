@@ -110,8 +110,20 @@ public sealed record CollaborationNodeRecord
     /// <summary>Schema version this build writes.</summary>
     public const int CurrentSchemaVersion = 1;
 
+    /// <summary>
+    /// The JSON member every persisted collaboration document carries its schema version under.
+    /// </summary>
+    /// <remarks>
+    /// Named once and shared because the forward-compatibility guard in a projection reads this member
+    /// off the RAW document — it has to work on a version too new to deserialize — while the record
+    /// writes it through <c>[JsonPropertyName]</c>. Two spellings of the same member would leave the
+    /// guard reading a property that is never written, so it would report "unversioned" for every blob
+    /// and happily overwrite a newer build's data.
+    /// </remarks>
+    public const string SchemaVersionPropertyName = "schema_version";
+
     /// <summary>Schema version of this row.</summary>
-    [JsonPropertyName("schema_version")]
+    [JsonPropertyName(SchemaVersionPropertyName)]
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
     /// <summary>Canonical identifier of the agent.</summary>
@@ -163,6 +175,27 @@ public sealed record CollaborationNodeRecord
     /// <summary>Lifecycle status at the time the row was written.</summary>
     [JsonPropertyName("status")]
     public required string Status { get; init; }
+
+    /// <summary>
+    /// When the agent was admitted to the directory, when that instant is known.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing in this build reads it.</b> It is recorded because an admission instant cannot be
+    /// backfilled: a document written today by a build that does not capture it can never gain one, so
+    /// a later reader — a diagnostic asking how long the agents lost to a restart had been running —
+    /// would have no rows to read. Writing it now is what makes that answerable at all.
+    /// <para>
+    /// Deliberately absent from the operator trace, which stays identifiers and counts for the reasons
+    /// given on <see cref="RestartReconciliationReport.ToOperatorTrace"/>.
+    /// </para>
+    /// <para>
+    /// Nullable because it is not part of addressing: a row written by a build that did not record it,
+    /// or projected from a snapshot with no registration instant, still reconciles identically.
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("spawned_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? SpawnedAt { get; init; }
 
     /// <summary>Projects a live snapshot into its persisted form.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>

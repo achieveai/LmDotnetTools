@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -180,70 +179,23 @@ public static class ConversationTodoProjection
         }
     }
 
-    /// <summary>Reads the persisted schema version even when it is newer than this build understands.</summary>
-    private static int PersistedSchemaVersion(ThreadMetadata? metadata)
-    {
-        var json = RawJson(metadata);
-        if (json is null)
-        {
-            return 0;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            return
-                document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("SchemaVersion", out var value)
-                && value.ValueKind == JsonValueKind.Number
-                ? value.GetInt32()
-                : CurrentSchemaVersion;
-        }
-        catch (JsonException)
-        {
-            return 0; // corrupt — treat as absent, allow overwrite
-        }
-    }
-
-    private static string? RawJson(ThreadMetadata? metadata)
-    {
-        if (metadata?.Properties is null || !metadata.Properties.TryGetValue(PropertyKey, out var raw) || raw is null)
-        {
-            return null;
-        }
-
-        return raw switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
-            JsonElement element => element.GetRawText(),
-            _ => null,
-        };
-    }
-
     /// <summary>
-    ///     Returns <paramref name="existing" /> with the board written into its property bag.
+    ///     Reads the persisted schema version even when it is newer than this build understands. The
+    ///     board's version member was never pinned with <c>[JsonPropertyName]</c>, so the probe name is
+    ///     the CLR property name; an unversioned blob reads as this build's own version rather than as
+    ///     newer, which is what lets a pre-versioning row be overwritten.
     /// </summary>
-    /// <remarks>
-    ///     Takes a NON-NULL row by design — there is deliberately no create branch, so this method
-    ///     cannot mint an ownership-less conversation even if a future caller forgets the guard in
-    ///     <see cref="SaveAsync" />. <see cref="ThreadMetadata.LastUpdated" /> is deliberately NOT
-    ///     bumped: it drives the sidebar's default ordering, and a read that persisted the board would
-    ///     otherwise float the conversation to the top of the user's list. Matches
-    ///     <c>ConversationUsageProjection</c>, which leaves it alone for the same reason.
-    /// </remarks>
-    private static ThreadMetadata WithProjection(ThreadMetadata existing, string boardJson)
-    {
-        // SetItem, never a wholesale replace: this bag is shared with the usage projection, the mode
-        // binding, and the workspace binding.
-        var properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+    private static int PersistedSchemaVersion(ThreadMetadata? metadata) =>
+        ThreadMetadataProjection.PersistedSchemaVersion(
+            metadata,
             PropertyKey,
-            boardJson
+            nameof(TodoBoardSnapshot.SchemaVersion),
+            whenUnversioned: CurrentSchemaVersion
         );
 
-        return existing with
-        {
-            Properties = properties,
-        };
-    }
+    private static string? RawJson(ThreadMetadata? metadata) => ThreadMetadataProjection.RawJson(metadata, PropertyKey);
+
+    /// <summary>Returns <paramref name="existing" /> with the board written into its property bag.</summary>
+    private static ThreadMetadata WithProjection(ThreadMetadata existing, string boardJson) =>
+        ThreadMetadataProjection.WithProjection(existing, PropertyKey, boardJson);
 }

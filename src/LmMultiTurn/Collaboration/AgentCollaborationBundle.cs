@@ -72,10 +72,17 @@ public sealed class AgentCollaborationBundle
     // needs the chain link taken before the next admission can observe it.
     private readonly object _deliveryGate = new();
 
+    private readonly TimeProvider _clock;
+
     /// <summary>Creates a collaboration and validates the settings it will enforce.</summary>
     /// <param name="collaborationId">Identifier of the root thread this collaboration belongs to.</param>
     /// <param name="options">Settings the directory and ledger enforce.</param>
-    /// <param name="timeProvider">Clock used for ledger retention. Defaults to the system clock.</param>
+    /// <param name="timeProvider">
+    /// Clock used for ledger retention, directory admission stamps, and identity captures. Defaults to
+    /// the system clock. One clock for all three, because a capture's instant is compared against a
+    /// persisted one to decide which is fresher — two clocks would let that comparison be decided by
+    /// which component read the time.
+    /// </param>
     /// <remarks>
     /// Options are validated here rather than at first use, because every bound they carry becomes a
     /// refusal returned to a model. A bad bound must fail the run that configured it, not surface much
@@ -96,8 +103,9 @@ public sealed class AgentCollaborationBundle
 
         CollaborationId = collaborationId;
         Options = options;
-        Directory = new AgentCollaborationDirectory(collaborationId, options);
-        Ledger = new AgentMessageLedger(options, timeProvider);
+        _clock = timeProvider ?? TimeProvider.System;
+        Directory = new AgentCollaborationDirectory(collaborationId, options, _clock);
+        Ledger = new AgentMessageLedger(options, _clock);
     }
 
     /// <summary>Identifier of the root thread this collaboration belongs to.</summary>
@@ -274,6 +282,41 @@ public sealed class AgentCollaborationBundle
         }
 
         await deliver();
+    }
+
+    /// <summary>
+    /// Takes the durable record of who is in this collaboration and what is outstanding between them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A capture, not a checkpoint. Nothing here can be resumed: the endpoints, inboxes and delivery
+    /// chains that make a message deliverable are process state, and ADR 0009 records that making the
+    /// message fabric durable is the wrong answer. What survives is only enough to say honestly, after a
+    /// restart, which agents this conversation used to be talking to and what it was still owed —
+    /// so those names resolve as gone rather than as never having existed.
+    /// </para>
+    /// <para>
+    /// The roster and the obligations are snapshotted without holding <see cref="_deliveryGate"/>, so a
+    /// message admitted between the two can appear in one and not the other. That is deliberate: the
+    /// capture runs from a directory-change notification that may itself be raised under that gate, and
+    /// the worst a torn pair costs is one identifier named in an operator trace whose counterpart is
+    /// not. Blocking every send to make a diagnostic document self-consistent is the worse trade.
+    /// </para>
+    /// </remarks>
+    /// <param name="rootAgentId">Canonical identifier of the agent that owns the collaboration.</param>
+    /// <exception cref="ArgumentException"><paramref name="rootAgentId"/> is blank.</exception>
+    public AgentIdentityBindingSet CaptureIdentityBinding(string rootAgentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootAgentId);
+
+        return new AgentIdentityBindingSet
+        {
+            CollaborationId = CollaborationId,
+            RootAgentId = rootAgentId,
+            CapturedAtUtc = _clock.GetUtcNow(),
+            Agents = Directory.SnapshotRecords(),
+            OpenObligations = [.. Ledger.GetOpenReplyBearing().Select(OpenObligationRecord.FromEntry)],
+        };
     }
 
     /// <summary>Decides whether one agent may read another agent's transcript.</summary>

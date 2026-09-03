@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 
@@ -123,6 +124,17 @@ public static class AgentDirectoryFailureCodes
 
     /// <summary>Admitting the agent would exceed the configured delegation depth.</summary>
     public const string DepthLimit = "depth_limit";
+
+    /// <summary>
+    /// The agent is real and was addressable in an earlier process, but nothing is running it now.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately distinct from <see cref="NotFound"/>. After a restart the in-memory collaboration is
+    /// empty while the conversation the model is resuming still refers to agents by name; answering
+    /// "no such agent" would read as "you invented that name" and invite the model to argue with the
+    /// tool instead of spawning a replacement. This code says what actually happened.
+    /// </remarks>
+    public const string TargetNotLive = "target_not_live";
 }
 
 /// <summary>The outcome of an attempt to admit an agent to the directory.</summary>
@@ -172,25 +184,74 @@ public sealed class AgentCollaborationDirectory
     // would send a reply to a different agent than the one the sender was talking to.
     private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.Ordinal);
 
+    // Agents a previous process registered and this one cannot reach. Kept apart from the live maps
+    // rather than registered as not-live entries, so nothing that walks the collaboration — a listing,
+    // a capacity count, a fan-out — has to learn to skip them. They are consulted only when every live
+    // lookup has already missed.
+    private readonly ConcurrentDictionary<string, CollaborationNodeRecord> _invalidatedById = new(
+        StringComparer.Ordinal
+    );
+
+    private readonly ConcurrentDictionary<string, NameBinding> _invalidatedByName = new(StringComparer.Ordinal);
+
     private readonly AgentCollaborationOptions _options;
+    private readonly TimeProvider _clock;
 
     /// <summary>Creates an empty directory for one collaboration.</summary>
     /// <param name="collaborationId">The collaboration this directory describes.</param>
     /// <param name="options">Root configuration supplying the depth, capacity, and inbox bounds.</param>
+    /// <param name="timeProvider">
+    /// Clock used to stamp each admission. Injectable so a test can assert on the stamp rather than on
+    /// "some time near now".
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="collaborationId"/> is blank.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
-    public AgentCollaborationDirectory(string collaborationId, AgentCollaborationOptions options)
+    public AgentCollaborationDirectory(
+        string collaborationId,
+        AgentCollaborationOptions options,
+        TimeProvider? timeProvider = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(collaborationId);
         ArgumentNullException.ThrowIfNull(options);
 
         CollaborationId = collaborationId;
         _options = options;
+        _clock = timeProvider ?? TimeProvider.System;
         Capacity = new AgentCapacityLimiter(options.MaxTotalAgents);
     }
 
     /// <summary>The collaboration this directory describes.</summary>
     public string CollaborationId { get; }
+
+    /// <summary>
+    /// Optional sink for the one thing this class cannot otherwise report: a subscriber that threw.
+    /// </summary>
+    public ILogger? Logger { get; set; }
+
+    /// <summary>
+    /// Raised after any write that changes who is reachable, or under what name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists so the durable identity binding can be captured from the same lifecycle boundaries the
+    /// directory already has, instead of a second component polling for changes or a capture call being
+    /// threaded through every spawn, status change, and retirement site.
+    /// </para>
+    /// <para>
+    /// Subscribers are invoked one at a time and a throwing one is swallowed per subscriber: the
+    /// mutation has already happened and cannot be undone, and a plain multicast invoke would abort the
+    /// rest of the invocation list on the first throw — letting a broken live push cost the durable
+    /// write queued behind it.
+    /// </para>
+    /// <para>
+    /// A subscriber must not block or do I/O. It is invoked synchronously on the thread that made the
+    /// change, and one of those threads holds the collaboration's delivery gate
+    /// (<see cref="AgentCollaborationBundle.RetireAgent"/> updates status under it), so a slow
+    /// subscriber would stall every send in the collaboration. Schedule the work and return.
+    /// </para>
+    /// </remarks>
+    public event Action? OnDirectoryChanged;
 
     /// <summary>The root-wide agent budget.</summary>
     public AgentCapacityLimiter Capacity { get; }
@@ -266,7 +327,8 @@ public sealed class AgentCollaborationDirectory
             entry,
             writeEndpoint,
             readEndpoint,
-            new AgentInbox(_options.MaxInboxMessages)
+            new AgentInbox(_options.MaxInboxMessages),
+            _clock.GetUtcNow()
         );
 
         if (!_byAgentId.TryAdd(entry.AgentId, registration))
@@ -275,6 +337,7 @@ public sealed class AgentCollaborationDirectory
         }
 
         BindName(name, entry.AgentId);
+        RaiseDirectoryChanged();
         return new AgentRegistrationResult(entry);
     }
 
@@ -304,6 +367,57 @@ public sealed class AgentCollaborationDirectory
         return TryMutate(agentId, entry => entry with { IsLive = false });
     }
 
+    /// <summary>
+    /// Records that a persisted agent belongs to this collaboration but is not running in this process.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the whole restart seam. Rather than a second reconciler that callers must remember to
+    /// consult, a dead agent becomes a tombstone in the directory every routing decision already goes
+    /// through, so <see cref="Resolve"/> answers <see cref="AgentDirectoryFailureCodes.TargetNotLive"/>
+    /// for it and every caller inherits that answer without changing.
+    /// </para>
+    /// <para>
+    /// It does <b>not</b> check whether an agent with the same identifier is currently registered. That
+    /// rule lives in <see cref="Resolve"/>, which consults the live maps first; stating it a second time
+    /// here would make each copy's failure invisible behind the other.
+    /// </para>
+    /// </remarks>
+    /// <param name="record">The persisted row describing the agent.</param>
+    /// <returns>
+    /// True when this call added the tombstone. False when the row belongs to another collaboration, or
+    /// when that agent was already tombstoned — so a caller can report the agents it actually retired
+    /// and a second reconciliation pass reports none.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="record"/> is null.</exception>
+    public bool MarkInvalidated(CollaborationNodeRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        if (string.IsNullOrWhiteSpace(record.AgentId) || string.IsNullOrWhiteSpace(record.Name))
+        {
+            return false;
+        }
+
+        // The scope half of every (scope, agent id) lookup. Sub-agent identifiers are ordinals minted
+        // per ROOT conversation, so `agent-1` names a different agent in every collaboration; a row
+        // from another root would tombstone an identifier and a name this collaboration is entitled to
+        // use, and every field on it would look plausible while doing so.
+        if (!string.Equals(record.CollaborationId, CollaborationId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!_invalidatedById.TryAdd(record.AgentId, record))
+        {
+            return false;
+        }
+
+        BindInvalidatedName(record.Name, record.AgentId);
+        RaiseDirectoryChanged();
+        return true;
+    }
+
     /// <summary>Looks an agent up by canonical identifier.</summary>
     public AgentDirectoryEntry? FindById(string agentId)
     {
@@ -316,8 +430,15 @@ public sealed class AgentCollaborationDirectory
     /// Resolves a canonical identifier or a name to one agent.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Identifiers win over names, so an agent named after another agent's identifier cannot shadow it.
     /// A name claimed by more than one agent resolves to nothing at all rather than to a guess.
+    /// </para>
+    /// <para>
+    /// Every live lookup is tried before any tombstone. That ordering is the single mechanism keeping a
+    /// dead agent from shadowing its own replacement: a name is free to be claimed again after a
+    /// restart, and whoever holds it now must be the one a sender reaches.
+    /// </para>
     /// </remarks>
     public AgentResolution Resolve(string target)
     {
@@ -331,19 +452,42 @@ public sealed class AgentCollaborationDirectory
             return new AgentResolution(byId.Entry);
         }
 
-        if (!_byName.TryGetValue(target, out var binding))
+        if (_byName.TryGetValue(target, out var binding))
+        {
+            if (binding.IsAmbiguous)
+            {
+                return new AgentResolution(null, AgentDirectoryFailureCodes.AmbiguousName);
+            }
+
+            if (_byAgentId.TryGetValue(binding.AgentId, out var byName))
+            {
+                return new AgentResolution(byName.Entry);
+            }
+        }
+
+        return ResolveInvalidated(target);
+    }
+
+    /// <summary>
+    /// The answer for a target no live registration matches: either an agent a previous process ran, or
+    /// nothing this collaboration has ever heard of.
+    /// </summary>
+    private AgentResolution ResolveInvalidated(string target)
+    {
+        if (_invalidatedById.ContainsKey(target))
+        {
+            return new AgentResolution(null, AgentDirectoryFailureCodes.TargetNotLive);
+        }
+
+        if (!_invalidatedByName.TryGetValue(target, out var binding))
         {
             return new AgentResolution(null, AgentDirectoryFailureCodes.NotFound);
         }
 
-        if (binding.IsAmbiguous)
-        {
-            return new AgentResolution(null, AgentDirectoryFailureCodes.AmbiguousName);
-        }
-
-        return _byAgentId.TryGetValue(binding.AgentId, out var byName)
-            ? new AgentResolution(byName.Entry)
-            : new AgentResolution(null, AgentDirectoryFailureCodes.NotFound);
+        return new AgentResolution(
+            null,
+            binding.IsAmbiguous ? AgentDirectoryFailureCodes.AmbiguousName : AgentDirectoryFailureCodes.TargetNotLive
+        );
     }
 
     /// <summary>Every registered agent, ordered by canonical identifier so listings are stable.</summary>
@@ -354,6 +498,29 @@ public sealed class AgentCollaborationDirectory
             .. _byAgentId
                 .Values.Select(registration => registration.Entry)
                 .OrderBy(entry => entry.AgentId, StringComparer.Ordinal),
+        ];
+    }
+
+    /// <summary>
+    /// Every registered agent as a persistable row, ordered by canonical identifier.
+    /// </summary>
+    /// <remarks>
+    /// Tombstones are deliberately excluded. A row is written so the <em>next</em> process can learn
+    /// that an agent stopped being reachable; once that has been reported, re-persisting it would make
+    /// every restart inherit the ghosts of every restart before it.
+    /// </remarks>
+    public IReadOnlyList<CollaborationNodeRecord> SnapshotRecords()
+    {
+        return
+        [
+            .. _byAgentId
+                .Values.Select(registration =>
+                    CollaborationNodeRecord.FromEntry(registration.Entry) with
+                    {
+                        SpawnedAt = registration.SpawnedAt,
+                    }
+                )
+                .OrderBy(record => record.AgentId, StringComparer.Ordinal),
         ];
     }
 
@@ -449,6 +616,26 @@ public sealed class AgentCollaborationDirectory
         );
     }
 
+    /// <summary>
+    /// Binds a name to a tombstoned agent, latching on collision exactly as the live map does: two dead
+    /// agents that answered to one name leave a sender no way to say which it meant, and picking one
+    /// would be a worse answer than refusing.
+    /// </summary>
+    private void BindInvalidatedName(string name, string agentId)
+    {
+        _ = _invalidatedByName.AddOrUpdate(
+            name,
+            _ => new NameBinding(agentId, IsAmbiguous: false),
+            (_, existing) =>
+                string.Equals(existing.AgentId, agentId, StringComparison.Ordinal)
+                    ? existing
+                    : existing with
+                    {
+                        IsAmbiguous = true,
+                    }
+        );
+    }
+
     private bool TryMutate(string agentId, Func<AgentDirectoryEntry, AgentDirectoryEntry> mutate)
     {
         if (string.IsNullOrWhiteSpace(agentId))
@@ -461,11 +648,40 @@ public sealed class AgentCollaborationDirectory
             var updated = current with { Entry = mutate(current.Entry) };
             if (_byAgentId.TryUpdate(agentId, updated, current))
             {
+                RaiseDirectoryChanged();
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Invokes each subscriber separately so one that throws cannot starve the ones behind it. Swallowed
+    /// is not silent: a downed subscriber can take the durable identity capture with it.
+    /// </summary>
+    private void RaiseDirectoryChanged()
+    {
+        if (OnDirectoryChanged is not { } subscribers)
+        {
+            return;
+        }
+
+        foreach (var subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                ((Action)subscriber)();
+            }
+            catch (Exception ex)
+            {
+                Logger?.LogError(
+                    ex,
+                    "An OnDirectoryChanged subscriber threw; that subscriber's work (durable identity capture) was skipped for this change to collaboration {CollaborationId}",
+                    CollaborationId
+                );
+            }
+        }
     }
 
     /// <summary>
@@ -476,7 +692,8 @@ public sealed class AgentCollaborationDirectory
         AgentDirectoryEntry Entry,
         IAgentWriteEndpoint? WriteEndpoint,
         IAgentReadEndpoint? ReadEndpoint,
-        AgentInbox Inbox
+        AgentInbox Inbox,
+        DateTimeOffset SpawnedAt
     );
 
     private readonly record struct NameBinding(string AgentId, bool IsAmbiguous);

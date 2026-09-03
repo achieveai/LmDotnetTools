@@ -613,6 +613,20 @@ public sealed class AgentMessageLedger
     }
 
     /// <summary>
+    /// Every open message somebody is still owed an answer to, collaboration-wide, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// The set worth writing down. A message that expects no reply leaves no obligation behind when the
+    /// process ends — nobody is waiting on it — so persisting it would record noise that can never be
+    /// acted on. Unlike the per-agent views this takes no agent: the caller is the collaboration itself,
+    /// capturing what was outstanding between all of its members.
+    /// </remarks>
+    public IReadOnlyList<AgentMessageLedgerEntry> GetOpenReplyBearing()
+    {
+        return SnapshotOpen(entry => entry.ExpectsReply);
+    }
+
+    /// <summary>
     /// Everything a sender still has to act on, oldest first: what is still in flight, plus what ended
     /// badly and is still remembered.
     /// </summary>
