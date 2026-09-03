@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -1097,28 +1098,57 @@ public sealed class AgentHierarchyServiceTests
     /// automatically, reproduced by hand here since these unit tests spawn children through a plain
     /// <see cref="InMemoryConversationStore"/> with no such decorator wired.
     /// </summary>
-    private static Task PersistProvenanceAsync(IConversationStore store, string agentId, string name) =>
-        store.SaveMetadataAsync(
-            SubAgentThreadIds.For(RootThread, agentId),
-            new ThreadMetadata
+    /// <remarks>
+    /// Written through <see cref="IConversationStore.UpdateMetadataAsync"/>, never
+    /// <see cref="IConversationStore.SaveMetadataAsync"/>, and that is load-bearing rather than
+    /// stylistic. The child this stamps provenance onto was spawned with <c>run_in_background</c> and is
+    /// running its own turn against this same store, where
+    /// <c>ContextObservationProjection.RecordAsync</c> merges <c>context.*</c> keys into this very row
+    /// through the store's atomic read-modify-write. A blind <c>SaveMetadataAsync</c> does not take the
+    /// store's metadata lock (see <see cref="InMemoryConversationStore"/>), so it can land INSIDE that
+    /// read-modify-write's window — after the projection has read the row, before it writes back — and
+    /// be written straight back out. The provenance keys vanish, and the cold-path scan that projects
+    /// from them stops seeing the child at all. That is exactly how this test flaked on CI: not every
+    /// run, and on whichever of the two children lost, so it surfaced as three different assertions
+    /// failing with three different survivors.
+    /// </remarks>
+    private static Task PersistProvenanceAsync(IConversationStore store, string agentId, string name)
+    {
+        var threadId = SubAgentThreadIds.For(RootThread, agentId);
+        var provenance = SubAgentProvenance.Build(
+            RootThread,
+            new SubAgentSnapshot(
+                agentId,
+                Name: name,
+                TemplateName: "worker",
+                Task: $"{name}'s task",
+                Status: SubAgentStatus.Completed,
+                ThreadId: threadId,
+                LastActivityUtc: DateTimeOffset.UtcNow,
+                TerminalAtUtc: DateTimeOffset.UtcNow
+            )
+        );
+
+        return store.UpdateMetadataAsync(
+            threadId,
+            existing =>
             {
-                ThreadId = SubAgentThreadIds.For(RootThread, agentId),
-                LastUpdated = 0,
-                Properties = SubAgentProvenance.Build(
-                    RootThread,
-                    new SubAgentSnapshot(
-                        agentId,
-                        Name: name,
-                        TemplateName: "worker",
-                        Task: $"{name}'s task",
-                        Status: SubAgentStatus.Completed,
-                        ThreadId: SubAgentThreadIds.For(RootThread, agentId),
-                        LastActivityUtc: DateTimeOffset.UtcNow,
-                        TerminalAtUtc: DateTimeOffset.UtcNow
-                    )
-                ),
+                // Merge, so this write neither drops what the live child has already recorded nor gets
+                // dropped by the child's next merge — both writers now serialize on the same lock.
+                var properties =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+                foreach (var (key, value) in provenance)
+                {
+                    properties[key] = value;
+                }
+
+                return (existing ?? new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 }) with
+                {
+                    Properties = properties.ToImmutable(),
+                };
             }
         );
+    }
 
     private static object NewSpawn(string name, string subagentType = "worker") =>
         new
