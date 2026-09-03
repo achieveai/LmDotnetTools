@@ -373,11 +373,37 @@ if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 // "api/conversations") resolve correctly against HttpClient.BaseAddress.
 var lmStreamingBaseUri = new Uri(daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
 
+// The transport budget for every S2S call. Long-LIVED is not long-TIMEOUT: the client below is a
+// singleton, but an HttpClient with no explicit Timeout takes .NET's 100-second default, and
+// `POST api/conversations/{id}/messages` blocks on the review host until it has built the agent and
+// provisioned its sandbox session — routinely minutes. The 100s stopwatch fired first and every review
+// died as `TaskCanceledException: ... HttpClient.Timeout of 100 seconds elapsing`, leaving the run
+// RetryPending while the host went on to finish a review nobody collected. Same shape as #735, one layer
+// down: there the ceiling was a constructor default, here it is a transport default.
+//
+// The value is the operator's whole-stage budget, so the review's deadline is the stage budget rather
+// than the transport's stopwatch. That is deliberately NOT a min-clamp of the #735 kind: this bounds ONE
+// request while ReviewStageDeadlineMinutes bounds the whole stage (collect -> barrier -> synthesize), and
+// a single request is always a strict sub-interval of the stage it runs in. So this bound cannot bind
+// before the stage bound on any healthy path — it can only truncate a request that has already outlived
+// the entire stage that contains it.
+//
+// Timeout.InfiniteTimeSpan was the alternative, carrying the deadline solely on the CancellationToken.
+// Rejected on the evidence: no caller on this path attaches a deadline to that token (the stage budget is
+// enforced as an absolute DateTimeOffset inside S2SReviewAgent.PollToTerminalAsync, and that check only
+// runs BETWEEN requests). An infinite transport timeout would therefore hang a stalled review host's
+// request forever and wedge the poller, which is strictly worse than the bug being fixed. A finite bound
+// keeps a hung host recoverable within one budget.
+//
+// Math.Max keeps the span positive: HttpClient.Timeout rejects zero/negative, so a misconfigured 0 would
+// otherwise fail startup with an opaque ArgumentOutOfRangeException from a DI factory.
+var lmStreamingS2STimeout = TimeSpan.FromMinutes(Math.Max(1, daemonOptions.ReviewStageDeadlineMinutes));
+
 // Outbound S2S client over the review host. The raw HttpClient is intentionally long-lived (mirrors the
 // gateway HttpClients above); it forwards the daemon's own gateway identity (X-Sbx-App-*) so the sandbox
 // the review provisions is attributed to codereview-daemon, and the X-S2S-Auth secret (never logged).
 builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
-    new HttpClient { BaseAddress = lmStreamingBaseUri },
+    new HttpClient { BaseAddress = lmStreamingBaseUri, Timeout = lmStreamingS2STimeout },
     daemonOptions.LmStreamingS2SSecret,
     daemonAppId,
     daemonKeyMissing ? null : daemonAppKey
