@@ -276,8 +276,16 @@ internal static class ConversationStoreReader
                 var callId = GetString(inner.RootElement, "tool_call_id");
                 totalToolCalls++;
 
-                var result = ResultFacts.None;
-                var hasResult = !string.IsNullOrEmpty(callId) && resultById.TryGetValue(callId, out result);
+                // TryGetValue writes default(ResultFacts) on a MISS, and ResultFacts is a struct,
+                // so an `out result` seeded with None comes back with a NULL Text for every
+                // unpaired call - which is exactly what a timed-out or interrupted run leaves
+                // behind. Keep the miss on its own variable so None survives.
+                var paired =
+                    string.IsNullOrEmpty(callId) ? (ResultFacts?)null
+                    : resultById.TryGetValue(callId, out var found) ? found
+                    : null;
+                var hasResult = paired is not null;
+                var result = paired ?? ResultFacts.None;
                 if (!hasResult)
                 {
                     unpairedToolCalls++;
@@ -710,5 +718,8 @@ internal readonly record struct ResultFacts(string Text, bool IsErrorFlag, strin
     /// Cheap gate before parsing. Most results are prose, and handing every one of them to
     /// JsonDocument.Parse just to catch the exception is the hot path of a whole-sweep extraction.
     /// </summary>
-    private static bool LooksLikeJsonObject(string text) => text.TrimStart().StartsWith('{');
+    // Non-null by declaration, nullable in practice: ResultFacts is a struct, so `default`
+    // hands every future caller a null Text without a compiler warning. Losing a whole sweep's
+    // extraction to that is not worth the one saved branch.
+    private static bool LooksLikeJsonObject(string? text) => text?.TrimStart().StartsWith('{') == true;
 }
