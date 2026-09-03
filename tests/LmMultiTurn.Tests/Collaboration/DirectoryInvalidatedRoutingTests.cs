@@ -151,6 +151,45 @@ public class DirectoryInvalidatedRoutingTests
     }
 
     [Fact]
+    public void InvalidatedAgentId_NamesTheAgentBehindATombstonedTarget()
+    {
+        // #672: a caller recording ownership needs the identifier, and Resolve deliberately cannot carry
+        // it — a tombstone answers with a null entry. Both spellings of the same agent must give the
+        // same identifier, or the agent is keyed one way before a restart and another way after one.
+        var directory = CreateDirectory();
+        RegisterRoot(directory);
+        directory.MarkInvalidated(Row("agent-1", "reviewer"));
+
+        directory.InvalidatedAgentId("reviewer").Should().Be("agent-1");
+        directory.InvalidatedAgentId("agent-1").Should().Be("agent-1");
+    }
+
+    [Fact]
+    public void InvalidatedAgentId_RefusesToGuess_WhenTwoTombstonesShareAName()
+    {
+        // The ambiguity rule follows the identifier, not just the resolution: naming either agent here
+        // would hand one of them ownership of the other's work.
+        var directory = CreateDirectory();
+        RegisterRoot(directory);
+        directory.MarkInvalidated(Row("agent-1", "reviewer"));
+        directory.MarkInvalidated(Row("agent-2", "reviewer"));
+
+        directory.InvalidatedAgentId("reviewer").Should().BeNull();
+        directory.InvalidatedAgentId("agent-2").Should().Be("agent-2", "the ids stay individually nameable");
+    }
+
+    [Fact]
+    public void InvalidatedAgentId_IsNullForATargetNoTombstoneHolds()
+    {
+        var directory = CreateDirectory();
+        RegisterRoot(directory);
+        directory.MarkInvalidated(Row("agent-1", "reviewer"));
+
+        directory.InvalidatedAgentId("nobody").Should().BeNull();
+        directory.InvalidatedAgentId("agent-root").Should().BeNull("a live agent is not a tombstone");
+    }
+
+    [Fact]
     public void OnDirectoryChanged_FiresForEveryWriteThatChangesWhoIsReachable()
     {
         var directory = CreateDirectory();
