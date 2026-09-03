@@ -43,6 +43,15 @@ internal sealed class LmStreamingS2SClient
         _sandboxAppKey = sandboxAppKey;
     }
 
+    /// <summary>
+    /// The transport budget one S2S request may take, i.e. the injected client's
+    /// <see cref="HttpClient.Timeout"/>. Exposed so the wiring test can pin that the operator's configured
+    /// stage budget actually reaches the transport. That wiring is otherwise invisible from outside, and its
+    /// unset value is not a no-op but .NET's 100-second default — long enough to look configured and short
+    /// enough to abandon every real review mid-turn.
+    /// </summary>
+    internal TimeSpan RequestTimeout => _httpClient.Timeout;
+
     /// <summary>Lists all workspaces the review host knows about.</summary>
     public async Task<IReadOnlyList<S2SWorkspace>> ListWorkspacesAsync(CancellationToken ct)
     {

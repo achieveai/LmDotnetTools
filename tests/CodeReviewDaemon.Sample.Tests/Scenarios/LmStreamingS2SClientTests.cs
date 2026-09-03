@@ -944,4 +944,111 @@ public sealed class LmStreamingS2SClientTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
+
+    /// <summary>
+    /// The injected client's <see cref="HttpClient.Timeout"/> is the operative per-request deadline: a review
+    /// host that has accepted the connection and is still working is abandoned when it elapses, with
+    /// <see cref="CancellationToken.None"/> from the caller. This is the mechanism that broke every review —
+    /// <c>Program.cs</c> built the client with no Timeout, so the deadline was .NET's silent 100-second
+    /// default while <c>POST .../messages</c> blocks on the host building the agent and provisioning its
+    /// sandbox session.
+    /// <para>
+    /// The stall is a controllable fake and the span is scaled down to milliseconds, so this proves the
+    /// mechanism and not the production number. The number that reaches the transport is pinned separately by
+    /// <c>DaemonS2SClientTimeoutWiringTests</c> over the real <c>Program</c> graph; reproducing the literal
+    /// 100-second trip would mean a 100-second test.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_clients_transport_timeout_is_the_deadline_for_a_stalled_review_host()
+    {
+        using var handler = new StallingHandler();
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5051/"),
+            Timeout = TimeSpan.FromMilliseconds(200),
+        };
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "review this PR",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: null,
+                CancellationToken.None
+            );
+
+        var thrown = await act.Should().ThrowAsync<TaskCanceledException>();
+        thrown
+            .Which.InnerException.Should()
+            .BeOfType<TimeoutException>(
+                "the caller passed no cancellable token, so only the transport's own stopwatch could have "
+                    + "ended this request — which is what makes that stopwatch the review's real deadline"
+            );
+    }
+
+    /// <summary>
+    /// The same stalled host, the same fake, the only difference being a transport budget generous enough to
+    /// outlast it: the send now completes. Pairs with the test above — that one shows the transport stopwatch
+    /// CAN end a live request, this one shows raising it is what stops it happening, so neither passes for a
+    /// reason unrelated to the timeout.
+    /// </summary>
+    [Fact]
+    public async Task A_generous_transport_timeout_lets_a_still_working_review_host_finish()
+    {
+        using var handler = new StallingHandler();
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5051/"),
+            Timeout = TimeSpan.FromSeconds(30),
+        };
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var send = client.SendMessageAsync(
+            "thread-1",
+            "review this PR",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: null,
+            CancellationToken.None
+        );
+
+        send.IsCompleted.Should().BeFalse("the host has not answered yet — it is still building the agent");
+        handler.Release("{\"inputId\":\"input-1\"}");
+
+        (await send).Should().Be("input-1", "a slow but legitimate turn must survive its transport budget");
+    }
+
+    /// <summary>
+    /// Holds every request until <see cref="Release"/> (or cancellation), standing in for a review host that
+    /// has accepted the call and is still working. Cancelling through the handed-in token is the point: that
+    /// is precisely the token <see cref="HttpClient"/> cancels when its own <see cref="HttpClient.Timeout"/>
+    /// elapses, so the stall is ended by the real mechanism rather than by a test-only shortcut.
+    /// </summary>
+    private sealed class StallingHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource<HttpResponseMessage> _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        /// <summary>Answers the pending request with <paramref name="json"/>.</summary>
+        public void Release(string json) =>
+            _release.TrySetResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            using var registration = cancellationToken.Register(() => _release.TrySetCanceled(cancellationToken));
+            return await _release.Task.ConfigureAwait(false);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            // Unblocks any request still parked on the gate, so a failing test cannot leave one hanging.
+            _ = _release.TrySetCanceled();
+            base.Dispose(disposing);
+        }
+    }
 }
