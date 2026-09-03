@@ -43,7 +43,16 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </remarks>
 public sealed class WorkspaceTranscriptPathAliasTests
 {
-    private const string RootDirectoryName = "lm-transcript-alias";
+    /// <summary>Temp root for every case, unique to the test process that owns it.</summary>
+    /// <remarks>
+    /// The process id is part of the name because this repository is worked in many git worktrees at once,
+    /// and each one runs this project in its own <c>dotnet test</c> process. Under a fixed name every one of
+    /// those processes resolved to the same <c>%TEMP%</c> path, so concurrent runs deleted and rewrote each
+    /// other's fixtures: <see cref="Directory.Delete(string, bool)"/> in setup raced a live handle, and the
+    /// alias assertions saw files another run had left behind. The per-case delete below still clears a tree
+    /// stranded by an earlier process that happened to hold this id.
+    /// </remarks>
+    private static readonly string RootDirectoryName = $"lm-transcript-alias-{Environment.ProcessId}";
 
     private const string ThreadId = "conv-link-7a3b";
     private const string WorkspaceId = "ws-link";
