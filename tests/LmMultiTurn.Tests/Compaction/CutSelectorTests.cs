@@ -64,6 +64,20 @@ public sealed class CutSelectorTests
         cut.Seq.Should().Be(ThreadFixture.TurnEnd(2));
     }
 
+    [Fact]
+    public void R1_CallRowWhoseResultNeverArrived_IsNeverTheCut()
+    {
+        // The stream died after the call, then a new run continued the thread: the orphan row ends its
+        // generation, so the boundary rule accepts it and only the pairing rule refuses it (#686 M16).
+        var thread = new ThreadFixture().Human("go").ToolTurns(2).ToolCall();
+        var orphanCall = thread.LastSeq;
+        _ = thread.Run("run-2").Human("carry on").ToolTurns(2);
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(orphanCall, Short)));
+
+        cut.Seq.Should().Be(ThreadFixture.TurnEnd(2), "a call row without its result may not end a checkpoint");
+    }
+
     // ---- R2: mid-run cut, instruction travels whole ---------------------------------------------
 
     [Fact]
@@ -277,15 +291,17 @@ public sealed class CutSelectorTests
     [Fact]
     public void Observe_CountsDeferredAndParkedRows_ByTool()
     {
+        // Asymmetric on purpose: one of each counts 1/1 whichever counter each branch increments.
         var thread = new ThreadFixture()
             .Human("go")
+            .ToolTurn(tool: "AskUserQuestion", deferred: true)
             .ToolTurn(tool: "AskUserQuestion", deferred: true)
             .ToolTurn(tool: "Wait", deferred: true)
             .ToolTurn();
 
         var recovery = CutSelector.Observe(thread.Rows, CutBlockingState.Clean, upToSeq: long.MaxValue);
 
-        recovery.DeferredToolCalls.Should().Be(1);
+        recovery.DeferredToolCalls.Should().Be(2);
         recovery.ParkedWaits.Should().Be(1);
     }
 

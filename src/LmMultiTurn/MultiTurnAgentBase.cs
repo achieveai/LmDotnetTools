@@ -771,7 +771,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <returns>Messages ready to send to the LLM</returns>
     protected IEnumerable<IMessage> GetMessagesWithSystemPrompt()
     {
-        var history = GetHistorySnapshot();
+        // A compaction checkpoint row is a durable audit row, never a provider message: with compaction
+        // off (rolled back, killed, or never configured) the raw history goes out without it. The OpenAI
+        // converter rejects unknown message types outright, so leaving the row in would turn a rollback
+        // into a failed request on every thread that ever compacted (#686 AC 8).
+        var history = GetHistorySnapshot().Where(m => m is not CompactionCheckpointMessage);
 
         if (!string.IsNullOrEmpty(SystemPrompt))
         {

@@ -543,6 +543,8 @@ public class CompactionLoopTests
         var observed = await ContextObservationProjection.LoadLatestAsync(h.Store, Thread);
         observed.Should().NotBeNull("#681 measures every generation regardless of compaction mode");
         observed!.Decision.Should().BeNull("Off evaluates no policy, so it stamps no decision");
+        observed.ActiveCheckpointId.Should().BeNull("Off never builds a checkpoint to stamp");
+        (await h.StateAsync()).Should().BeNull("no compaction state is ever written in Off");
     }
 
     [Fact]

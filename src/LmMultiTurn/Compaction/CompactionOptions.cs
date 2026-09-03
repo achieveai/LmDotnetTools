@@ -42,10 +42,33 @@ public sealed record RecallLimits
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Where the defaults come from.</b> Every threshold below is a hypothesis; #686 is the issue that
-/// replaces them with numbers measured on the repository corpus. Until then each default is anchored on
-/// something this repository already does rather than on another product's example:
+/// <b>Where the defaults come from.</b> Every threshold below started as a hypothesis anchored on
+/// something this repository already does rather than on another product's example. #686 ran the §12.4
+/// corpus (<c>tests/LmMultiTurn.Tests/Compaction/Corpus</c>, mock providers, 2,400-token window) in
+/// Off, Shadow and Compact; <c>docs/features/compaction-rollout-proof/compaction-rollout-proof.md</c>
+/// holds the numbers. What they said about the defaults:
 /// </para>
+/// <list type="bullet">
+///     <item>The ratio ladder behaved as designed: warn one turn before the compact band, hard band one
+///     turn before the provider's overflow, a 14–19 % peak-request reduction after a cut, and the only
+///     item that overflows without compaction (a 40-turn tool run) finishes with it. Nothing observed
+///     argues for moving <see cref="WarnRatio"/>, <see cref="CompactRatio"/>, <see cref="HardRatio"/>
+///     or <see cref="TargetRatio"/>.</item>
+///     <item>Every corpus compaction came from the hard band. The economic band (policy row 6) prices the
+///     summary at <see cref="CheckpointTokenCap"/> output tokens, which no 2,400-token window can repay;
+///     the same formula is positive at a 200k window, so <see cref="ExpectedFutureGenerations"/> and
+///     <see cref="MinPredictedSavingsMicros"/> remain unmeasured hypotheses.</item>
+///     <item>Residual cost risk: on conversations that fit the window anyway, Compact cost 22–35 % more
+///     than Off, because the envelope rewrites the cached prefix (cache-hit ratio fell 12–29 points) and
+///     each summary is billed. Compaction earns its cost only where the alternative is failure, which is
+///     why <see cref="Mode"/> stays <see cref="CompactionMode.Off"/> and the rollout goes per route
+///     through Warn and Shadow (Shadow's cost and cache profile are identical to Off's).</item>
+///     <item><see cref="MaxCompactionsPerRun"/> = 2 was raised to 20 for the corpus, where one run spans
+///     twenty windows; at production windows a run compacts far less often, but a tool-heavy run several
+///     windows long would hit the cap and then overflow. Raise it only with
+///     <see cref="CooldownNewTokens"/> in place.</item>
+/// </list>
+/// <para>The original anchors, still the reason each number is what it is:</para>
 /// <list type="bullet">
 ///     <item><see cref="WarnAbsoluteTokens"/> = 100,000 is the inline estimate <c>MultiTurnAgentLoop</c>
 ///     already uses to label a failed run "likely exceeded the model context window"
@@ -69,8 +92,9 @@ public sealed record RecallLimits
 ///     #470) — a precedent, not shared code.</item>
 ///     <item><see cref="CacheTtl"/> = 5 minutes matches the 5-minute cache-write rate <c>ModelPricing</c>
 ///     prices (#682) and the sample host's <c>PromptCachingMode.Auto</c>.</item>
-///     <item><see cref="ExpectedFutureGenerations"/> = 3 is the economic guess the spec names; it is the
-///     first knob #686 should measure.</item>
+///     <item><see cref="ExpectedFutureGenerations"/> = 3 is the economic guess the spec names; #686 could
+///     not reach the band it governs (see above), so it is still the first knob to measure on a
+///     production window.</item>
 /// </list>
 /// </remarks>
 public sealed record CompactionOptions
