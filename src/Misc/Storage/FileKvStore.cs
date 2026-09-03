@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 
 namespace AchieveAi.LmDotnetTools.Misc.Storage;
@@ -107,19 +108,15 @@ public class FileKvStore : IKvStore, IDisposable
         }
 
         var filePath = GetFilePath(key);
-        var json = JsonSerializer.Serialize(value, _jsonOptions);
 
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
-            // Ensure directory exists (in case it was deleted)
-            _ = Directory.CreateDirectory(CacheDirectory);
-
-            // Write to temporary file first, then move to final location
-            // This ensures atomic writes and prevents corruption
-            var tempFilePath = filePath + ".tmp";
-            await File.WriteAllTextAsync(tempFilePath, json, Encoding.UTF8, cancellationToken);
-            File.Move(tempFilePath, filePath, true);
+            // Atomic write via the shared helper: a unique staging file, then a rename over the target with
+            // a bounded retry. The semaphore above is per-INSTANCE, so it protects nothing between two
+            // stores over one cache directory — the ordinary deployment for a shared on-disk cache — nor
+            // against a reader holding the destination while the cache is refreshed.
+            await AtomicFile.WriteJsonAsync(filePath, value, _jsonOptions, cancellationToken);
         }
         finally
         {

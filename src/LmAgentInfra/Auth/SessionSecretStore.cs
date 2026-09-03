@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 
@@ -73,11 +74,16 @@ public sealed class SessionSecretStore
             // Ensure the directory still exists (it may have been removed out-of-band).
             _ = Directory.CreateDirectory(_baseDirectory);
 
-            // Atomic write: stage to a temp file, then move over the target so a reader never
-            // observes a partially written file.
-            var tempFilePath = filePath + ".tmp";
-            await File.WriteAllTextAsync(tempFilePath, secret, Encoding.UTF8, ct).ConfigureAwait(false);
-            File.Move(tempFilePath, filePath, overwrite: true);
+            // Atomic write via the shared helper: a unique staging file, then a rename over the
+            // target with a bounded retry. MatchesAsync reads straight from disk on every webhook
+            // call, so a concurrent reader holding the destination is this store's normal traffic.
+            await AtomicFile
+                .WriteAsync(
+                    filePath,
+                    (tempFilePath, token) => File.WriteAllTextAsync(tempFilePath, secret, Encoding.UTF8, token),
+                    ct
+                )
+                .ConfigureAwait(false);
         }
         finally
         {

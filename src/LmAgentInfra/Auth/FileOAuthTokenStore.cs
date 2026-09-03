@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 
@@ -94,7 +95,7 @@ public sealed class FileOAuthTokenStore : IOAuthTokenStore
         {
             // Atomic write (temp-file + move) via the shared helper so a reader never observes a
             // partially-written file. The helper re-creates the base dir if it was removed out-of-band.
-            await AtomicJsonFile.WriteAsync(filePath, record, JsonOptions, ct).ConfigureAwait(false);
+            await AtomicFile.WriteJsonAsync(filePath, record, JsonOptions, ct).ConfigureAwait(false);
         }
         finally
         {

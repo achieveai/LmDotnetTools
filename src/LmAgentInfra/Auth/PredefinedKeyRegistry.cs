@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 
@@ -128,7 +129,7 @@ public sealed class PredefinedKeyRegistry
                 .Append(entry)
                 .ToList();
 
-            Task Persist() => AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, CancellationToken.None);
+            Task Persist() => AtomicFile.WriteJsonAsync(_filePath, candidate, JsonOptions, CancellationToken.None);
 
             if (existing is not null)
             {
@@ -168,7 +169,7 @@ public sealed class PredefinedKeyRegistry
                 .Values.Select(p => p.Entry)
                 .Where(e => !string.Equals(e.Id, id, StringComparison.Ordinal))
                 .ToList();
-            await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
+            await AtomicFile.WriteJsonAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
 
             _ = _providers.TryRemove(id, out _);
             // Drop the persisted minted token so the secret does not linger — genuinely best-effort so a

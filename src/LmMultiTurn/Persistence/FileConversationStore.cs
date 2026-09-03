@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -1412,20 +1413,31 @@ public sealed class FileConversationStore
     private static Task WriteJsonFileAsync<T>(string filePath, T data, CancellationToken ct) =>
         WriteJsonFileAsync(filePath, data, JsonOptions, ct);
 
-    private static async Task WriteJsonFileAsync<T>(
+    /// <summary>
+    /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
+    /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
+    /// <para>
+    /// <see cref="_lock"/> covers none of that. It is a per-INSTANCE semaphore, so it serializes nothing
+    /// between two stores over one base directory — the shape
+    /// <c>ConversationContextReportTests(kind:"file")</c> and <c>InputAcceptanceStoreTests</c> construct —
+    /// and nothing at all across processes.
+    /// </para>
+    /// <para>
+    /// Serializes to a string and writes it WITHOUT a byte-order mark, which is what this store has always
+    /// written; <see cref="AtomicFile.WriteJsonAsync"/> emits one, so this path stages its own bytes rather
+    /// than rewriting every existing thread file's encoding for no gain.
+    /// </para>
+    /// </summary>
+    private static Task WriteJsonFileAsync<T>(
         string filePath,
         T data,
         JsonSerializerOptions options,
         CancellationToken ct
     )
     {
-        // Write to temp file first, then rename for atomic operation
-        var tempFile = filePath + ".tmp";
+        // Serialize before staging so a serialization failure never creates a temp file to clean up.
         var json = JsonSerializer.Serialize(data, options);
 
-        await File.WriteAllTextAsync(tempFile, json, ct);
-
-        // Atomic rename
-        File.Move(tempFile, filePath, overwrite: true);
+        return AtomicFile.WriteAsync(filePath, (tempFile, token) => File.WriteAllTextAsync(tempFile, json, token), ct);
     }
 }
