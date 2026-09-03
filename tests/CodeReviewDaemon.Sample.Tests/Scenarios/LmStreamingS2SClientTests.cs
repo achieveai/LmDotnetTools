@@ -1033,9 +1033,7 @@ public sealed class LmStreamingS2SClientTests
 
         /// <summary>Answers the pending request with <paramref name="json"/>.</summary>
         public void Release(string json) =>
-            _release.TrySetResult(
-                new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) }
-            );
+            _release.TrySetResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
