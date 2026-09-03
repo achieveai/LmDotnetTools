@@ -684,6 +684,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         }
     }
 
+    /// <summary>
+    /// How far the per-credential transport's own <see cref="HttpClient.Timeout"/> sits ABOVE the SDK's
+    /// <see cref="SandboxClientOptions.TransportTimeout"/>. Strictly positive so the SDK's linked budget
+    /// always expires first and the caller sees <see cref="SandboxErrorKind.TransportTimeout"/> (with its
+    /// operationId) rather than a race between two deadlines set to the same instant.
+    /// </summary>
+    private static readonly TimeSpan TransportBackstopMargin = TimeSpan.FromSeconds(30);
+
     /// <summary>Resolves (creating on first use) the per-credential client entry. Caller MUST hold <see cref="_clientsLock"/>.</summary>
     private SandboxClientEntry GetOrCreateClientEntryLocked(SandboxCredential credential)
     {
@@ -714,7 +722,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             InnerHandler = new SharedTransportForwardingHandler(_httpClient),
         };
-        var transport = new HttpClient(pipeline, disposeHandler: true);
+        // This client's OWN Timeout is a BACKSTOP, not the budget. The SDK enforces TransportTimeout with
+        // a CancellationToken linked into every one of its four send sites, deliberately NOT through
+        // HttpClient.Timeout (mutating a borrowed client's Timeout would hit every other caller of it), so
+        // the deadline that should fire is always the SDK's. Left at .NET's 100s default this is a second,
+        // UNCOUPLED deadline: it silently caps any configured budget above 100s, and when it wins it throws
+        // a bare TaskCanceledException instead of the SDK's SandboxException(TransportTimeout) — the one
+        // that carries the operationId a caller needs to re-poll a command that has already run. Deriving
+        // it from the same budget, plus a margin, makes the two numbers unable to disagree.
+        //
+        // Bounded rather than Timeout.InfiniteTimeSpan: infinite is only safe while every send arms the
+        // SDK's linked budget (all four do today), and that is a property of the SDK this class does not
+        // own. A finite backstop keeps a send that ever escapes that budget recoverable instead of hung.
+        var transport = new HttpClient(pipeline, disposeHandler: true)
+        {
+            Timeout = transportTimeout + TransportBackstopMargin,
+        };
         var client = new SandboxClient(options, transport);
         var entry = new SandboxClientEntry(client, transport);
         _clients[key] = entry;
@@ -775,6 +798,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             lock (_clientsLock)
             {
                 return _clients.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test-only: the <see cref="HttpClient.Timeout"/> of every cached per-credential transport. Used to
+    /// assert that this backstop is derived from the configured budget rather than left at .NET's 100s
+    /// default — a value no other seam exposes, because the SDK never reads it.
+    /// </summary>
+    internal IReadOnlyList<TimeSpan> PerCredentialTransportTimeouts
+    {
+        get
+        {
+            lock (_clientsLock)
+            {
+                return [.. _clients.Values.Select(entry => entry.Transport.Timeout)];
             }
         }
     }
