@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -691,7 +692,6 @@ public class OpenRouterModelService
                 throw new InvalidOperationException("Cannot save cache with invalid integrity");
             }
 
-            var tempFile = _cacheFilePath + ".tmp";
             var backupFile = _cacheFilePath + ".backup";
 
             try
@@ -703,29 +703,38 @@ public class OpenRouterModelService
                     _logger.LogTrace("Created backup of existing cache file");
                 }
 
-                // Write to temporary file with optimized streaming for performance
-                using (
-                    var fileStream = new FileStream(
-                        tempFile,
-                        FileMode.Create,
-                        FileAccess.Write,
-                        FileShare.None,
-                        FileBufferSize
-                    )
-                )
-                {
-                    await JsonSerializer.SerializeAsync(fileStream, cache, _jsonOptions, cancellationToken);
-                    await fileStream.FlushAsync(cancellationToken);
-                }
+                // Atomic write via the shared helper: a unique staging file, then a rename over the target
+                // with a bounded retry. The semaphore above is per-INSTANCE, and the DEFAULT cache path is a
+                // fixed machine-wide %TEMP%/LmDotnetTools/openrouter-cache.json, so every process on the box
+                // shares one target and one staging name. The staging write and its read-back check both run
+                // inside the callback, so a verification failure aborts with nothing moved over the target.
+                await AtomicFile.WriteAsync(
+                    _cacheFilePath,
+                    async (tempFile, token) =>
+                    {
+                        // Write to temporary file with optimized streaming for performance
+                        using (
+                            var fileStream = new FileStream(
+                                tempFile,
+                                FileMode.Create,
+                                FileAccess.Write,
+                                FileShare.None,
+                                FileBufferSize
+                            )
+                        )
+                        {
+                            await JsonSerializer.SerializeAsync(fileStream, cache, _jsonOptions, token);
+                            await fileStream.FlushAsync(token);
+                        }
 
-                // Verify the written file can be read back correctly
-                if (!await VerifyWrittenCacheFile(tempFile, cancellationToken))
-                {
-                    throw new InvalidOperationException("Cache file verification failed after write");
-                }
-
-                // Atomic move to final location
-                File.Move(tempFile, _cacheFilePath, true);
+                        // Verify the written file can be read back correctly
+                        if (!await VerifyWrittenCacheFile(tempFile, token))
+                        {
+                            throw new InvalidOperationException("Cache file verification failed after write");
+                        }
+                    },
+                    cancellationToken
+                );
 
                 // Clean up backup file on successful write
                 if (File.Exists(backupFile))
@@ -754,18 +763,8 @@ public class OpenRouterModelService
                 stopwatch.Stop();
                 _logger.LogError(ex, "Failed to save cache atomically");
 
-                // Clean up temporary file
-                try
-                {
-                    if (File.Exists(tempFile))
-                    {
-                        File.Delete(tempFile);
-                    }
-                }
-                catch (Exception cleanupEx)
-                {
-                    _logger.LogWarning(cleanupEx, "Failed to clean up temporary cache file: {TempFile}", tempFile);
-                }
+                // The staging file is cleaned up by AtomicFile.WriteAsync, which owns its name and deletes
+                // it on any failure — nothing to clean up here.
 
                 // Restore from backup if available
                 try

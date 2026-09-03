@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -1413,102 +1414,30 @@ public sealed class FileConversationStore
         WriteJsonFileAsync(filePath, data, JsonOptions, ct);
 
     /// <summary>
-    /// Attempts at the final rename, and the backoff step multiplied by the attempt number: ~1.1 s in
-    /// total across the budget (the delay fires on attempts 1-9; the tenth rethrows first).
+    /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
+    /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
     /// <para>
-    /// Deliberately the same shape and budget as <c>DetachedStoreTeardown.Purge</c>, which already
-    /// absorbs exactly this class of briefly-held handle during teardown. That the teardown path retried
-    /// and the write path did not was the asymmetry worth closing, not a difference in the hazard.
+    /// <see cref="_lock"/> covers none of that. It is a per-INSTANCE semaphore, so it serializes nothing
+    /// between two stores over one base directory — the shape
+    /// <c>ConversationContextReportTests(kind:"file")</c> and <c>InputAcceptanceStoreTests</c> construct —
+    /// and nothing at all across processes.
+    /// </para>
+    /// <para>
+    /// Serializes to a string and writes it WITHOUT a byte-order mark, which is what this store has always
+    /// written; <see cref="AtomicFile.WriteJsonAsync"/> emits one, so this path stages its own bytes rather
+    /// than rewriting every existing thread file's encoding for no gain.
     /// </para>
     /// </summary>
-    private const int MoveAttempts = 10;
-    private const int MoveRetryDelayMs = 25;
-
-    private static async Task WriteJsonFileAsync<T>(
+    private static Task WriteJsonFileAsync<T>(
         string filePath,
         T data,
         JsonSerializerOptions options,
         CancellationToken ct
     )
     {
-        // A fresh suffix per write, rather than a name derived from the target. <see cref="_lock"/> is a
-        // per-INSTANCE semaphore, so it serializes nothing between two stores over one base directory —
-        // the shape ConversationContextReportTests(kind:"file") and InputAcceptanceStoreTests construct —
-        // and nothing at all across processes. Under a temp name shared by every writer to a file, those
-        // writers contend for the temp path itself and one of them fails before it ever reaches the
-        // rename. A unique name removes that contention by construction.
-        var tempFile = $"{filePath}.{Guid.NewGuid():N}.tmp";
+        // Serialize before staging so a serialization failure never creates a temp file to clean up.
         var json = JsonSerializer.Serialize(data, options);
 
-        try
-        {
-            await File.WriteAllTextAsync(tempFile, json, ct);
-            await MoveWithRetryAsync(tempFile, filePath, ct);
-        }
-        catch
-        {
-            // A write that did not land must not leave its temp file behind. Unique names are what make
-            // this necessary as well as safe: no later writer reuses or overwrites this path, so without
-            // an explicit delete a failed write would litter the thread directory permanently.
-            TryDeleteTempFile(tempFile);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Renames the temp file over <paramref name="filePath"/>, retrying a bounded number of times while
-    /// the destination is held.
-    /// <para>
-    /// The rename is atomic but not unconditional on Windows: <c>MoveFile</c> with
-    /// <c>REPLACE_EXISTING</c> needs delete access on the destination, so it fails outright while ANY
-    /// handle is open on it. <c>FileShare.Read</c> — precisely what a concurrent
-    /// <c>File.ReadAllTextAsync</c> of the same file takes — is enough to produce the
-    /// <see cref="UnauthorizedAccessException"/> reported through <c>UpdateMetadataAsync</c>, and so is a
-    /// virus scanner or the search indexer touching a file this store has just written. Every one of
-    /// those holders is transient, so waiting for the condition is worth more than failing the caller.
-    /// </para>
-    /// <para>
-    /// The final failure is rethrown as-is rather than wrapped: callers see the same exception types this
-    /// path has always thrown, and a genuine permanent holder — an ACL problem, a leaked writer — still
-    /// surfaces with its own cause intact instead of behind a retry-flavoured message.
-    /// </para>
-    /// </summary>
-    private static async Task MoveWithRetryAsync(string tempFile, string filePath, CancellationToken ct)
-    {
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                File.Move(tempFile, filePath, overwrite: true);
-                return;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                if (attempt >= MoveAttempts)
-                {
-                    throw;
-                }
-
-                await Task.Delay(MoveRetryDelayMs * attempt, ct);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Best-effort removal of a temp file whose write or rename failed. The swallow is safe here for a
-    /// reason the write itself does not share: this runs while the caller's real exception is already
-    /// unwinding, and replacing that failure with a cleanup failure would destroy the cause. The unique
-    /// name makes any survivor inert — nothing else ever looks at that path.
-    /// </summary>
-    private static void TryDeleteTempFile(string tempFile)
-    {
-        try
-        {
-            File.Delete(tempFile);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Deliberately ignored; see the summary above.
-        }
+        return AtomicFile.WriteAsync(filePath, (tempFile, token) => File.WriteAllTextAsync(tempFile, json, token), ct);
     }
 }
