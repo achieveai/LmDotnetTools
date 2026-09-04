@@ -1,10 +1,15 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -94,6 +99,13 @@ public class SubAgentLineagePropagationTests
     public async Task QueuedSpawnCapturesLineageWhenAccepted_NotWhenCapacityFrees()
     {
         var publisher = new RecordingLifecyclePublisher();
+        var audit = new RecordingAuditSink();
+        var lifecycle = new MultiTurnLifecycleServices
+        {
+            Publisher = publisher,
+            AuditSink = audit,
+            AuditScope = new MultiTurnAuditScope("engagement-queued", "round-queued"),
+        };
         var parent = new Mock<IMultiTurnAgent>();
         _ = parent.SetupGet(a => a.ThreadId).Returns("parent-thread");
         _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-original");
@@ -130,11 +142,14 @@ public class SubAgentLineagePropagationTests
             new Dictionary<string, ToolHandler>(),
             options,
             new MutableSubAgentTemplateSource(options.Templates),
-            lifecycleServices: CreateBundle(publisher)
+            lifecycleServices: lifecycle
         );
+        var acceptedParentTurnIds = new Queue<string>(["block-parent-turn", "queued-parent-turn"]);
+        manager.AuditParentTurnIdResolver = _ => acceptedParentTurnIds.Dequeue();
 
         _ = await manager.SpawnAsync(TemplateName, "block", runInBackground: true);
         _ = await manager.SpawnAsync(TemplateName, "queued", runInBackground: true, spawningToolCallId: "call-queued");
+        manager.AuditParentTurnIdResolver = _ => "later-parent-turn";
         _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-later");
         gate.SetResult();
 
@@ -146,6 +161,16 @@ public class SubAgentLineagePropagationTests
             .CorrelationsFor(LifecycleEventTypes.RunStarted)
             .Single(c => c.SpawningToolCallId == "call-queued");
         queued.ParentRunId.Should().Be("parent-run-original");
+
+        var queuedThreadId = queued.ThreadId;
+        await WaitUntilAsync(
+            () => audit.Records.Any(record => record.ThreadId == queuedThreadId),
+            TimeSpan.FromSeconds(10)
+        );
+        audit
+            .Records.Where(record => record.ThreadId == queuedThreadId)
+            .Should()
+            .OnlyContain(record => record.ParentTurnId == "queued-parent-turn");
     }
 
     [Fact]
@@ -155,11 +180,19 @@ public class SubAgentLineagePropagationTests
         // ended. Re-deriving lineage at rebuild time would read the parent's CURRENT run — which by
         // then is a different run, or none — and silently re-parent the whole sub-tree.
         var publisher = new RecordingLifecyclePublisher();
+        var audit = new RecordingAuditSink();
+        var lifecycle = new MultiTurnLifecycleServices
+        {
+            Publisher = publisher,
+            AuditSink = audit,
+            AuditScope = new MultiTurnAuditScope("engagement-restart", "round-restart"),
+        };
         var parent = new Mock<IMultiTurnAgent>();
         _ = parent.SetupGet(a => a.ThreadId).Returns("parent-thread");
         _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-original");
 
-        var manager = CreateManager(CreateBundle(publisher), parent);
+        var manager = CreateManager(lifecycle, parent);
+        manager.AuditParentTurnIdResolver = _ => "original-parent-turn";
 
         var spawned = await manager.SpawnAsync(
             TemplateName,
@@ -171,6 +204,7 @@ public class SubAgentLineagePropagationTests
 
         // The spawning run is over; the parent has moved on to another one.
         _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-later");
+        manager.AuditParentTurnIdResolver = _ => "later-parent-turn";
 
         _ = await manager.SendMessageAsync("worker", "keep going");
 
@@ -194,6 +228,146 @@ public class SubAgentLineagePropagationTests
         // And the run after the spawn points at the run it continued, not back at the spawn: an
         // in-thread cause outranks lineage, so a subscriber walks the chain to reach the spawn.
         started[1].ParentRunId.Should().Be(started[0].RunId);
+
+        var childThreadId = started[0].ThreadId;
+        var childRecords = audit.Records.Where(record => record.ThreadId == childThreadId).ToList();
+        childRecords
+            .Select(record => record.RunId)
+            .Distinct()
+            .Should()
+            .HaveCountGreaterThan(1, "the restarted child audits both of its runs");
+        childRecords.Should().OnlyContain(record => record.ParentTurnId == "original-parent-turn");
+    }
+
+    [Fact]
+    public async Task SpawnedAgentAuditRecordsCarryTheExactParentTurnIdAndInheritedScope()
+    {
+        var audit = new RecordingAuditSink();
+        var lifecycle = new MultiTurnLifecycleServices
+        {
+            AuditSink = audit,
+            AuditScope = new MultiTurnAuditScope("engagement-tree", "round-tree"),
+            ProviderId = "host-provider",
+        };
+        var childProvider = new Mock<IStreamingAgent>();
+        _ = childProvider
+            .Setup(agent =>
+                agent.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "child done", Role = Role.Assistant }]));
+
+        var parentCalls = 0;
+        var parentProvider = new Mock<IStreamingAgent>();
+        _ = parentProvider
+            .Setup(agent =>
+                agent.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+            {
+                parentCalls++;
+                return Task.FromResult(
+                    parentCalls == 1
+                        ? ToAsyncEnumerable([
+                            new ToolCallMessage
+                            {
+                                FunctionName = "Agent",
+                                FunctionArgs = JsonSerializer.Serialize(
+                                    new { subagent_type = TemplateName, prompt = "inspect lineage" }
+                                ),
+                                ToolCallId = "call-parent-turn",
+                                Role = Role.Assistant,
+                            },
+                        ])
+                        : ToAsyncEnumerable([new TextMessage { Text = "parent done", Role = Role.Assistant }])
+                );
+            });
+
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [TemplateName] = new SubAgentTemplate
+                {
+                    SystemPrompt = "test",
+                    AgentFactory = () => childProvider.Object,
+                },
+            },
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            parentProvider.Object,
+            new FunctionRegistry(),
+            "parent-audit-thread",
+            subAgentOptions: options,
+            lifecycleServices: lifecycle
+        );
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "spawn", Role = Role.User }], InputId: "lineage-input"),
+                cts.Token
+            )
+        ) { }
+
+        var parentRequest = audit.Records.First(record =>
+            record.RecordType == MultiTurnAuditRecordTypes.ModelRequest && record.ThreadId == "parent-audit-thread"
+        );
+        var expectedIdentity = string.Join(
+            "\n",
+            "parent-audit-thread",
+            parentRequest.RunId,
+            parentRequest.GenerationId,
+            "call-parent-turn"
+        );
+        var expectedParentTurnId = Convert
+            .ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(expectedIdentity)))
+            .ToLowerInvariant();
+
+        var childRecords = audit.Records.Where(record => record.ThreadId != "parent-audit-thread").ToList();
+        childRecords.Should().NotBeEmpty("the real spawned loop must audit its own model turn");
+        childRecords.Should().OnlyContain(record => record.Scope == lifecycle.AuditScope);
+        childRecords.Should().OnlyContain(record => record.ProviderId == "host-provider");
+        childRecords.Should().OnlyContain(record => record.ParentTurnId == expectedParentTurnId);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task FailedSpawnRemovesCapturedAuditParentTurn()
+    {
+        var publisher = new RecordingLifecyclePublisher();
+        await using var manager = CreateManager(CreateBundle(publisher));
+        manager.AuditParentTurnIdResolver = _ => "captured-parent-turn";
+        manager.TestAgentFactoryOverride = (_, _) => throw new InvalidOperationException("construction failed");
+
+        var act = () => manager.SpawnAsync(TemplateName, "fail", spawningToolCallId: "call-failed");
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("construction failed");
+        manager.AuditParentTurnIdCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DisposalClearsRetainedAuditParentTurns()
+    {
+        var publisher = new RecordingLifecyclePublisher();
+        var manager = CreateManager(CreateBundle(publisher));
+        manager.AuditParentTurnIdResolver = _ => "captured-parent-turn";
+
+        _ = await manager.SpawnAsync(TemplateName, "complete", spawningToolCallId: "call-complete");
+        manager.AuditParentTurnIdCount.Should().Be(1, "a completed child remains restartable");
+
+        await manager.DisposeAsync();
+
+        manager.AuditParentTurnIdCount.Should().Be(0);
     }
 
     [Fact]
@@ -321,6 +495,34 @@ public class SubAgentLineagePropagationTests
         {
             yield return message;
             await Task.Yield();
+        }
+    }
+
+    private sealed class RecordingAuditSink : IMultiTurnAuditSink
+    {
+        private readonly object _gate = new();
+        private readonly List<ModelTurnAuditRecord> _records = [];
+
+        public IReadOnlyList<ModelTurnAuditRecord> Records
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _records];
+                }
+            }
+        }
+
+        public ValueTask RecordAsync(ModelTurnAuditRecord record, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_gate)
+            {
+                _records.Add(record);
+            }
+
+            return ValueTask.CompletedTask;
         }
     }
 }

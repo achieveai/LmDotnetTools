@@ -14,8 +14,15 @@ namespace LmStreaming.Sample.Services;
 /// headers (ADR 0029) are supplied by the <see cref="GatewayAuthHandler"/> already wired into that
 /// client's pipeline, so this client neither validates nor forwards the app key itself.
 /// </para>
+/// <para>
+/// It implements <see cref="ISessionMarketplaceCatalogClient"/> as well, so the SAME type serves both
+/// the best-effort browse registration and the longer-budget session-validation one — the two differ
+/// only in the <see cref="HttpClient.Timeout"/> of the client handed to them, which is read below and
+/// becomes the SDK's transport budget. One implementation, two budgets: nothing else about a catalog
+/// read is different between the two callers, so nothing else should be.
+/// </para>
 /// </summary>
-public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
+public sealed class MarketplaceCatalogClient : ISessionMarketplaceCatalogClient
 {
     private readonly SandboxGatewayOptions _options;
     private readonly SandboxClient _sandboxClient;

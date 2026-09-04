@@ -73,10 +73,94 @@ public sealed class JudgeAgentTests : LoggingTestBase
                 "GeneratorModelId",
                 "SelfGraded",
                 "BallotCount",
+                "BallotStatus",
+                "AbstentionReason",
+                "ExclusionReason",
+                "RubricId",
+                "RubricVersion",
+                "SystemPromptSource",
+                "RequestSource",
+                "ResponseSource",
             ]);
         ReadInt(payload, "Score").Should().Be(8);
         ReadString(payload, "Rationale").Should().Be("Thorough; caught the null deref.");
         ReadString(payload, "VariantId").Should().Be("b");
+        ReadString(payload, "BallotStatus").Should().Be("Counted");
+        ReadString(payload, "RubricId").Should().Be("revobot-review");
+        ReadString(payload, "RubricVersion").Should().Be("1.0");
+    }
+
+    [Fact]
+    public async Task JudgeAsync_records_unknown_source_links_as_null_without_inventing_ids()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var reviewRunId = SeedRun(store);
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextMessage
+            {
+                Text = "{\"score\": 7, \"rationale\": \"Useful.\"}",
+                Role = Role.Assistant,
+                RunId = RunId,
+            }
+        );
+
+        _ = await Judge(agent, store)
+            .JudgeAsync(
+                new JudgeRequest(reviewRunId, Provider, "primary", "grade")
+                {
+                    JudgeModelId = "gpt-5.6-sol",
+                    GeneratorModelId = "gpt-5.6-terra",
+                },
+                CancellationToken.None
+            );
+
+        var artifact = store.GetArtifacts(reviewRunId).Should().ContainSingle().Subject;
+        artifact.ArtifactSchemaVersion.Should().Be(3);
+        using var payload = JsonDocument.Parse(artifact.Payload);
+        payload.RootElement.GetProperty("SystemPromptSource").ValueKind.Should().Be(JsonValueKind.Null);
+        payload.RootElement.GetProperty("RequestSource").ValueKind.Should().Be(JsonValueKind.Null);
+        payload.RootElement.GetProperty("ResponseSource").ValueKind.Should().Be(JsonValueKind.Null);
+        ReadString(payload, "JudgeModelId").Should().Be("gpt-5.6-sol");
+        ReadString(payload, "GeneratorModelId").Should().Be("gpt-5.6-terra");
+        payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task JudgeAsync_persists_explicit_request_and_response_source_references()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var reviewRunId = SeedRun(store);
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextMessage
+            {
+                Text = "{\"score\": 9, \"rationale\": \"Strong.\"}",
+                Role = Role.Assistant,
+                RunId = RunId,
+            }
+        );
+        var systemPromptSource = new AuditSourceReference("judge-system-1", new string('c', 64));
+        var requestSource = new AuditSourceReference("judge-request-1", new string('a', 64));
+        var responseSource = new AuditSourceReference("judge-response-1", new string('b', 64));
+
+        _ = await Judge(agent, store)
+            .JudgeAsync(
+                new JudgeRequest(reviewRunId, Provider, "primary", "grade")
+                {
+                    SystemPromptSource = systemPromptSource,
+                    RequestSource = requestSource,
+                    ResponseSource = responseSource,
+                },
+                CancellationToken.None
+            );
+
+        using var payload = JsonDocument.Parse(store.GetArtifacts(reviewRunId).Single().Payload);
+        ReadSource(payload, "SystemPromptSource").Should().Be(systemPromptSource);
+        ReadSource(payload, "RequestSource").Should().Be(requestSource);
+        ReadSource(payload, "ResponseSource").Should().Be(responseSource);
     }
 
     [Fact]
@@ -163,6 +247,15 @@ public sealed class JudgeAgentTests : LoggingTestBase
 
     private static string? ReadString(JsonDocument document, string property) =>
         document.RootElement.GetProperty(property).GetString();
+
+    private static AuditSourceReference ReadSource(JsonDocument document, string property)
+    {
+        var source = document.RootElement.GetProperty(property);
+        return new AuditSourceReference(
+            source.GetProperty("SourceRecordId").GetString()!,
+            source.GetProperty("ContentSha256").GetString()!
+        );
+    }
 
     private static long SeedRun(ReviewStore store)
     {

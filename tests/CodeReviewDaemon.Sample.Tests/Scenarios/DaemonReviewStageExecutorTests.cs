@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -37,6 +38,24 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// <summary>A provisional answer seeded by a checkpoint, distinct from anything a live turn produces —
     /// if it ever appears in an authoritative artifact, a checkpoint was promoted.</summary>
     private const string StaleProvisionalText = "## Review\nProvisional answer from the interrupted attempt.";
+
+    private static DynamicContextManifestDraft SemanticManifest(long roundId) =>
+        new(
+            DynamicContextManifest.SchemaVersion,
+            roundId,
+            [
+                new DynamicContextClaimDraft(
+                    "claim-1",
+                    "The changed file is part of this pull request.",
+                    ["file:src/Foo.cs"]
+                ),
+            ],
+            [
+                new DynamicContextGap("repository", DynamicContextGapState.Linked, true, null),
+                new DynamicContextGap("head", DynamicContextGapState.Linked, true, null),
+                new DynamicContextGap("workspace", DynamicContextGapState.Linked, true, null),
+            ]
+        );
 
     public DaemonReviewStageExecutorTests(ITestOutputHelper output)
         : base(output) { }
@@ -680,6 +699,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             onPoll();
             return Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
         }
+    }
+
+    private sealed class StaticCompletionSource(ReviewSubAgentTreeSnapshot snapshot) : IReviewSubAgentCompletionSource
+    {
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        ) => Task.FromResult(snapshot);
     }
 
     /// <summary>
@@ -1647,6 +1675,387 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         block
             .Should()
             .Contain("do NOT ", "the agent is steered off Grep/Glob, which can miss the file even when it exists");
+    }
+
+    [Fact]
+    public async Task ContextReady_with_an_engagement_round_requires_a_dynamic_manifest_after_static_preparation()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            completionSource: new StaticCompletionSource(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "gatherer-1",
+                        ThreadId = "gatherer-thread",
+                        ParentThreadId = "fake-thread",
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Completed,
+                        Name = "context-gatherer",
+                        Template = DynamicContextEvidenceValidator.GathererTemplate,
+                    },
+                ])
+            )
+        );
+        var run = fixture.SeedRun(withEngagementRound: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = JsonSerializer.Serialize(
+            SemanticManifest(run.EngagementRoundId!.Value)
+        );
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*two*scoped read*");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle("static preparation must be followed by one dynamic context turn");
+    }
+
+    [Fact]
+    public async Task ContextReady_bootstrap_carries_compact_round_navigation_without_provider_bodies()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", WorkItemLinks(1234))
+            .OnJson(
+                HttpMethod.Get,
+                "ids=1234",
+                WorkItemBatch(WorkItem(1234, "Bug", "Sensitive work item title", parent: null))
+            );
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            workItemContextReader: WorkItemReader(handler),
+            completionSource: new StaticCompletionSource(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "gatherer-1",
+                        ThreadId = "gatherer-thread",
+                        ParentThreadId = "fake-thread",
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Completed,
+                        Name = "context-gatherer",
+                        Template = DynamicContextEvidenceValidator.GathererTemplate,
+                    },
+                ])
+            )
+        );
+        var run = fixture.SeedRun(withEngagementRound: true, priorObservationBoundary: 37);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = JsonSerializer.Serialize(
+            SemanticManifest(run.EngagementRoundId!.Value)
+        );
+        fixture.StoreToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        fixture.StoreToolResult(run, "source-work-item", "mcp__azure-devops__getWorkItemById", "issue:117");
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "ado",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(
+                        run.PrId,
+                        run.BaseSha,
+                        run.HeadSha,
+                        DiffText,
+                        CheckoutRoot: "/workspace/target",
+                        StoreRoot: "/workspace/store",
+                        ChangedPaths: "src/Foo.cs",
+                        MergeBaseSha: "merge-base-sha"
+                    )
+                ),
+            }
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var input = fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Subject.ReceivedInputs.Should()
+            .ContainSingle()
+            .Subject.Messages.OfType<TextMessage>()
+            .Single()
+            .Text;
+        var bootstrapJson = input[
+            (input.IndexOf("Bootstrap JSON:", StringComparison.Ordinal) + "Bootstrap JSON:".Length)..
+        ]
+            .Trim();
+        var bootstrap = JsonSerializer.Deserialize<DynamicContextBootstrap>(bootstrapJson)!;
+        bootstrap.LinkedWorkItemRefs.Should().ContainSingle().Which.Should().Be("ado-work-item:1234");
+        bootstrap.PriorObservationBoundary.Should().Be(37);
+        bootstrap.DiscussionRefs.Should().ContainSingle("the admitted activity bound remains navigable");
+        bootstrap.OpenQuestionRefs.Should().NotBeNull();
+        bootstrap.KnowledgeBasePaths.Should().Contain("/workspace/store/KnowledgeBase/_index.jsonl");
+        bootstrap.KnowledgeBasePaths.Should().Contain("/workspace/store/KnowledgeBase/_toc.md");
+        input.Should().NotContain("Sensitive work item title", "bootstrap navigation must not embed provider bodies");
+    }
+
+    [Fact]
+    public async Task ContextReady_persists_a_host_owned_manifest_from_gatherer_roster_and_immutable_reads()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            completionSource: new StaticCompletionSource(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "gatherer-1",
+                        ThreadId = "gatherer-thread",
+                        ParentThreadId = "fake-thread",
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Completed,
+                        Name = "context-gatherer",
+                        Template = DynamicContextEvidenceValidator.GathererTemplate,
+                    },
+                ])
+            )
+        );
+        var run = fixture.SeedRun(withEngagementRound: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = JsonSerializer.Serialize(
+            SemanticManifest(run.EngagementRoundId!.Value)
+        );
+        fixture.StoreToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        fixture.StoreToolResult(run, "source-pr", "mcp__github__get_pull_request", "pull-request:118");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextManifestArtifactKind)
+            .Should()
+            .ContainSingle()
+            .Subject;
+        var manifest = JsonSerializer.Deserialize<DynamicContextManifest>(artifact.Payload)!;
+        manifest.ThreadId.Should().Be("fake-thread");
+        manifest.GathererAgentId.Should().Be("gatherer-1");
+        manifest.GathererTemplate.Should().Be(DynamicContextEvidenceValidator.GathererTemplate);
+        manifest.ScopedReadCount.Should().Be(2);
+        manifest
+            .Claims.Should()
+            .ContainSingle()
+            .Which.SourceRecordRefs.Should()
+            .ContainSingle()
+            .Which.SourceRecordId.Should()
+            .Be("source-file", "only reads containing a claim citation may source that claim");
+    }
+
+    [Fact]
+    public async Task ContextReady_with_a_valid_dynamic_manifest_replays_without_dispatching_again()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun(withEngagementRound: true);
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        var source = fixture.StoreToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        SeedDynamicManifest(
+            fixture,
+            run,
+            "context-parent-thread",
+            [new AuditSourceReference(source.Id, source.ContentSha256)]
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).Should().ContainSingle();
+        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextManifestArtifactKind).Should().ContainSingle();
+        fixture.Factory.CreatedAgents.Should().BeEmpty("a complete same-identity replay has nothing to gather");
+    }
+
+    [Fact]
+    public async Task ContextReady_regathers_when_a_persisted_manifest_cites_a_missing_source_record()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            completionSource: new StaticCompletionSource(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "gatherer-1",
+                        ThreadId = "gatherer-thread",
+                        ParentThreadId = "fake-thread",
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Completed,
+                        Name = "context-gatherer",
+                        Template = DynamicContextEvidenceValidator.GathererTemplate,
+                    },
+                ])
+            )
+        );
+        var run = fixture.SeedRun(withEngagementRound: true);
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        SeedDynamicManifest(
+            fixture,
+            run,
+            "context-parent-thread",
+            [new AuditSourceReference("source-missing", new string('a', 64))]
+        );
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = JsonSerializer.Serialize(
+            SemanticManifest(run.EngagementRoundId!.Value)
+        );
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*two*scoped read*");
+        fixture.Factory.CreatedAgents.Should().ContainSingle("an unverifiable manifest must be gathered again");
+    }
+
+    [Fact]
+    public async Task Reviewed_refuses_a_persisted_manifest_whose_source_hash_no_longer_matches()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun(withEngagementRound: true);
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        var source = fixture.StoreToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        SeedDynamicManifest(
+            fixture,
+            run,
+            "context-parent-thread",
+            [new AuditSourceReference(source.Id, new string('b', 64))]
+        );
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*matching*context-manifest*");
+        fixture.Factory.CreatedAgents.Should().BeEmpty();
+        fixture.GitHubPublisher.ListCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Reviewed_refuses_a_persisted_manifest_with_a_failed_required_scope()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun(withEngagementRound: true);
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        var source = fixture.StoreToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        SeedDynamicManifest(
+            fixture,
+            run,
+            "context-parent-thread",
+            [new AuditSourceReference(source.Id, source.ContentSha256)],
+            [
+                new DynamicContextGap("repository", DynamicContextGapState.Linked, true, null),
+                new DynamicContextGap("head", DynamicContextGapState.Failed, true, "head unavailable"),
+                new DynamicContextGap("workspace", DynamicContextGapState.Linked, true, null),
+            ]
+        );
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*matching*context-manifest*");
+        fixture.Factory.CreatedAgents.Should().BeEmpty();
+        fixture.GitHubPublisher.ListCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Reviewed_resumes_the_context_manifest_parent_before_any_review_checkpoint_exists()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun(withEngagementRound: true);
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        SeedDynamicManifest(fixture, run, "context-parent-thread");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .GitHubPublisher.ListCallCount.Should()
+            .Be(0, "the resumed review must not repeat the PR-level discussion discovery captured by the manifest");
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("context-parent-thread", "review must continue the context conversation rather than rediscover the PR");
+    }
+
+    [Fact]
+    public async Task Reviewed_threads_the_engagement_and_round_scope_to_the_review_loop()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun(withEngagementRound: true);
+        var round = fixture.Store.GetEngagementRound(run.EngagementRoundId!.Value)!;
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        SeedDynamicManifest(fixture, run, "context-parent-thread");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.ReviewScopes.Should()
+            .OnlyContain(scope =>
+                scope
+                == new ReviewConversationScope(
+                    round.PrEngagementId.ToString(CultureInfo.InvariantCulture),
+                    round.Id.ToString(CultureInfo.InvariantCulture)
+                )
+            );
+    }
+
+    [Fact]
+    public async Task Reviewed_threads_a_collect_only_host_derived_publication_scope_to_the_parent_loop()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun(withEngagementRound: true);
+        var round = fixture.Store.GetEngagementRound(run.EngagementRoundId!.Value)!;
+        await fixture.Executor.ExecuteStageAsync(
+            ReviewStage.ContextReady,
+            run with
+            {
+                EngagementRoundId = null,
+            },
+            CancellationToken.None
+        );
+        SeedDynamicManifest(fixture, run, "context-parent-thread");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.ReviewPublicationScopes.Should()
+            .OnlyContain(scope =>
+                scope
+                == new ReviewPublicationConversationScope(round.Id, "github", run.RepoId, run.PrId, run.HeadSha, false)
+            );
     }
 
     [Fact]
@@ -3632,6 +4041,51 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// that seeds a mismatch isolates the single discriminator it is about. (No workspace preparer is wired on
     /// this ctor, so the hosted workspace id is null here, as it is in every other test on this fixture.)
     /// </summary>
+    private static void SeedDynamicManifest(
+        Fixture fixture,
+        ReviewRun run,
+        string threadId,
+        IReadOnlyList<AuditSourceReference>? sources = null,
+        IReadOnlyList<DynamicContextGap>? gaps = null
+    ) =>
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextManifestArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ContextManifestArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new DynamicContextManifest(
+                        DynamicContextManifest.SchemaVersion,
+                        run.EngagementRoundId!.Value,
+                        threadId,
+                        "gatherer-1",
+                        DynamicContextEvidenceValidator.GathererTemplate,
+                        2,
+                        sources is null
+                            ? []
+                            :
+                            [
+                                new DynamicContextClaim(
+                                    "claim-1",
+                                    "The changed file is part of this pull request.",
+                                    ["file:src/Foo.cs"],
+                                    sources
+                                ),
+                            ],
+                        gaps
+                            ??
+                            [
+                                new DynamicContextGap("repository", DynamicContextGapState.Linked, true, null),
+                                new DynamicContextGap("head", DynamicContextGapState.Linked, true, null),
+                                new DynamicContextGap("workspace", DynamicContextGapState.Linked, true, null),
+                            ]
+                    )
+                ),
+            }
+        );
+
     private static ReviewLifecycleIdentity LifecycleOf(
         Fixture fixture,
         ReviewRun run,
@@ -3640,7 +4094,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         string? workspaceId = null,
         string? modelId = null,
         bool toolAssisted = false,
-        long? contextGeneration = null
+        long? contextGeneration = null,
+        long? contextManifestGeneration = null
     ) =>
         new(
             modality,
@@ -3650,6 +4105,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             toolAssisted,
             contextGeneration
                 ?? fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind)?.Id
+                ?? 0,
+            contextManifestGeneration
+                ?? fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextManifestArtifactKind)?.Id
                 ?? 0
         );
 
@@ -3809,7 +4267,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
             IReviewCommentPublisher[]? publishersOverride = null,
-            AdoWorkItemContextReader? workItemContextReader = null
+            AdoWorkItemContextReader? workItemContextReader = null,
+            IReviewSubAgentCompletionSource? completionSource = null
         ) =>
             new(
                 loggerFactory,
@@ -3817,9 +4276,85 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 options,
                 diffResult: null,
                 publishersOverride,
-                completionSource: null,
+                completionSource,
                 workItemContextReader
             );
+
+        public AuditSourceRecord StoreToolResult(ReviewRun run, string recordId, string toolName, string result)
+        {
+            var roundId = run.EngagementRoundId!.Value;
+            var engagementId = Store.GetEngagementRound(roundId)!.PrEngagementId.ToString(CultureInfo.InvariantCulture);
+            var toolCallId = $"call-{recordId}";
+            var functionArgs = toolName switch
+            {
+                "Read" => """{"file_path":"/workspace/target/src/Foo.cs"}""",
+                "mcp__github__get_issue" => """{"owner":"achieveai","repo":"LmDotnetTools","issue_number":117}""",
+                "mcp__github__get_pull_request" => """{"owner":"achieveai","repo":"LmDotnetTools","pull_number":118}""",
+                "mcp__azure-devops__getWorkItemById" => """{"id":1234}""",
+                _ => "{}",
+            };
+            var callContent = AuditMessageSerializer.SerializeMessage(
+                new ToolCallMessage
+                {
+                    ToolCallId = toolCallId,
+                    FunctionName = toolName,
+                    FunctionArgs = functionArgs,
+                    Role = Role.Assistant,
+                }
+            );
+            _ = Store.StoreAuditRecord(
+                new ModelTurnAuditRecord(
+                    $"{recordId}-call",
+                    new MultiTurnAuditScope(engagementId, roundId.ToString(CultureInfo.InvariantCulture)),
+                    "gatherer-thread",
+                    "gather-run-1",
+                    "gather-generation-1",
+                    null,
+                    Store.ListAuditRecordsForRound(roundId).Count + 1,
+                    MultiTurnAuditRecordTypes.ModelResponse,
+                    "assistant",
+                    "claude-opus-5",
+                    "anthropic",
+                    callContent,
+                    AuditMessageSerializer.ComputeSha256(callContent),
+                    callContent.Length,
+                    AuditCaptureOutcome.Complete,
+                    null,
+                    DateTimeOffset.UtcNow
+                )
+            );
+
+            var content = AuditMessageSerializer.SerializeMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = toolName,
+                    Result = result,
+                    Role = Role.User,
+                }
+            );
+            return Store.StoreAuditRecord(
+                new ModelTurnAuditRecord(
+                    recordId,
+                    new MultiTurnAuditScope(engagementId, roundId.ToString(CultureInfo.InvariantCulture)),
+                    "gatherer-thread",
+                    "gather-run-1",
+                    "gather-generation-1",
+                    null,
+                    Store.ListAuditRecordsForRound(roundId).Count + 1,
+                    MultiTurnAuditRecordTypes.ToolResult,
+                    "user",
+                    "claude-opus-5",
+                    "anthropic",
+                    content,
+                    AuditMessageSerializer.ComputeSha256(content),
+                    content.Length,
+                    AuditCaptureOutcome.Complete,
+                    null,
+                    DateTimeOffset.UtcNow
+                )
+            );
+        }
 
         public ReviewRun SeedRun(
             string watermark = "wm-1",
@@ -3827,7 +4362,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             string? prAuthor = null,
             string? modelId = null,
             string? prTitle = null,
-            string? prDescription = null
+            string? prDescription = null,
+            bool withEngagementRound = false,
+            long priorObservationBoundary = 0
         )
         {
             var repoId = Store.EnsureRepo(
@@ -3840,6 +4377,55 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                     RepoStableId = "repo-stable-1",
                 }
             );
+            long? engagementRoundId = null;
+            if (withEngagementRound)
+            {
+                var watermarkAt = new DateTimeOffset(2026, 9, 2, 1, 2, 3, TimeSpan.Zero);
+                var activity = new ProviderActivityWatermark(_repoProvider, watermarkAt, watermark);
+                var engagement = Store.CreateOrGetEngagement(
+                    new PrEngagement(
+                        0,
+                        repoId,
+                        _repoProvider,
+                        "118",
+                        PrLifecycleState.Open,
+                        "head-sha",
+                        "base-sha",
+                        null,
+                        activity,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        watermarkAt
+                    )
+                );
+                engagementRoundId = Store
+                    .TryAdmitRound(
+                        new EngagementRound(
+                            0,
+                            engagement.Id,
+                            EngagementRoundIntent.CodeReview,
+                            EngagementRoundStatus.Pending,
+                            "head-sha",
+                            "base-sha",
+                            null,
+                            activity,
+                            priorObservationBoundary,
+                            null,
+                            0,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null
+                        )
+                    )!
+                    .Id;
+            }
+
             return Store.CreateOrGetReviewRun(
                 new ReviewRun
                 {
@@ -3851,6 +4437,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                     ReviewKind = "full",
                     VariantId = "primary",
                     Mode = mode,
+                    EngagementRoundId = engagementRoundId,
                     Stage = ReviewStage.Discovered,
                     WorkflowStatus = WorkflowStatus.Running,
                     PrLifecycleState = PrLifecycleState.Open,

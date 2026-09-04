@@ -226,6 +226,21 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void CreateDiscussionProfile_externalizes_the_one_turn_parent_publication_contract()
+    {
+        var profile = DaemonAgentFactory.CreateDiscussionProfile();
+
+        profile.Id.Should().Be(DaemonAgentFactory.DiscussionProfileId);
+        profile.Name.Should().Be("Discussion Follow-up Agent");
+        profile.SystemPrompt.Should().Contain("one turn");
+        profile.SystemPrompt.Should().Contain("Do not start or repeat a code review");
+        profile.SystemPrompt.Should().Contain("parent-only typed publication operations");
+        profile.SystemPrompt.Should().Contain("discussion-decision");
+        profile.EnabledBuiltInTools.Should().BeEmpty();
+        profile.EnabledTools.Should().BeNull();
+    }
+
+    [Fact]
     public void CreateVariantProfile_carries_the_variant_prompt_and_keeps_the_same_tool_gating()
     {
         // P4.2 — the prompt/skill axis of an A/B comparison feeds the profile; the model and the

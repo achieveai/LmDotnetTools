@@ -324,10 +324,12 @@ public sealed class FindingsPersistenceTests
                 "diff",
                 new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
             );
-        var host = new FakeSandboxCommandRunner().OnArgvContains(
-            "rev-parse review/lmdotnettools-118",
-            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
-        );
+        var host = new FakeSandboxCommandRunner()
+            .OnArgvContains("remote get-url origin", new SandboxCommandResult(0, $"{ReviewBotRepoUrl}\n", string.Empty))
+            .OnArgvContains(
+                "rev-parse review/lmdotnettools-118",
+                new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+            );
         var hostFileSystem = new FakeSandboxFileSystem()
             .Seed("/host/reviewbot/README.md", "# ReviewBot")
             .Seed("/host/reviewbot/PRs/.gitkeep", string.Empty)
@@ -343,7 +345,7 @@ public sealed class FindingsPersistenceTests
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = ReviewBotRepoUrl },
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
-            hostRetention: new HostRetentionWorkspace(host, hostFileSystem, "/host/reviewbot"),
+            hostRetention: new HostRetentionWorkspace(host, hostFileSystem, "/host/reviewbot", ReviewBotRepoUrl),
             completionSource: new ScriptedRoster(SpecialistNode()),
             transcriptSource: new ScriptedTranscripts(SpecialistTranscript)
         );

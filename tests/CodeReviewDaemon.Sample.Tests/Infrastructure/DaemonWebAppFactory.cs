@@ -10,6 +10,24 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// </summary>
 public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
 {
+    private readonly bool _enableReviewAuditIngestion;
+    private readonly bool _enableTypedReviewPublication;
+    private readonly string? _reviewBridgeSecret;
+    private readonly IReadOnlyDictionary<string, string?> _settings;
+
+    public DaemonWebAppFactory(
+        bool enableReviewAuditIngestion = false,
+        string? reviewBridgeSecret = null,
+        bool enableTypedReviewPublication = false,
+        IReadOnlyDictionary<string, string?>? settings = null
+    )
+    {
+        _enableReviewAuditIngestion = enableReviewAuditIngestion;
+        _enableTypedReviewPublication = enableTypedReviewPublication;
+        _reviewBridgeSecret = reviewBridgeSecret;
+        _settings = settings ?? new Dictionary<string, string?>();
+    }
+
     private readonly string _tokenStoreDir = Path.Combine(
         Path.GetTempPath(),
         "codereviewdaemon-tests",
@@ -29,6 +47,18 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
         // Isolate the orchestration store (it migrates SQLite at construction) to a throwaway file so
         // booting the host for a test never touches a developer's review.db beside the binary.
         builder.UseSetting("CodeReviewDaemon:DatabasePath", _databasePath);
+        builder.UseSetting("CodeReviewDaemon:EnableReviewAuditIngestion", _enableReviewAuditIngestion.ToString());
+        builder.UseSetting("CodeReviewDaemon:EnableTypedReviewPublication", _enableTypedReviewPublication.ToString());
+        if (_reviewBridgeSecret is not null)
+        {
+            builder.UseSetting("CodeReviewDaemon:ReviewBridgeSecret", _reviewBridgeSecret);
+        }
+
+        foreach (var (key, value) in _settings)
+        {
+            builder.UseSetting(key, value);
+        }
+
         // The daemon requires S2S mode and a base URL to boot (in-process path removed). A fake URL
         // satisfies the guard — these tests never exercise the S2S client, only the route surface.
         builder.UseSetting("CodeReviewDaemon:UseS2SReviewAgent", "true");

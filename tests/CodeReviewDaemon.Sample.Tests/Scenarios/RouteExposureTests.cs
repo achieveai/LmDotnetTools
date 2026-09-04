@@ -38,6 +38,55 @@ public sealed class RouteExposureTests
         patterns.Should().BeEquivalentTo([WebhookPattern, DiscoveryPattern]);
     }
 
+    [Fact]
+    public void Audit_routes_are_mapped_only_when_ingestion_is_enabled()
+    {
+        using var factory = new DaemonWebAppFactory(
+            enableReviewAuditIngestion: true,
+            reviewBridgeSecret: "route-exposure-secret"
+        );
+
+        var patterns = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        patterns
+            .Should()
+            .BeEquivalentTo([
+                WebhookPattern,
+                DiscoveryPattern,
+                "api/review-audit/records/{recordId}",
+                "api/review-audit/records/{recordId}/chunks/{chunkIndex}",
+                "api/review-audit/records/{recordId}/complete",
+                "api/review-audit/rounds/{roundId:long}/status",
+            ]);
+    }
+
+    [Fact]
+    public void Publication_route_is_mapped_only_when_typed_publication_is_enabled()
+    {
+        using var factory = new DaemonWebAppFactory(
+            reviewBridgeSecret: "route-exposure-secret",
+            enableTypedReviewPublication: true
+        );
+
+        var patterns = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        patterns
+            .Should()
+            .BeEquivalentTo([
+                WebhookPattern,
+                DiscoveryPattern,
+                "api/review-publication/rounds/{roundId:long}/actions/{operation}",
+            ]);
+    }
+
     [Theory]
     [InlineData(WebhookPattern)]
     [InlineData(DiscoveryPattern)]

@@ -2,7 +2,9 @@ using System.Net;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
+using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -27,6 +29,10 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     private readonly TempSqliteDatabase _db = new();
     private readonly ReviewStore _store;
     private readonly List<HttpClient> _clients = [];
+    private readonly string _poolRoot = Path.Combine(
+        Path.GetTempPath(),
+        "crd-retention-pool-" + Guid.NewGuid().ToString("N")
+    );
 
     public DeepLinkRetentionSweeperTests() => _store = new ReviewStore(_db.ConnectionString);
 
@@ -39,6 +45,14 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
 
         _store.Dispose();
         _db.Dispose();
+        try
+        {
+            Directory.Delete(_poolRoot, true);
+        }
+        catch
+        {
+            // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
+        }
     }
 
     [Fact]
@@ -109,6 +123,47 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     }
 
     [Fact]
+    public async Task A_logically_released_conversation_expires_without_resolving_its_slot_claim()
+    {
+        var runId = SeedRun();
+        var slotPath = Path.Combine(_poolRoot, "review-slot-0");
+        var claimId = _store.AppendReviewSlotClaim(runId, slotPath);
+        var intentId = _store.AppendReviewProvisionIntent(claimId, runId);
+        _store.AssociateReviewProvisionIntent(intentId, "thread-owned");
+        _store.TrackRunHostedConversation(runId, "thread-owned", "Review PR #222", Now - TimeSpan.FromHours(25));
+        _store.MarkHostedConversationReleased("thread-owned", Now - TimeSpan.FromHours(24));
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.Method == HttpMethod.Delete,
+            _ => new HttpResponseMessage(HttpStatusCode.NoContent)
+        );
+
+        await NewSweeper(handler).SweepAsync(CancellationToken.None);
+
+        handler
+            .Requests.Should()
+            .ContainSingle()
+            .Which.Uri.ToString()
+            .Should()
+            .EndWith("api/conversations/thread-owned");
+        AllLedgerRows().Should().BeEmpty("retention owns the deep-link row after logical disablement");
+        var unresolved = _store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        unresolved.Id.Should().Be(claimId);
+        unresolved.SlotHostPath.Should().Be(Path.GetFullPath(slotPath));
+        unresolved.Intents.Should().ContainSingle().Which.ThreadId.Should().Be("thread-owned");
+
+        var restartedPool = new ReviewSlotPool(
+            1,
+            _poolRoot,
+            "scratch",
+            NullLogger<ReviewSlotPool>.Instance,
+            slotDirPrefix: "review-slot-",
+            quarantinedHostPaths: [unresolved.SlotHostPath]
+        );
+        var replacement = await restartedPool.LeaseAsync(CancellationToken.None);
+        replacement.Index.Should().Be(1, "retention does not prove that the old backend mount is quiescent");
+    }
+
+    [Fact]
     public void Re_recording_a_thread_keeps_the_first_mint_so_the_clock_cannot_be_restarted()
     {
         var minted = Now - TimeSpan.FromHours(25);
@@ -146,6 +201,36 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
             NullLogger<DeepLinkRetentionSweeper>.Instance,
             new FrozenTimeProvider(Now)
         );
+
+    private long SeedRun()
+    {
+        var repoId = _store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+            }
+        );
+        return _store
+            .CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "222",
+                    HeadSha = "head",
+                    BaseSha = "base",
+                    TriggerWatermark = "watermark",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "post",
+                    Stage = ReviewStage.ContextReady,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            )
+            .Id;
+    }
 
     private LmStreamingS2SClient NewClient(FakeHttpMessageHandler handler)
     {

@@ -30,7 +30,12 @@ public sealed class GatewaySkillSupportGateTests
         var store = new ReviewStore(db.ConnectionString);
         var factory = new FakeReviewAgentLoopFactory();
         var probe = new FakeGatewaySkillProbe(
-            new GatewaySkillSupport(HasReviewSkill: false, ReviewerAgentCount: 16, MarketplaceErrors: [])
+            new GatewaySkillSupport(
+                HasReviewSkill: false,
+                HasContextGatherer: true,
+                ReviewerAgentCount: 16,
+                MarketplaceErrors: []
+            )
         );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, factory, S2SOptions(), probe, lifetime);
@@ -59,7 +64,12 @@ public sealed class GatewaySkillSupportGateTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var probe = new FakeGatewaySkillProbe(
-            new GatewaySkillSupport(HasReviewSkill: true, ReviewerAgentCount: 0, MarketplaceErrors: [])
+            new GatewaySkillSupport(
+                HasReviewSkill: true,
+                HasContextGatherer: true,
+                ReviewerAgentCount: 0,
+                MarketplaceErrors: []
+            )
         );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), S2SOptions(), probe, lifetime);
@@ -83,6 +93,7 @@ public sealed class GatewaySkillSupportGateTests
         var probe = new FakeGatewaySkillProbe(
             new GatewaySkillSupport(
                 HasReviewSkill: false,
+                HasContextGatherer: false,
                 ReviewerAgentCount: 0,
                 MarketplaceErrors: ["gb-plugins: clone failed: authentication required"]
             )
@@ -113,7 +124,12 @@ public sealed class GatewaySkillSupportGateTests
         var store = new ReviewStore(db.ConnectionString);
         var factory = new FakeReviewAgentLoopFactory();
         var probe = new FakeGatewaySkillProbe(
-            new GatewaySkillSupport(HasReviewSkill: true, ReviewerAgentCount: 16, MarketplaceErrors: [])
+            new GatewaySkillSupport(
+                HasReviewSkill: true,
+                HasContextGatherer: true,
+                ReviewerAgentCount: 16,
+                MarketplaceErrors: []
+            )
         );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, factory, S2SOptions(), probe, lifetime);
@@ -190,7 +206,7 @@ public sealed class GatewaySkillSupportGateTests
     {
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, 0, []));
+        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, false, 0, []));
         var executor = BuildExecutor(
             store,
             new FakeReviewAgentLoopFactory(),
@@ -212,7 +228,7 @@ public sealed class GatewaySkillSupportGateTests
     {
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, 0, []));
+        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, false, 0, []));
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(
             store,
@@ -238,7 +254,7 @@ public sealed class GatewaySkillSupportGateTests
     {
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, 0, []));
+        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, false, 0, []));
         var lifetime = new RecordingHostLifetime();
         var options = new CodeReviewDaemonOptions { RequireSkillSupport = true };
         var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), options, probe, lifetime);

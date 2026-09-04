@@ -102,6 +102,58 @@ public class RunLifecycleEmissionTests
     }
 
     [Fact]
+    public async Task Metadata_cancellation_after_terminalization_still_publishes_completion()
+    {
+        await using var agent = new LifecycleProbeAgent(
+            "thread-1",
+            updateMetadata: _ => throw new OperationCanceledException("provider metadata cancelled")
+        );
+        await using var subscription = agent.SubscribeAsync().GetAsyncEnumerator();
+        var waiting = subscription.MoveNextAsync().AsTask();
+        var assignment = await agent.StartAsync();
+
+        await agent.CompleteAsync(assignment);
+
+        (await waiting.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        subscription
+            .Current.Should()
+            .BeOfType<RunCompletedMessage>()
+            .Which.CompletedRunId.Should()
+            .Be(assignment.RunId);
+    }
+
+    [Fact]
+    public async Task Completion_does_not_broadcast_until_metadata_persistence_finishes()
+    {
+        var metadataStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseMetadata = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var agent = new LifecycleProbeAgent(
+            "thread-1",
+            updateMetadata: async _ =>
+            {
+                metadataStarted.TrySetResult();
+                await releaseMetadata.Task;
+            }
+        );
+        await using var subscription = agent.SubscribeAsync().GetAsyncEnumerator();
+        var waiting = subscription.MoveNextAsync().AsTask();
+        var assignment = await agent.StartAsync();
+
+        var completing = agent.CompleteAsync(assignment);
+        await metadataStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        waiting.IsCompleted.Should().BeFalse();
+
+        releaseMetadata.TrySetResult();
+        await completing;
+        (await waiting.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        subscription
+            .Current.Should()
+            .BeOfType<RunCompletedMessage>()
+            .Which.CompletedRunId.Should()
+            .Be(assignment.RunId);
+    }
+
+    [Fact]
     public async Task CompletingTwice_EmitsRunCompletedOnce()
     {
         var (agent, publisher, _) = CreateWiredAgent("thread-1");
@@ -422,6 +474,7 @@ public class RunLifecycleEmissionTests
     private sealed class LifecycleProbeAgent : MultiTurnAgentBase
     {
         private readonly bool _startRunOnLoop;
+        private readonly Func<CancellationToken, Task>? _updateMetadata;
         private readonly TaskCompletionSource<string> _loopRunStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
@@ -431,11 +484,13 @@ public class RunLifecycleEmissionTests
             string threadId,
             MultiTurnLifecycleServices? services = null,
             IConversationStore? store = null,
-            bool startRunOnLoop = true
+            bool startRunOnLoop = true,
+            Func<CancellationToken, Task>? updateMetadata = null
         )
             : base(threadId, store: store, lifecycleServices: services)
         {
             _startRunOnLoop = startRunOnLoop;
+            _updateMetadata = updateMetadata;
         }
 
         public bool LifecycleEnabled => Lifecycle.IsEnabled;
@@ -458,6 +513,9 @@ public class RunLifecycleEmissionTests
         public Task<string> WaitForLoopRunAsync() => _loopRunStarted.Task;
 
         public Task WaitForLoopEntryAsync() => _loopEntered.Task;
+
+        protected override Task UpdateMetadataAsync(CancellationToken ct) =>
+            _updateMetadata is null ? base.UpdateMetadataAsync(ct) : _updateMetadata(ct);
 
         protected override async Task RunLoopAsync(CancellationToken ct)
         {

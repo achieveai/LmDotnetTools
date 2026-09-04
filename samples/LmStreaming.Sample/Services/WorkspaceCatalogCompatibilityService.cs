@@ -55,15 +55,28 @@ public sealed record WorkspaceCompatibilityResult(
 /// <summary>Validates persisted workspace marketplace selections against the active gateway.</summary>
 public sealed class WorkspaceCatalogCompatibilityService
 {
+    /// <summary>How long a catalog that WAS read is reused before the gateway is asked again.</summary>
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
-    private readonly IMarketplaceCatalogClient _client;
+
+    /// <summary>
+    /// How long a catalog that could NOT be read is reused. Far shorter than <see cref="CacheDuration"/>,
+    /// and the asymmetry is the point: the cache exists to spare a healthy gateway repeated reads, but
+    /// holding a FAILURE for the same full window does the opposite — it keeps answering "unavailable"
+    /// from memory for half a minute after the gateway has come up, so a cold start that finally
+    /// succeeded is still refused by everything that asks in the next 30 seconds. Not zero, because a
+    /// gateway that is genuinely down should not be hammered once per request either.
+    /// </summary>
+    private static readonly TimeSpan UnavailableCacheDuration = TimeSpan.FromSeconds(3);
+
     private readonly SandboxGatewayOptions _gatewayOptions;
     private readonly TimeProvider _timeProvider;
-    private readonly object _sync = new();
-    private Task<CatalogSnapshot>? _refresh;
-    private CatalogSnapshot? _cached;
+    private readonly CatalogCache _browseCatalog;
+    private readonly CatalogCache _sessionCatalog;
 
-    /// <param name="client">Gateway marketplace catalog reader.</param>
+    /// <param name="client">
+    /// Best-effort gateway catalog reader, used by <see cref="EvaluateAsync"/> and the mutation
+    /// validations. Its short transport budget is a feature for a browse and a listing.
+    /// </param>
     /// <param name="gatewayOptions">
     /// Required, not optional: it supplies the configured default marketplace list that an empty
     /// workspace selection falls back to. Defaulting it to <c>null</c> would let a deployment that
@@ -71,21 +84,39 @@ public sealed class WorkspaceCatalogCompatibilityService
     /// mode would be accepting plugins the session then refuses, which is worse than a compile error.
     /// </param>
     /// <param name="timeProvider">Clock for the catalog cache; defaults to the system clock.</param>
+    /// <param name="sessionClient">
+    /// Optional longer-budget reader for <see cref="ValidateForSessionAsync"/> only — see
+    /// <see cref="ISessionMarketplaceCatalogClient"/> for why the fail-closed path must not share the
+    /// browse client's fail-fast timeout. Null (nothing registered) keeps the pre-split behaviour of
+    /// reading the catalog through <paramref name="client"/>, cache and all: the two share ONE cache in
+    /// that case, so a host that wires only the browse client sees no extra gateway traffic.
+    /// </param>
     public WorkspaceCatalogCompatibilityService(
         IMarketplaceCatalogClient client,
         SandboxGatewayOptions gatewayOptions,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        ISessionMarketplaceCatalogClient? sessionClient = null
     )
     {
-        _client = client ?? throw new ArgumentNullException(nameof(client));
+        ArgumentNullException.ThrowIfNull(client);
         _gatewayOptions = gatewayOptions ?? throw new ArgumentNullException(nameof(gatewayOptions));
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _browseCatalog = new CatalogCache(client, _timeProvider);
+
+        // Separate caches, not just separate clients: a browse that gave up after 10 seconds must not
+        // publish "unavailable" into the window a 2-minute session check is still legitimately waiting
+        // out, and a session check must not be answered from a snapshot the browse budget produced.
+        _sessionCatalog = sessionClient is null ? _browseCatalog : new CatalogCache(sessionClient, _timeProvider);
     }
 
     public async Task<WorkspaceCompatibilityResult> EvaluateAsync(Workspace workspace, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(workspace);
-        var catalog = await GetCatalogAsync(ct);
+        return Evaluate(workspace, await _browseCatalog.GetAsync(ct).ConfigureAwait(false));
+    }
+
+    private static WorkspaceCompatibilityResult Evaluate(Workspace workspace, CatalogSnapshot catalog)
+    {
         if (!catalog.Available)
         {
             // Unavailable, never Incompatible: no marketplace was compared against anything, so the
@@ -121,11 +152,24 @@ public sealed class WorkspaceCatalogCompatibilityService
             DirectoryRelPath = "validation",
             Marketplaces = marketplaces,
         };
-        await ValidateResultAsync(await EvaluateAsync(probe, ct));
+
+        // The BROWSE client, deliberately: a mutation is an interactive request a person is waiting on,
+        // so it keeps the fail-fast budget it always had. Only starting a session is worth waiting a
+        // cold gateway out for.
+        var snapshot = await _browseCatalog.GetAsync(ct).ConfigureAwait(false);
+        Validate(Evaluate(probe, snapshot), snapshot);
     }
 
-    public async Task ValidateForSessionAsync(Workspace workspace, CancellationToken ct = default) =>
-        await ValidateResultAsync(await EvaluateAsync(workspace, ct));
+    /// <summary>
+    /// Fail-closed validation for STARTING a sandbox session, read through
+    /// <see cref="ISessionMarketplaceCatalogClient"/> when one is registered.
+    /// </summary>
+    public async Task ValidateForSessionAsync(Workspace workspace, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        var snapshot = await _sessionCatalog.GetAsync(ct).ConfigureAwait(false);
+        Validate(Evaluate(workspace, snapshot), snapshot);
+    }
 
     /// <summary>
     /// Validates an explicit, non-null plugin selection against the current catalog. A <c>null</c>
@@ -136,8 +180,8 @@ public sealed class WorkspaceCatalogCompatibilityService
     /// The marketplace aliases selected on the workspace being mutated, or an EMPTY list to mean "no
     /// preference", which resolves to the configured global default exactly as session creation does.
     /// Every selected plugin must sit under one of the resolved aliases: the cached catalog is
-    /// deliberately fetched UNFILTERED (see <see cref="RefreshAsync"/>) and is shared process-wide, so
-    /// a plugin identity can be known to the gateway while belonging to a marketplace this workspace
+    /// deliberately fetched UNFILTERED (see <c>CatalogCache.RefreshAsync</c>) and is shared process-wide,
+    /// so a plugin identity can be known to the gateway while belonging to a marketplace this workspace
     /// does not run under. Membership of the catalog alone is therefore not sufficient.
     /// </param>
     /// <param name="pluginSelection">
@@ -192,7 +236,7 @@ public sealed class WorkspaceCatalogCompatibilityService
             throw new MalformedWorkspacePluginSelectionException(malformed);
         }
 
-        var snapshot = await GetCatalogAsync(ct).ConfigureAwait(false);
+        var snapshot = await _browseCatalog.GetAsync(ct).ConfigureAwait(false);
 
         if (snapshot.PluginFilteringSupported != true)
         {
@@ -239,86 +283,212 @@ public sealed class WorkspaceCatalogCompatibilityService
     /// session, where acting on an unchecked marketplace set is what actually breaks. Distinguishing
     /// the values is what lets those two callers disagree without either of them guessing.
     /// </summary>
-    private static Task ValidateResultAsync(WorkspaceCompatibilityResult result)
+    /// <param name="result">The evaluated compatibility answer to act on.</param>
+    /// <param name="snapshot">
+    /// The snapshot <paramref name="result"/> was derived from, carried alongside it purely for its
+    /// <see cref="CatalogSnapshot.Cause"/>. The result's <c>Error</c> is a flattened string; the cause is
+    /// the exception chain that says WHICH failure this was — a transport timeout reads identically to a
+    /// rejected credential once it has been reduced to text, and the caller that turns this into a 503
+    /// logs the exception, not the sentence.
+    /// </param>
+    private static void Validate(WorkspaceCompatibilityResult result, CatalogSnapshot snapshot)
     {
-        return result.Compatibility switch
+        switch (result.Compatibility)
         {
-            WorkspaceCompatibility.Compatible => Task.CompletedTask,
-            WorkspaceCompatibility.Incompatible => Task.FromException(
-                new UnsupportedWorkspaceMarketplacesException(
+            case WorkspaceCompatibility.Compatible:
+                return;
+            case WorkspaceCompatibility.Incompatible:
+                throw new UnsupportedWorkspaceMarketplacesException(
                     result.UnsupportedMarketplaces,
                     result.AvailableMarketplaces
-                )
-            ),
-            _ => Task.FromException(
-                new WorkspaceGatewayCatalogUnavailableException(
-                    result.Error ?? "Sandbox gateway marketplace catalog is unavailable."
-                )
-            ),
-        };
+                );
+            case WorkspaceCompatibility.Unavailable:
+            default:
+                throw new WorkspaceGatewayCatalogUnavailableException(
+                    result.Error ?? "Sandbox gateway marketplace catalog is unavailable.",
+                    snapshot.Cause
+                );
+        }
     }
 
-    private async Task<CatalogSnapshot> GetCatalogAsync(CancellationToken ct)
+    /// <summary>
+    /// One client's view of the gateway catalog: a single-flight refresh plus the last snapshot it
+    /// produced. Instance-per-client rather than static so the browse and session readers, which have
+    /// different transport budgets and therefore different notions of "unavailable", cannot answer each
+    /// other's questions.
+    /// </summary>
+    private sealed class CatalogCache(IMarketplaceCatalogClient client, TimeProvider timeProvider)
     {
-        Task<CatalogSnapshot> refresh;
-        lock (_sync)
-        {
-            var now = _timeProvider.GetUtcNow();
-            if (_cached is not null && now - _cached.FetchedAt < CacheDuration)
-            {
-                return _cached;
-            }
+        /// <summary>
+        /// The most transports ONE <see cref="GetAsync"/> call may spend. Two, not unbounded: a caller that
+        /// resumes onto a snapshot which has already aged out has to be able to ask again, or a single
+        /// unlucky interleaving pins an answer nobody can refresh. But every extra attempt adds a WHOLE
+        /// transport budget to the SAME caller's wait, and the session client's budget is minutes — so the
+        /// bound is a constant, and the unavailable path (below) does not spend even this one.
+        /// </summary>
+        private const int MaxTransportsPerCall = 2;
 
-            _refresh ??= RefreshAsync();
-            refresh = _refresh;
-        }
+        private readonly object _sync = new();
+        private Task<CatalogSnapshot>? _refresh;
+        private CatalogSnapshot? _cached;
 
-        CatalogSnapshot value;
-        try
+        public async Task<CatalogSnapshot> GetAsync(CancellationToken ct)
         {
-            value = await refresh.WaitAsync(ct);
-        }
-        finally
-        {
-            lock (_sync)
+            for (var transports = 1; ; transports++)
             {
-                if (ReferenceEquals(_refresh, refresh) && refresh.IsCompleted)
+                Task<CatalogSnapshot> refresh;
+                lock (_sync)
                 {
-                    _refresh = null;
+                    var now = timeProvider.GetUtcNow();
+                    if (_cached is { } cached && IsFresh(cached, now))
+                    {
+                        return cached;
+                    }
+
+                    // Drop an in-flight slot that can no longer produce an answer worth having BEFORE
+                    // joining it. A waiter whose token fired leaves its refresh behind (the `finally`
+                    // below only clears a slot that had already completed), so without this the next
+                    // caller silently adopts that abandoned flight — and adopts its verdict too, whether
+                    // that is a snapshot fetched minutes ago, an exception, or a cancellation. "The
+                    // gateway said so, some time before anyone was listening" is not a current read.
+                    if (_refresh is { } pending && !CanStillAnswer(pending, now))
+                    {
+                        _refresh = null;
+                    }
+
+                    _refresh ??= RefreshAsync();
+                    refresh = _refresh;
+                }
+
+                CatalogSnapshot value;
+                try
+                {
+                    value = await refresh.WaitAsync(ct);
+                }
+                finally
+                {
+                    lock (_sync)
+                    {
+                        if (ReferenceEquals(_refresh, refresh) && refresh.IsCompleted)
+                        {
+                            _refresh = null;
+                        }
+                    }
+                }
+
+                lock (_sync)
+                {
+                    // Freshness is decided HERE, at the boundary the value is actually handed back, not at
+                    // the boundary the wait began on. Between those two points a whole transport budget
+                    // elapsed, so the check at the top of the loop says nothing about what this caller is
+                    // about to act on.
+                    var now = timeProvider.GetUtcNow();
+
+                    // Publication is monotonic in FetchedAt. An unconditional assignment lets a caller
+                    // that waited out a long budget overwrite a NEWER snapshot published while it waited,
+                    // which does not merely lose information — it re-authorizes whatever the newer
+                    // snapshot had just refused, for the newer snapshot's whole remaining window.
+                    if (_cached is null || value.FetchedAt >= _cached.FetchedAt)
+                    {
+                        _cached = value;
+                    }
+
+                    // …and the same ordering decides what THIS caller returns. A newer snapshot that is
+                    // still fresh is the current answer for everyone, including the caller holding an
+                    // older one: returning the older success here would be a session starting on a
+                    // catalog the cache has already recorded as unreadable.
+                    if (
+                        _cached is { } published
+                        && !ReferenceEquals(published, value)
+                        && published.FetchedAt > value.FetchedAt
+                        && IsFresh(published, now)
+                    )
+                    {
+                        return published;
+                    }
+
+                    if (IsFresh(value, now))
+                    {
+                        return value;
+                    }
+
+                    // An UNAVAILABLE snapshot that aged out while this caller was resuming fails closed
+                    // for THIS caller and stops there. Asking again would cost a second full transport
+                    // budget on top of the one that just expired — the session budget is minutes, so the
+                    // caller that was already waiting the longest is the one made to wait twice as long,
+                    // and the daemon stage deadline it is racing does not double with it. The snapshot is
+                    // deliberately caller-local (never published): publishing an "unavailable" that no
+                    // transport produced would suppress the real re-read for the whole unavailable
+                    // window. Recovery is the next caller's job, and the next caller finds no fresh cache
+                    // and goes to the gateway.
+                    if (!value.Available)
+                    {
+                        return Expired(value, now);
+                    }
+                }
+
+                // An aged-out SUCCESS may be revalidated, bounded by MaxTransportsPerCall. It is the one
+                // case where asking again is cheap in the way the unavailable case is not: the flight
+                // that produced it returned an answer rather than burning its budget to a timeout.
+                if (transports >= MaxTransportsPerCall)
+                {
+                    return value;
                 }
             }
         }
 
-        lock (_sync)
-        {
-            _cached = value;
-        }
-        return value;
-    }
+        /// <summary>
+        /// Whether joining <paramref name="refresh"/> can still yield a usable snapshot. A flight that is
+        /// still running can (that is the single-flight this cache exists for). A COMPLETED one can only
+        /// if it completed normally and its snapshot is still within its own window — a faulted or
+        /// cancelled flight has no answer at all, and a stale one has an answer that expired unobserved.
+        /// </summary>
+        private static bool CanStillAnswer(Task<CatalogSnapshot> refresh, DateTimeOffset now) =>
+            !refresh.IsCompleted || (refresh.Status == TaskStatus.RanToCompletion && IsFresh(refresh.Result, now));
 
-    private async Task<CatalogSnapshot> RefreshAsync()
-    {
-        try
+        private static bool IsFresh(CatalogSnapshot snapshot, DateTimeOffset now) =>
+            now - snapshot.FetchedAt < MaxAge(snapshot);
+
+        /// <summary>
+        /// The caller-local fail-closed answer for a snapshot that aged out before it could be returned.
+        /// Keeps the original error and cause — that is still the reason the gateway could not be read —
+        /// but is stamped now so no caller mistakes it for a current successful check.
+        /// </summary>
+        private static CatalogSnapshot Expired(CatalogSnapshot stale, DateTimeOffset now) =>
+            new(false, [], stale.Error, now, [], null, stale.Cause);
+
+        private static TimeSpan MaxAge(CatalogSnapshot snapshot) =>
+            snapshot.Available ? CacheDuration : UnavailableCacheDuration;
+
+        private async Task<CatalogSnapshot> RefreshAsync()
         {
-            var catalog = await _client.GetCatalogAsync(null, CancellationToken.None);
-            var aliases = catalog.Marketplaces.Select(x => x.Alias).Distinct(StringComparer.Ordinal).ToArray();
-            var availablePlugins = catalog
-                .Marketplaces.SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))
-                .ToArray();
-            return new CatalogSnapshot(
-                true,
-                aliases,
-                null,
-                _timeProvider.GetUtcNow(),
-                availablePlugins,
-                catalog.Capabilities.PluginFiltering
-            );
-        }
-        catch (MarketplaceCatalogUnavailableException ex)
-        {
-            // An unreachable gateway advertises nothing, so the capability stays null and any explicit
-            // plugin selection fails closed rather than being validated against an empty catalog.
-            return new CatalogSnapshot(false, [], ex.Message, _timeProvider.GetUtcNow(), [], null);
+            try
+            {
+                var catalog = await client.GetCatalogAsync(null, CancellationToken.None);
+                var aliases = catalog.Marketplaces.Select(x => x.Alias).Distinct(StringComparer.Ordinal).ToArray();
+                var availablePlugins = catalog
+                    .Marketplaces.SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))
+                    .ToArray();
+                return new CatalogSnapshot(
+                    true,
+                    aliases,
+                    null,
+                    timeProvider.GetUtcNow(),
+                    availablePlugins,
+                    catalog.Capabilities.PluginFiltering
+                );
+            }
+            catch (MarketplaceCatalogUnavailableException ex)
+            {
+                // An unreachable gateway advertises nothing, so the capability stays null and any explicit
+                // plugin selection fails closed rather than being validated against an empty catalog.
+                //
+                // The failed snapshot REPLACES a previously good one rather than falling back to it. That
+                // is deliberate: this snapshot is what authorizes an explicit plugin selection, and
+                // "the catalog said so 40 seconds ago" is not permission. Fast re-read
+                // (UnavailableCacheDuration), not stale trust, is how a recovered gateway gets back in.
+                return new CatalogSnapshot(false, [], ex.Message, timeProvider.GetUtcNow(), [], null, ex);
+            }
         }
     }
 
@@ -328,7 +498,8 @@ public sealed class WorkspaceCatalogCompatibilityService
         string? Error,
         DateTimeOffset FetchedAt,
         IReadOnlyList<PluginRef> AvailablePlugins,
-        bool? PluginFilteringSupported
+        bool? PluginFilteringSupported,
+        Exception? Cause = null
     );
 }
 
@@ -347,8 +518,14 @@ public sealed class UnsupportedWorkspaceMarketplacesException : InvalidOperation
 
 public sealed class WorkspaceGatewayCatalogUnavailableException : InvalidOperationException
 {
-    public WorkspaceGatewayCatalogUnavailableException(string message)
-        : base(message) { }
+    /// <param name="message">The flattened reason, echoed to the caller as the 503 detail.</param>
+    /// <param name="innerException">
+    /// The failure that made the catalog unreadable, kept because the message alone cannot tell a cold
+    /// gateway apart from a rejected credential once both have been reduced to a sentence. Optional so
+    /// existing single-argument call sites keep compiling.
+    /// </param>
+    public WorkspaceGatewayCatalogUnavailableException(string message, Exception? innerException = null)
+        : base(message, innerException) { }
 }
 
 /// <summary>

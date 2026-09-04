@@ -35,6 +35,9 @@ internal static class DaemonAgentFactory
     /// <summary>Stable id of the at-close per-developer review-feedback profile.</summary>
     public const string ReviewFeedbackExtractionProfileId = "review-feedback-extraction";
 
+    /// <summary>Stable id of the unchanged-head discussion follow-up profile.</summary>
+    public const string DiscussionProfileId = "discussion-follow-up";
+
     private static readonly IPromptReader Prompts = new PromptReader(
         typeof(DaemonAgentFactory).Assembly,
         "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml"
@@ -228,6 +231,19 @@ internal static class DaemonAgentFactory
             Id: ReviewFeedbackExtractionProfileId,
             Name: "Review Feedback Extraction Agent",
             SystemPrompt: Prompts.GetPrompt("review-feedback-extraction").PromptText(),
+            EnabledTools: null,
+            EnabledBuiltInTools: []
+        );
+
+    /// <summary>
+    /// Builds the one-turn unchanged-head discussion profile. Publication remains available only through
+    /// the parent conversation's typed operations; no provider or built-in tool is granted here.
+    /// </summary>
+    public static AgentProfile CreateDiscussionProfile() =>
+        new(
+            Id: DiscussionProfileId,
+            Name: "Discussion Follow-up Agent",
+            SystemPrompt: Prompts.GetPrompt("discussion-follow-up").PromptText(),
             EnabledTools: null,
             EnabledBuiltInTools: []
         );

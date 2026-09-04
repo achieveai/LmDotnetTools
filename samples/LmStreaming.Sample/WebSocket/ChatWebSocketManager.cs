@@ -161,6 +161,17 @@ public sealed class ChatWebSocketManager
         var connection = _connectionRegistry.Register(threadId, webSocket);
         try
         {
+            var metadata = await _conversationStore.LoadMetadataAsync(threadId, cancellationToken);
+            if (Controllers.ConversationsController.IsWorkspaceSessionReleased(metadata))
+            {
+                _logger.LogWarning(
+                    "WebSocket connection for thread {ThreadId} rejected because its workspace session was released",
+                    threadId
+                );
+                await SendWorkspaceSessionReleasedAsync(connection, recordWriter, cancellationToken);
+                return;
+            }
+
             // Replay any in-flight deferred-auth prompts: a webhook call may already be held
             // waiting for sign-in (it broadcast auth_required before this client connected).
             foreach (var pending in _pendingAuth.Snapshot())
@@ -1037,14 +1048,25 @@ public sealed class ChatWebSocketManager
         string? ownerUserId
     )
     {
-        if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
-        {
-            await HandleClientToolResultAsync(connection, agent, threadId, json, ct);
-            return;
-        }
-
         try
         {
+            var metadata = await _conversationStore.LoadMetadataAsync(threadId, ct);
+            if (Controllers.ConversationsController.IsWorkspaceSessionReleased(metadata))
+            {
+                _logger.LogWarning(
+                    "Message on an open WebSocket for thread {ThreadId} rejected because its workspace session was released",
+                    threadId
+                );
+                await SendWorkspaceSessionReleasedAsync(connection, recordWriter: null, ct);
+                return;
+            }
+
+            if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
+            {
+                await HandleClientToolResultAsync(connection, agent, threadId, json, ct);
+                return;
+            }
+
             var request = JsonSerializer.Deserialize<ChatRequest>(json, _jsonOptions);
             if (request?.Message == null)
             {
@@ -1613,6 +1635,39 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Sub-agent unavailable",
+            CancellationToken.None
+        );
+    }
+
+    private async Task SendWorkspaceSessionReleasedAsync(
+        RegisteredWebSocketConnection connection,
+        StreamWriter? recordWriter,
+        CancellationToken ct
+    )
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = Controllers.ConversationsController.WorkspaceSessionReleasedCode,
+            ["message"] =
+                "This conversation's workspace session has been released. Its transcript remains readable, but it can no longer be continued.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Workspace session released",
             CancellationToken.None
         );
     }

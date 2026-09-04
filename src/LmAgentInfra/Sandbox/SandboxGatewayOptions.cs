@@ -12,6 +12,29 @@ public sealed class SandboxGatewayOptions
     public const string SectionName = "SandboxGateway";
 
     /// <summary>
+    /// Budget used when nothing is configured, and the value an out-of-range setting falls back to.
+    /// Chosen to outlast a COLD gateway's first catalog read (which has to start a container before it
+    /// can answer, and takes many times a warm read) with headroom, because the caller that spends this
+    /// budget REFUSES the session when it runs out.
+    /// </summary>
+    public const int DefaultSessionCatalogTimeoutSeconds = 120;
+
+    /// <summary>
+    /// Floor for <see cref="SessionCatalogTimeoutSeconds"/>. Below this the fail-closed session check
+    /// would give up sooner than the best-effort browse client it was deliberately split away from —
+    /// strictly worse than not configuring it at all, and the exact failure this budget exists to
+    /// prevent, re-entered through configuration.
+    /// </summary>
+    public const int MinSessionCatalogTimeoutSeconds = 10;
+
+    /// <summary>
+    /// Ceiling for <see cref="SessionCatalogTimeoutSeconds"/>. Session creation BLOCKS on this read, so
+    /// an unbounded budget would let one misconfigured line hang every create against a gateway that is
+    /// simply dead — the failure would look like a hung app rather than a refused session.
+    /// </summary>
+    public const int MaxSessionCatalogTimeoutSeconds = 300;
+
+    /// <summary>
     /// Base URL of the gateway the app connects to. Uses the IPv4 loopback literal (not
     /// <c>localhost</c>) on purpose: the gateway binds <c>BIND_ADDRESS=127.0.0.1</c> (IPv4 only),
     /// while <c>localhost</c> resolves to <c>::1</c> first on Windows — the IPv6 connect then
@@ -236,4 +259,40 @@ public sealed class SandboxGatewayOptions
 
     /// <summary>Host path to the MITM CA private key (the egress proxy's <c>CA_KEY_PATH</c>).</summary>
     public string? CaKeyPath { get; set; }
+
+    /// <summary>
+    /// Seconds allowed for the marketplace-catalog read that FAIL-CLOSED session validation performs,
+    /// as written by an operator. Not the session's own lifetime and not the best-effort browse budget:
+    /// this one bounds a single <c>GET /api/v1/marketplaces/preview</c> whose failure REFUSES the
+    /// session, which is why it deserves to outlast a cold gateway rather than fail fast like a browse.
+    /// <para>
+    /// Read through <see cref="SessionCatalogTimeout"/>, never directly — that property is what applies
+    /// the bounds. Values outside
+    /// <see cref="MinSessionCatalogTimeoutSeconds"/>..<see cref="MaxSessionCatalogTimeoutSeconds"/> are
+    /// clamped rather than rejected, and zero/negative (what a missing or blank binding produces)
+    /// resolves to <see cref="DefaultSessionCatalogTimeoutSeconds"/>. Clamping, not throwing, because a
+    /// mistyped timeout must not stop the app from booting — availability knobs are not containment
+    /// invariants, unlike the workspace guards in <see cref="ResolveWorkspace(string)"/>.
+    /// </para>
+    /// </summary>
+    public int SessionCatalogTimeoutSeconds { get; set; } = DefaultSessionCatalogTimeoutSeconds;
+
+    /// <summary>
+    /// <see cref="SessionCatalogTimeoutSeconds"/> as a bounded <see cref="TimeSpan"/> — the only form
+    /// callers should use. Centralised here (like <c>WebhookOptions.CallbackBaseUrl</c>) so every caller
+    /// agrees on the effective budget even if a future operator misconfigures the raw seconds.
+    /// </summary>
+    public TimeSpan SessionCatalogTimeout =>
+        TimeSpan.FromSeconds(
+            SessionCatalogTimeoutSeconds <= 0
+                // Absent (a missing/blank binding lands here as 0) or meaningless. Falls back to the
+                // DEFAULT rather than the floor: an operator who configured nothing must not silently
+                // end up on the tightest budget the type allows.
+                ? DefaultSessionCatalogTimeoutSeconds
+                : Math.Clamp(
+                    SessionCatalogTimeoutSeconds,
+                    MinSessionCatalogTimeoutSeconds,
+                    MaxSessionCatalogTimeoutSeconds
+                )
+        );
 }

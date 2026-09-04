@@ -39,6 +39,20 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public bool EnableReviewFeedbackAgent { get; init; }
 
+    /// <summary>
+    /// When <c>false</c> (default) a merged close records its verified outcome rows but writes no
+    /// <c>outcome.json</c> / <c>OUTCOME.md</c> report. Enabling it turns on report rendering only;
+    /// promotion stays governed by <see cref="EnableMergedLearningPromotion"/>.
+    /// </summary>
+    public bool EnableMergedCloseReporting { get; init; }
+
+    /// <summary>
+    /// When <c>false</c> (default) merged close performs no Knowledge Base or developer-learning
+    /// promotion and records every pass as <c>Declined(feature_disabled)</c>. Writing durable learning
+    /// into a shared store is an operator decision, never a default.
+    /// </summary>
+    public bool EnableMergedLearningPromotion { get; init; }
+
     /// <summary>When <c>false</c> (default) the judge agent does not run (no grading is persisted).</summary>
     public bool EnableJudgeAgent { get; init; }
 
@@ -54,6 +68,41 @@ internal sealed class CodeReviewDaemonOptions
     /// registers the ADO OAuth provider and (later) its poller.
     /// </summary>
     public bool EnableAdoProvider { get; init; }
+
+    /// <summary>
+    /// Enables the private, authenticated source-audit ingestion routes. Disabled by default. Enabling it
+    /// requires a non-empty <see cref="ReviewBridgeSecret"/> or startup fails closed.
+    /// </summary>
+    public bool EnableReviewAuditIngestion { get; init; }
+
+    /// <summary>
+    /// Enables the private, authenticated typed review-publication route. Disabled by default. Live provider
+    /// effects remain separately gated per action; enabling this route alone stays collect-only.
+    /// </summary>
+    public bool EnableTypedReviewPublication { get; init; }
+
+    /// <summary>
+    /// Enables durable observation through the PR engagement coordinator. Disabled by default, so the legacy
+    /// direct review path remains unchanged until an operator opts into coordinator rollout.
+    /// </summary>
+    public bool EnableEngagementCoordinator { get; init; }
+
+    /// <summary>
+    /// Allows eligible coordinator decisions to invoke round executors. Disabled by default and enabled only
+    /// after cutover seeding has completed.
+    /// </summary>
+    public bool EnableEngagementEligibility { get; init; }
+
+    /// <summary>
+    /// Records coordinator decisions without invoking round executors. Disabled by default.
+    /// </summary>
+    public bool EnableEngagementShadowMode { get; init; }
+
+    /// <summary>
+    /// Shared credential presented only in the <c>X-Review-Bridge-Auth</c> header by the trusted review host.
+    /// It is never included in audit content or logs.
+    /// </summary>
+    public string ReviewBridgeSecret { get; init; } = "";
 
     /// <summary>
     /// Allow-list of <c>owner/repo</c> (GitHub) or <c>org/project/repo</c> (ADO) identifiers the daemon

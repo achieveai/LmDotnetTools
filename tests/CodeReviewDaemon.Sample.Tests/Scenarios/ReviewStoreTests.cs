@@ -455,6 +455,34 @@ public sealed class ReviewStoreTests
             .BeNull("a PR no run recorded an author for stays unknown rather than borrowing another PR's");
     }
 
+    [Fact]
+    public void GetPrAuthor_prefers_a_known_identity_and_never_borrows_from_another_pr()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-1", PrAuthor = null });
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrId = "118",
+                HeadSha = "sha-2",
+                PrAuthor = "octocat",
+            }
+        );
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrId = "200",
+                HeadSha = "sha-3",
+                PrAuthor = "other-author",
+            }
+        );
+
+        store.GetPrAuthor(repoId, "118").Should().Be("octocat");
+        store.GetPrAuthor(repoId, "missing").Should().BeNull();
+    }
+
     // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
 
     private const int CurrentCursorVersion = 1;
@@ -804,6 +832,173 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
 
         store.GetRepo(9999).Should().BeNull();
+    }
+
+    // ── restart-safe slot ownership ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Slot_claims_and_provision_intents_survive_reopen_and_preserve_every_attempt()
+    {
+        using var db = new TempSqliteDatabase();
+        long runId;
+        long claimId;
+        long associatedIntentId;
+        long ambiguousIntentId;
+        long retractedIntentId;
+        var retractedAt = DateTimeOffset.Parse("2026-09-03T02:00:00Z");
+        var slotPath = Path.Combine(Path.GetTempPath(), "review-slot-0");
+        using (var store = new ReviewStore(db.ConnectionString))
+        {
+            runId = SeedRun(store);
+            claimId = store.AppendReviewSlotClaim(runId, slotPath);
+            associatedIntentId = store.AppendReviewProvisionIntent(claimId, runId);
+            ambiguousIntentId = store.AppendReviewProvisionIntent(claimId, runId);
+            retractedIntentId = store.AppendReviewProvisionIntent(claimId, runId);
+            store.AssociateReviewProvisionIntent(associatedIntentId, "thread-known");
+            store.RetractReviewProvisionIntent(retractedIntentId, retractedAt);
+        }
+
+        using var reopened = new ReviewStore(db.ConnectionString);
+        var claim = reopened.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        claim.Id.Should().Be(claimId);
+        claim.ReviewRunId.Should().Be(runId);
+        claim.SlotHostPath.Should().Be(slotPath);
+        claim.Intents.Should().HaveCount(3);
+        claim.Intents.Single(intent => intent.Id == associatedIntentId).ThreadId.Should().Be("thread-known");
+        claim
+            .Intents.Single(intent => intent.Id == ambiguousIntentId)
+            .ThreadId.Should()
+            .BeNull("a known earlier thread does not prove a later provision returned no unrecorded thread");
+        claim
+            .Intents.Single(intent => intent.Id == retractedIntentId)
+            .RetractedAt.Should()
+            .Be(retractedAt, "definitive pre-mint refusal history must survive process restart");
+    }
+
+    [Fact]
+    public void Provision_intent_association_and_retraction_are_mutually_exclusive_first_writes()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        var claimId = store.AppendReviewSlotClaim(runId, Path.Combine(Path.GetTempPath(), "review-slot-0"));
+        var associatedIntentId = store.AppendReviewProvisionIntent(claimId, runId);
+        var retractedIntentId = store.AppendReviewProvisionIntent(claimId, runId);
+        var associatedAt = DateTimeOffset.Parse("2026-09-03T01:00:00Z");
+        var retractedAt = DateTimeOffset.Parse("2026-09-03T02:00:00Z");
+
+        store.AssociateReviewProvisionIntent(associatedIntentId, "thread-known", associatedAt);
+        store.RetractReviewProvisionIntent(retractedIntentId, retractedAt);
+
+        var associateAgain = () =>
+            store.AssociateReviewProvisionIntent(associatedIntentId, "thread-overwrite", associatedAt.AddHours(1));
+        var retractAssociated = () => store.RetractReviewProvisionIntent(associatedIntentId, retractedAt);
+        var associateRetracted = () =>
+            store.AssociateReviewProvisionIntent(retractedIntentId, "thread-impossible", associatedAt);
+        var retractAgain = () => store.RetractReviewProvisionIntent(retractedIntentId, retractedAt.AddHours(1));
+
+        associateAgain.Should().Throw<InvalidOperationException>();
+        retractAssociated.Should().Throw<InvalidOperationException>();
+        associateRetracted.Should().Throw<InvalidOperationException>();
+        retractAgain.Should().Throw<InvalidOperationException>();
+        var intents = store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject.Intents;
+        intents
+            .Single(intent => intent.Id == associatedIntentId)
+            .Should()
+            .BeEquivalentTo(
+                new
+                {
+                    ThreadId = "thread-known",
+                    AssociatedAt = associatedAt,
+                    RetractedAt = (DateTimeOffset?)null,
+                }
+            );
+        intents
+            .Single(intent => intent.Id == retractedIntentId)
+            .Should()
+            .BeEquivalentTo(
+                new
+                {
+                    ThreadId = (string?)null,
+                    AssociatedAt = (DateTimeOffset?)null,
+                    RetractedAt = (DateTimeOffset?)retractedAt,
+                }
+            );
+    }
+
+    [Fact]
+    public void Slot_claim_paths_are_persisted_as_absolute_allocator_addresses()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var relativePath = Path.Combine("review-pool", "slot-0");
+
+        _ = store.AppendReviewSlotClaim(SeedRun(store), relativePath);
+
+        store
+            .ListUnresolvedReviewSlotClaims()
+            .Should()
+            .ContainSingle()
+            .Subject.SlotHostPath.Should()
+            .Be(Path.GetFullPath(relativePath));
+    }
+
+    [Fact]
+    public void Hosted_conversation_disablement_is_first_write_wins_and_separate_from_backend_release()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        store.TrackRunHostedConversation(
+            runId,
+            "thread-disabled",
+            "Disabled review",
+            DateTimeOffset.Parse("2026-09-02T10:00:00Z")
+        );
+
+        store.MarkHostedConversationReleased("thread-disabled", DateTimeOffset.Parse("2026-09-02T11:00:00Z"));
+        store.MarkHostedConversationReleased("thread-disabled", DateTimeOffset.Parse("2026-09-02T12:00:00Z"));
+
+        var conversation = store.ListRunHostedConversations(runId).Should().ContainSingle().Subject;
+        conversation.ConversationReleasedAt.Should().Be(DateTimeOffset.Parse("2026-09-02T11:00:00Z"));
+        conversation.ReleasedAt.Should().BeNull("disabling sends and remounts does not prove backend teardown");
+    }
+
+    [Fact]
+    public void Backend_release_remains_distinguishable_and_also_records_conversation_disablement()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        store.TrackRunHostedConversation(
+            runId,
+            "thread-quiescent",
+            "Quiescent review",
+            DateTimeOffset.Parse("2026-09-02T10:00:00Z")
+        );
+
+        store.MarkHostedWorkspaceReleased("thread-quiescent", DateTimeOffset.Parse("2026-09-02T11:00:00Z"));
+
+        var conversation = store.ListRunHostedConversations(runId).Should().ContainSingle().Subject;
+        conversation.ReleasedAt.Should().Be(DateTimeOffset.Parse("2026-09-02T11:00:00Z"));
+        conversation
+            .ConversationReleasedAt.Should()
+            .Be(
+                DateTimeOffset.Parse("2026-09-02T11:00:00Z"),
+                "positive backend release also means the conversation cannot remount"
+            );
+    }
+
+    [Fact]
+    public void A_resolved_claim_is_not_returned_as_startup_quarantine()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var claimId = store.AppendReviewSlotClaim(SeedRun(store), Path.Combine(Path.GetTempPath(), "review-slot-0"));
+
+        store.ResolveReviewSlotClaim(claimId, DateTimeOffset.Parse("2026-09-02T12:00:00Z"));
+
+        store.ListUnresolvedReviewSlotClaims().Should().BeEmpty();
     }
 
     // ── concurrency ───────────────────────────────────────────────────────────────────────────────

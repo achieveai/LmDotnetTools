@@ -1,27 +1,19 @@
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
-using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Git;
-using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
-/// <summary>
-/// <see cref="PrLifecycleSweeper"/> resolves each reviewed PR's persistent notes branch when the PR
-/// closes: merges into the store default branch when merged (if enabled), deletes when abandoned, and
-/// leaves an open PR's branch untouched. Drives a REAL <see cref="ReviewBranchManager"/> over a
-/// <see cref="FakeSandboxCommandRunner"/> (mirroring <c>ReviewBranchManagerTests</c>) so the recorded git
-/// commands prove the sweeper wired the right op for each lifecycle, plus fake <c>Func</c> seams for the
-/// PR list and lifecycle lookup the sweeper is composed from.
-/// </summary>
 public sealed class PrLifecycleSweeperTests : LoggingTestBase
 {
     private const string RepoRoot = "/host/reviewbot";
-    private const string DefaultBranch = "main";
 
     private static readonly RepoIdentity TargetRepo = new()
     {
@@ -40,62 +32,309 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         IReadOnlyList<ReviewedPr> reviewedPrs,
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
         ReviewBranchManager branchManager,
-        bool mergeNotesBranchOnClose,
-        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null
+        Func<ReviewedPr, PrLifecycle, CancellationToken, Task<EngagementDecision>>? observeTerminalAsync = null,
+        Func<EngagementDecision, CancellationToken, Task>? runRoundAsync = null,
+        Func<ReviewedPr, PrLifecycle, CancellationToken, Task<EngagementDecision>>? reconcileTerminalAsync = null
     ) =>
         new(
             _ => Task.FromResult(reviewedPrs),
             getPrLifecycleAsync,
             branchManager,
             RepoRoot,
-            DefaultBranch,
-            mergeNotesBranchOnClose,
             LoggerFactory.CreateLogger<PrLifecycleSweeper>(),
-            extractKnowledgeAsync
+            observeTerminalAsync,
+            runRoundAsync,
+            reconcileTerminalAsync
         );
 
     private static ReviewedPr Pr(string prId, string branch) => new(TargetRepo, "github", prId, branch);
 
+    /// <summary>
+    /// A stand-in substep success. The executor refuses to checkpoint a completion with no artifact, so
+    /// even a test double has to hand back bytes that identify the substep it stands in for.
+    /// </summary>
+    private static MergedCloseSubstepResult CompletedWithArtifact(MergedCloseSubstep substep) =>
+        MergedCloseSubstepResult.Completed(
+            new MergedCloseSubstepReceipt(System.Text.Encoding.UTF8.GetBytes($"artifact:{substep}"))
+        );
+
     [Fact]
-    public async Task Sweep_merges_the_notes_branch_of_a_merged_PR_when_merge_on_close_is_enabled()
+    public async Task Sweep_reports_merge_to_the_engagement_coordinator_without_merging_the_notes_branch()
     {
         var runner = new FakeSandboxCommandRunner();
         var pr = Pr("42", "review/widgets-42");
+        var observations = new List<(string PrId, PrLifecycle Lifecycle)>();
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
+            (observed, lifecycle, _) =>
+            {
+                observations.Add((observed.PrId, lifecycle));
+                return Task.FromResult(
+                    new EngagementDecision(
+                        EngagementDecisionKind.AdmitMergedClose,
+                        RoundId: 7,
+                        "merge_bypasses_cooldown"
+                    )
+                );
+            }
         );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        // The sweeper-store clone has no local notes branch, so the merge must fetch and target the
-        // remote-tracking ref (origin/<branch>), not the bare name.
-        commands.Should().Contain(a => a.Contains("fetch origin"));
-        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-        commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
+        observations.Should().Equal(("42", PrLifecycle.Merged));
+        runner.Commands.Should().BeEmpty("Archived is the only merged-close substep allowed to merge notes");
     }
 
     [Fact]
-    public async Task Sweep_deletes_the_notes_branch_of_an_abandoned_PR_and_never_merges()
+    public async Task Sweep_executes_an_admitted_merged_close_and_persists_its_first_substep()
     {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("43", "review/widgets-43");
+        using var database = new TempSqliteDatabase();
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 9, 2, 10, 0, 0, TimeSpan.Zero));
+        using var store = new ReviewStore(database.ConnectionString, time);
+        var repoId = store.EnsureRepo(TargetRepo);
+        var snapshot = ProviderEngagementSnapshot.Create(
+            PrLifecycleState.Merged,
+            "head-42",
+            "base-42",
+            new ProviderActivityWatermark("github", time.GetUtcNow(), "merge:42"),
+            []
+        );
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = "42",
+            HeadSha = snapshot.HeadSha,
+            BaseSha = snapshot.BaseSha,
+            TriggerWatermark = snapshot.LatestObserved.StableObjectId,
+            LifecycleState = snapshot.Lifecycle,
+        };
+        var coordinator = new PrEngagementCoordinator(store, time);
+        var executor = new MergedCloseRoundExecutor(
+            store,
+            (_, substep, _) =>
+                Task.FromResult(
+                    substep == MergedCloseSubstep.CandidatesBuilt
+                        ? MergedCloseSubstepResult.Retry
+                        : CompletedWithArtifact(substep)
+                ),
+            time
+        );
+        var runner = new EngagementRoundRunner(
+            store,
+            [executor],
+            new CodeReviewDaemonOptions { MaxDurableRetryAttempts = 3 },
+            time,
+            LoggerFactory.CreateLogger<EngagementRoundRunner>()
+        );
+        var pr = Pr("42", "review/widgets-42");
         var sweeper = CreateSweeper(
             [pr],
-            (_, _) => Task.FromResult(PrLifecycle.Abandoned),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(new FakeSandboxCommandRunner()),
+            (_, _, ct) => coordinator.ObserveAsync(repoId, TargetRepo, descriptor, snapshot, ct),
+            (decision, ct) => runner.RunAsync(decision, null, ct)
         );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"branch -D {pr.Branch}"));
-        commands.Should().Contain(a => a.Contains($"push origin --delete {pr.Branch}"));
-        commands.Should().NotContain(a => a.Contains("merge "));
+        var round = store.ListEngagementRounds(store.CreateOrGetEngagement(EngagementSeed(repoId, time)).Id).Single();
+        round.Status.Should().Be(EngagementRoundStatus.RetryPending);
+        round.GovernedFailureCount.Should().Be(1);
+        store
+            .ListAuditRecordsForRound(round.Id)
+            .Where(record => record.RecordType == MergedCloseRoundExecutor.SubstepRecordType)
+            .Select(record => record.GenerationId)
+            .Should()
+            .Equal(MergedCloseSubstep.EvidenceFrozen.ToString());
+    }
+
+    [Fact]
+    public async Task Sweep_reconciles_a_running_merged_close_after_restart_then_executes_the_same_round()
+    {
+        using var database = new TempSqliteDatabase();
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 9, 2, 10, 0, 0, TimeSpan.Zero));
+        using var store = new ReviewStore(database.ConnectionString, time);
+        var repoId = store.EnsureRepo(TargetRepo);
+        var snapshot = ProviderEngagementSnapshot.Create(
+            PrLifecycleState.Merged,
+            "head-49",
+            "base-49",
+            new ProviderActivityWatermark("github", time.GetUtcNow(), "merge:49"),
+            []
+        );
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = "49",
+            HeadSha = snapshot.HeadSha,
+            BaseSha = snapshot.BaseSha,
+            TriggerWatermark = snapshot.LatestObserved.StableObjectId,
+            LifecycleState = snapshot.Lifecycle,
+        };
+        var coordinator = new PrEngagementCoordinator(store, time);
+        var admitted = await coordinator.ObserveAsync(repoId, TargetRepo, descriptor, snapshot, CancellationToken.None);
+        store
+            .TryTransitionEngagementRound(
+                admitted.RoundId!.Value,
+                EngagementRoundStatus.Pending,
+                EngagementRoundStatus.Running,
+                time.GetUtcNow()
+            )
+            .Should()
+            .BeTrue();
+        var calls = 0;
+        var executor = new MergedCloseRoundExecutor(
+            store,
+            (_, substep, _) =>
+            {
+                calls++;
+                return Task.FromResult(
+                    substep == MergedCloseSubstep.CandidatesBuilt
+                        ? MergedCloseSubstepResult.Retry
+                        : CompletedWithArtifact(substep)
+                );
+            },
+            time
+        );
+        var runner = new EngagementRoundRunner(
+            store,
+            [executor],
+            new CodeReviewDaemonOptions { MaxDurableRetryAttempts = 3 },
+            time,
+            LoggerFactory.CreateLogger<EngagementRoundRunner>()
+        );
+        var sweeper = CreateSweeper(
+            [Pr("49", "review/widgets-49")],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(new FakeSandboxCommandRunner()),
+            (_, _, ct) => coordinator.ObserveAsync(repoId, TargetRepo, descriptor, snapshot, ct),
+            (decision, ct) => runner.RunAsync(decision, null, ct),
+            (_, _, ct) => coordinator.ReconcileAsync(repoId, TargetRepo, descriptor, snapshot, ct)
+        );
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        calls.Should().Be(2);
+        var round = store.GetEngagementRound(admitted.RoundId.Value)!;
+        round.Status.Should().Be(EngagementRoundStatus.RetryPending);
+        round.GovernedFailureCount.Should().Be(1);
+        store.ListEngagementRounds(round.PrEngagementId).Should().ContainSingle().Which.Id.Should().Be(round.Id);
+    }
+
+    [Fact]
+    public async Task Sweep_deletes_an_abandoned_branch_when_terminal_observation_fails()
+    {
+        var commandRunner = new FakeSandboxCommandRunner();
+        var pr = Pr("50", "review/widgets-50");
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Abandoned),
+            CreateBranchManager(commandRunner),
+            (_, _, _) => throw new InvalidOperationException("closed/abandoned snapshot mismatch")
+        );
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        var commands = commandRunner.Commands.Select(command => string.Join(' ', command.Argv)).ToList();
+        commands.Should().Contain(command => command.Contains($"branch -D {pr.Branch}"));
+        commands.Should().Contain(command => command.Contains($"push origin --delete {pr.Branch}"));
+    }
+
+    [Fact]
+    public async Task Sweep_parks_repeated_required_failures_without_archiving_the_notes_branch()
+    {
+        using var database = new TempSqliteDatabase();
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 9, 2, 10, 0, 0, TimeSpan.Zero));
+        using var store = new ReviewStore(database.ConnectionString, time);
+        var repoId = store.EnsureRepo(TargetRepo);
+        var snapshot = ProviderEngagementSnapshot.Create(
+            PrLifecycleState.Merged,
+            "head-48",
+            "base-48",
+            new ProviderActivityWatermark("github", time.GetUtcNow(), "merge:48"),
+            []
+        );
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = "48",
+            HeadSha = snapshot.HeadSha,
+            BaseSha = snapshot.BaseSha,
+            TriggerWatermark = snapshot.LatestObserved.StableObjectId,
+            LifecycleState = snapshot.Lifecycle,
+        };
+        var coordinator = new PrEngagementCoordinator(store, time);
+        var executor = new MergedCloseRoundExecutor(
+            store,
+            (_, _, _) => Task.FromResult(MergedCloseSubstepResult.Retry),
+            time
+        );
+        var runner = new EngagementRoundRunner(
+            store,
+            [executor],
+            new CodeReviewDaemonOptions { MaxDurableRetryAttempts = 2 },
+            time,
+            LoggerFactory.CreateLogger<EngagementRoundRunner>()
+        );
+        var commandRunner = new FakeSandboxCommandRunner();
+        var sweeper = CreateSweeper(
+            [Pr("48", "review/widgets-48")],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(commandRunner),
+            (_, _, ct) => coordinator.ObserveAsync(repoId, TargetRepo, descriptor, snapshot, ct),
+            (decision, ct) => runner.RunAsync(decision, null, ct)
+        );
+
+        await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        var engagement = store.CreateOrGetEngagement(
+            EngagementSeed(repoId, time) with
+            {
+                PrId = "48",
+                LatestHeadSha = "head-48",
+                LatestBaseSha = "base-48",
+            }
+        );
+        var round = store.ListEngagementRounds(engagement.Id).Single();
+        round.Status.Should().Be(EngagementRoundStatus.Parked);
+        round.GovernedFailureCount.Should().Be(2);
+        store
+            .ListAuditRecordsForRound(round.Id)
+            .Should()
+            .NotContain(record => record.GenerationId == MergedCloseSubstep.Archived.ToString());
+        commandRunner.Commands.Should().BeEmpty();
+    }
+
+    private static PrEngagement EngagementSeed(long repoId, FakeTimeProvider time) =>
+        new(
+            0,
+            repoId,
+            "github",
+            "42",
+            PrLifecycleState.Merged,
+            "head-42",
+            "base-42",
+            "head-42",
+            new ProviderActivityWatermark("github", time.GetUtcNow(), "merge:42"),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            time.GetUtcNow()
+        );
+
+    [Fact]
+    public async Task Sweep_preserves_a_merged_notes_branch_when_no_engagement_observer_is_configured()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("45", "review/widgets-45");
+        var sweeper = CreateSweeper([pr], (_, _) => Task.FromResult(PrLifecycle.Merged), CreateBranchManager(runner));
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        runner.Commands.Should().BeEmpty();
     }
 
     [Fact]
@@ -103,37 +342,87 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     {
         var runner = new FakeSandboxCommandRunner();
         var pr = Pr("44", "review/widgets-44");
+        var observations = 0;
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Open),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
+            (_, _, _) =>
+            {
+                observations++;
+                return Task.FromResult(new EngagementDecision(EngagementDecisionKind.None, null, "unexpected"));
+            }
         );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
+        observations.Should().Be(0);
         runner.Commands.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Sweep_leaves_the_notes_branch_of_a_merged_PR_when_merge_on_close_is_disabled()
+    public async Task Sweep_reports_abandonment_then_deletes_the_notes_branch_without_merging()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("45", "review/widgets-45");
+        var pr = Pr("43", "review/widgets-43");
+        var observations = new List<PrLifecycle>();
+        var closeExecutions = 0;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Abandoned),
+            CreateBranchManager(runner),
+            (_, lifecycle, _) =>
+            {
+                observations.Add(lifecycle);
+                return Task.FromResult(
+                    new EngagementDecision(EngagementDecisionKind.CleanupTerminal, null, "pr_abandoned")
+                );
+            },
+            (_, _) =>
+            {
+                closeExecutions++;
+                return Task.CompletedTask;
+            }
+        );
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        observations.Should().Equal(PrLifecycle.Abandoned);
+        closeExecutions.Should().Be(0, "abandoned PRs never enter the merged-close outcome pipeline");
+        var commands = runner.Commands.Select(command => string.Join(' ', command.Argv)).ToList();
+        commands.Should().Contain(command => command.Contains($"branch -D {pr.Branch}"));
+        commands.Should().Contain(command => command.Contains($"push origin --delete {pr.Branch}"));
+        commands.Should().NotContain(command => command.Contains("merge "));
+    }
+
+    [Fact]
+    public async Task Sweep_keeps_a_parked_merged_close_visible_without_merging_or_re_admitting()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("47", "review/widgets-47");
+        var observations = 0;
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: false
+            (_, _, _) =>
+            {
+                observations++;
+                return Task.FromResult(
+                    new EngagementDecision(EngagementDecisionKind.None, RoundId: 9, "merged_close_blocked")
+                );
+            }
         );
 
         await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
 
-        runner.Commands.Should().BeEmpty();
+        observations.Should().Be(2, "parked work remains durably visible on each authoritative lifecycle sweep");
+        runner.Commands.Should().BeEmpty("a parked required close output must preserve the notes branch");
     }
 
     [Fact]
-    public async Task Sweep_isolates_a_per_PR_lifecycle_lookup_failure_so_the_remaining_PRs_still_resolve()
+    public async Task Sweep_isolates_a_per_PR_lifecycle_lookup_failure_so_remaining_PRs_still_resolve()
     {
         var runner = new FakeSandboxCommandRunner();
         var failingPr = Pr("46", "review/widgets-46");
@@ -144,241 +433,14 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
                 pr.PrId == failingPr.PrId
                     ? throw new InvalidOperationException("simulated lifecycle lookup failure")
                     : Task.FromResult(PrLifecycle.Abandoned),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
+            CreateBranchManager(runner)
         );
 
         var act = () => sweeper.SweepAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync();
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"branch -D {okPr.Branch}"));
-        commands.Should().Contain(a => a.Contains($"push origin --delete {okPr.Branch}"));
-    }
-
-    [Fact]
-    public async Task Sweep_runs_knowledge_extraction_before_merging_a_merged_PR()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("42", "review/widgets-42");
-        var invokedPrs = new List<string>();
-        var runnerCommandCountAtInvocation = -1;
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) => Task.FromResult(PrLifecycle.Merged),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (p, _) =>
-            {
-                invokedPrs.Add(p.PrId);
-                // MergeToDefaultAsync's first git op is `fetch origin`; an empty command log here proves
-                // extraction ran BEFORE the merge (design §1 — extract before the notes branch merges).
-                runnerCommandCountAtInvocation = runner.Commands.Count;
-                return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
-            }
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        invokedPrs.Should().Equal("42");
-        runnerCommandCountAtInvocation.Should().Be(0);
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-        commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
-    }
-
-    [Fact]
-    public async Task Sweep_does_not_run_knowledge_extraction_for_abandoned_or_open_PRs()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var abandoned = Pr("43", "review/widgets-43");
-        var open = Pr("44", "review/widgets-44");
-        var invoked = new List<string>();
-        var sweeper = CreateSweeper(
-            [abandoned, open],
-            (p, _) => Task.FromResult(p.PrId == abandoned.PrId ? PrLifecycle.Abandoned : PrLifecycle.Open),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (p, _) =>
-            {
-                invoked.Add(p.PrId);
-                return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
-            }
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        invoked.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task Sweep_defers_the_merge_when_knowledge_extraction_throws()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("45", "review/widgets-45");
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) => Task.FromResult(PrLifecycle.Merged),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (_, _) => throw new InvalidOperationException("simulated extraction failure")
-        );
-
-        var act = () => sweeper.SweepAsync(CancellationToken.None);
-
-        // The throw is contained — it must never abort the sweep (design §6) — but it IS a failure, so the
-        // notes branch is held back for a retry instead of being merged and deleted with nothing extracted.
-        await act.Should().NotThrowAsync();
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().NotContain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-    }
-
-    [Fact]
-    public async Task Sweep_leaves_the_notes_branch_intact_when_knowledge_extraction_fails_so_the_next_sweep_retries()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("46", "review/widgets-46");
-        var lifecycleLookups = 0;
-        var attempts = 0;
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) =>
-            {
-                lifecycleLookups++;
-                return Task.FromResult(PrLifecycle.Merged);
-            },
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (_, _) =>
-            {
-                attempts++;
-                return Task.FromResult(KnowledgeExtractionOutcome.Failed);
-            }
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands
-            .Should()
-            .NotContain(
-                a => a.Contains($"merge --ff-only origin/{pr.Branch}"),
-                "merging deletes the notes branch, which would make this failed extraction permanent (defect D5)"
-            );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        lifecycleLookups.Should().Be(2, "a deferred PR is not cached as terminally resolved");
-        attempts.Should().Be(2, "the next sweep retries the extraction");
-    }
-
-    [Fact]
-    public async Task Sweep_merges_anyway_once_knowledge_extraction_has_exhausted_its_retries()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("47", "review/widgets-47");
-        var attempts = 0;
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) => Task.FromResult(PrLifecycle.Merged),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (_, _) =>
-            {
-                attempts++;
-                return Task.FromResult(KnowledgeExtractionOutcome.Failed);
-            }
-        );
-
-        // Three sweeps: two deferrals, then the cap is reached and the lifecycle proceeds regardless —
-        // extraction bounds the delay, it never blocks the lifecycle outright (design §6).
-        await sweeper.SweepAsync(CancellationToken.None);
-        await sweeper.SweepAsync(CancellationToken.None);
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        attempts.Should().Be(3, "extraction is retried up to the cap, then given up on");
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-        commands
-            .Count(a => a.Contains($"push origin {DefaultBranch}"))
-            .Should()
-            .Be(1, "the merge happens exactly once, on the sweep that hit the cap");
-    }
-
-    [Fact]
-    public async Task Sweep_merges_immediately_when_knowledge_extraction_declines()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("49", "review/widgets-49");
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) => Task.FromResult(PrLifecycle.Merged),
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true,
-            // "This PR carried no durable knowledge" is a valid outcome, not a failure — nothing to retry.
-            extractKnowledgeAsync: (_, _) => Task.FromResult(KnowledgeExtractionOutcome.Declined)
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-        commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
-    }
-
-    [Fact]
-    public async Task Sweep_does_not_re_resolve_a_merged_PR_on_a_later_sweep()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("42", "review/widgets-42");
-        var lifecycleLookups = 0;
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) =>
-            {
-                lifecycleLookups++;
-                return Task.FromResult(PrLifecycle.Merged);
-            },
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        lifecycleLookups.Should().Be(1, "a merged-and-swept branch is cached, so later sweeps skip it entirely");
-        runner
-            .Commands.Select(c => string.Join(' ', c.Argv))
-            .Count(a => a.Contains($"push origin {DefaultBranch}"))
-            .Should()
-            .Be(1, "the notes branch is merged exactly once, not re-merged every poll");
-    }
-
-    [Fact]
-    public async Task Sweep_retries_a_merged_PR_whose_merge_push_failed()
-    {
-        var runner = new FakeSandboxCommandRunner();
-        // The push never succeeds, so MergeToDefaultAsync returns false and the branch is NOT cached as done.
-        runner.OnArgvContains(
-            $"push origin {DefaultBranch}",
-            new SandboxCommandResult(1, string.Empty, "rejected: non-fast-forward")
-        );
-        var pr = Pr("48", "review/widgets-48");
-        var lifecycleLookups = 0;
-        var sweeper = CreateSweeper(
-            [pr],
-            (_, _) =>
-            {
-                lifecycleLookups++;
-                return Task.FromResult(PrLifecycle.Merged);
-            },
-            CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true
-        );
-
-        await sweeper.SweepAsync(CancellationToken.None);
-        await sweeper.SweepAsync(CancellationToken.None);
-
-        lifecycleLookups.Should().Be(2, "a failed merge is not cached, so the next sweep retries it");
+        var commands = runner.Commands.Select(command => string.Join(' ', command.Argv)).ToList();
+        commands.Should().Contain(command => command.Contains($"branch -D {okPr.Branch}"));
+        commands.Should().Contain(command => command.Contains($"push origin --delete {okPr.Branch}"));
     }
 }

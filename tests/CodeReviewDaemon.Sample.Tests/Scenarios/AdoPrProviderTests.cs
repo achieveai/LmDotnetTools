@@ -497,6 +497,155 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Engagement_snapshot_preserves_thread_ancestry_status_anchor_and_iteration_context()
+    {
+        const string pr = """
+            { "pullRequestId": 42, "status": "active", "lastUpdatedDate": "2026-09-02T12:05:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-42" },
+              "lastMergeTargetCommit": { "commitId": "base-42" } }
+            """;
+        const string threads = """
+            {
+              "value": [
+                {
+                  "id": 900,
+                  "status": "fixed",
+                  "threadContext": {
+                    "filePath": "/src/a.cs",
+                    "rightFileStart": { "line": 10, "offset": 1 },
+                    "rightFileEnd": { "line": 12, "offset": 4 }
+                  },
+                  "pullRequestThreadContext": {
+                    "iterationContext": { "firstComparingIteration": 2, "secondComparingIteration": 3 },
+                    "changeTrackingId": 44
+                  },
+                  "comments": [
+                    { "id": 1, "parentCommentId": 0, "content": "daemon root",
+                      "publishedDate": "2026-09-02T12:00:00Z", "commentType": "text",
+                      "author": { "displayName": "Review Bot" } },
+                    { "id": 2, "parentCommentId": 1, "content": "human reply",
+                      "publishedDate": "2026-09-02T12:01:00Z", "commentType": "text",
+                      "author": { "displayName": "Developer" } },
+                    { "id": 3, "parentCommentId": 1, "content": "deleted body",
+                      "publishedDate": "2026-09-02T12:02:00Z", "commentType": "text", "isDeleted": true,
+                      "author": { "displayName": "Developer" } },
+                    { "id": 4, "parentCommentId": 0, "content": "vote update",
+                      "publishedDate": "2026-09-02T12:03:00Z", "commentType": "system",
+                      "author": { "displayName": "Project Service" } }
+                  ]
+                }
+              ]
+            }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/threads", threads)
+            .OnJson(HttpMethod.Get, "/pullrequests/42", pr);
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(
+                Repo,
+                "42",
+                new ProviderActivityWatermark(
+                    "ado",
+                    new DateTimeOffset(2026, 9, 2, 11, 59, 0, TimeSpan.Zero),
+                    "seed:0"
+                ),
+                new HashSet<string>(["thread:900:comment:1"], StringComparer.Ordinal),
+                CancellationToken.None
+            );
+
+        snapshot.Lifecycle.Should().Be(PrLifecycleState.Open);
+        snapshot.HeadSha.Should().Be("head-42");
+        snapshot.BaseSha.Should().Be("base-42");
+        snapshot.ExternalActivity.Select(activity => activity.CommentId).Should().Equal("2", "3", "4");
+        var reply = snapshot.ExternalActivity[0];
+        reply.ProviderObjectId.Should().Be("thread:900:comment:2");
+        reply.ThreadId.Should().Be("900");
+        reply.ParentCommentId.Should().Be("1");
+        reply.Path.Should().Be("/src/a.cs");
+        reply.Side.Should().Be("RIGHT");
+        reply.StartLine.Should().Be(10);
+        reply.EndLine.Should().Be(12);
+        reply.Status.Should().Be("fixed");
+        reply.IterationContext.Should().Contain("secondComparingIteration");
+        reply.CreatesDiscussionDemand.Should().BeTrue();
+        snapshot.ExternalActivity[1].Kind.Should().Be(ProviderDiscussionKind.Deleted);
+        snapshot.ExternalActivity[1].CreatesDiscussionDemand.Should().BeFalse();
+        snapshot.ExternalActivity[2].Kind.Should().Be(ProviderDiscussionKind.System);
+        snapshot.ExternalActivity[2].CreatesDiscussionDemand.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_retains_the_parent_of_an_in_window_thread_reply_as_ancestor_only()
+    {
+        const string pr = """
+            { "pullRequestId": 42, "status": "active", "lastUpdatedDate": "2026-09-02T12:03:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-42" },
+              "lastMergeTargetCommit": { "commitId": "base-42" } }
+            """;
+        const string threads = """
+            { "value": [
+              { "id": 900, "status": "active", "comments": [
+                { "id": 1, "parentCommentId": 0, "content": "original question",
+                  "publishedDate": "2026-09-02T12:00:00Z", "commentType": "text",
+                  "author": { "displayName": "Developer" } },
+                { "id": 2, "parentCommentId": 1, "content": "the retry is per attempt",
+                  "publishedDate": "2026-09-02T12:02:00Z", "commentType": "text",
+                  "author": { "displayName": "Reviewer" } }
+              ] }
+            ] }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/threads", threads)
+            .OnJson(HttpMethod.Get, "/pullrequests/42", pr);
+        var after = new ProviderActivityWatermark(
+            "ado",
+            new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero),
+            "thread:900:comment:1"
+        );
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(Repo, "42", after, new HashSet<string>(), CancellationToken.None);
+
+        snapshot.ExternalActivity.Should().ContainSingle().Which.CommentId.Should().Be("2");
+        snapshot.AncestorActivity.Should().ContainSingle().Which.CommentId.Should().Be("1");
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_keeps_same_author_text_and_excludes_only_the_receipted_root_object()
+    {
+        const string pr = """
+            { "pullRequestId": 42, "status": "active", "lastUpdatedDate": "2026-09-02T12:03:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-42" },
+              "lastMergeTargetCommit": { "commitId": "base-42" } }
+            """;
+        const string threads = """
+            { "value": [
+              { "id": 900, "status": "active", "comments": [
+                { "id": 1, "parentCommentId": 0, "content": "same body", "publishedDate": "2026-09-02T12:00:00Z",
+                  "commentType": "text", "author": { "displayName": "Review Bot" } },
+                { "id": 2, "parentCommentId": 1, "content": "same body", "publishedDate": "2026-09-02T12:01:00Z",
+                  "commentType": "text", "author": { "displayName": "Review Bot" } }
+              ] }
+            ] }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/threads", threads)
+            .OnJson(HttpMethod.Get, "/pullrequests/42", pr);
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(
+                Repo,
+                "42",
+                after: null,
+                new HashSet<string>(["thread:900:comment:1"], StringComparer.Ordinal),
+                CancellationToken.None
+            );
+
+        snapshot.ExternalActivity.Should().ContainSingle().Which.CommentId.Should().Be("2");
+    }
+
+    [Fact]
     public async Task GetPrState_maps_an_active_pr_to_open()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
@@ -508,6 +657,472 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
         state.Should().Be(PrLifecycle.Open);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_returns_current_iteration_change_identity_without_inventing_line_ranges()
+    {
+        const string iterations = """
+            {
+              "value": [
+                { "id": 1, "sourceRefCommit": { "commitId": "head-1" } },
+                { "id": 2, "sourceRefCommit": { "commitId": "head-42" } }
+              ]
+            }
+            """;
+        const string changes = """
+            {
+              "changeEntries": [
+                {
+                  "changeTrackingId": 17,
+                  "changeType": "edit",
+                  "item": { "path": "/src/Foo.cs" }
+                }
+              ],
+              "nextSkip": 0,
+              "nextTop": 0
+            }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnSequence(
+                HttpMethod.Get,
+                "/pullrequests/42?",
+                (HttpStatusCode.OK, """{ "lastMergeSourceCommit": { "commitId": "head-42" } }"""),
+                (HttpStatusCode.OK, """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""")
+            )
+            .OnJson(HttpMethod.Get, "/iterations/2/changes", changes)
+            .OnJson(HttpMethod.Get, "/iterations", iterations);
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-42");
+        var file = snapshot.Files.Should().ContainSingle().Subject;
+        file.Path.Should().Be("/src/Foo.cs");
+        file.RightRanges.Should().BeEmpty("ADO's provider response contains no line hunks");
+        file.LeftRanges.Should().BeEmpty("ADO's provider response contains no line hunks");
+        file.AdoContext.Should().Be(new AdoPullRequestThreadContext(17, new AdoIterationContext(1, 2)));
+
+        handler.CountRequests("/pullrequests/42?").Should().Be(2, "the head is checked before and after inventory");
+        handler.CountRequests("/iterations?").Should().Be(1);
+        var changeRequest = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Uri.AbsolutePath.EndsWith("/iterations/2/changes", StringComparison.Ordinal))
+            .Which;
+        var query = System.Web.HttpUtility.ParseQueryString(changeRequest.Uri.Query);
+        query["$compareTo"].Should().Be("0", "native change identity must match the common-base PR diff");
+        query["$top"].Should().Be("2000");
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_follows_every_bounded_iteration_change_page()
+    {
+        const string iterations = """
+            { "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnSequence(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                (
+                    HttpStatusCode.OK,
+                    """
+                    { "changeEntries": [
+                        { "changeTrackingId": 17, "item": { "path": "/src/First.cs" } }
+                      ], "nextSkip": 1, "nextTop": 2000 }
+                    """
+                ),
+                (
+                    HttpStatusCode.OK,
+                    """
+                    { "changeEntries": [
+                        { "changeTrackingId": 18, "item": { "path": "/src/Second.cs" } }
+                      ], "nextSkip": 0, "nextTop": 0 }
+                    """
+                )
+            )
+            .OnJson(HttpMethod.Get, "/iterations", iterations)
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        snapshot.Files.Select(file => file.Path).Should().Equal("/src/First.cs", "/src/Second.cs");
+        handler.CountRequests("/iterations/3/changes").Should().Be(2);
+        var requests = handler
+            .Requests.Where(request =>
+                request.Uri.AbsolutePath.EndsWith("/iterations/3/changes", StringComparison.Ordinal)
+            )
+            .ToArray();
+        System.Web.HttpUtility.ParseQueryString(requests[0].Uri.Query)["$skip"].Should().BeNull();
+        System.Web.HttpUtility.ParseQueryString(requests[1].Uri.Query)["$skip"].Should().Be("1");
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{ \"value\": null }")]
+    [InlineData("{ \"value\": {} }")]
+    [InlineData("[]")]
+    [InlineData("null")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_malformed_iterations_envelope(string iterations)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/iterations", iterations)
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations?").Should().Be(1);
+        handler.CountRequests("/changes").Should().Be(0);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_returns_empty_when_no_iteration_matches_the_exact_head()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "different-head" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-42");
+        snapshot.Files.Should().BeEmpty();
+        handler.CountRequests("/iterations?").Should().Be(1);
+        handler.CountRequests("/changes").Should().Be(0);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("3.5")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_non_positive_or_non_integral_iteration_id(
+        string iterationId
+    )
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                $$"""{ "value": [ { "id": {{iterationId}}, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations?").Should().Be(1);
+        handler.CountRequests("/changes").Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{ \"changeEntries\": null }")]
+    [InlineData("{ \"changeEntries\": {} }")]
+    [InlineData("[]")]
+    [InlineData("null")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_malformed_change_page_envelope(string changes)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/iterations/3/changes", changes)
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(1);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    [InlineData("{ \"changeTrackingId\": 17 }")]
+    [InlineData("{ \"changeTrackingId\": 17, \"item\": null }")]
+    [InlineData("{ \"changeTrackingId\": 17, \"item\": {} }")]
+    [InlineData("{ \"changeTrackingId\": 17, \"item\": { \"path\": null } }")]
+    [InlineData("{ \"changeTrackingId\": 17, \"item\": { \"path\": 7 } }")]
+    [InlineData("{ \"changeTrackingId\": 17, \"item\": { \"path\": \"  \" } }")]
+    [InlineData("{ \"item\": { \"path\": \"/src/Foo.cs\" } }")]
+    [InlineData("{ \"changeTrackingId\": \"17\", \"item\": { \"path\": \"/src/Foo.cs\" } }")]
+    [InlineData("{ \"changeTrackingId\": 0, \"item\": { \"path\": \"/src/Foo.cs\" } }")]
+    [InlineData("{ \"changeTrackingId\": -1, \"item\": { \"path\": \"/src/Foo.cs\" } }")]
+    [InlineData("{ \"changeTrackingId\": 17.5, \"item\": { \"path\": \"/src/Foo.cs\" } }")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_malformed_change_entry(string entry)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                $$"""{ "changeEntries": [ {{entry}} ], "nextSkip": 0, "nextTop": 0 }"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(1);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(-1, 2000)]
+    [InlineData(-1, -1)]
+    [InlineData(1, -1)]
+    [InlineData(1, 2001)]
+    [InlineData(0, 1)]
+    [InlineData(1, 0)]
+    public async Task Inline_anchor_snapshot_fails_closed_on_invalid_first_page_continuation(int nextSkip, int nextTop)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                $$"""{ "changeEntries": [], "nextSkip": {{nextSkip}}, "nextTop": {{nextTop}} }"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(1);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task Inline_anchor_snapshot_fails_closed_when_continuation_skip_does_not_advance(int secondNextSkip)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnSequence(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                (HttpStatusCode.OK, """{ "changeEntries": [], "nextSkip": 2, "nextTop": 2000 }"""),
+                (HttpStatusCode.OK, $$"""{ "changeEntries": [], "nextSkip": {{secondNextSkip}}, "nextTop": 2000 }""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(2);
+        handler.CountRequests("/pullrequests/42?").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("\"3\"", "0", "0")]
+    [InlineData("3", "\"0\"", "0")]
+    [InlineData("3", "0", "\"0\"")]
+    public async Task Inline_anchor_snapshot_fails_closed_when_numeric_identity_or_paging_fields_are_not_numbers(
+        string iterationId,
+        string nextSkip,
+        string nextTop
+    )
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                $$"""
+                { "changeEntries": [
+                    { "changeTrackingId": 17, "item": { "path": "/src/Foo.cs" } }
+                  ], "nextSkip": {{nextSkip}}, "nextTop": {{nextTop}} }
+                """
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                $$"""{ "value": [ { "id": {{iterationId}}, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+    }
+
+    [Theory]
+    [InlineData(
+        """
+            { "changeEntries": [
+                { "changeTrackingId": 17, "item": { "path": "/src/Foo.cs" } },
+                { "changeTrackingId": 17, "item": { "path": "/src/Other.cs" } }
+              ], "nextSkip": 0, "nextTop": 0 }
+            """
+    )]
+    [InlineData(
+        """
+            { "changeEntries": [
+                { "changeTrackingId": 17, "item": { "path": "/src/Foo.cs" } },
+                { "changeTrackingId": 18, "item": { "path": "/src/Foo.cs" } }
+              ], "nextSkip": 0, "nextTop": 0 }
+            """
+    )]
+    public async Task Inline_anchor_snapshot_fails_closed_on_duplicate_change_or_file_identity(string changes)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/iterations/3/changes", changes)
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+    }
+
+    [Theory]
+    [InlineData(17, "/src/Second.cs")]
+    [InlineData(18, "/src/First.cs")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_duplicate_identity_across_pages(
+        int secondTrackingId,
+        string secondPath
+    )
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnSequence(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                (
+                    HttpStatusCode.OK,
+                    """
+                    { "changeEntries": [
+                        { "changeTrackingId": 17, "item": { "path": "/src/First.cs" } }
+                      ], "nextSkip": 1, "nextTop": 2000 }
+                    """
+                ),
+                (
+                    HttpStatusCode.OK,
+                    $$"""
+                    { "changeEntries": [
+                        { "changeTrackingId": {{secondTrackingId}}, "item": { "path": "{{secondPath}}" } }
+                      ], "nextSkip": 0, "nextTop": 0 }
+                    """
+                )
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_throws_instead_of_returning_partial_inventory_when_page_bound_is_exhausted()
+    {
+        const string page = """
+            { "changeEntries": [
+                { "changeTrackingId": 17, "item": { "path": "/src/Foo.cs" } }
+              ], "nextSkip": 1, "nextTop": 2000 }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/iterations/3/changes", page)
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () =>
+            Provider(handler, maxPagesPerPoll: 1)
+                .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        handler.CountRequests("/iterations/3/changes").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_fails_closed_when_exact_head_matches_multiple_iterations()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """
+                { "value": [
+                    { "id": 2, "sourceRefCommit": { "commitId": "head-42" } },
+                    { "id": 3, "sourceRefCommit": { "commitId": "head-42" } }
+                  ] }
+                """
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        snapshot.Files.Should().BeEmpty();
+        handler.CountRequests("/changes").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_discards_inventory_when_head_changes_during_read()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnSequence(
+                HttpMethod.Get,
+                "/pullrequests/42?",
+                (HttpStatusCode.OK, """{ "lastMergeSourceCommit": { "commitId": "head-42" } }"""),
+                (HttpStatusCode.OK, """{ "lastMergeSourceCommit": { "commitId": "head-43" } }""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations/3/changes",
+                """
+                { "changeEntries": [
+                    { "changeTrackingId": 17, "item": { "path": "/src/Foo.cs" } }
+                  ], "nextSkip": 0, "nextTop": 0 }
+                """
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                """{ "value": [ { "id": 3, "sourceRefCommit": { "commitId": "head-42" } } ] }"""
+            );
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-43");
+        snapshot.Files.Should().BeEmpty();
     }
 
     [Fact]

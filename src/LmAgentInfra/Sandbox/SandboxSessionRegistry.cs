@@ -119,6 +119,65 @@ public interface ISandboxBindingSink
     void ClearEstablishedBinding(string threadId);
 }
 
+/// <summary>
+/// What <see cref="SandboxSessionRegistry.TryRetireSessionAsync"/> did with one exact gateway session.
+/// </summary>
+/// <remarks>
+/// NONE of these members says the workspace MOUNT is quiescent, and no caller may read one that way. The
+/// gateway commits its session-record removal before it tears the backend container down and exposes no
+/// signal for the latter, so no answer it can give today distinguishes a released mount from a leaked
+/// one. This enum reports the LOGICAL retirement only.
+/// </remarks>
+public enum SessionRetirementOutcome
+{
+    /// <summary>
+    /// The session was not in the cache: never created, already retired, or already replaced by a newer
+    /// one that must not be taken in its place. A no-op, not a failure — this is what a retry gets.
+    /// </summary>
+    NothingToRetire,
+
+    /// <summary>
+    /// Another conversation is still bound to the session, so it was deliberately KEPT. Nothing was
+    /// deleted and the asking conversation is simply detached from it.
+    /// </summary>
+    StillBound,
+
+    /// <summary>
+    /// A conversation is part-way through acquiring this slot's session — past the point of asking for it
+    /// and not yet registered — so the session was deliberately KEPT for it. Nothing was deleted. Retrying
+    /// after that acquisition finishes gets a definite answer.
+    /// </summary>
+    ClaimInFlight,
+
+    /// <summary>
+    /// The session was removed from the cache and the gateway accepted its DELETE (or it was already
+    /// gone). Says nothing about the backend container — see the remarks on this enum.
+    /// </summary>
+    Retired,
+
+    /// <summary>
+    /// The session was removed from the cache — this host will never serve it again — but the gateway
+    /// refused the DELETE or could not be reached. What is unconfirmed is the remote end.
+    /// </summary>
+    Unconfirmed,
+}
+
+/// <summary>
+/// The result of <see cref="SandboxSessionRegistry.TryRetireSessionAsync"/>.
+/// </summary>
+/// <param name="Outcome">What happened. See <see cref="SessionRetirementOutcome"/> for what each member
+/// does and does not prove.</param>
+/// <param name="UnconfirmedReason">A content-free code naming the condition that prevented confirmation
+/// (a status class, or an unreachable gateway), or <see langword="null"/> when nothing did. Names the
+/// condition and never the session, so it is safe to surface to a caller not entitled to session ids.</param>
+/// <param name="BoundThreads">How many OTHER conversations kept the session alive, for
+/// <see cref="SessionRetirementOutcome.StillBound"/>; zero otherwise. A count, never the thread ids.</param>
+public sealed record SessionRetirementResult(
+    SessionRetirementOutcome Outcome,
+    string? UnconfirmedReason = null,
+    int BoundThreads = 0
+);
+
 /// <summary>The outcome of resolving a conversation thread to its sandbox workspace session.</summary>
 public enum SandboxSessionResolutionOutcome
 {
@@ -255,6 +314,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// </summary>
     private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>> _sessions =
         new();
+
+    /// <summary>
+    /// Serializes retiring a session against acquiring one for an agent. Guards
+    /// <see cref="_acquisitionClaims"/> and the thread-routing writes. Held for dictionary operations
+    /// only and NEVER across a remote call; see <see cref="AcquireSessionForAgentAsync"/>.
+    /// </summary>
+    private readonly object _retirementGate = new();
+
+    /// <summary>
+    /// Outstanding agent acquisitions per (workspace id, app id) cache slot: how many callers are
+    /// somewhere between "about to resolve this slot's session" and "registered against it". A slot with
+    /// an outstanding claim cannot be retired, which is what makes the ordering hold for a claimant that
+    /// is descheduled for any length of time. Guarded by <see cref="_retirementGate"/>.
+    /// </summary>
+    private readonly Dictionary<(string WorkspaceId, string AppId), int> _acquisitionClaims = [];
 
     /// <summary>
     /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
@@ -497,6 +571,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
         ArgumentNullException.ThrowIfNull(binding);
+
         // Last-writer-wins under the pool's per-thread lock; a mode switch that establishes a new binding
         // replaces the prior one atomically with the pool's agent-entry commit.
         _establishedBindings[threadId] = binding;
@@ -1579,7 +1654,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // credential via _sessionCredentials, so the DELETE must carry the owner's app id while
                 // that entry is still present (a default/foreign id is rejected 404, leaking the remote
                 // session). Uses CancellationToken.None so a cancelled create still attempts teardown.
-                await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+                // The outcome is deliberately discarded: this is a rollback of a create that already
+                // failed, and there is no caller left to report a release to.
+                _ = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
                 // Remove ONLY the entries this attempt added, and only while they still point at THIS
                 // session, so a concurrent recreation is never clobbered (mirrors InvalidateSessionAsync).
                 _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
@@ -1645,12 +1722,170 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
     /// can never orphan the remote session or its persisted secret.
     /// </summary>
-    public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
+    public Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default) =>
+        TearDownWorkspaceSessionsAsync(workspaceId, ct);
+
+    /// <summary>
+    /// Retires ONE exact gateway session — the <paramref name="sessionId"/> the caller was bound to —
+    /// and reports whether it could. The narrow, identity-scoped counterpart to
+    /// <see cref="DestroyWorkspaceSessionAsync"/>, which tears down every app id's session for a
+    /// workspace and would therefore destroy a session belonging to a caller that asked for nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// EXACT-SESSION SCOPE. The cache is partitioned by (workspace id, app id), so a workspace id alone
+    /// names several sessions. This locates the ONE entry whose created session carries
+    /// <paramref name="sessionId"/> and compare-and-removes that entry by reference, so a replacement
+    /// created in the meantime is left alone rather than deleted in its place.
+    /// </para>
+    /// <para>
+    /// THE ACQUISITION BARRIER. Counting bound threads and then deleting is not atomic on its own: a
+    /// conversation can resolve the cached session, be descheduled for an unbounded time, and register
+    /// afterwards — ending up on a session this method destroyed in between. The decision and the cache
+    /// removal therefore happen under <see cref="_retirementGate"/>, and
+    /// <see cref="AcquireSessionForAgentAsync"/> records a claim on the slot under that same gate for the
+    /// WHOLE of its resolution. So the two are totally ordered however slow either is: a claim (or a
+    /// registration) that lands first makes this KEEP the session
+    /// (<see cref="SessionRetirementOutcome.ClaimInFlight"/> / <see cref="SessionRetirementOutcome.StillBound"/>);
+    /// a retirement that lands first empties the cache slot, so the acquisition resolves a genuinely new
+    /// session rather than a stale handle. No marker, tombstone, or expiry is involved, because the window
+    /// it would have to outlive has no bound. The remote DELETE runs outside the gate — by then the cache
+    /// removal is irreversible and no new holder can reach the session.
+    /// </para>
+    /// <para>
+    /// LOGICAL RETIREMENT ONLY. <see cref="SessionRetirementOutcome.Retired"/> means the gateway accepted
+    /// the DELETE (or the session was already gone). It does NOT mean the backend container is gone: the
+    /// gateway commits its record removal BEFORE its best-effort container teardown and exposes no signal
+    /// for the latter, so no probe available here — a re-read of the deleted id included — can tell a
+    /// released mount from a leaked one. A caller that needs the underlying slot back must RETIRE that
+    /// slot on every outcome.
+    /// </para>
+    /// </remarks>
+    /// <param name="sessionId">The exact gateway session to retire.</param>
+    /// <param name="releasingThreadId">The conversation asking, excluded from the bound-thread count so a
+    /// caller that has not finished unbinding itself does not block its own release. Every OTHER bound
+    /// thread retains the session.</param>
+    /// <param name="ct">Observed only before the cache removal commits.</param>
+    public async Task<SessionRetirementResult> TryRetireSessionAsync(
+        string sessionId,
+        string? releasingThreadId = null,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+
+        SandboxSession session;
+        lock (_retirementGate)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!TryFindCachedSession(sessionId, out var key, out var lazy))
+            {
+                // Never cached, already retired, or already replaced. A no-op, not a failure.
+                return new SessionRetirementResult(SessionRetirementOutcome.NothingToRetire);
+            }
+
+            var bound = GetBoundThreads(sessionId)
+                .Where(thread => !string.Equals(thread, releasingThreadId, StringComparison.Ordinal))
+                .ToList();
+            if (bound.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Keeping sandbox session {SessionId}: {BoundThreads} other conversation(s) are still bound to it",
+                    sessionId,
+                    bound.Count
+                );
+                return new SessionRetirementResult(SessionRetirementOutcome.StillBound, BoundThreads: bound.Count);
+            }
+
+            // The claimant that has not finished acquiring yet. It holds no routing and no binding, so
+            // every count above reads zero for it — and it is precisely the caller about to work in this
+            // mount. Deferring costs a retry; deleting costs the claimant its workspace mid-construction.
+            if (_acquisitionClaims.TryGetValue(key, out var claims) && claims > 0)
+            {
+                _logger.LogInformation(
+                    "Keeping sandbox session {SessionId}: {Claims} conversation(s) are still acquiring it",
+                    sessionId,
+                    claims
+                );
+                return new SessionRetirementResult(SessionRetirementOutcome.ClaimInFlight);
+            }
+
+            // Keyed compare-and-remove: if the slot now holds a DIFFERENT creation, it belongs to
+            // somebody else's session and must not be taken with this one.
+            if (
+                !(
+                    (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
+                ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy))
+            )
+            {
+                return new SessionRetirementResult(SessionRetirementOutcome.NothingToRetire);
+            }
+
+            // A deliberate retirement is not a replacement, so the successor ledger forgets it too.
+            _ = _replacedSessions.TryRemove(key, out _);
+
+            // Nothing marks the session id as retired, deliberately. A marker only helps against a
+            // claimant that already escaped with a handle, and it would have to outlive an unbounded
+            // deschedule to do so. The claim check above removes the escape instead of surviving it.
+            session = lazy.Value.Result;
+        }
+
+        // Cache removal is committed and irreversible, so the remote calls run outside the gate and under
+        // CancellationToken.None: a cancellation here would forget the session while leaving the gateway
+        // session and its persisted secret behind. Destroy BEFORE evicting per-session state —
+        // DestroySessionAsync resolves the owner credential via CredentialFor(sessionId), which reads
+        // _sessionCredentials, and EvictSessionStateAsync clears it.
+        var deletion = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+        await EvictSessionStateAsync(session).ConfigureAwait(false);
+
+        return deletion.Accepted
+            ? new SessionRetirementResult(SessionRetirementOutcome.Retired)
+            : new SessionRetirementResult(SessionRetirementOutcome.Unconfirmed, deletion.FailureReason);
+    }
+
+    /// <summary>
+    /// Finds the ONE cache entry whose successfully-created session carries <paramref name="sessionId"/>.
+    /// MUST be called under <see cref="_retirementGate"/>.
+    /// </summary>
+    private bool TryFindCachedSession(
+        string sessionId,
+        out (string WorkspaceId, string AppId) key,
+        out Lazy<Task<SandboxSession>> lazy
+    )
+    {
+        foreach (var entry in _sessions)
+        {
+            var candidate = entry.Value;
+            if (
+                candidate.IsValueCreated
+                && candidate.Value.IsCompletedSuccessfully
+                && string.Equals(candidate.Value.Result.SessionId, sessionId, StringComparison.Ordinal)
+            )
+            {
+                key = entry.Key;
+                lazy = candidate;
+                return true;
+            }
+        }
+
+        key = default;
+        lazy = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// The ONE teardown funnel behind <see cref="DestroyWorkspaceSessionAsync"/>.
+    /// </summary>
+    private async Task<int> TearDownWorkspaceSessionsAsync(string workspaceId, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
 
         var matchingKeys = _sessions.Keys.Where(key => key.WorkspaceId == workspaceId).ToList();
+
+        var tornDown = 0;
 
         foreach (var key in matchingKeys)
         {
@@ -1684,12 +1919,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
             // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session) —
             // and CredentialFor reads _sessionCredentials, which EvictSessionStateAsync clears.
-            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            // Best-effort by contract: gateway failures are logged inside DestroySessionAsync and the
+            // typed result is deliberately discarded here — this entry point returns nothing and its
+            // callers (shutdown, run cleanup) have no decision to make on it. TryRetireSessionAsync is
+            // the one that reports.
+            _ = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            tornDown++;
+
             // Clear every per-session collection (reverse map, sub-agent bindings, thread routing,
             // discovery ledger, credential + client refcount, persisted secret) via the shared helper —
             // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
             await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
+
+        return tornDown;
     }
 
     /// <summary>
@@ -1715,7 +1958,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     continue;
                 }
 
-                await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
+                _ = await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
                 // Best-effort secret cleanup: a single filesystem failure here must not abort disposal of
                 // the remaining sessions, per-credential clients, and the shared transport below. Isolate it
                 // (DestroySessionAsync already swallows its own errors) so disposal always reaches the
@@ -2195,21 +2438,148 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     }
 
     /// <summary>
+    /// Resolves the sandbox session an agent will run on AND registers the agent's thread against it as
+    /// ONE operation, so no session handle can escape into agent construction without the registry
+    /// knowing the conversation is claiming it. The acquisition route for the agent factory; other
+    /// consumers keep using <see cref="GetOrCreateLiveSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>
+    /// and <see cref="RegisterThread"/> directly.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS ONE CALL. Resolve-then-register as two steps leaves a gap the caller owns and the
+    /// registry cannot see: a conversation resolves a session, is descheduled for an unbounded time, and
+    /// registers afterwards. A retirement landing in that gap counts zero bound threads, deletes the
+    /// session, and the claimant then binds to a deleted mount. No marker with a lifetime — a tombstone
+    /// ledger, a capacity, an expiry — closes that, because the gap has no upper bound; the claim must be
+    /// held for its actual duration instead.
+    /// </para>
+    /// <para>
+    /// HOW IT ORDERS. The claim is recorded under <see cref="_retirementGate"/> BEFORE resolution starts
+    /// and dropped only after the thread is registered, under that same gate.
+    /// <see cref="TryRetireSessionAsync"/> takes the gate too and defers to any outstanding claim on the
+    /// session's slot, so the two are totally ordered no matter how long the resolution takes: claim
+    /// first and the session is kept (<see cref="SessionRetirementOutcome.ClaimInFlight"/>); retirement
+    /// first and the claim finds an empty cache slot and resolves a genuinely new session. The gate is
+    /// never held across the resolution await, so a slow gateway blocks nothing but retirements of its
+    /// own slot.
+    /// </para>
+    /// <para>
+    /// The claim is released on every exit — success, failure, or cancellation — so a construction that
+    /// throws cannot pin a slot against retirement forever.
+    /// </para>
+    /// </remarks>
+    /// <param name="workspaceRef">The workspace identity + directory the agent will mount.</param>
+    /// <param name="threadId">The conversation being constructed, registered on success.</param>
+    /// <param name="credential">Caller credential; <c>null</c> resolves to the process default. Partitions
+    /// the cache, and therefore the claim, exactly as the plain resolve overloads do.</param>
+    /// <param name="ct">Cancellation observed by the resolution.</param>
+    public async Task<SandboxSession> AcquireSessionForAgentAsync(
+        WorkspaceRef workspaceRef,
+        string threadId,
+        SandboxCredential? credential = null,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(workspaceRef);
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        var key = ClaimKeyFor(workspaceRef, credential);
+        lock (_retirementGate)
+        {
+            _acquisitionClaims[key] = _acquisitionClaims.GetValueOrDefault(key) + 1;
+        }
+
+        var handedOver = false;
+        try
+        {
+            var session = await GetOrCreateLiveSessionAsync(workspaceRef, ct, credential).ConfigureAwait(false);
+
+            lock (_retirementGate)
+            {
+                // Register and drop the claim in ONE critical section: releasing first would reopen the
+                // very gap this method exists to close, for exactly as long as it takes to re-take the
+                // gate.
+                RegisterThreadUnderGate(session.SessionId, threadId);
+                ReleaseClaimUnderGate(key);
+                handedOver = true;
+            }
+
+            return session;
+        }
+        finally
+        {
+            if (!handedOver)
+            {
+                lock (_retirementGate)
+                {
+                    ReleaseClaimUnderGate(key);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The cache/claim partition key for a workspace + caller, derived exactly as
+    /// <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/> derives
+    /// it — a claim on a different key than the one the resolution lands on would guard nothing.
+    /// </summary>
+    private (string WorkspaceId, string AppId) ClaimKeyFor(WorkspaceRef workspaceRef, SandboxCredential? credential)
+    {
+        var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
+        return (workspaceId, (credential ?? _defaultCredential).AppId);
+    }
+
+    /// <summary>Drops one outstanding claim. MUST be called under <see cref="_retirementGate"/>.</summary>
+    private void ReleaseClaimUnderGate((string WorkspaceId, string AppId) key)
+    {
+        if (!_acquisitionClaims.TryGetValue(key, out var count))
+        {
+            return;
+        }
+
+        if (count <= 1)
+        {
+            _ = _acquisitionClaims.Remove(key);
+        }
+        else
+        {
+            _acquisitionClaims[key] = count - 1;
+        }
+    }
+
+    /// <summary>Adds thread routing. MUST be called under <see cref="_retirementGate"/>.</summary>
+    private void RegisterThreadUnderGate(string sessionId, string threadId)
+    {
+        var set = _sessionThreads.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
+        );
+        _ = set.TryAdd(threadId, 0);
+    }
+
+    /// <summary>
     /// Registers an agent-pool thread as belonging to <paramref name="sessionId"/> so the
     /// context-discovery injector can find every thread that should receive an injection event.
     /// Idempotent: re-registering the same thread is a no-op.
     /// </summary>
+    /// <remarks>
+    /// Takes <see cref="_retirementGate"/> so a registration is ordered against a concurrent retirement
+    /// rather than interleaved with its bound-thread count. Agent construction should use
+    /// <see cref="AcquireSessionForAgentAsync"/> instead, which additionally holds a claim across the
+    /// resolution that precedes this; this overload remains for consumers that already hold a session
+    /// they are not acquiring (webhook routing, tests, re-registration on a mode switch).
+    /// </remarks>
     public void RegisterThread(string sessionId, string threadId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
-        var set = _sessionThreads.GetOrAdd(
-            sessionId,
-            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
-        );
-        _ = set.TryAdd(threadId, 0);
+        lock (_retirementGate)
+        {
+            RegisterThreadUnderGate(sessionId, threadId);
+        }
     }
 
     /// <summary>
@@ -2434,27 +2804,68 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         return [.. _sessionsById.Keys];
     }
 
-    private async Task DestroySessionAsync(SandboxSession session, CancellationToken ct = default)
+    /// <summary>
+    /// Issues the gateway DELETE for <paramref name="session"/> and REPORTS whether the gateway took
+    /// it. Still best-effort for its callers — nothing throws, and every failure is logged exactly as
+    /// before — but the outcome is now returned instead of discarded, so a caller that must confirm a
+    /// release can, while shutdown/run-cleanup keeps ignoring it.
+    /// </summary>
+    /// <returns>
+    /// <see cref="SessionDeletionResult.Accepted"/> when the gateway took the DELETE, or when it
+    /// answered <c>404</c> — a session the gateway has already forgotten is exactly the post-condition
+    /// the DELETE was asking for, so treating that as a failure would report every idle-evicted session
+    /// as unreleased.
+    /// </returns>
+    private async Task<SessionDeletionResult> DestroySessionAsync(
+        SandboxSession session,
+        CancellationToken ct = default
+    )
     {
         try
         {
             await ClientFor(CredentialFor(session.SessionId)).DeleteAsync(session.SessionId, ct).ConfigureAwait(false);
             _logger.LogInformation("Destroyed sandbox session {SessionId}", session.SessionId);
+            return SessionDeletionResult.Success;
         }
-        catch (SandboxException ex)
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
         {
-            // Best-effort teardown: a non-success gateway status (incl. a 404 for an already-evicted
-            // session) is logged and swallowed so shutdown/run-cleanup never throws.
+            // Already gone. Logged at the same level as every other non-success status so the existing
+            // operator-facing behaviour is unchanged; only the classification differs.
             _logger.LogWarning(
                 "Sandbox destroy returned {StatusCode} for session {SessionId}",
                 ex.StatusCode,
                 session.SessionId
             );
+            return SessionDeletionResult.Success;
+        }
+        catch (SandboxException ex)
+        {
+            // Best-effort teardown: a non-success gateway status is logged and swallowed so
+            // shutdown/run-cleanup never throws. The reason names the STATUS, never the session.
+            _logger.LogWarning(
+                "Sandbox destroy returned {StatusCode} for session {SessionId}",
+                ex.StatusCode,
+                session.SessionId
+            );
+            return SessionDeletionResult.Rejected($"gateway_status_{ex.StatusCode}");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to destroy sandbox session {SessionId}", session.SessionId);
+            return SessionDeletionResult.Rejected("gateway_unreachable");
         }
+    }
+
+    /// <summary>
+    /// What one gateway DELETE did. <see cref="FailureReason"/> is a content-free code naming the
+    /// CONDITION (a status class, or an unreachable gateway) so it can be surfaced to a caller without
+    /// disclosing the session it is about.
+    /// </summary>
+    private readonly record struct SessionDeletionResult(bool Accepted, string? FailureReason)
+    {
+        public static SessionDeletionResult Success { get; } = new(true, null);
+
+        public static SessionDeletionResult Rejected(string reason) => new(false, reason);
     }
 
     /// <summary>

@@ -68,6 +68,9 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <summary>Azure DevOps' documented maximum for <c>$top</c> on the PR-list endpoint.</summary>
     private const int AdoMaxPageSize = 1000;
 
+    /// <summary>Azure DevOps' documented maximum for <c>$top</c> on iteration-change pages.</summary>
+    private const int AdoMaxIterationChangesPageSize = 2000;
+
     /// <summary>
     /// Whether the listing might not be finished. True when ADO handed back a continuation token, or when
     /// the last page came back exactly full — a full page is indistinguishable from a truncated one, so it
@@ -284,6 +287,192 @@ internal sealed class AdoPrProvider : IPrProvider
             },
         };
     }
+
+    public async Task<ProviderEngagementSnapshot> GetEngagementSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        ProviderActivityWatermark? after,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentNullException.ThrowIfNull(daemonReceiptIds);
+
+        using var pullRequest = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        var root = pullRequest.RootElement;
+        var upperBound = ParseTimestamp(root, "lastUpdatedDate") ?? DateTimeOffset.MaxValue;
+        var observedActivity = await ReadThreadsAsync(repo, prId, upperBound, daemonReceiptIds, cancellationToken)
+            .ConfigureAwait(false);
+        var activity = observedActivity
+            .Where(candidate => after is null || candidate.Watermark.CompareTo(after) > 0)
+            .ToArray();
+        var fallback = after ?? new ProviderActivityWatermark(Provider, DateTimeOffset.UnixEpoch, "seed:0");
+        return ProviderEngagementSnapshot.Create(
+            MapLifecycle(root.GetProperty("status").GetString()),
+            CommitId(root, "lastMergeSourceCommit"),
+            CommitId(root, "lastMergeTargetCommit"),
+            fallback,
+            activity,
+            observedActivity
+        );
+    }
+
+    private async Task<IReadOnlyList<ProviderDiscussionRef>> ReadThreadsAsync(
+        RepoIdentity repo,
+        string prId,
+        DateTimeOffset upperBound,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    )
+    {
+        var url =
+            $"{BaseUrl}/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}"
+            + $"/pullRequests/{prId}/threads?api-version={ApiVersion}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        request.Headers.Accept.ParseAdd("application/json");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var activity = new List<ProviderDiscussionRef>();
+        foreach (var thread in document.RootElement.GetProperty("value").EnumerateArray())
+        {
+            var threadId = StableIdOf(thread) ?? string.Empty;
+            var status = StringOf(thread, "status");
+            var (path, side, startLine, endLine) = ThreadSpan(thread);
+            var iterationContext = IterationContextOf(thread);
+            if (!thread.TryGetProperty("comments", out var comments) || comments.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var comment in comments.EnumerateArray())
+            {
+                var commentId = StableIdOf(comment);
+                var publishedAt = ParseTimestamp(comment, "publishedDate");
+                if (commentId is null || publishedAt is null)
+                {
+                    continue;
+                }
+
+                var parent = StableIdOf(comment, "parentCommentId");
+                var isRoot = parent is null or "0";
+                var deleted = BoolOf(comment, "isDeleted") || BoolOf(thread, "isDeleted");
+                var commentType = StringOf(comment, "commentType");
+                var kind =
+                    deleted ? ProviderDiscussionKind.Deleted
+                    : string.Equals(commentType, "system", StringComparison.OrdinalIgnoreCase)
+                        ? ProviderDiscussionKind.System
+                    : ProviderDiscussionKind.Comment;
+                var candidate = new ProviderDiscussionRef(
+                    Provider,
+                    threadId,
+                    commentId,
+                    $"thread:{threadId}:comment:{commentId}",
+                    isRoot ? null : parent,
+                    LinkOf(comment),
+                    path,
+                    side,
+                    startLine,
+                    endLine,
+                    status,
+                    iterationContext,
+                    publishedAt.Value,
+                    AuthorOf(comment),
+                    StringOf(comment, "content") ?? string.Empty,
+                    kind
+                );
+                if (publishedAt <= upperBound && !daemonReceiptIds.Contains(candidate.ProviderObjectId))
+                {
+                    activity.Add(candidate);
+                }
+            }
+        }
+
+        return activity;
+    }
+
+    private static (string? Path, string? Side, int? StartLine, int? EndLine) ThreadSpan(JsonElement thread)
+    {
+        if (!thread.TryGetProperty("threadContext", out var context) || context.ValueKind != JsonValueKind.Object)
+        {
+            return (null, null, null, null);
+        }
+
+        var path = StringOf(context, "filePath");
+        var rightStart = LineOf(context, "rightFileStart");
+        var rightEnd = LineOf(context, "rightFileEnd");
+        if (rightStart is not null || rightEnd is not null)
+        {
+            return (path, "RIGHT", rightStart ?? rightEnd, rightEnd ?? rightStart);
+        }
+
+        var leftStart = LineOf(context, "leftFileStart");
+        var leftEnd = LineOf(context, "leftFileEnd");
+        return (
+            path,
+            leftStart is not null || leftEnd is not null ? "LEFT" : null,
+            leftStart ?? leftEnd,
+            leftEnd ?? leftStart
+        );
+    }
+
+    private static int? LineOf(JsonElement context, string property) =>
+        context.TryGetProperty(property, out var position)
+        && position.ValueKind == JsonValueKind.Object
+        && position.TryGetProperty("line", out var line)
+        && line.ValueKind == JsonValueKind.Number
+        && line.TryGetInt32(out var value)
+            ? value
+            : null;
+
+    private static string? IterationContextOf(JsonElement thread)
+    {
+        if (
+            !thread.TryGetProperty("pullRequestThreadContext", out var context)
+            || context.ValueKind != JsonValueKind.Object
+        )
+        {
+            return null;
+        }
+
+        return context.GetRawText();
+    }
+
+    private static string? LinkOf(JsonElement comment) =>
+        comment.TryGetProperty("_links", out var links)
+        && links.ValueKind == JsonValueKind.Object
+        && links.TryGetProperty("self", out var self)
+        && self.ValueKind == JsonValueKind.Object
+            ? StringOf(self, "href")
+            : null;
+
+    private static string AuthorOf(JsonElement comment) =>
+        comment.TryGetProperty("author", out var author) && author.ValueKind == JsonValueKind.Object
+            ? StringOf(author, "uniqueName") ?? StringOf(author, "displayName") ?? string.Empty
+            : string.Empty;
+
+    private static bool BoolOf(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.True;
+
+    private static string? StableIdOf(JsonElement element, string property = "id") =>
+        element.TryGetProperty(property, out var value)
+            ? value.ValueKind switch
+            {
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                _ => null,
+            }
+            : null;
 
     private static string CommitId(JsonElement pr, string property) =>
         pr.TryGetProperty(property, out var commit)
@@ -547,6 +736,200 @@ internal sealed class AdoPrProvider : IPrProvider
         using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         var head = CommitId(document.RootElement, "lastMergeSourceCommit");
         return string.IsNullOrWhiteSpace(head) ? null : head;
+    }
+
+    public async Task<ProviderInlineAnchorSnapshot> GetInlineAnchorSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        string expectedHeadSha,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedHeadSha);
+
+        var initialHead = await GetCurrentHeadShaAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(initialHead, expectedHeadSha, StringComparison.Ordinal))
+        {
+            return new ProviderInlineAnchorSnapshot(initialHead ?? string.Empty, []);
+        }
+
+        var iterationsUrl =
+            $"{BaseUrl}/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}"
+            + $"/pullRequests/{prId}/iterations?api-version={ApiVersion}";
+        using var iterations = await GetJsonAsync(iterationsUrl, cancellationToken).ConfigureAwait(false);
+        if (
+            iterations.RootElement.ValueKind != JsonValueKind.Object
+            || !iterations.RootElement.TryGetProperty("value", out var iterationEntries)
+            || iterationEntries.ValueKind != JsonValueKind.Array
+        )
+        {
+            throw new InvalidDataException("ADO iteration inventory did not contain an array of iterations.");
+        }
+
+        var matches = iterationEntries
+            .EnumerateArray()
+            .Where(iteration =>
+                string.Equals(CommitId(iteration, "sourceRefCommit"), expectedHeadSha, StringComparison.Ordinal)
+            )
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            return new ProviderInlineAnchorSnapshot(expectedHeadSha, []);
+        }
+
+        if (
+            !matches[0].TryGetProperty("id", out var iterationIdElement)
+            || iterationIdElement.ValueKind != JsonValueKind.Number
+            || !iterationIdElement.TryGetInt32(out var iterationId)
+            || iterationId <= 0
+        )
+        {
+            throw new InvalidDataException("ADO exact-head iteration did not contain one positive numeric id.");
+        }
+
+        const int firstComparingIteration = 1;
+        var changesBaseUrl =
+            $"{BaseUrl}/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}"
+            + $"/pullRequests/{prId}/iterations/{iterationId}/changes";
+        var files = new List<ProviderInlineAnchorFile>();
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
+        var seenChangeTrackingIds = new HashSet<int>();
+        var skip = 0;
+        var top = AdoMaxIterationChangesPageSize;
+        var pages = 0;
+        var inventoryComplete = false;
+        while (pages < MaxPagesPerPoll)
+        {
+            var changesUrl =
+                $"{changesBaseUrl}?$compareTo=0"
+                + $"&$top={top.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                + (
+                    skip > 0
+                        ? $"&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                        : string.Empty
+                )
+                + $"&api-version={ApiVersion}";
+            using var changes = await GetJsonAsync(changesUrl, cancellationToken).ConfigureAwait(false);
+            pages++;
+
+            if (
+                changes.RootElement.ValueKind != JsonValueKind.Object
+                || !changes.RootElement.TryGetProperty("changeEntries", out var entries)
+                || entries.ValueKind != JsonValueKind.Array
+            )
+            {
+                throw new InvalidDataException("ADO iteration-change page did not contain a changeEntries array.");
+            }
+
+            foreach (var change in entries.EnumerateArray())
+            {
+                if (
+                    change.ValueKind != JsonValueKind.Object
+                    || !change.TryGetProperty("changeTrackingId", out var trackingIdElement)
+                    || trackingIdElement.ValueKind != JsonValueKind.Number
+                    || !trackingIdElement.TryGetInt32(out var changeTrackingId)
+                    || changeTrackingId <= 0
+                    || !change.TryGetProperty("item", out var item)
+                    || item.ValueKind != JsonValueKind.Object
+                    || StringOf(item, "path") is not { } path
+                )
+                {
+                    throw new InvalidDataException(
+                        "ADO iteration-change entry did not contain one positive numeric changeTrackingId and path."
+                    );
+                }
+
+                if (!seenChangeTrackingIds.Add(changeTrackingId) || !seenPaths.Add(path))
+                {
+                    throw new InvalidDataException(
+                        "ADO iteration-change inventory repeated a changeTrackingId or file path."
+                    );
+                }
+
+                files.Add(
+                    new ProviderInlineAnchorFile(
+                        path,
+                        [],
+                        [],
+                        new AdoPullRequestThreadContext(
+                            changeTrackingId,
+                            new AdoIterationContext(firstComparingIteration, iterationId)
+                        )
+                    )
+                );
+            }
+
+            if (!TryGetNextIterationChangesPage(changes.RootElement, skip, out var nextSkip, out var nextTop))
+            {
+                throw new InvalidDataException("ADO iteration-change page contained invalid continuation metadata.");
+            }
+
+            if (nextSkip == 0 && nextTop == 0)
+            {
+                inventoryComplete = true;
+                break;
+            }
+
+            skip = nextSkip;
+            top = nextTop;
+        }
+
+        if (!inventoryComplete)
+        {
+            throw new InvalidOperationException(
+                $"ADO iteration-change inventory exceeded the configured {MaxPagesPerPoll} page limit."
+            );
+        }
+
+        var finalHead = await GetCurrentHeadShaAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        return string.Equals(finalHead, expectedHeadSha, StringComparison.Ordinal)
+            ? new ProviderInlineAnchorSnapshot(expectedHeadSha, files)
+            : new ProviderInlineAnchorSnapshot(finalHead ?? string.Empty, []);
+    }
+
+    private static bool TryGetNextIterationChangesPage(
+        JsonElement page,
+        int currentSkip,
+        out int nextSkip,
+        out int nextTop
+    )
+    {
+        nextSkip = 0;
+        nextTop = 0;
+        if (
+            !page.TryGetProperty("nextSkip", out var nextSkipElement)
+            || nextSkipElement.ValueKind != JsonValueKind.Number
+            || !nextSkipElement.TryGetInt32(out nextSkip)
+            || !page.TryGetProperty("nextTop", out var nextTopElement)
+            || nextTopElement.ValueKind != JsonValueKind.Number
+            || !nextTopElement.TryGetInt32(out nextTop)
+            || nextSkip < 0
+            || nextTop < 0
+            || nextTop > AdoMaxIterationChangesPageSize
+        )
+        {
+            return false;
+        }
+
+        return (nextSkip == 0 && nextTop == 0) || (nextSkip > currentSkip && nextTop > 0);
+    }
+
+    private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        request.Headers.Accept.ParseAdd("application/json");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        _ = response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

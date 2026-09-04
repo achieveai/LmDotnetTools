@@ -31,7 +31,8 @@ internal interface IReviewCommentPublisher
     /// <summary>
     /// Posts <paramref name="body"/> as a review comment on the target PR, embedding
     /// <paramref name="idempotencyKey"/> as a hidden marker so <see cref="FindPostedCommentAsync"/> can
-    /// recognize it later. Returns the provider's id for the created comment.
+    /// recognize it later. Returns the exact provider-qualified object identity used by engagement snapshots
+    /// (for example, <c>issue-comment:123</c> or <c>thread:45:comment:6</c>).
     /// </summary>
     Task<PostedComment> PostReviewCommentAsync(
         ReviewCommentTarget target,
@@ -50,13 +51,117 @@ internal interface IReviewCommentPublisher
         ReviewCommentTarget target,
         CancellationToken cancellationToken
     );
+
+    /// <summary>Submits one atomic GitHub review containing every prevalidated inline finding.</summary>
+    Task<PostedComment> SubmitInlineReviewAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubInlineReviewRequest review,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"{Provider} does not support GitHub inline reviews.");
+
+    /// <summary>Replies to the top-level comment that owns a GitHub inline review thread.</summary>
+    Task<PostedComment> ReplyToInlineReviewCommentAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubInlineReplyRequest reply,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"{Provider} does not support GitHub inline review replies.");
+
+    /// <summary>Posts an explicitly degraded flat GitHub PR-conversation comment.</summary>
+    Task<PostedComment> PostFlatConversationCommentAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubFlatConversationComment comment,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"{Provider} does not support GitHub conversation comments.");
+
+    /// <summary>Creates one located Azure DevOps review thread.</summary>
+    Task<PostedComment> PostLocatedThreadAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        AdoThreadRequest thread,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"{Provider} does not support Azure DevOps review threads.");
+
+    /// <summary>Replies inside an existing Azure DevOps review thread.</summary>
+    Task<PostedComment> ReplyToThreadAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        AdoThreadReplyRequest reply,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"{Provider} does not support Azure DevOps thread replies.");
 }
 
 /// <summary>Where a review comment is posted: the normalized repo and the PR within it.</summary>
 internal sealed record ReviewCommentTarget(RepoIdentity Repo, string PrId);
 
-/// <summary>A comment that exists on the provider, identified by the provider's own id.</summary>
-internal sealed record PostedComment(string ProviderResponseId);
+/// <summary>A provider-native file span. Offsets are provider columns and remain distinct from lines.</summary>
+internal sealed record ProviderCommentSpan(
+    string Path,
+    string Side,
+    int? StartLine,
+    int EndLine,
+    int? StartOffset = null,
+    int? EndOffset = null
+);
+
+/// <summary>One GitHub inline finding inside an atomic review.</summary>
+internal sealed record GitHubInlineReviewComment(ProviderCommentSpan Span, string Body);
+
+/// <summary>An atomic GitHub COMMENT review tied to the expected PR head.</summary>
+internal sealed record GitHubInlineReviewRequest(string CommitId, IReadOnlyList<GitHubInlineReviewComment> Comments);
+
+/// <summary>A GitHub reply whose thread identity is always the top-level review comment.</summary>
+internal sealed record GitHubInlineReplyRequest(
+    string TopLevelCommentId,
+    string TargetCommentId,
+    string? TargetPermalink,
+    string Body
+);
+
+/// <summary>A flat GitHub PR-conversation comment with the native target link retained in its body.</summary>
+internal sealed record GitHubFlatConversationComment(string Body, string? TargetPermalink = null);
+
+/// <summary>The Azure DevOps comparison iterations attached to a review thread.</summary>
+internal sealed record AdoIterationContext(int FirstComparingIteration, int SecondComparingIteration);
+
+/// <summary>Azure DevOps change tracking plus comparison-iteration identity.</summary>
+internal sealed record AdoPullRequestThreadContext(int ChangeTrackingId, AdoIterationContext IterationContext);
+
+/// <summary>A new located Azure DevOps review thread.</summary>
+internal sealed record AdoThreadRequest(
+    ProviderCommentSpan Span,
+    AdoPullRequestThreadContext PullRequestContext,
+    string Body
+);
+
+/// <summary>A reply to one comment in an existing Azure DevOps review thread.</summary>
+internal sealed record AdoThreadReplyRequest(
+    string ThreadId,
+    string ParentCommentId,
+    string? ThreadStatus,
+    ProviderCommentSpan? Span,
+    AdoPullRequestThreadContext? PullRequestContext,
+    string Body
+);
+
+/// <summary>
+/// A provider-native publication receipt. <see cref="ProviderResponseId"/> remains the stable compatibility
+/// identity while the remaining fields retain native review/thread ancestry and anchoring.
+/// </summary>
+internal sealed record PostedComment(
+    string ProviderResponseId,
+    string? ReviewId = null,
+    string? ThreadId = null,
+    string? CommentId = null,
+    string? ParentCommentId = null,
+    string? Permalink = null,
+    string? Status = null,
+    ProviderCommentSpan? Span = null,
+    AdoPullRequestThreadContext? IterationContext = null,
+    bool RelationshipDegraded = false
+);
 
 /// <summary>
 /// A review comment already present on a PR. <see cref="Path"/>/<see cref="Line"/> are set for an inline

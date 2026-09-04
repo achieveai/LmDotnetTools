@@ -215,7 +215,8 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner
+    ConversationDescendantScanner descendantScanner,
+    ReviewAuditBridge? reviewAuditBridge = null
 ) : ControllerBase
 {
     /// <summary>
@@ -290,13 +291,92 @@ public class ConversationsController(
         var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
         if (workspace == null)
         {
-            return NotFound(new { error = $"Workspace '{request.WorkspaceId}' not found." });
+            return NotFound(
+                new { error = $"Workspace '{request.WorkspaceId}' not found.", code = "workspace_not_found" }
+            );
         }
 
         var mode = await modeStore.GetModeAsync(request.ModeId, ct);
         if (mode == null)
         {
-            return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+            return NotFound(new { error = $"Mode '{request.ModeId}' not found.", code = "mode_not_found" });
+        }
+
+        ReviewConversationScope? reviewScope;
+        try
+        {
+            reviewScope = ConversationReviewScope.Validate(request.ReviewScope);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message, code = "invalid_review_scope" });
+        }
+
+        if (
+            reviewScope is not null
+            && !string.Equals(request.ModeId, SystemChatModes.CodeReviewDaemonModeId, StringComparison.Ordinal)
+        )
+        {
+            return BadRequest(
+                new
+                {
+                    error = "Review scope is valid only for the code-review-daemon mode.",
+                    code = "review_scope_mode_mismatch",
+                }
+            );
+        }
+
+        if (reviewScope is not null && reviewAuditBridge is null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "The review audit bridge is unavailable.", code = "review_audit_bridge_unavailable" }
+            );
+        }
+
+        ReviewPublicationScope? publicationScope = null;
+        if (request.ReviewPublicationScope is { } requestedPublicationScope)
+        {
+            if (!InboundS2SAuthAttribute.IsServiceToServiceRequest(Request))
+            {
+                return BadRequest(
+                    new
+                    {
+                        error = "review_publication_scope_requires_s2s",
+                        code = "review_publication_scope_requires_s2s",
+                    }
+                );
+            }
+
+            if (reviewScope is null)
+            {
+                return BadRequest(
+                    new
+                    {
+                        error = "Review publication scope requires a review engagement scope.",
+                        code = "review_publication_scope_requires_review_scope",
+                    }
+                );
+            }
+
+            publicationScope = ReviewPublicationScope.TryCreate(requestedPublicationScope);
+            if (publicationScope is null)
+            {
+                return BadRequest(
+                    new { error = "Review publication scope is incomplete.", code = "invalid_review_publication_scope" }
+                );
+            }
+
+            if (!string.Equals(reviewScope.RoundId, publicationScope.RoundId.ToString(), StringComparison.Ordinal))
+            {
+                return BadRequest(
+                    new
+                    {
+                        error = "Review and publication scopes name different rounds.",
+                        code = "review_publication_round_mismatch",
+                    }
+                );
+            }
         }
 
         if (!providerRegistry.IsAvailable(request.ProviderId))
@@ -342,6 +422,39 @@ public class ConversationsController(
                 propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
                 propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
+
+                if (reviewScope is not null)
+                {
+                    if (
+                        propertiesBuilder.TryGetValue(
+                            ConversationReviewScope.EngagementIdPropertyKey,
+                            out var engagement
+                        )
+                        && !StringComparer.Ordinal.Equals(
+                            ThreadPropertyValue.AsString(engagement),
+                            reviewScope.EngagementId
+                        )
+                    )
+                    {
+                        throw new InvalidOperationException("A conversation's review engagement cannot be changed.");
+                    }
+
+                    if (
+                        propertiesBuilder.TryGetValue(ConversationReviewScope.RoundIdPropertyKey, out var round)
+                        && !StringComparer.Ordinal.Equals(ThreadPropertyValue.AsString(round), reviewScope.RoundId)
+                    )
+                    {
+                        throw new InvalidOperationException("A conversation's review round cannot be changed.");
+                    }
+
+                    propertiesBuilder[ConversationReviewScope.EngagementIdPropertyKey] = reviewScope.EngagementId;
+                    propertiesBuilder[ConversationReviewScope.RoundIdPropertyKey] = reviewScope.RoundId;
+                }
+
+                if (publicationScope is not null)
+                {
+                    propertiesBuilder[ReviewPublicationScope.PropertyKey] = publicationScope.ToPropertyValue();
+                }
 
                 if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                 {
@@ -542,6 +655,21 @@ public class ConversationsController(
         }
 
         return Ok(result);
+    }
+
+    /// <summary>Returns the immutable review engagement and round bound to one hosted conversation.</summary>
+    [HttpGet("{threadId}/review-scope")]
+    public async Task<IActionResult> GetReviewScope(string threadId, CancellationToken ct = default)
+    {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        var scope = await ConversationReviewScope.ReadAsync(store, threadId, ct);
+        return scope is null
+            ? NotFound(new { error = "Review scope is not present.", code = "review_scope_missing" })
+            : Ok(scope);
     }
 
     /// <summary>Smallest page the sidebar may ask for. Zero would be a page that can never fill.</summary>
@@ -1100,6 +1228,17 @@ public class ConversationsController(
         if (metadata == null)
         {
             return UnknownThread(threadId);
+        }
+
+        // BEFORE any agent/session work, and deliberately so. A released conversation is one whose
+        // pooled workspace has been handed back (see ReleaseWorkspaceSession); the whole point of the
+        // durable stamp is that nothing may recreate an agent for it or remount that workspace, and
+        // GetOrCreateAgent below does BOTH the moment it is reached. Refused as a 409 rather than a
+        // 404: the conversation exists, its transcript is still readable on every GET route, and only
+        // this write is closed.
+        if (IsWorkspaceSessionReleased(metadata))
+        {
+            return WorkspaceSessionReleased(threadId, "SendMessage");
         }
 
         var persistedModeId =
@@ -1867,6 +2006,339 @@ public class ConversationsController(
         return NoContent();
     }
 
+    /// <summary>
+    /// Thread property recording that this conversation's pooled workspace session has been RELEASED:
+    /// the epoch-millisecond instant the release was committed. Durable, because the guarantee it
+    /// carries has to outlive the process — a host restart that forgot it would let the very next send
+    /// recreate an agent and remount the pooled workspace this endpoint exists to hand back.
+    /// </summary>
+    internal const string WorkspaceSessionReleasedAtPropertyKey = "sample.workspaceSessionReleasedAt";
+
+    /// <summary>Reason code for a write refused because the conversation's workspace session was released.</summary>
+    internal const string WorkspaceSessionReleasedCode = "workspace_session_released";
+
+    /// <summary>Reason code for a release deferred because a run that shares the session is still live.</summary>
+    internal const string WorkspaceSessionBusyCode = "workspace_session_busy";
+
+    /// <summary>
+    /// Hands a conversation's pooled workspace back: evicts its live agent, stops this host from ever
+    /// remounting that workspace for it, and — only when nothing else is still bound to the session —
+    /// tears the gateway session down. The conversation's metadata and transcript are left completely
+    /// intact, so every read route (messages, usage, status, transcripts, deep links) keeps working.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS NOT <see cref="Delete"/>. Delete removes the agent AND the transcript and never
+    /// touches the sandbox session — precisely inverted from what a finished review needs, which is to
+    /// give the writable mount back while keeping every word of the review readable. Reusing its
+    /// semantics here would destroy the artifact and leak the mount.
+    /// </para>
+    /// <para>
+    /// BUSY IS A REFUSAL, NOT A WAIT. A review session is shared by <c>(workspaceId, appId)</c>, so the
+    /// session under this conversation may be carrying another conversation's live turn. Tearing it
+    /// down would pull the mount out from under that run. Both the addressed thread and every OTHER
+    /// thread bound to the same session are therefore checked, and a live run anywhere among them
+    /// answers <c>409</c> with a retryable code rather than blocking the request or proceeding anyway.
+    /// The body names the CONDITION and never which conversation was busy — that is a fact about
+    /// another actor.
+    /// </para>
+    /// <para>
+    /// THE STAMP IS WRITTEN BEFORE THE EVICTION. Between evicting the agent and recording the release
+    /// there is a window in which a concurrent send would resolve the conversation, create a fresh
+    /// agent, and remount the workspace — undoing the release and leaving the caller believing the
+    /// mount came back. Recording first closes the write path before the thing it protects is taken
+    /// apart. The cost is that a busy/replaced entry discovered afterwards leaves a released
+    /// conversation whose agent is still pooled, which the caller's retry finishes; that is the
+    /// fail-CLOSED direction.
+    /// </para>
+    /// <para>
+    /// WHAT THE RESPONSE MAY CLAIM. <see cref="ReleaseWorkspaceSessionResponse.MountQuiescenceConfirmed"/>
+    /// is always <see langword="false"/>. The gateway commits its session-record removal BEFORE its
+    /// best-effort backend container teardown and reports nothing about the latter, so a container still
+    /// holding the mount is indistinguishable from a released one — including to a re-read of the deleted
+    /// id, which is why no such probe is attempted. A caller that needs the underlying slot back must
+    /// retire it rather than reuse it, whatever this endpoint says. No session id appears in the
+    /// response or in this method's log lines.
+    /// </para>
+    /// </remarks>
+    [HttpPost("{threadId}/workspace-session/release")]
+    public async Task<IActionResult> ReleaseWorkspaceSession(
+        string threadId,
+        [FromServices] SandboxSessionRegistry registry,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        // An agent-owned thread is some agent's, and releasing its workspace by id alone would take the
+        // mount out from under it. Refused for every caller, not merely machine callers: unlike a read,
+        // there is no browser-client case for tearing down another agent's workspace.
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+
+        // Authorize BEFORE the null-metadata 404, for the reason SendMessage documents: short-circuiting
+        // the missing case would make a missing thread cost zero grant look-ups and a forbidden one cost
+        // one, which is a work-shape existence oracle even behind byte-identical 404 bodies.
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct)) is { } denied)
+        {
+            return denied;
+        }
+
+        if (metadata == null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        // ONE locked read of the pooled entry: owner, frozen app id, busy, and the entry's identity.
+        // TryReleaseIdleAgentAsync re-validates all of it under the same lock before it disposes
+        // anything, which is what makes the decision and the removal a single step — an unlocked
+        // IsRunInProgress here would let a run start in the gap and be aborted by the removal.
+        var pooled = agentPool.TryGetHandoffState(threadId, out var observed);
+        if (pooled && observed.IsBusy)
+        {
+            return WorkspaceSessionBusy(threadId);
+        }
+
+        // Read the binding BEFORE anything is torn down: releasing the agent clears it, and it is the
+        // only thing that says which gateway session (and which workspace) this conversation is on.
+        _ = registry.TryGetEstablishedBinding(threadId, out var binding);
+        var sessionId = binding?.SessionId;
+        var workspaceId = binding?.WorkspaceRef.Id;
+
+        // The shared-session half of the busy check, and a fail-FAST one: a busy sibling is necessarily
+        // still bound, so the bound-count gate below would retain the session anyway. Refusing here says
+        // so out loud instead of reporting a silent "retained", and costs the caller nothing.
+        if (IsAnySiblingBusy(registry, sessionId, threadId))
+        {
+            return WorkspaceSessionBusy(threadId);
+        }
+
+        await StampWorkspaceSessionReleasedAsync(threadId, ct);
+
+        if (pooled)
+        {
+            var released = await agentPool.TryReleaseIdleAgentAsync(threadId, observed);
+            if (
+                released
+                is MultiTurnAgentPool.AgentReleaseOutcome.Busy
+                    or MultiTurnAgentPool.AgentReleaseOutcome.Replaced
+            )
+            {
+                // The entry acquired work, or was swapped for one nobody decided anything about, between
+                // the read and the release. Neither is destroyed. The stamp above stays: this
+                // conversation IS retired — no further send can open a new turn on it — and only the
+                // teardown is deferred to the caller's retry, which the stamp now guarantees will find a
+                // quiet thread.
+                return WorkspaceSessionBusy(threadId);
+            }
+        }
+
+        // Load-bearing rather than defensive: the pool clears the binding only when it actually held an
+        // entry, and a conversation whose agent was already evicted (idle reclaim, a restart's cold read,
+        // a previous half-finished release) still carries one. Left in place it makes this thread look
+        // BOUND below, so the session would never be handed back — the exact leak this endpoint closes.
+        // Both calls are idempotent and neither destroys a session another conversation is using.
+        registry.ClearEstablishedBinding(threadId);
+        registry.UnregisterThreadFromAllSessions(threadId);
+
+        if (sessionId is null)
+        {
+            LogReleased(threadId, workspaceId, WorkspaceSessionOutcomes.NothingToRelease);
+            return Ok(ReleaseResponse(threadId, WorkspaceSessionOutcomes.NothingToRelease));
+        }
+
+        // Exactly the session this conversation was bound to — never the workspace, which names one
+        // session PER caller app id and would take another caller's live session with it. The registry
+        // counts the remaining bound threads AND any acquisition still in flight for that slot, then
+        // removes the exact cache entry, all under one gate that agent acquisition also takes. So a
+        // conversation resolving this session concurrently either lands first (and keeps it alive) or
+        // finds an empty slot and builds a new one. That is why no bound-thread check happens here: split
+        // across two calls it would not be atomic with the teardown.
+        var retirement = await registry.TryRetireSessionAsync(sessionId, threadId, ct);
+        var outcome = retirement.Outcome switch
+        {
+            SessionRetirementOutcome.Retired => WorkspaceSessionOutcomes.Released,
+            SessionRetirementOutcome.StillBound or SessionRetirementOutcome.ClaimInFlight =>
+                WorkspaceSessionOutcomes.Retained,
+            SessionRetirementOutcome.Unconfirmed => WorkspaceSessionOutcomes.Unconfirmed,
+            _ => WorkspaceSessionOutcomes.NothingToRelease,
+        };
+
+        LogReleased(threadId, workspaceId, outcome, retirement.BoundThreads);
+        return Ok(ReleaseResponse(threadId, outcome, retirement.UnconfirmedReason));
+    }
+
+    /// <summary>
+    /// The wire vocabulary for <see cref="ReleaseWorkspaceSessionResponse.SessionOutcome"/>. Constants
+    /// rather than a serialized enum so the strings a caller branches on are stated once, here.
+    /// </summary>
+    internal static class WorkspaceSessionOutcomes
+    {
+        /// <summary>The conversation had no gateway session to hand back.</summary>
+        public const string NothingToRelease = "nothing_to_release";
+
+        /// <summary>Another conversation is still bound to the session, so it was deliberately kept.</summary>
+        public const string Retained = "retained";
+
+        /// <summary>The gateway accepted the teardown.</summary>
+        public const string Released = "released";
+
+        /// <summary>The host forgot the session; the gateway refused or could not be reached.</summary>
+        public const string Unconfirmed = "unconfirmed";
+    }
+
+    /// <summary>
+    /// Whether any OTHER conversation sharing <paramref name="sessionId"/> has work in hand. Asks the
+    /// pool's locked handoff read rather than <c>IsRunInProgress</c>, so an accepted-but-unstarted input
+    /// counts as busy too — that input is exactly the run this release must not pull the mount out from
+    /// under.
+    /// </summary>
+    private bool IsAnySiblingBusy(SandboxSessionRegistry registry, string? sessionId, string threadId)
+    {
+        if (sessionId is null)
+        {
+            return false;
+        }
+
+        foreach (var bound in registry.GetBoundThreads(sessionId))
+        {
+            if (
+                !string.Equals(bound, threadId, StringComparison.Ordinal)
+                && agentPool.TryGetHandoffState(bound, out var siblingState)
+                && siblingState.IsBusy
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The retryable refusal a release gets while any run sharing the session is still live. A
+    /// <c>409</c>, matching this controller's other "the conversation is busy" refusals, and the body
+    /// names only the condition — never which conversation was running.
+    /// </summary>
+    private ConflictObjectResult WorkspaceSessionBusy(string threadId)
+    {
+        logger.LogWarning(
+            "Workspace-session release for thread {ThreadId} deferred: a run sharing its session is in progress",
+            threadId
+        );
+
+        return Conflict(
+            new
+            {
+                error = WorkspaceSessionBusyCode,
+                code = WorkspaceSessionBusyCode,
+                detail = "A run using this conversation's workspace session is still in progress. Retry once it "
+                    + "has finished.",
+                retryable = true,
+                threadId,
+            }
+        );
+    }
+
+    private void LogReleased(string threadId, string? workspaceId, string outcome, int stillBound = 0) =>
+        logger.LogInformation(
+            "Released the workspace session for thread {ThreadId} (workspace {WorkspaceId}): {Outcome}, "
+                + "{StillBoundCount} other conversation(s) still bound",
+            threadId,
+            workspaceId ?? "(none)",
+            outcome,
+            stillBound
+        );
+
+    private static ReleaseWorkspaceSessionResponse ReleaseResponse(
+        string threadId,
+        string sessionOutcome,
+        string? unconfirmedReason = null
+    ) =>
+        new()
+        {
+            ThreadId = threadId,
+            Released = true,
+            SessionOutcome = sessionOutcome,
+            UnconfirmedReason = unconfirmedReason,
+            MountQuiescenceConfirmed = false,
+            MountQuiescenceEvidence = ReleaseWorkspaceSessionResponse.MountQuiescenceNotObservable,
+        };
+
+    /// <summary>
+    /// Records the release durably, preserving the conversation's messages and every other metadata
+    /// field. An already-released conversation keeps its ORIGINAL instant: the stamp answers "when was
+    /// this handed back", and a retry of an idempotent release must not rewrite that answer.
+    /// </summary>
+    private Task StampWorkspaceSessionReleasedAsync(string threadId, CancellationToken ct) =>
+        store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                var propertiesBuilder =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                if (!propertiesBuilder.ContainsKey(WorkspaceSessionReleasedAtPropertyKey))
+                {
+                    propertiesBuilder[WorkspaceSessionReleasedAtPropertyKey] = timeProvider
+                        .GetUtcNow()
+                        .ToUnixTimeMilliseconds();
+                }
+
+                // Ownership is CARRIED, not recomputed — see UpdateMetadata: this projection rebuilds the
+                // whole row, so leaving the owner columns off would unstamp the conversation and make the
+                // transcript this release exists to preserve unreadable by anyone.
+                return new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    CurrentRunId = existing?.CurrentRunId,
+                    LatestRunId = existing?.LatestRunId,
+                    LastUpdated = existing?.LastUpdated ?? timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                    SessionMappings = existing?.SessionMappings,
+                    Properties = propertiesBuilder.ToImmutable(),
+                    TenantId = existing?.TenantId,
+                    OwnerUserId = existing?.OwnerUserId,
+                    OwnerAppId = existing?.OwnerAppId,
+                    Visibility = existing?.Visibility,
+                };
+            },
+            ct
+        );
+
+    /// <summary>
+    /// True when <paramref name="metadata"/> carries the durable release stamp. Presence alone decides —
+    /// the value is a diagnostic timestamp, and a row whose value failed to round-trip as a number must
+    /// still read as released, or a serialization quirk would silently reopen the write path.
+    /// </summary>
+    internal static bool IsWorkspaceSessionReleased(ThreadMetadata? metadata) =>
+        metadata?.Properties?.ContainsKey(WorkspaceSessionReleasedAtPropertyKey) == true;
+
+    private ConflictObjectResult WorkspaceSessionReleased(string threadId, string operation)
+    {
+        logger.LogWarning(
+            "{Operation} for thread {ThreadId} rejected because its workspace session was released",
+            operation,
+            threadId
+        );
+        return Conflict(
+            new
+            {
+                error = "workspace_session_released",
+                code = WorkspaceSessionReleasedCode,
+                detail = "This conversation's workspace session has been released. Its transcript remains "
+                    + "readable, but it can no longer be continued.",
+                threadId,
+            }
+        );
+    }
+
     [HttpPost("{threadId}/mode")]
     public async Task<IActionResult> SwitchMode(
         string threadId,
@@ -1886,10 +2358,32 @@ public class ConversationsController(
             return denied;
         }
 
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (IsWorkspaceSessionReleased(metadata))
+        {
+            return WorkspaceSessionReleased(threadId, "Mode switch");
+        }
+
         var mode = await modeStore.GetModeAsync(request.ModeId, ct);
         if (mode == null)
         {
             return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+        }
+
+        var reviewScope = await ConversationReviewScope.ReadAsync(store, threadId, ct);
+        if (
+            reviewScope is not null
+            && !string.Equals(mode.Id, SystemChatModes.CodeReviewDaemonModeId, StringComparison.Ordinal)
+        )
+        {
+            return Conflict(
+                new
+                {
+                    error = "A review-scoped conversation cannot leave the code-review-daemon mode.",
+                    code = "review_scope_mode_mismatch",
+                    threadId,
+                }
+            );
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);
@@ -2038,6 +2532,12 @@ public class ConversationsController(
             return denied;
         }
 
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (IsWorkspaceSessionReleased(metadata))
+        {
+            return WorkspaceSessionReleased(threadId, "Provider switch");
+        }
+
         var runState = agentPool.GetRunStateInfo(threadId);
         if (runState.IsInProgress)
         {
@@ -2065,7 +2565,6 @@ public class ConversationsController(
         var currentMode = agentPool.GetAgentMode(threadId);
         if (currentMode == null)
         {
-            var metadata = await store.LoadMetadataAsync(threadId, ct);
             var persistedModeId =
                 metadata?.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
                     ? modeObj?.ToString()

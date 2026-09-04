@@ -22,6 +22,14 @@ internal static class SchemaMigrations
         new Migration(6, V6Sql),
         new Migration(7, V7Sql),
         new Migration(8, V8Sql),
+        new Migration(9, V9Sql),
+        new Migration(10, V10Sql),
+        new Migration(11, V11Sql),
+        new Migration(12, V12Sql),
+        new Migration(13, V13Sql),
+        new Migration(14, V14Sql),
+        new Migration(15, V15Sql),
+        new Migration(16, V16Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -285,5 +293,436 @@ internal static class SchemaMigrations
         ALTER TABLE review_run ADD COLUMN governed_failure_count INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE review_run ADD COLUMN parked_at              TEXT NULL;
         ALTER TABLE review_run ADD COLUMN park_reason            TEXT NULL;
+        """;
+
+    // ── v9: which RUN owns a hosted conversation, and whether its workspace was released ──────────
+    // The deep-link ledger already knew every conversation the daemon mints — it is written at the single
+    // mint choke point precisely because the judge and A/B arms never reach an artifact. What it did not
+    // know is which REVIEW RUN minted each one, and that is the question the pooled slot's safety turns on:
+    // an S2S conversation is a live container with the leased slot mounted into it, so returning that slot
+    // (or running host git over it, which CommitPooledNotesAsync does) while any of the run's conversations
+    // still holds the mount is the duplicate-mount / index.lock family we have been chasing. The terminal
+    // stage has a run id in hand and needs the thread ids; nothing mapped one to the other.
+    //
+    // review_run_id is NULL-able with no default and NO foreign key, both deliberately. NULL-able for v4's
+    // reason: every pre-migration row genuinely has no known owner, and a fabricated id would attribute
+    // someone else's conversation to a run and get it released underneath a live review. No FK because the
+    // ledger deliberately OUTLIVES the review (see v3) — a row whose run is later pruned must keep ageing
+    // out on its own clock rather than being cascaded away, and the mint choke point may legitimately
+    // record a conversation no run claims.
+    //
+    // released_at is the RELEASE claim, and it is a timestamp rather than a boolean so an operator can tell
+    // "released during this run's teardown" from "released by some later sweep". NULL means the workspace
+    // release is UNCONFIRMED — which is the fail-closed reading everywhere it is consumed: an unconfirmed
+    // release retires the slot instead of returning it. Stamped only on a positive, explicit host
+    // confirmation of a backend unmount; never on a bare 200, because the host's own delete path deletes
+    // its database row before a best-effort backend teardown and answers 200 either way, so a 200 alone is
+    // not evidence the mount is gone.
+    //
+    // Release is NOT deletion. The row survives release and keeps its retention clock: the posted comment's
+    // ?threadId= deep-link must go on resolving, and retention expiry stays the only thing that DELETEs a
+    // conversation.
+    //
+    // "O" round-trip UTC text like every other timestamp here, so lexicographic order is chronological.
+    private const string V9Sql = """
+        ALTER TABLE deep_link_conversation ADD COLUMN review_run_id INTEGER NULL;
+        ALTER TABLE deep_link_conversation ADD COLUMN released_at   TEXT NULL;
+
+        CREATE INDEX ix_deep_link_conversation_run ON deep_link_conversation (review_run_id);
+        """;
+
+    // ── v10: append-only pooled-slot ownership across daemon restarts ──────────────────────────────
+    // A hosted provision can mount the leased slot before its returned thread id reaches the daemon. The
+    // slot claim therefore exists BEFORE preparation or provision, while each provision call gets its own
+    // append-only intent. A null thread_id means provision may have begun but its result was lost; it is not
+    // evidence that no thread exists. Claims remain unresolved until every possible mount is positively
+    // released, or the daemon durably proves provisioning never began.
+    private const string V10Sql = """
+        CREATE TABLE review_slot_claim (
+            id             INTEGER PRIMARY KEY,
+            review_run_id  INTEGER NOT NULL REFERENCES review_run (id),
+            slot_host_path TEXT NOT NULL,
+            claimed_at     TEXT NOT NULL,
+            resolved_at    TEXT NULL
+        );
+
+        CREATE INDEX ix_review_slot_claim_unresolved
+            ON review_slot_claim (resolved_at, id);
+        CREATE INDEX ix_review_slot_claim_run
+            ON review_slot_claim (review_run_id, id);
+
+        CREATE TABLE review_provision_intent (
+            id                   INTEGER PRIMARY KEY,
+            slot_claim_id        INTEGER NOT NULL REFERENCES review_slot_claim (id),
+            review_run_id        INTEGER NOT NULL REFERENCES review_run (id),
+            provisioning_began_at TEXT NOT NULL,
+            thread_id            TEXT NULL,
+            associated_at        TEXT NULL
+        );
+
+        CREATE INDEX ix_review_provision_intent_claim
+            ON review_provision_intent (slot_claim_id, id);
+        CREATE UNIQUE INDEX ux_review_provision_intent_thread
+            ON review_provision_intent (thread_id) WHERE thread_id IS NOT NULL;
+        """;
+
+    // ── v11: distinguish conversation disablement from backend mount quiescence ─────────────────────
+    // The review host can durably disable a conversation so it accepts no send and can never remount while
+    // still being unable to observe whether the gateway tore down the old backend mount. That fact permits a
+    // resumed run to continue on a fresh address, but does not make the old address reusable. Keep it separate
+    // from released_at, whose stronger meaning remains positive backend mount quiescence.
+    //
+    // This is the next LOCAL migration after restart ownership v10. Integration must append it after the target
+    // branch's actual migration tip if another lane lands first; renumbering this isolated migration is mechanical.
+    private const string V11Sql = """
+        ALTER TABLE deep_link_conversation
+        ADD COLUMN conversation_released_at TEXT NULL;
+        """;
+
+    // ── v12: retain definitive pre-mint refusals without erasing attempt history ────────────────────
+    // An intent is appended before contacting the host. A stable host refusal can prove that request minted
+    // no conversation, but deleting its intent would erase the evidence used to make that address reusable.
+    // Retraction is therefore a separate terminal timestamp. Null remains ambiguous, while association and
+    // retraction are mutually exclusive first writes in ReviewStore.
+    private const string V12Sql = """
+        ALTER TABLE review_provision_intent
+        ADD COLUMN retracted_at TEXT NULL;
+        """;
+
+    // ── v13: one PR-level coordinator and its typed engagement rounds ───────────────────────────────
+    // review_run remains commit-identified. Its nullable round link associates only an admitted code-review
+    // round without changing that identity; discussion and merged-close rounds therefore need no fabricated run.
+    // Activity positions are canonical JSON because providers do not share one watermark shape, while the
+    // required provider/timestamp/stable-object tuple remains exact and round-trippable.
+    //
+    // The partial unique index is the database authority for the per-PR lease. Pending work has already been
+    // admitted, Running owns execution, and RetryPending owns the same round identity while awaiting recovery;
+    // no second active row may exist in any of those states.
+    private const string V13Sql = """
+        CREATE TABLE pr_engagement (
+            id                        INTEGER PRIMARY KEY,
+            repo_id                   INTEGER NOT NULL REFERENCES repo (id),
+            provider                  TEXT NOT NULL,
+            pr_id                     TEXT NOT NULL,
+            lifecycle                 TEXT NOT NULL CHECK (lifecycle IN ('Open', 'Merged', 'Closed', 'Abandoned')),
+            latest_head_sha           TEXT NOT NULL,
+            latest_base_sha           TEXT NOT NULL,
+            last_reviewed_head_sha    TEXT NULL,
+            latest_activity_json      TEXT NOT NULL,
+            consumed_activity_json    TEXT NULL,
+            last_completed_at         TEXT NULL,
+            next_eligible_at          TEXT NULL,
+            active_round_id           INTEGER NULL,
+            latest_round_id           INTEGER NULL,
+            root_summary_receipt_json TEXT NULL,
+            created_at                TEXT NOT NULL,
+            updated_at                TEXT NOT NULL,
+            UNIQUE (provider, repo_id, pr_id)
+        );
+
+        CREATE TABLE engagement_round (
+            id                         INTEGER PRIMARY KEY,
+            pr_engagement_id           INTEGER NOT NULL REFERENCES pr_engagement (id),
+            intent                     TEXT NOT NULL CHECK (intent IN ('CodeReview', 'DiscussionFollowUp', 'MergedClose')),
+            status                     TEXT NOT NULL CHECK (status IN ('Pending', 'Running', 'RetryPending', 'Completed', 'Superseded', 'Parked')),
+            head_sha                   TEXT NOT NULL,
+            base_sha                   TEXT NOT NULL,
+            activity_lower_bound_json  TEXT NULL,
+            activity_upper_bound_json  TEXT NULL,
+            prior_observation_boundary INTEGER NOT NULL,
+            review_run_id              INTEGER NULL REFERENCES review_run (id),
+            governed_failure_count     INTEGER NOT NULL DEFAULT 0 CHECK (governed_failure_count >= 0),
+            started_at                 TEXT NULL,
+            completed_at               TEXT NULL,
+            superseded_at              TEXT NULL,
+            parked_at                  TEXT NULL,
+            park_reason                TEXT NULL,
+            created_at                 TEXT NOT NULL,
+            updated_at                 TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX ux_engagement_round_one_active
+            ON engagement_round (pr_engagement_id)
+            WHERE status IN ('Pending', 'Running', 'RetryPending');
+        CREATE INDEX ix_engagement_round_engagement ON engagement_round (pr_engagement_id, id);
+
+        ALTER TABLE review_run ADD COLUMN engagement_round_id INTEGER NULL REFERENCES engagement_round (id);
+        CREATE UNIQUE INDEX ux_review_run_engagement_round
+            ON review_run (engagement_round_id)
+            WHERE engagement_round_id IS NOT NULL;
+
+        CREATE TRIGGER fk_pr_engagement_active_round_update
+        BEFORE UPDATE OF active_round_id ON pr_engagement
+        WHEN NEW.active_round_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM engagement_round
+             WHERE id = NEW.active_round_id AND pr_engagement_id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'active round must belong to engagement');
+        END;
+
+        CREATE TRIGGER fk_pr_engagement_latest_round_update
+        BEFORE UPDATE OF latest_round_id ON pr_engagement
+        WHEN NEW.latest_round_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM engagement_round
+             WHERE id = NEW.latest_round_id AND pr_engagement_id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'latest round must belong to engagement');
+        END;
+
+        """;
+
+    // ── v14: immutable, chunked model-turn audit source and versioned redactions ────────────────────
+    private const string V14Sql = """
+        CREATE TABLE audit_blob (
+            sha256     TEXT PRIMARY KEY,
+            byte_count INTEGER NOT NULL CHECK (byte_count >= 0),
+            content    BLOB NOT NULL
+        );
+
+        CREATE TABLE audit_source_record (
+            id                  TEXT PRIMARY KEY,
+            engagement_round_id INTEGER NOT NULL REFERENCES engagement_round (id),
+            thread_id           TEXT NOT NULL,
+            run_id              TEXT NOT NULL,
+            generation_id       TEXT NOT NULL,
+            parent_turn_id      TEXT NULL,
+            sequence            INTEGER NOT NULL CHECK (sequence >= 0),
+            record_type         TEXT NOT NULL,
+            role                TEXT NULL,
+            model_id            TEXT NULL,
+            provider_id         TEXT NULL,
+            content_sha256        TEXT NOT NULL,
+            byte_count            INTEGER NOT NULL CHECK (byte_count >= 0),
+            source_content_sha256 TEXT NOT NULL,
+            source_byte_count     INTEGER NOT NULL CHECK (source_byte_count >= 0),
+            capture_outcome       TEXT NOT NULL CHECK (capture_outcome IN ('Complete', 'Gap', 'Redacted')),
+            gap_reason_code     TEXT NULL,
+            captured_at         TEXT NOT NULL,
+            completed_at        TEXT NULL,
+            CHECK (
+                (capture_outcome = 'Complete' AND gap_reason_code IS NULL)
+                OR (capture_outcome IN ('Gap', 'Redacted') AND byte_count = 0 AND gap_reason_code IS NOT NULL)
+            ),
+            UNIQUE (engagement_round_id, thread_id, run_id, generation_id, sequence, record_type)
+        );
+
+        CREATE TABLE audit_source_chunk (
+            source_record_id TEXT NOT NULL REFERENCES audit_source_record (id),
+            chunk_index      INTEGER NOT NULL CHECK (chunk_index >= 0),
+            blob_sha256      TEXT NOT NULL REFERENCES audit_blob (sha256),
+            byte_offset      INTEGER NOT NULL CHECK (byte_offset >= 0),
+            byte_count       INTEGER NOT NULL CHECK (byte_count >= 0),
+            PRIMARY KEY (source_record_id, chunk_index)
+        );
+
+        CREATE TABLE audit_redaction_record (
+            id                      TEXT PRIMARY KEY,
+            source_record_id        TEXT NOT NULL REFERENCES audit_source_record (id),
+            version                 INTEGER NOT NULL CHECK (version > 0),
+            redacted_content_sha256 TEXT NOT NULL,
+            redacted_byte_count     INTEGER NOT NULL CHECK (redacted_byte_count >= 0),
+            affected_ranges_json    TEXT NOT NULL,
+            reason_code             TEXT NOT NULL,
+            created_at              TEXT NOT NULL,
+            UNIQUE (source_record_id, version)
+        );
+
+        CREATE TABLE audit_redaction_chunk (
+            redaction_record_id TEXT NOT NULL REFERENCES audit_redaction_record (id),
+            chunk_index         INTEGER NOT NULL CHECK (chunk_index >= 0),
+            blob_sha256         TEXT NOT NULL REFERENCES audit_blob (sha256),
+            byte_offset         INTEGER NOT NULL CHECK (byte_offset >= 0),
+            byte_count          INTEGER NOT NULL CHECK (byte_count >= 0),
+            PRIMARY KEY (redaction_record_id, chunk_index)
+        );
+        """;
+
+    // ── v15: typed review participation evidence with exact source links ─────────────────────────────
+    private const string V15Sql = """
+        CREATE UNIQUE INDEX ux_audit_source_record_id_hash
+            ON audit_source_record (id, content_sha256);
+
+        CREATE TABLE review_action (
+            engagement_round_id  INTEGER NOT NULL REFERENCES engagement_round (id),
+            action_id             TEXT NOT NULL,
+            kind                  TEXT NOT NULL CHECK (kind IN (
+                'CreateRootSummary', 'AppendSummaryDelta', 'SubmitInlineFindings',
+                'PostClarificationQuestion', 'ReplyToDiscussion', 'FinalizeRound')),
+            status                TEXT NOT NULL CHECK (status IN (
+                'Planned', 'CollectedOnly', 'Sending', 'Accepted', 'Rejected')),
+            payload_sha256        TEXT NOT NULL,
+            provider_target_json  TEXT NULL,
+            provider_receipt_json TEXT NULL,
+            rejection_json        TEXT NULL,
+            created_at            TEXT NOT NULL,
+            updated_at            TEXT NOT NULL,
+            PRIMARY KEY (engagement_round_id, action_id),
+            CHECK (status <> 'Accepted' OR provider_receipt_json IS NOT NULL),
+            CHECK (status <> 'Rejected' OR rejection_json IS NOT NULL)
+        );
+
+        CREATE TABLE review_action_source (
+            engagement_round_id  INTEGER NOT NULL,
+            action_id             TEXT NOT NULL,
+            source_record_id      TEXT NOT NULL,
+            source_content_sha256 TEXT NOT NULL,
+            PRIMARY KEY (engagement_round_id, action_id, source_record_id),
+            FOREIGN KEY (engagement_round_id, action_id)
+                REFERENCES review_action (engagement_round_id, action_id),
+            FOREIGN KEY (source_record_id, source_content_sha256)
+                REFERENCES audit_source_record (id, content_sha256)
+        );
+
+        CREATE TABLE clarification_question (
+            id                    TEXT PRIMARY KEY,
+            engagement_round_id   INTEGER NOT NULL REFERENCES engagement_round (id),
+            wording               TEXT NOT NULL,
+            provider_target_json  TEXT NULL,
+            file_path             TEXT NULL,
+            line                  INTEGER NULL CHECK (line IS NULL OR line > 0),
+            evidence_summary      TEXT NOT NULL,
+            withheld_conclusion   TEXT NOT NULL,
+            action_id             TEXT NULL,
+            provider_receipt_json TEXT NULL,
+            asked_at              TEXT NULL,
+            state                 TEXT NOT NULL CHECK (state IN (
+                'Open', 'Answered', 'Contested', 'Superseded', 'UnansweredAtMerge')),
+            created_at            TEXT NOT NULL,
+            updated_at            TEXT NOT NULL,
+            FOREIGN KEY (engagement_round_id, action_id)
+                REFERENCES review_action (engagement_round_id, action_id),
+            CHECK (
+                (asked_at IS NULL AND provider_receipt_json IS NULL)
+                OR (asked_at IS NOT NULL AND provider_receipt_json IS NOT NULL))
+        );
+
+        CREATE TABLE clarification_question_source (
+            question_id           TEXT NOT NULL REFERENCES clarification_question (id),
+            source_record_id      TEXT NOT NULL,
+            source_content_sha256 TEXT NOT NULL,
+            PRIMARY KEY (question_id, source_record_id),
+            FOREIGN KEY (source_record_id, source_content_sha256)
+                REFERENCES audit_source_record (id, content_sha256)
+        );
+
+        CREATE TABLE clarification_candidate_answer (
+            id                     TEXT PRIMARY KEY,
+            question_id            TEXT NOT NULL REFERENCES clarification_question (id),
+            observed_in_round_id   INTEGER NOT NULL REFERENCES engagement_round (id),
+            provider_reference_json TEXT NOT NULL,
+            interpretation_summary TEXT NOT NULL,
+            observed_at             TEXT NOT NULL
+        );
+
+        CREATE TABLE clarification_candidate_answer_source (
+            candidate_answer_id    TEXT NOT NULL REFERENCES clarification_candidate_answer (id),
+            source_record_id       TEXT NOT NULL,
+            source_content_sha256  TEXT NOT NULL,
+            PRIMARY KEY (candidate_answer_id, source_record_id),
+            FOREIGN KEY (source_record_id, source_content_sha256)
+                REFERENCES audit_source_record (id, content_sha256)
+        );
+
+        CREATE TABLE round_observation (
+            id                  TEXT PRIMARY KEY,
+            engagement_round_id INTEGER NOT NULL REFERENCES engagement_round (id),
+            sequence            INTEGER NOT NULL CHECK (sequence >= 0),
+            kind                TEXT NOT NULL CHECK (kind IN (
+                'ContextClaim', 'Finding', 'Question', 'Answer', 'Correction',
+                'DiscussionContribution', 'DeliberateNoAction', 'JudgeResult', 'Gap')),
+            summary             TEXT NOT NULL,
+            observed_at         TEXT NOT NULL,
+            UNIQUE (engagement_round_id, sequence)
+        );
+
+        CREATE TABLE round_observation_source (
+            observation_id       TEXT NOT NULL REFERENCES round_observation (id),
+            source_record_id     TEXT NOT NULL,
+            source_content_sha256 TEXT NOT NULL,
+            PRIMARY KEY (observation_id, source_record_id),
+            FOREIGN KEY (source_record_id, source_content_sha256)
+                REFERENCES audit_source_record (id, content_sha256)
+        );
+
+        CREATE TRIGGER round_observation_no_update
+        BEFORE UPDATE ON round_observation
+        BEGIN
+            SELECT RAISE(ABORT, 'round observations are append-only');
+        END;
+
+        CREATE TRIGGER round_observation_no_delete
+        BEFORE DELETE ON round_observation
+        BEGIN
+            SELECT RAISE(ABORT, 'round observations are append-only');
+        END;
+
+        CREATE TRIGGER round_observation_source_no_update
+        BEFORE UPDATE ON round_observation_source
+        BEGIN
+            SELECT RAISE(ABORT, 'round observation source links are append-only');
+        END;
+
+        CREATE TRIGGER round_observation_source_no_delete
+        BEFORE DELETE ON round_observation_source
+        BEGIN
+            SELECT RAISE(ABORT, 'round observation source links are append-only');
+        END;
+        """;
+
+    // ── v16: merged-close outcome items and their promotion results ─────────────────────────────────
+    // close_outcome_item is the persisted denominator: one row per deterministic candidate, carrying
+    // both what the analyst proposed and what the verifier independently confirmed. Reports recompute
+    // their aggregates from these rows, so a rendered count can never drift from the evidence.
+    //
+    // The evidence link repeats the (id, content_sha256) pair so a mutated source orphans the link
+    // exactly as it does for questions, actions, and observations.
+    //
+    // promotion_outcome is keyed by source observation ID and destination, which is what makes an
+    // identical promotion replay a no-op rather than a duplicate contribution.
+    private const string V16Sql = """
+        CREATE TABLE close_outcome_item (
+            engagement_round_id      INTEGER NOT NULL REFERENCES engagement_round (id),
+            candidate_id             TEXT NOT NULL,
+            kind                     TEXT NOT NULL CHECK (kind IN (
+                'Question', 'Finding', 'SubstantiveContribution', 'ProviderAction')),
+            summary                  TEXT NOT NULL,
+            proposed_label           TEXT NULL,
+            verified_label           TEXT NOT NULL CHECK (verified_label IN (
+                'Indeterminate', 'Confirmed', 'Addressed', 'NotAddressed', 'Novel', 'IndependentlyRaised')),
+            verification_reason_code TEXT NOT NULL,
+            observed_at              TEXT NOT NULL,
+            PRIMARY KEY (engagement_round_id, candidate_id),
+            CHECK (verified_label <> 'Indeterminate' OR verification_reason_code <> '')
+        );
+
+        CREATE TABLE close_outcome_item_source (
+            engagement_round_id   INTEGER NOT NULL,
+            candidate_id          TEXT NOT NULL,
+            source_record_id      TEXT NOT NULL,
+            source_content_sha256 TEXT NOT NULL,
+            PRIMARY KEY (engagement_round_id, candidate_id, source_record_id),
+            FOREIGN KEY (engagement_round_id, candidate_id)
+                REFERENCES close_outcome_item (engagement_round_id, candidate_id) ON DELETE CASCADE,
+            FOREIGN KEY (source_record_id, source_content_sha256)
+                REFERENCES audit_source_record (id, content_sha256)
+        );
+
+        CREATE TABLE promotion_outcome (
+            engagement_round_id     INTEGER NOT NULL REFERENCES engagement_round (id),
+            source_observation_id   TEXT NOT NULL,
+            destination_kind        TEXT NOT NULL CHECK (destination_kind IN (
+                'KnowledgeBase', 'DeveloperLearnings')),
+            disposition             TEXT NOT NULL CHECK (disposition IN ('Written', 'Declined', 'Failed')),
+            destination_path        TEXT NULL,
+            destination_content_sha256 TEXT NULL,
+            reason_code             TEXT NULL,
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL,
+            PRIMARY KEY (engagement_round_id, source_observation_id, destination_kind),
+            CHECK (disposition <> 'Written' OR (destination_path IS NOT NULL AND destination_content_sha256 IS NOT NULL)),
+            CHECK (disposition = 'Written' OR reason_code IS NOT NULL)
+        );
         """;
 }

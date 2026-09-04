@@ -301,7 +301,7 @@ public sealed class JudgeHarnessAdapterTests
         );
 
         var artifact = store.GetArtifacts(reviewRunId).Should().ContainSingle().Subject;
-        artifact.ArtifactSchemaVersion.Should().Be(2);
+        artifact.ArtifactSchemaVersion.Should().Be(JudgeAgent.JudgeArtifactSchemaVersion);
 
         using var payload = JsonDocument.Parse(artifact.Payload);
         payload.RootElement.GetProperty("JudgeModelId").GetString().Should().Be(judgeModelId);

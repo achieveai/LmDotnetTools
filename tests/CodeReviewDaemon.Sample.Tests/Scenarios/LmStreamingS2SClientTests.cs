@@ -1,8 +1,11 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Text;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Time.Testing;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -19,6 +22,63 @@ public sealed class LmStreamingS2SClientTests
 {
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+    /// <summary>
+    /// A client whose retry backoff is RECORDED instead of slept. The claim these tests make is about the
+    /// duration the client decided on — asserting it as a value is both exact and instant, where sleeping
+    /// for it would prove less (elapsed time cannot distinguish "waited 4s because the host said so" from
+    /// "waited 4s because the schedule happened to land there") and cost seconds per case.
+    /// </summary>
+    private static (LmStreamingS2SClient Client, List<TimeSpan> Delays) NewRetryingClient(
+        HttpClient http,
+        TimeProvider? clock = null
+    )
+    {
+        var delays = new List<TimeSpan>();
+        var client = new LmStreamingS2SClient(
+            http,
+            "s",
+            "id",
+            "key",
+            clock,
+            (delay, _) =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            }
+        );
+        return (client, delays);
+    }
+
+    private static bool IsMessageSend(HttpRequestMessage request) =>
+        request.Method == HttpMethod.Post
+        && request.RequestUri!.ToString().Contains("/messages", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Answers successive matching requests from <paramref name="responses"/> in order, repeating the last.
+    /// <c>FakeHttpMessageHandler.OnSequence</c> does the same for status+body pairs but cannot set response
+    /// HEADERS, which is exactly what a <c>Retry-After</c> case needs.
+    /// </summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> Sequenced(
+        params Func<HttpRequestMessage, HttpResponseMessage>[] responses
+    )
+    {
+        var index = 0;
+        return request => responses[Math.Min(index++, responses.Length - 1)](request);
+    }
+
+    private static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    private static HttpResponseMessage Transient(string code, RetryConditionHeaderValue? retryAfter = null)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent($"{{\"code\":\"{code}\"}}", Encoding.UTF8, "application/json"),
+        };
+        response.Headers.RetryAfter = retryAfter;
+        return response;
+    }
 
     [Fact]
     public async Task ProvisionAsync_sends_workspace_agent_mode_and_attaches_the_auth_headers()
@@ -54,7 +114,8 @@ public sealed class LmStreamingS2SClientTests
             "REVIEW METHODOLOGY",
             "gpt-5.6-sol",
             "xhigh",
-            CancellationToken.None
+            CancellationToken.None,
+            reviewScope: new ReviewConversationScope("17", "31")
         );
 
         threadId.Should().Be("thread-abc123");
@@ -78,7 +139,8 @@ public sealed class LmStreamingS2SClientTests
             .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"")
             // Root effort is also conversation-scoped. It must cross S2S instead of falling back to the
             // provider default, which is only medium for the deployed GPT-5.6 models.
-            .And.Contain("\"reasoningEffort\":\"xhigh\"");
+            .And.Contain("\"reasoningEffort\":\"xhigh\"")
+            .And.Contain("\"reviewScope\":{\"engagementId\":\"17\",\"roundId\":\"31\"}");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
@@ -114,11 +176,13 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
-    public async Task ProvisionAsync_deletes_a_minted_thread_when_effort_acknowledgement_is_missing()
+    public async Task ProvisionAsync_does_not_delete_a_minted_thread_when_effort_acknowledgement_is_missing()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-old-host\"}")
-            .OnJson(HttpMethod.Delete, "api/conversations/thread-old-host", "{}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-old-host\"}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -136,10 +200,38 @@ public sealed class LmStreamingS2SClientTests
         _ = await act.Should().ThrowAsync<ReviewHostContractException>();
         handler
             .Requests.Should()
-            .ContainSingle(r =>
-                r.Method == HttpMethod.Delete
-                && r.Uri.ToString().EndsWith("api/conversations/thread-old-host", StringComparison.Ordinal)
+            .NotContain(
+                r => r.Method == HttpMethod.Delete,
+                "the parsed thread id must be durably associated and settled through workspace release"
             );
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_associates_the_parsed_thread_before_later_contract_validation()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-associated\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var associated = new List<string>();
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "xhigh",
+                CancellationToken.None,
+                onThreadIdParsed: associated.Add
+            );
+
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>();
+        associated.Should().Equal("thread-associated");
     }
 
     [Fact]
@@ -168,6 +260,108 @@ public sealed class LmStreamingS2SClientTests
         var thrown = await act.Should().ThrowAsync<ReviewHostContractException>();
         thrown.Which.Message.Should().Contain("reasoning_effort_invalid");
         thrown.Which.Message.Should().Contain("turbo");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "reasoning_effort_invalid")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "provider_unavailable")]
+    [InlineData(HttpStatusCode.NotFound, "workspace_not_found")]
+    [InlineData(HttpStatusCode.NotFound, "mode_not_found")]
+    public async Task ProvisionAsync_classifies_only_stable_pre_mint_refusals(HttpStatusCode status, string code)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            $"{{\"error\":\"refused\",\"code\":\"{code}\"}}",
+            status
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+        var parsed = new List<string>();
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "xhigh",
+                CancellationToken.None,
+                parsed.Add
+            );
+
+        var thrown = await act.Should().ThrowAsync<ReviewHostPreMintRefusalException>();
+        thrown.Which.Code.Should().Be(code);
+        parsed.Should().BeEmpty("a pre-mint refusal has no thread id to associate");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "{\"code\":\"sandbox_unavailable\"}")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "{\"code\":\"unknown_proxy_code\"}")]
+    [InlineData(HttpStatusCode.NotFound, "{\"error\":\"legacy host\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "not-json")]
+    public async Task ProvisionAsync_keeps_unknown_or_ambiguous_failures_non_definitive(
+        HttpStatusCode status,
+        string body
+    )
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "api/conversations", body, status);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        var exception = await Record.ExceptionAsync(() =>
+            client.ProvisionAsync(
+                "ws-1",
+                "gpt-5.6-sol",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: "xhigh",
+                CancellationToken.None
+            )
+        );
+
+        exception.Should().NotBeNull();
+        exception.Should().NotBeOfType<ReviewHostPreMintRefusalException>();
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_sends_the_host_derived_publication_scope_collect_only()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-publication\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s2s-secret", "review-daemon", "sandbox-key");
+
+        _ = await client.ProvisionAsync(
+            "ws-1",
+            "openai",
+            "workspace-agent",
+            "REVIEW METHODOLOGY",
+            "gpt-5.6-sol",
+            reasoningEffort: null,
+            ct: CancellationToken.None,
+            reviewScope: new ReviewConversationScope("17", "31"),
+            publicationScope: new ReviewPublicationConversationScope(
+                31,
+                "github",
+                9,
+                "118",
+                "head-sha",
+                LivePostingAuthorized: false
+            )
+        );
+
+        var body = handler.Requests.Should().ContainSingle().Subject.Body;
+        body.Should()
+            .Contain(
+                "\"reviewPublicationScope\":{\"roundId\":31,\"provider\":\"github\",\"repoId\":9,"
+                    + "\"prId\":\"118\",\"expectedHeadSha\":\"head-sha\",\"livePostingAuthorized\":false}"
+            );
     }
 
     [Fact]
@@ -201,6 +395,7 @@ public sealed class LmStreamingS2SClientTests
         recorded.Body.Should().Contain("\"subAgentModelId\":null");
         // Null means "use the host/provider default" and must stay distinct from explicit empty below.
         recorded.Body.Should().Contain("\"reasoningEffort\":null");
+        recorded.Body.Should().Contain("\"reviewScope\":null");
     }
 
     [Fact]
@@ -289,6 +484,25 @@ public sealed class LmStreamingS2SClientTests
         thrown.Which.Message.Should().Contain("code-review-daemon", "the message must name the configured mode id");
         thrown.Which.Message.Should().Contain("http://localhost:5051", "the message must name the review host");
         thrown.Which.Message.Should().Contain("LmStreamingModeId", "the message must point at the config key to fix");
+    }
+
+    [Fact]
+    public async Task GetReviewScopeAsync_reads_the_immutable_scope_from_a_hosted_conversation()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/conversations/thread-1/review-scope",
+            "{\"engagementId\":\"17\",\"roundId\":\"31\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s2s-secret", "review-daemon", "sandbox-key");
+
+        var scope = await client.GetReviewScopeAsync("thread-1", CancellationToken.None);
+
+        scope.Should().Be(new ReviewConversationScope("17", "31"));
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Body.Should().BeNull();
+        request.SbxAppKey.Should().Be("sandbox-key");
     }
 
     [Fact]
@@ -510,6 +724,307 @@ public sealed class LmStreamingS2SClientTests
             );
 
         _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*idempotencyKeyHonored*");
+    }
+
+    /// <summary>
+    /// The one-transient-response case the whole retry exists for: the host answered <c>503</c> with a
+    /// documented transient code, and its own contract for that code is that NOTHING was queued. Re-sending
+    /// under the same idempotency key therefore cannot duplicate the turn, and the review survives instead
+    /// of being abandoned mid-stage over a condition the host explicitly labelled retryable.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_with_an_idempotency_key_survives_one_transient_sandbox_unavailable()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "/messages",
+            (HttpStatusCode.ServiceUnavailable, "{\"error\":\"sandbox_unavailable\",\"code\":\"sandbox_unavailable\"}"),
+            (HttpStatusCode.OK, "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var inputId = await client.SendMessageAsync(
+            "thread-1",
+            "review this PR",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: "turn-key-1",
+            CancellationToken.None
+        );
+
+        // ONE input id, from TWO wire attempts — the whole point. A duplicate would show up here as a
+        // second distinct id, and as a second review turn on the host.
+        inputId.Should().Be("input-1");
+        handler.CountRequests("/messages").Should().Be(2);
+        delays.Should().ContainSingle().Which.Should().Be(TimeSpan.FromSeconds(1), "the host named no delay");
+    }
+
+    /// <summary>
+    /// The boundary that keeps the retry safe. The identical transient response, the identical route — only
+    /// the key is gone, and with it the host's ability to reconcile a repeat. A second attempt here would
+    /// queue a second minutes-long, sub-agent-fanning review turn, so there must not be one.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_without_an_idempotency_key_is_never_retried()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "/messages",
+            (HttpStatusCode.ServiceUnavailable, "{\"error\":\"sandbox_unavailable\",\"code\":\"sandbox_unavailable\"}"),
+            (HttpStatusCode.OK, "{\"inputId\":\"input-1\"}")
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "review this PR",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: null,
+                CancellationToken.None
+            );
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/messages").Should().Be(1);
+        delays.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A whitespace key is not an idempotency guarantee — the host would store a blank and mint its own id
+    /// anyway — so it must gate the retry exactly as a missing key does. Written separately because
+    /// <c>!= null</c> and <c>not blank</c> are different predicates and only one of them is correct here.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_with_a_blank_idempotency_key_is_never_retried()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "/messages",
+            (HttpStatusCode.ServiceUnavailable, "{\"code\":\"sandbox_unavailable\"}"),
+            (HttpStatusCode.OK, "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+        );
+        using var http = NewHttp(handler);
+        var (client, _) = NewRetryingClient(http);
+
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "review this PR",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: "   ",
+                CancellationToken.None
+            );
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/messages").Should().Be(1);
+    }
+
+    /// <summary>
+    /// When the host names a wait, that wait is what happens — asserted as the VALUE handed to the delay,
+    /// not as elapsed time, so the claim is exact and the test does not sleep for it.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_delta_is_obeyed_verbatim_rather_than_backed_off_from()
+    {
+        var handler = new FakeHttpMessageHandler().On(
+            IsMessageSend,
+            Sequenced(
+                _ => Transient("queue_full", retryAfter: new RetryConditionHeaderValue(TimeSpan.FromSeconds(4))),
+                _ => Json("{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+            )
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        _ = await client.SendMessageAsync("thread-1", "go", false, "turn-key-1", CancellationToken.None);
+
+        // 4s, NOT the 1s first backoff step — so this cannot pass by accident on the default schedule.
+        delays.Should().Equal(TimeSpan.FromSeconds(4));
+    }
+
+    /// <summary>
+    /// The date form of the same header, resolved against the injected clock. Kept as a separate case
+    /// because it is a separate parse: a client that only reads delta-seconds silently falls back to its
+    /// own backoff here, which looks identical to success from the outside.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_http_date_is_resolved_against_the_clock()
+    {
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var clock = new FakeTimeProvider(now);
+        var handler = new FakeHttpMessageHandler().On(
+            IsMessageSend,
+            Sequenced(
+                _ =>
+                    Transient(
+                        "agent_replaced",
+                        retryAfter: new RetryConditionHeaderValue(now.AddSeconds(6).UtcDateTime)
+                    ),
+                _ => Json("{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+            )
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http, clock);
+
+        _ = await client.SendMessageAsync("thread-1", "go", false, "turn-key-1", CancellationToken.None);
+
+        delays.Should().Equal(TimeSpan.FromSeconds(6));
+    }
+
+    /// <summary>
+    /// A wait longer than this client's cap is not shortened to the cap — the attempt is abandoned. Waiting
+    /// less than the host asked for is precisely the behaviour <c>Retry-After</c> exists to prevent, and the
+    /// caller's stage deadline is a better place to spend the time than a queue the host told us to leave
+    /// alone.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_longer_than_the_cap_abandons_the_retry_instead_of_shortening_it()
+    {
+        var handler = new FakeHttpMessageHandler().On(
+            IsMessageSend,
+            Sequenced(
+                _ => Transient("queue_full", retryAfter: new RetryConditionHeaderValue(TimeSpan.FromMinutes(5))),
+                _ => Json("{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+            )
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var act = () => client.SendMessageAsync("thread-1", "go", false, "turn-key-1", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/messages").Should().Be(1);
+        delays.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// <c>503</c> is not a synonym for "transient" on this host: it is also how a configuration answer
+    /// arrives. <c>provider_unavailable</c> will be identical on every attempt, so retrying it spends the
+    /// review's deadline to reach the same conclusion.
+    /// </summary>
+    [Theory]
+    // A code this client has not been told the queueing behaviour of.
+    [InlineData("{\"error\":\"provider_unavailable\",\"code\":\"provider_unavailable\"}")]
+    // No code at all — an unrecognized 503 is not evidence that a repeat is safe.
+    [InlineData("{\"error\":\"something went wrong\"}")]
+    // Not even JSON: an unparseable body cannot vouch for anything either.
+    [InlineData("service unavailable")]
+    public async Task A_503_that_is_not_a_documented_transient_is_not_retried(string body)
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "/messages",
+            (HttpStatusCode.ServiceUnavailable, body),
+            (HttpStatusCode.OK, "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+        );
+        using var http = NewHttp(handler);
+        var (client, _) = NewRetryingClient(http);
+
+        var act = () => client.SendMessageAsync("thread-1", "go", false, "turn-key-1", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/messages").Should().Be(1);
+    }
+
+    /// <summary>
+    /// Nothing outside <c>429</c>/<c>503</c> is retried at all, however idempotent the call is. A 500 is an
+    /// unhandled failure whose queueing behaviour the host has not characterised.
+    /// </summary>
+    [Fact]
+    public async Task A_500_is_not_retried_even_for_a_keyed_send()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "/messages",
+            (HttpStatusCode.InternalServerError, "{\"code\":\"sandbox_unavailable\"}"),
+            (HttpStatusCode.OK, "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}")
+        );
+        using var http = NewHttp(handler);
+        var (client, _) = NewRetryingClient(http);
+
+        var act = () => client.SendMessageAsync("thread-1", "go", false, "turn-key-1", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/messages").Should().Be(1);
+    }
+
+    /// <summary>
+    /// A read carries no side effect at all, so it needs no key to be repeatable — and a status poll that
+    /// dies on a single throttle takes the whole review with it. <c>429</c> also proves the status alone is
+    /// enough here: it names no code, and none is required, because the status itself means "ask again".
+    /// </summary>
+    [Fact]
+    public async Task A_status_read_is_retried_through_a_throttle_without_any_idempotency_key()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Get,
+            "/status",
+            (HttpStatusCode.TooManyRequests, "{}"),
+            (HttpStatusCode.OK, "{\"status\":\"Completed\",\"runId\":\"run-1\"}")
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
+
+        status.Status.Should().Be("Completed");
+        handler.CountRequests("/status").Should().Be(2);
+        delays.Should().ContainSingle().Which.Should().Be(TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>
+    /// Bounded, not persistent: a host answering transiently forever is not having a blip, and each extra
+    /// attempt is time the daemon's stage deadline does not get back. Three attempts total, two waits.
+    /// </summary>
+    [Fact]
+    public async Task A_persistently_transient_host_is_retried_a_bounded_number_of_times_then_fails()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/status",
+            "{\"code\":\"sandbox_unavailable\"}",
+            HttpStatusCode.ServiceUnavailable
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var act = () => client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("/status").Should().Be(3);
+        delays.Should().Equal(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2));
+    }
+
+    /// <summary>
+    /// A provision mints a conversation, so a repeat mints a SECOND one — there is no key to reconcile it
+    /// against. It stays at one attempt however transient the host's answer looks.
+    /// </summary>
+    [Fact]
+    public async Task Provisioning_is_never_retried_because_a_repeat_would_mint_a_second_conversation()
+    {
+        var handler = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Post,
+            "api/conversations",
+            (HttpStatusCode.ServiceUnavailable, "{\"code\":\"sandbox_unavailable\"}"),
+            (HttpStatusCode.OK, "{\"threadId\":\"thread-abc\",\"reasoningEffortAccepted\":true}")
+        );
+        using var http = NewHttp(handler);
+        var (client, _) = NewRetryingClient(http);
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "openai",
+                "workspace-agent",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                reasoningEffort: null,
+                CancellationToken.None
+            );
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+        handler.CountRequests("api/conversations").Should().Be(1);
     }
 
     /// <summary>An ordinary send asks for nothing, so an un-acknowledging host is fine.</summary>
@@ -945,6 +1460,147 @@ public sealed class LmStreamingS2SClientTests
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
+    [Fact]
+    public async Task ReleaseWorkspaceAsync_recognizes_the_stable_unknown_thread_refusal()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            "{\"code\":\"unknown_thread\",\"message\":\"Conversation not found.\"}",
+            HttpStatusCode.NotFound
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.ConversationMissing);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.MethodNotAllowed)]
+    public async Task ReleaseWorkspaceAsync_keeps_route_absence_distinct_from_unknown_thread(HttpStatusCode status)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "workspace-session/release", "{}", status);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.Unsupported);
+    }
+
+    [Fact]
+    public async Task ReleaseWorkspaceAsync_distinguishes_a_disabled_conversation_from_backend_quiescence()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            """
+            {
+              "released": true,
+              "sessionOutcome": "released",
+              "mountQuiescenceConfirmed": false,
+              "mountQuiescenceEvidence": "gateway_does_not_report_backend_teardown"
+            }
+            """
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.ConversationReleased);
+    }
+
+    [Theory]
+    [InlineData("{\"released\":false}")]
+    [InlineData("{\"sessionOutcome\":\"released\"}")]
+    [InlineData("released")]
+    [InlineData("{\"released\":true}")]
+    [InlineData("{\"released\":true,\"sessionOutcome\":\"retained\"}")]
+    [InlineData("{\"released\":true,\"sessionOutcome\":\"unconfirmed\"}")]
+    [InlineData("{\"released\":true,\"sessionOutcome\":\"future_outcome\"}")]
+    [InlineData("{\"workspaceUnmounted\":true}")]
+    [InlineData("{\"released\":true,\"workspaceUnmounted\":true}")]
+    public async Task ReleaseWorkspaceAsync_leaves_unproven_success_responses_unconfirmed(string body)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "workspace-session/release", body);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.Unconfirmed);
+    }
+
+    [Theory]
+    [InlineData("released")]
+    [InlineData("nothing_to_release")]
+    public async Task ReleaseWorkspaceAsync_accepts_only_known_logical_release_outcomes(string sessionOutcome)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            $"{{\"released\":true,\"sessionOutcome\":\"{sessionOutcome}\"}}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.ConversationReleased);
+    }
+
+    [Fact]
+    public async Task ReleaseWorkspaceAsync_does_not_treat_fictional_workspace_unmounted_as_backend_proof()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            "{\"released\":true,\"sessionOutcome\":\"released\",\"workspaceUnmounted\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.ConversationReleased);
+    }
+
+    [Fact]
+    public async Task ReleaseWorkspaceAsync_requires_logical_release_before_accepting_backend_quiescence()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            "{\"released\":true,\"mountQuiescenceConfirmed\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.Unconfirmed);
+    }
+
+    [Fact]
+    public async Task ReleaseWorkspaceAsync_preserves_positive_backend_quiescence_as_released()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "workspace-session/release",
+            "{\"released\":true,\"sessionOutcome\":\"released\",\"mountQuiescenceConfirmed\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.ReleaseWorkspaceAsync("thread-root", CancellationToken.None);
+
+        result.Outcome.Should().Be(S2SWorkspaceReleaseOutcome.Released);
+    }
+
     /// <summary>
     /// The injected client's <see cref="HttpClient.Timeout"/> is the operative per-request deadline: a review
     /// host that has accepted the connection and is still working is abandoned when it elapses, with
@@ -1017,6 +1673,56 @@ public sealed class LmStreamingS2SClientTests
         handler.Release("{\"inputId\":\"input-1\"}");
 
         (await send).Should().Be("input-1", "a slow but legitimate turn must survive its transport budget");
+    }
+
+    /// <summary>
+    /// Reading retry metadata is an abandoned-response path. It must dispose the response even when decoding
+    /// the body throws before a retry decision can be made.
+    /// </summary>
+    [Fact]
+    public async Task A_transient_response_whose_charset_cannot_be_read_is_still_disposed()
+    {
+        var content = new DisposalTrackingContent("{\"code\":\"queue_full\"}", "definitely-not-a-charset");
+        var handler = new FakeHttpMessageHandler().On(
+            request => request.Method == HttpMethod.Get && request.RequestUri!.ToString().Contains("/status"),
+            _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = content }
+        );
+        using var http = NewHttp(handler);
+        var (client, delays) = NewRetryingClient(http);
+
+        var act = () => client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        content.Disposed.Should().BeTrue("the client owns the response it abandons");
+        delays.Should().BeEmpty("an unreadable body is not evidence that retrying is safe");
+    }
+
+    private sealed class DisposalTrackingContent : HttpContent
+    {
+        private readonly byte[] _body;
+
+        public DisposalTrackingContent(string body, string charSet)
+        {
+            _body = Encoding.UTF8.GetBytes(body);
+            Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = charSet };
+        }
+
+        public bool Disposed { get; private set; }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(_body, 0, _body.Length);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _body.Length;
+            return true;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
     }
 
     /// <summary>

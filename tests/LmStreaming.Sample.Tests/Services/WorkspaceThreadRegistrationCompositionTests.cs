@@ -209,9 +209,17 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
                 services.AddSingleton<IWorkspaceStore>(new FileWorkspaceStore(Path.Combine(_root, "workspaces")));
 
                 // WorkspaceCatalogCompatibilityService is a plain ctor-injected singleton, so replacing
-                // the client it depends on is enough to fake the whole catalog.
+                // the clients it depends on is enough to fake the whole catalog. BOTH seams have to be
+                // replaced, not just the browse one: the service reads the session seam for anything that
+                // STARTS a sandbox session, so leaving that registration in place (or leaving the slot
+                // empty for the host to fill) points the fail-closed path at the real gateway — which in
+                // this fixture is a closed loopback port, so the session validation fails and takes the
+                // registration assertion below down with it. Replacing only the interface the test
+                // happens to know about is how a composition test starts depending on the network.
                 services.RemoveAll<IMarketplaceCatalogClient>();
                 services.AddSingleton<IMarketplaceCatalogClient>(new StubCatalogClient());
+                services.RemoveAll<ISessionMarketplaceCatalogClient>();
+                services.AddSingleton<ISessionMarketplaceCatalogClient>(new StubSessionCatalogClient());
 
                 // RemoveAll + AddSingleton is last-wins; the AddHostedService wrapper still resolves the
                 // replacement lifetime singleton.
@@ -302,17 +310,30 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
         public Task<MarketplaceCatalog> GetCatalogAsync(
             IReadOnlyList<string>? marketplaces = null,
             CancellationToken ct = default
-        ) =>
-            Task.FromResult(
-                new MarketplaceCatalog(
-                    [Marketplace],
-                    [new CatalogMarketplace(Marketplace, null, [new CatalogPlugin("code-review", null, "", [], [])])]
-                )
-                {
-                    Capabilities = new MarketplaceCapabilities(true),
-                }
-            );
+        ) => Task.FromResult(FakeCatalog());
     }
+
+    /// <summary>
+    /// The same catalog behind the SESSION seam. A separate type rather than one object registered twice,
+    /// because the production seams are separate types and a double satisfying both at once could not show
+    /// which registration the host actually resolved.
+    /// </summary>
+    private sealed class StubSessionCatalogClient : ISessionMarketplaceCatalogClient
+    {
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        ) => Task.FromResult(FakeCatalog());
+    }
+
+    private static MarketplaceCatalog FakeCatalog() =>
+        new(
+            [Marketplace],
+            [new CatalogMarketplace(Marketplace, null, [new CatalogPlugin("code-review", null, "", [], [])])]
+        )
+        {
+            Capabilities = new MarketplaceCapabilities(true),
+        };
 
     /// <summary>
     /// Minimal in-memory sandbox gateway. Records the session ids handed out and the ones deleted, not

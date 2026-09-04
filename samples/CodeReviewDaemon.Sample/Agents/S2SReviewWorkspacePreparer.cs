@@ -62,7 +62,7 @@ internal sealed class S2SReviewWorkspacePreparer
     /// Derives the leaf, host-clones the PR checkout under the shared workspace base, and ensures the
     /// LmStreaming workspace points at it. Returns the prepared leaf + minted/reused workspace id.
     /// </summary>
-    public async Task<PreparedReviewWorkspace> PrepareAsync(
+    public Task<PreparedReviewWorkspace> PrepareAsync(
         ReviewRun run,
         RepoIdentity repo,
         string provider,
@@ -70,25 +70,64 @@ internal sealed class S2SReviewWorkspacePreparer
     )
     {
         ArgumentNullException.ThrowIfNull(run);
-        ArgumentNullException.ThrowIfNull(repo);
+        return PrepareCheckoutAsync(
+            repo,
+            provider,
+            run.PrId,
+            run.BaseSha,
+            run.HeadSha,
+            "Review PR #{0}",
+            cancellationToken
+        );
+    }
 
-        var leaf = DeriveLeaf(repo, provider, run.PrId);
+    /// <summary>
+    /// Prepares the durable exact-head checkout used by a run-less discussion follow-up. It deliberately
+    /// takes immutable PR values rather than a <see cref="ReviewRun"/>: unchanged-head discussion rounds own
+    /// no review run and must not fabricate one or borrow a run-owned pool slot.
+    /// </summary>
+    internal Task<PreparedReviewWorkspace> PrepareDiscussionAsync(
+        RepoIdentity repo,
+        string provider,
+        string prId,
+        string baseSha,
+        string headSha,
+        CancellationToken cancellationToken
+    ) => PrepareCheckoutAsync(repo, provider, prId, baseSha, headSha, "Discussion PR #{0}", cancellationToken);
+
+    private async Task<PreparedReviewWorkspace> PrepareCheckoutAsync(
+        RepoIdentity repo,
+        string provider,
+        string prId,
+        string baseSha,
+        string headSha,
+        string workspaceNameFormat,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(provider);
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseSha);
+        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+
+        var leaf = DeriveLeaf(repo, provider, prId);
         var hostDir = $"{_workspaceBasePath.TrimEnd('/', '\\')}/{leaf}";
         var remote = TargetRemoteUrl(repo, provider);
 
         _logger.LogInformation(
             "Preparing S2S review workspace for PR {PrId}: leaf '{Leaf}', host dir '{HostDir}'.",
-            run.PrId,
+            prId,
             leaf,
             hostDir
         );
 
-        await CloneCheckoutAsync(remote, hostDir, run, cancellationToken).ConfigureAwait(false);
+        await CloneCheckoutAsync(remote, hostDir, prId, baseSha, headSha, cancellationToken).ConfigureAwait(false);
 
-        var name = string.Format(CultureInfo.InvariantCulture, "Review PR #{0}", run.PrId);
+        var name = string.Format(CultureInfo.InvariantCulture, workspaceNameFormat, prId);
         var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken).ConfigureAwait(false);
 
-        return new PreparedReviewWorkspace(leaf, workspaceId, hostDir, run.PrId);
+        return new PreparedReviewWorkspace(leaf, workspaceId, hostDir, prId);
     }
 
     /// <summary>
@@ -204,7 +243,9 @@ internal sealed class S2SReviewWorkspacePreparer
     private async Task CloneCheckoutAsync(
         string remote,
         string hostDir,
-        ReviewRun run,
+        string prId,
+        string baseSha,
+        string headSha,
         CancellationToken cancellationToken
     )
     {
@@ -223,7 +264,7 @@ internal sealed class S2SReviewWorkspacePreparer
             if (entries.Succeeded && !string.IsNullOrWhiteSpace(entries.Stdout))
             {
                 throw new InvalidOperationException(
-                    $"Existing checkout probe for PR {run.PrId} at '{hostDir}' failed (exit {probe.ExitCode}): "
+                    $"Existing checkout probe for PR {prId} at '{hostDir}' failed (exit {probe.ExitCode}): "
                         + probe.Stderr
                 );
             }
@@ -234,28 +275,28 @@ internal sealed class S2SReviewWorkspacePreparer
             if (!clone.Succeeded)
             {
                 throw new InvalidOperationException(
-                    $"Cloning '{remote}' for PR {run.PrId} into '{hostDir}' failed (exit {clone.ExitCode}): {clone.Stderr}"
+                    $"Cloning '{remote}' for PR {prId} into '{hostDir}' failed (exit {clone.ExitCode}): {clone.Stderr}"
                 );
             }
         }
 
         var fetch = await _hostGit
-            .RunAsync(["-C", hostDir, "fetch", "origin", run.BaseSha, run.HeadSha], hostDir, cancellationToken)
+            .RunAsync(["-C", hostDir, "fetch", "origin", baseSha, headSha], hostDir, cancellationToken)
             .ConfigureAwait(false);
         if (!fetch.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Fetching the PR commits for PR {run.PrId} failed (exit {fetch.ExitCode}): {fetch.Stderr}"
+                $"Fetching the PR commits for PR {prId} failed (exit {fetch.ExitCode}): {fetch.Stderr}"
             );
         }
 
         var checkout = await _hostGit
-            .RunAsync(["-C", hostDir, "checkout", "--force", run.HeadSha], hostDir, cancellationToken)
+            .RunAsync(["-C", hostDir, "checkout", "--force", headSha], hostDir, cancellationToken)
             .ConfigureAwait(false);
         if (!checkout.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Checking out the PR head for PR {run.PrId} failed (exit {checkout.ExitCode}): {checkout.Stderr}"
+                $"Checking out the PR head for PR {prId} failed (exit {checkout.ExitCode}): {checkout.Stderr}"
             );
         }
     }

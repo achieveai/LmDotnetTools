@@ -35,8 +35,33 @@ public sealed class GatewaySkillProbeTests
 
         support.IsSupported.Should().BeTrue();
         support.HasReviewSkill.Should().BeTrue();
+        support.HasContextGatherer.Should().BeTrue();
         support.ReviewerAgentCount.Should().Be(16);
         support.MarketplaceErrors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Probe_ContextGathererMissing_IsNotSupported()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            PreviewUrl,
+            Catalog(
+                Marketplace(
+                    "gb-plugins",
+                    error: null,
+                    ReviewerPlugin(skills: ["pr-review"], agentNames: ["architecture-review", "test-review"])
+                )
+            )
+        );
+        await using var probe = BuildProbe(handler);
+
+        var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
+
+        support.IsSupported.Should().BeFalse();
+        support.HasReviewSkill.Should().BeTrue();
+        support.HasContextGatherer.Should().BeFalse();
+        support.Describe().Should().Contain("code-reviewer:pr-context-gatherer").And.Contain("MISSING");
     }
 
     [Fact]
@@ -164,7 +189,13 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, Plugin("Code-Reviewer", ["PR-Review"], agents: 4)))
+            Catalog(
+                Marketplace(
+                    "gb-plugins",
+                    error: null,
+                    Plugin("Code-Reviewer", ["PR-Review"], ["agent-0", "PR-CONTEXT-GATHERER"])
+                )
+            )
         );
         await using var probe = BuildProbe(handler);
 
@@ -255,14 +286,28 @@ public sealed class GatewaySkillProbeTests
             )}}]}
             """;
 
-    private static string ReviewerPlugin(IReadOnlyList<string> skills, int agents) =>
-        Plugin("code-reviewer", skills, agents);
+    private static string ReviewerPlugin(IReadOnlyList<string> skills, int agents)
+    {
+        var names = Enumerable.Range(0, agents).Select(i => $"agent-{i}").ToArray();
+        if (names.Length > 0)
+        {
+            names[^1] = "pr-context-gatherer";
+        }
+
+        return ReviewerPlugin(skills, names);
+    }
+
+    private static string ReviewerPlugin(IReadOnlyList<string> skills, IReadOnlyList<string> agentNames) =>
+        Plugin("code-reviewer", skills, agentNames);
 
     private static string Plugin(string name, IReadOnlyList<string> skills, int agents) =>
+        Plugin(name, skills, [.. Enumerable.Range(0, agents).Select(i => $"agent-{i}")]);
+
+    private static string Plugin(string name, IReadOnlyList<string> skills, IReadOnlyList<string> agentNames) =>
         $$"""
             {"name":"{{name}}","version":"1.0.0","description":"{{name}} plugin",
              "skills":[{{string.Join(",", skills.Select(s => Item(s, name)))}}],
-             "agents":[{{string.Join(",", Enumerable.Range(0, agents).Select(i => Item($"agent-{i}", name)))}}]}
+             "agents":[{{string.Join(",", agentNames.Select(agentName => Item(agentName, name)))}}]}
             """;
 
     private static string Item(string name, string plugin) =>

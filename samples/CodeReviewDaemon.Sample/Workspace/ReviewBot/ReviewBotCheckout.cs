@@ -34,6 +34,34 @@ internal static class ReviewBotCheckout
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
+            var origin = await git.RunAsync(["remote", "get-url", "origin"], workdir, cancellationToken)
+                .ConfigureAwait(false);
+            if (!origin.Succeeded || string.IsNullOrWhiteSpace(origin.Stdout))
+            {
+                logger.LogError(
+                    "Refusing to reuse review-store checkout at {Workdir}: its origin remote could not be read.",
+                    workdir
+                );
+                return new CloneFailureDiagnosis(
+                    CloneFailureKind.OriginMismatch,
+                    CloneFailureClassifier.UnknownExitCode,
+                    "Existing review-store checkout origin could not be verified."
+                );
+            }
+
+            if (!RemoteMatches(url, origin.Stdout))
+            {
+                logger.LogError(
+                    "Refusing to reuse review-store checkout at {Workdir}: its origin does not match the configured store.",
+                    workdir
+                );
+                return new CloneFailureDiagnosis(
+                    CloneFailureKind.OriginMismatch,
+                    CloneFailureClassifier.UnknownExitCode,
+                    "Existing review-store checkout origin does not match the configured store."
+                );
+            }
+
             logger.LogInformation("Reusing existing ReviewBot checkout at {Workdir}.", workdir);
             return null;
         }
@@ -48,5 +76,31 @@ internal static class ReviewBotCheckout
         // The clone of a pre-created remote failed — classify the cause so the caller gets an actionable
         // reason and a distinct exit code rather than a generic failure.
         return CloneFailureClassifier.Classify(clone.ExitCode, clone.Stderr);
+    }
+
+    private static bool RemoteMatches(string expected, string actual)
+    {
+        var expectedIdentity = TryCanonicalizeRemote(expected);
+        var actualIdentity = TryCanonicalizeRemote(actual);
+        return expectedIdentity is not null
+            && actualIdentity is not null
+            && string.Equals(expectedIdentity, actualIdentity, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? TryCanonicalizeRemote(string value)
+    {
+        var trimmed = value.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) || string.IsNullOrWhiteSpace(uri.Host))
+        {
+            return null;
+        }
+
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+        {
+            path = path[..^4];
+        }
+
+        return $"{uri.Scheme.ToLowerInvariant()}://{uri.Host.ToLowerInvariant()}:{uri.Port}{path}";
     }
 }

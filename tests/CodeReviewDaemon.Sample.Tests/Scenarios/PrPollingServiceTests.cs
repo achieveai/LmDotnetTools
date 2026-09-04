@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -114,6 +115,468 @@ public sealed class PrPollingServiceTests : LoggingTestBase
                 "Siblings share no path token.",
                 "the description is the other half of the same retrieval key and rides the same hop"
             );
+    }
+
+    [Fact]
+    public async Task Coordinator_disabled_preserves_the_legacy_direct_review_path()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
+        var executor = new RecordingStageExecutor();
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var poller = BuildEngagementPoller(store, provider, orchestrator, new CodeReviewDaemonOptions());
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        executor.ExecutedStages.Should().NotBeEmpty();
+        store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Coordinator_shadow_mode_records_admission_without_running_an_executor()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var legacyExecutor = new RecordingStageExecutor();
+        var orchestrator = new PrOrchestrator(store, legacyExecutor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var roundExecutor = new RecordingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementShadowMode = true },
+            [roundExecutor],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        legacyExecutor.ExecutedStages.Should().BeEmpty();
+        roundExecutor.Calls.Should().BeEmpty();
+        var engagement = store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")!;
+        store
+            .ListEngagementRounds(engagement.Id)
+            .Should()
+            .ContainSingle(round => round.Status == EngagementRoundStatus.Pending);
+        store.GetEngagement(engagement.Id)!.ActiveRoundId.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task First_coordinator_poll_runs_cutover_seeding_before_eligibility()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(
+            store,
+            [provider],
+            new FixedTimeProvider(new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero))
+        );
+        var executor = new RecordingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [executor],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        seeder.IsComplete.Should().BeTrue();
+        executor.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Persistent_cutover_failure_retries_without_starving_healthy_target_polling()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var historicalRepoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "unsupported",
+                OrgOrOwner = "achieveai",
+                RepoName = "legacy",
+            }
+        );
+        _ = store.CreateOrGetReviewRun(SeedFor(historicalRepoId, "legacy-118"));
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>()),
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [new RecordingRoundExecutor(EngagementRoundIntent.CodeReview)],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        seeder.IsComplete.Should().BeFalse();
+        provider.CallCount.Should().Be(2, "the healthy target remains observable while cutover retries");
+        store
+            .GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")
+            .Should()
+            .NotBeNull("coordinator observation remains enabled while eligibility is cutover-gated");
+    }
+
+    [Fact]
+    public async Task Open_descriptor_with_merged_snapshot_admits_the_merged_close_executor()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = ProviderEngagementSnapshot.Create(
+                PrLifecycleState.Merged,
+                descriptor.HeadSha,
+                descriptor.BaseSha,
+                new ProviderActivityWatermark(Provider, DateTimeOffset.UtcNow, "poll:merged"),
+                []
+            ),
+        };
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        await seeder.SeedAsync(CancellationToken.None);
+        var merged = new RecordingRoundExecutor(EngagementRoundIntent.MergedClose);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [merged],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        merged.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Missing_intent_executor_supersedes_the_round_instead_of_holding_the_lease()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var activity = new ProviderDiscussionRef(
+            Provider,
+            "thread-1",
+            "comment-1",
+            "issue-comment:1",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            DateTimeOffset.UtcNow,
+            "developer",
+            "question",
+            ProviderDiscussionKind.Comment
+        );
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = ProviderEngagementSnapshot.Create(
+                PrLifecycleState.Open,
+                descriptor.HeadSha,
+                descriptor.BaseSha,
+                activity.Watermark,
+                [activity]
+            ),
+        };
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        await seeder.SeedAsync(CancellationToken.None);
+        var engagement = store.CreateOrGetEngagement(
+            new PrEngagement(
+                0,
+                store.EnsureRepo(SampleRepo()),
+                Provider,
+                "118",
+                PrLifecycleState.Open,
+                descriptor.HeadSha,
+                descriptor.BaseSha,
+                descriptor.HeadSha,
+                activity.Watermark,
+                new ProviderActivityWatermark(Provider, DateTimeOffset.UnixEpoch, "seed:0"),
+                DateTimeOffset.UtcNow.AddHours(-2),
+                DateTimeOffset.UtcNow.AddHours(-1),
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow
+            )
+        );
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        store.GetEngagement(engagement.Id)!.ActiveRoundId.Should().BeNull();
+        store
+            .ListEngagementRounds(engagement.Id)
+            .Should()
+            .ContainSingle(round => round.Status == EngagementRoundStatus.Superseded);
+    }
+
+    [Fact]
+    public async Task Eligible_code_review_invokes_only_its_typed_round_executor()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(
+            store,
+            [provider],
+            new FixedTimeProvider(new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero))
+        );
+        (await seeder.SeedAsync(CancellationToken.None)).Completed.Should().BeTrue();
+        var legacyExecutor = new RecordingStageExecutor();
+        var orchestrator = new PrOrchestrator(store, legacyExecutor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var code = new RecordingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var discussion = new RecordingRoundExecutor(EngagementRoundIntent.DiscussionFollowUp);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [code, discussion],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        legacyExecutor.ExecutedStages.Should().BeEmpty();
+        code.Calls.Should().ContainSingle();
+        discussion.Calls.Should().BeEmpty();
+        store.GetEngagementRound(code.Calls.Single())!.Status.Should().Be(EngagementRoundStatus.Completed);
+    }
+
+    [Fact]
+    public async Task Persisted_running_round_is_reconciled_and_retried_with_the_same_identity()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(
+            store,
+            [provider],
+            new FixedTimeProvider(new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero))
+        );
+        await seeder.SeedAsync(CancellationToken.None);
+        var coordinator = new PrEngagementCoordinator(store, TimeProvider.System);
+        var first = await coordinator.ObserveAsync(
+            store.EnsureRepo(SampleRepo()),
+            SampleRepo(),
+            descriptor,
+            provider.EngagementSnapshot,
+            CancellationToken.None
+        );
+        store.TryTransitionEngagementRound(
+            first.RoundId!.Value,
+            EngagementRoundStatus.Pending,
+            EngagementRoundStatus.Running,
+            DateTimeOffset.UtcNow
+        );
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var executor = new RecordingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [executor],
+            coordinator,
+            seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        executor.Calls.Should().ContainSingle().Which.Should().Be(first.RoundId.Value);
+        store
+            .ListEngagementRounds(store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")!.Id)
+            .Should()
+            .ContainSingle();
+    }
+
+    [Fact]
+    public async Task Parked_code_review_is_not_re_admitted_at_the_same_head()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        await seeder.SeedAsync(CancellationToken.None);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var parked = new RecordingRoundExecutor(EngagementRoundIntent.CodeReview, EngagementRoundStatus.Parked);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [parked],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        parked.Calls.Should().ContainSingle();
+        var engagement = store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")!;
+        store
+            .ListEngagementRounds(engagement.Id)
+            .Should()
+            .ContainSingle(round => round.Status == EngagementRoundStatus.Parked);
+        engagement.ActiveRoundId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Repeated_executor_failures_park_the_same_round_at_the_durable_limit()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(store, [provider], TimeProvider.System);
+        await seeder.SeedAsync(CancellationToken.None);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var failing = new ThrowingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions
+            {
+                EnableEngagementCoordinator = true,
+                EnableEngagementEligibility = true,
+                MaxDurableRetryAttempts = 2,
+            },
+            [failing],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+        await poller.PollOnceAsync(CancellationToken.None);
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var engagement = store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")!;
+        var codeReviewRound = store
+            .ListEngagementRounds(engagement.Id)
+            .Should()
+            .ContainSingle(round => round.Intent == EngagementRoundIntent.CodeReview)
+            .Subject;
+        codeReviewRound.Status.Should().Be(EngagementRoundStatus.Parked);
+        codeReviewRound.GovernedFailureCount.Should().Be(2);
+        failing.Calls.Should().HaveCount(2).And.OnlyContain(id => id == codeReviewRound.Id);
+        engagement.ActiveRoundId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Failing_round_executor_leaves_the_same_round_retry_pending()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118");
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor())
+        {
+            EngagementSnapshot = Snapshot(descriptor),
+        };
+        var seeder = new EngagementCutoverSeeder(
+            store,
+            [provider],
+            new FixedTimeProvider(new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero))
+        );
+        await seeder.SeedAsync(CancellationToken.None);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var failing = new ThrowingRoundExecutor(EngagementRoundIntent.CodeReview);
+        var poller = BuildEngagementPoller(
+            store,
+            provider,
+            orchestrator,
+            new CodeReviewDaemonOptions { EnableEngagementCoordinator = true, EnableEngagementEligibility = true },
+            [failing],
+            seeder: seeder
+        );
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var engagement = store.GetEngagement(Provider, store.EnsureRepo(SampleRepo()), "118")!;
+        var round = store.GetEngagementRound(engagement.ActiveRoundId!.Value)!;
+        round.Status.Should().Be(EngagementRoundStatus.RetryPending);
+        failing.Calls.Should().ContainSingle().Which.Should().Be(round.Id);
     }
 
     [Fact]
@@ -527,6 +990,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         );
 
         await poller.StartAsync(CancellationToken.None);
+        await WaitForProgressAsync(progress);
         await poller.StopAsync(CancellationToken.None);
 
         progress
@@ -549,6 +1013,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         );
 
         await poller.StartAsync(CancellationToken.None);
+        await WaitForProgressAsync(progress);
         await poller.StopAsync(CancellationToken.None);
 
         progress.CountAtLevel(LogLevel.Information, "That is the healthy value.").Should().Be(1);
@@ -581,6 +1046,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         );
 
         await poller.StartAsync(CancellationToken.None);
+        await WaitForProgressAsync(progress);
         await poller.StopAsync(CancellationToken.None);
 
         progress
@@ -591,6 +1057,18 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             .CountAtLevel(LogLevel.Information, "nothing to report yet")
             .Should()
             .Be(1, "and the empty window says so rather than reporting a healthy count it did not measure");
+    }
+
+    private static async Task WaitForProgressAsync(CapturingLogger<ReviewProgressReporter> progress)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (
+            progress.MessagesAtLevel(LogLevel.Warning).Count + progress.MessagesAtLevel(LogLevel.Information).Count == 0
+            && DateTimeOffset.UtcNow < deadline
+        )
+        {
+            await Task.Delay(10);
+        }
     }
 
     /// <summary>A PR whose one and only review carries <paramref name="reviewText"/>, on the primary variant,
@@ -683,6 +1161,71 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             orchestrator,
             LoggerFactory.CreateLogger<PrPollingService>()
         );
+    }
+
+    private PrPollingService BuildEngagementPoller(
+        ReviewStore store,
+        IPrProvider provider,
+        PrOrchestrator orchestrator,
+        CodeReviewDaemonOptions options,
+        IReadOnlyList<IEngagementRoundExecutor>? executors = null,
+        PrEngagementCoordinator? coordinator = null,
+        EngagementCutoverSeeder? seeder = null
+    )
+    {
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
+        return new PrPollingService(
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>(),
+            engagementCoordinator: coordinator ?? new PrEngagementCoordinator(store, TimeProvider.System),
+            engagementOptions: options,
+            engagementRoundExecutors: executors,
+            engagementCutoverSeeder: seeder
+        );
+    }
+
+    private static ProviderEngagementSnapshot Snapshot(PullRequestDescriptor descriptor) =>
+        ProviderEngagementSnapshot.Create(
+            descriptor.LifecycleState,
+            descriptor.HeadSha,
+            descriptor.BaseSha,
+            new ProviderActivityWatermark(Provider, new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero), "poll:1"),
+            []
+        );
+
+    private sealed class RecordingRoundExecutor(
+        EngagementRoundIntent intent,
+        EngagementRoundStatus result = EngagementRoundStatus.Completed
+    ) : IEngagementRoundExecutor
+    {
+        public EngagementRoundIntent Intent { get; } = intent;
+        public List<long> Calls { get; } = [];
+
+        public Task<EngagementRoundStatus> ExecuteAsync(EngagementRound round, CancellationToken cancellationToken)
+        {
+            Calls.Add(round.Id);
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class ThrowingRoundExecutor(EngagementRoundIntent intent) : IEngagementRoundExecutor
+    {
+        public EngagementRoundIntent Intent { get; } = intent;
+        public List<long> Calls { get; } = [];
+
+        public Task<EngagementRoundStatus> ExecuteAsync(EngagementRound round, CancellationToken cancellationToken)
+        {
+            Calls.Add(round.Id);
+            throw new InvalidOperationException("simulated round failure");
+        }
     }
 
     private static OpaqueCursor NextCursor() =>

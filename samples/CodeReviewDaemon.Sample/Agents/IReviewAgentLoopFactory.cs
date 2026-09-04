@@ -10,6 +10,21 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// loop, so the stage executor's agent logic stays verifiable against a fake while the real provider
 /// wiring lives in <see cref="S2SReviewAgentLoopFactory"/>.
 /// </summary>
+internal sealed record ReviewConversationScope(string EngagementId, string RoundId);
+
+/// <summary>
+/// Host-derived pull-request publication boundary for one review conversation. Per-action ids and immutable
+/// evidence references remain model tool arguments; this record only carries values the daemon controls.
+/// </summary>
+internal sealed record ReviewPublicationConversationScope(
+    long RoundId,
+    string Provider,
+    long RepoId,
+    string PrId,
+    string ExpectedHeadSha,
+    bool LivePostingAuthorized = false
+);
+
 internal interface IReviewAgentLoopFactory
 {
     /// <summary>
@@ -38,7 +53,9 @@ internal interface IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null
+        string? resumeHostedThreadId = null,
+        ReviewConversationScope? reviewScope = null,
+        ReviewPublicationConversationScope? publicationScope = null
     );
 
     /// <summary>

@@ -250,6 +250,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// them already knows the agent id. Empty whenever collaboration is off.
     /// </remarks>
     private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _auditParentTurnIds = new(StringComparer.Ordinal);
+
+    /// <summary>Snapshots the owning loop's active audit turn when a spawn is accepted.</summary>
+    internal Func<string?, string?>? AuditParentTurnIdResolver { get; set; }
+
+    internal int AuditParentTurnIdCount => _auditParentTurnIds.Count;
 
     /// <summary>
     /// The ordinal sequence (#705) for the ROOT conversation this manager belongs to — created here at the
@@ -412,6 +418,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </remarks>
     private void RetireFromCollaboration(string agentId, string status)
     {
+        _ = _auditParentTurnIds.TryRemove(agentId, out _);
+
         if (Collaboration is not { } parent || !_admissions.TryRemove(agentId, out var admission))
         {
             return;
@@ -640,12 +648,17 @@ public sealed class SubAgentManager : IAsyncDisposable
         // resolved template and the ordinal, so the agent surfaces in telemetry - and as a
         // SendMessage target - as e.g. `reviewer-2`. An explicitly supplied name is always kept verbatim.
         var effectiveName = string.IsNullOrWhiteSpace(name) ? DeriveReadableName(templateName, ordinal) : name;
+        var capturedAuditParentTurnId = AuditParentTurnIdResolver?.Invoke(spawningToolCallId);
 
         // Admission to the collaboration happens BEFORE the concurrency permit and before the defer
         // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
         // collaboration will not accept must never occupy a local slot or sit in the queue. No-op when
         // collaboration is off.
         AdmitToCollaboration(agentId, effectiveName, templateName, template, role, description);
+        if (capturedAuditParentTurnId is { } parentTurnId)
+        {
+            _auditParentTurnIds[agentId] = parentTurnId;
+        }
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -2665,6 +2678,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _agents.Clear();
         _namesToIds.Clear();
+        _auditParentTurnIds.Clear();
 
         // The agents this manager owned no longer exist, so give the collaboration back their slots and
         // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
@@ -3423,7 +3437,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // authority this level's host holds over ITS spawns (see ForChildLoop).
                 subAgentOptions: childParticipatesInCollaboration ? ChildOptions : null,
                 subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
-                lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
+                lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
+                    _lifecycleServices,
+                    lineage,
+                    _auditParentTurnIds.TryGetValue(agentId, out var auditParentTurnId) ? auditParentTurnId : null
+                ),
                 collaboration: childCollaboration,
                 descendantQuestionSink: _descendantQuestionSink,
                 compaction: ChildOptions.Compaction

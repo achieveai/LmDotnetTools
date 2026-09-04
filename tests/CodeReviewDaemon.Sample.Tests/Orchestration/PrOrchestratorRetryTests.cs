@@ -185,6 +185,34 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     }
 
     [Fact]
+    public async Task An_unresolved_exact_late_synthesis_is_charged_to_the_retry_budget()
+    {
+        // The executor deliberately preserves an exact accepted host turn while its answer is unavailable.
+        // That is safe only when the durable budget bounds the otherwise identical read-and-defer loop.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Reviewed,
+            () => new LateSynthesisUnresolvedException("exact accepted synthesis is unavailable")
+        );
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<LateSynthesisUnresolvedException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor
+            .FailStageCalls.Should()
+            .Be(1, "the budget is spent, so an exact terminal failure cannot defer replacement forever");
+    }
+
+    [Fact]
     public async Task An_unreadable_review_checkpoint_is_charged_to_the_retry_budget()
     {
         // An unreadable checkpoint cannot heal itself: the artifact is append-only, so every poll reads the

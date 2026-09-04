@@ -102,7 +102,7 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
 
         /// <summary>Seeds a run whose <see cref="ReviewRun.RepoId"/> is then made to point at a repo row
         /// that no longer exists. <see cref="ReviewStore"/>'s own connection enforces
-        /// <c>PRAGMA foreign_keys = ON</c> (see <see cref="Persistence.SqliteConnectionFactory"/>), so it
+        /// <c>PRAGMA foreign_keys = ON</c> (see <see cref="CodeReviewDaemon.Sample.Persistence.SqliteConnectionFactory"/>), so it
         /// cannot itself insert or delete across a dangling reference — a fresh repo is created and a valid
         /// run seeded against it first. The repo row is then removed through a SEPARATE raw connection to
         /// the same file with <c>foreign_keys</c> explicitly turned off on THAT connection only: SQLite

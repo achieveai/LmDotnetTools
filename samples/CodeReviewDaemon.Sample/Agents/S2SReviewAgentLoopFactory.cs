@@ -112,7 +112,9 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null
+        string? resumeHostedThreadId = null,
+        ReviewConversationScope? reviewScope = null,
+        ReviewPublicationConversationScope? publicationScope = null
     )
     {
         ArgumentNullException.ThrowIfNull(profile);
@@ -181,7 +183,9 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             subAgentModelId: _options.SubAgentModelId,
             // Null keeps the host/provider default. Empty is meaningful and is forwarded unchanged so a
             // non-supporting model can explicitly omit effort.
-            reasoningEffort: reasoningEffort
+            reasoningEffort: reasoningEffort,
+            reviewScope: reviewScope,
+            publicationScope: publicationScope
         );
     }
 

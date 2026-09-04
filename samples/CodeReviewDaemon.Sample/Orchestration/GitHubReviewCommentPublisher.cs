@@ -68,10 +68,30 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // for a comment that exists and the daemon would post a duplicate.
         await foreach (var comment in EnumerateNewestFirstAsync(CommentsUrl(target), cancellationToken))
         {
-            var body = comment.TryGetProperty("body", out var b) ? b.GetString() : null;
+            var body = GetString(comment, "body");
             if (IdempotencyMarker.Matches(body, idempotencyKey))
             {
-                return new PostedComment(comment.GetProperty("id").GetRawText());
+                var id = RequiredId(comment, "id");
+                return new PostedComment(
+                    IssueCommentReceiptId(id),
+                    CommentId: id,
+                    Permalink: GetString(comment, "html_url")
+                );
+            }
+        }
+
+        // Rich inline effects live on a separate native surface. Scan it after the established flat backstop so
+        // legacy fakes/hosts that expose only issue comments keep their existing single-endpoint behavior.
+        await foreach (
+            var comment in EnumeratePagedAsync(
+                $"{PullsUrl(target)}/comments?sort=created&direction=desc",
+                cancellationToken
+            )
+        )
+        {
+            if (IdempotencyMarker.Matches(GetString(comment, "body"), idempotencyKey))
+            {
+                return InlineReceipt(comment);
             }
         }
 
@@ -100,10 +120,209 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        var id = document.RootElement.GetProperty("id").GetRawText();
+        var root = document.RootElement;
+        var id = RequiredId(root, "id");
         _logger.LogInformation("Posted GitHub review comment {CommentId} on PR {PrId}.", id, target.PrId);
-        return new PostedComment(id);
+        return new PostedComment(IssueCommentReceiptId(id), CommentId: id, Permalink: GetString(root, "html_url"));
     }
+
+    public async Task<PostedComment> SubmitInlineReviewAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubInlineReviewRequest review,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(review);
+        ArgumentException.ThrowIfNullOrWhiteSpace(review.CommitId);
+        ArgumentNullException.ThrowIfNull(review.Comments);
+        if (review.Comments.Count == 0)
+        {
+            throw new ArgumentException(
+                "An atomic GitHub review requires at least one inline comment.",
+                nameof(review)
+            );
+        }
+
+        foreach (var comment in review.Comments)
+        {
+            ValidateSpan(comment.Span, allowOffsets: false);
+            ArgumentException.ThrowIfNullOrWhiteSpace(comment.Body);
+        }
+
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post,
+            $"{PullsUrl(target)}/reviews",
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
+        request.Content = JsonContent.Create(
+            new
+            {
+                commit_id = review.CommitId,
+                @event = "COMMENT",
+                comments = review.Comments.Select(comment => GitHubInlinePayload(comment, idempotencyKey)).ToArray(),
+            }
+        );
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = await ParseAsync(response, cancellationToken);
+        var root = document.RootElement;
+        var reviewId = RequiredId(root, "id");
+        var firstComment =
+            root.TryGetProperty("comments", out var comments)
+            && comments.ValueKind == JsonValueKind.Array
+            && comments.GetArrayLength() > 0
+                ? comments[0]
+                : default;
+        var commentId = firstComment.ValueKind == JsonValueKind.Object ? OptionalId(firstComment, "id") : null;
+        return new PostedComment(
+            $"review:{reviewId}",
+            ReviewId: reviewId,
+            ThreadId: commentId,
+            CommentId: commentId,
+            Permalink: GetString(root, "html_url"),
+            Status: GetString(root, "state")
+        );
+    }
+
+    public async Task<PostedComment> ReplyToInlineReviewCommentAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubInlineReplyRequest reply,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(reply);
+        var topLevelId = RequireNumericId(reply.TopLevelCommentId, nameof(reply.TopLevelCommentId));
+        _ = RequireNumericId(reply.TargetCommentId, nameof(reply.TargetCommentId));
+        ArgumentException.ThrowIfNullOrWhiteSpace(reply.Body);
+
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post,
+            $"{PullsUrl(target)}/comments/{topLevelId}/replies",
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
+        request.Content = JsonContent.Create(new { body = IdempotencyMarker.Embed(reply.Body, idempotencyKey) });
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = await ParseAsync(response, cancellationToken);
+        var root = document.RootElement;
+        var commentId = RequiredId(root, "id");
+        var reviewId = OptionalId(root, "pull_request_review_id");
+        return new PostedComment(
+            reviewId is null
+                ? $"thread:{topLevelId}:comment:{commentId}"
+                : $"review:{reviewId}:thread:{topLevelId}:comment:{commentId}",
+            ReviewId: reviewId,
+            ThreadId: topLevelId,
+            CommentId: commentId,
+            ParentCommentId: topLevelId,
+            Permalink: GetString(root, "html_url")
+        );
+    }
+
+    public async Task<PostedComment> PostFlatConversationCommentAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        GitHubFlatConversationComment comment,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(comment.Body);
+        var body = string.IsNullOrWhiteSpace(comment.TargetPermalink)
+            ? comment.Body
+            : $"{comment.Body}\n\nIn reply to: {comment.TargetPermalink}";
+        var posted = await PostReviewCommentAsync(target, idempotencyKey, body, cancellationToken);
+        return posted with { RelationshipDegraded = true };
+    }
+
+    private static object GitHubInlinePayload(GitHubInlineReviewComment comment, string idempotencyKey)
+    {
+        var span = comment.Span;
+        return new
+        {
+            path = span.Path,
+            line = span.EndLine,
+            side = span.Side,
+            start_line = span.StartLine,
+            start_side = span.StartLine is null ? null : span.Side,
+            body = IdempotencyMarker.Embed(comment.Body, idempotencyKey),
+        };
+    }
+
+    private static void ValidateSpan(ProviderCommentSpan span, bool allowOffsets)
+    {
+        ArgumentNullException.ThrowIfNull(span);
+        ArgumentException.ThrowIfNullOrWhiteSpace(span.Path);
+        if (span.Side is not ("LEFT" or "RIGHT"))
+        {
+            throw new ArgumentException("Comment side must be LEFT or RIGHT.", nameof(span));
+        }
+
+        if (span.EndLine <= 0 || span.StartLine is <= 0 || span.StartLine > span.EndLine)
+        {
+            throw new ArgumentException("Comment lines must form a positive ascending span.", nameof(span));
+        }
+
+        if (!allowOffsets && (span.StartOffset is not null || span.EndOffset is not null))
+        {
+            throw new ArgumentException("GitHub inline comments do not accept ADO offsets.", nameof(span));
+        }
+    }
+
+    private static PostedComment InlineReceipt(JsonElement comment)
+    {
+        var commentId = RequiredId(comment, "id");
+        var reviewId = OptionalId(comment, "pull_request_review_id");
+        var threadId = OptionalId(comment, "in_reply_to_id") ?? commentId;
+        return new PostedComment(
+            reviewId is null
+                ? $"thread:{threadId}:comment:{commentId}"
+                : $"review:{reviewId}:thread:{threadId}:comment:{commentId}",
+            ReviewId: reviewId,
+            ThreadId: threadId,
+            CommentId: commentId,
+            ParentCommentId: OptionalId(comment, "in_reply_to_id"),
+            Permalink: GetString(comment, "html_url")
+        );
+    }
+
+    private static async Task<JsonDocument> ParseAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+    }
+
+    private static string RequiredId(JsonElement element, string name) =>
+        OptionalId(element, name) ?? throw new JsonException($"Provider response omitted '{name}'.");
+
+    private static string? OptionalId(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value)
+            ? value.ValueKind switch
+            {
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.String => value.GetString(),
+                _ => null,
+            }
+            : null;
+
+    private static string RequireNumericId(string value, string parameterName) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out _)
+            ? value
+            : throw new ArgumentException("Provider comment IDs must be numeric.", parameterName);
+
+    private static string IssueCommentReceiptId(string id) => $"issue-comment:{id}";
+
+    private static string PullsUrl(ReviewCommentTarget target) =>
+        $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/pulls/{target.PrId}";
 
     private static string CommentsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/issues/{target.PrId}/comments";
@@ -117,7 +336,7 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
         var results = new List<ExistingReviewComment>();
         var repoBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}";
-        var pullsBase = $"{repoBase}/pulls/{target.PrId}";
+        var pullsBase = PullsUrl(target);
 
         // Review-level summaries (the top-level "Reviewed PR X…" bodies). Fetched FIRST so we can collect the ids of
         // PENDING/unsubmitted drafts before scanning inline comments below. Skip PENDING drafts: a draft is not

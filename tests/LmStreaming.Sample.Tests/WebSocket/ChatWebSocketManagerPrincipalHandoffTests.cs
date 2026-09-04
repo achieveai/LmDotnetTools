@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net.WebSockets;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
@@ -287,6 +288,115 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
         _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
     }
 
+    [Fact]
+    public async Task AMessageOnAnOpenSocketAfterRelease_IsRefusedWithoutAcceptingTheTurn()
+    {
+        const string threadId = "released-while-connected";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var pool = CreatePool();
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 1 });
+
+        var socket = new FakeWebSocket();
+        var handlerTask = CreateManager(pool, store)
+            .HandleConnectionAsync(
+                socket,
+                threadId,
+                mode: null,
+                providerId: null,
+                requestResponseDumpFileName: null,
+                recordWriter: null,
+                cancellationToken: cts.Token,
+                workspaceId: "ws-released",
+                ownerUserId: Alice
+            );
+        await Wait.UntilAsync(
+            () => pool.TryGetHandoffState(threadId, out var state) && !state.IsBusy,
+            "the socket is open with an idle agent before the durable release",
+            cancellationToken: cts.Token
+        );
+
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+                existing! with
+                {
+                    Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                        ConversationsController.WorkspaceSessionReleasedAtPropertyKey,
+                        1L
+                    ),
+                }
+        );
+        socket.EnqueueTextFrame( /*lang=json,strict*/
+            """{"Message":"must not run"}"""
+        );
+
+        await Wait.UntilAsync(
+            () =>
+                socket.SentContains("\"code\":\"workspace_session_released\"")
+                || (pool.TryGetHandoffState(threadId, out var state) && state.IsBusy),
+            "the message either observes the release stamp or reaches the forbidden accept path",
+            cancellationToken: cts.Token
+        );
+
+        _ = socket.SentContains("\"code\":\"workspace_session_released\"").Should().BeTrue();
+        _ = pool.TryGetHandoffState(threadId, out var afterRelease).Should().BeTrue();
+        _ = afterRelease.IsBusy.Should().BeFalse("a released conversation cannot accept another turn");
+        _ = socket.CloseAsyncCalled.Should().BeTrue();
+        _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+        await handlerTask;
+    }
+
+    [Fact]
+    public async Task ConnectingToAReleasedConversation_ClosesCleanly_WithoutCreatingAnAgent()
+    {
+        const string threadId = "released-conversation";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var pool = CreatePool();
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    ConversationsController.WorkspaceSessionReleasedAtPropertyKey,
+                    1L
+                ),
+            }
+        );
+
+        var socket = new FakeWebSocket();
+        var handlerTask = CreateManager(pool, store)
+            .HandleConnectionAsync(
+                socket,
+                threadId,
+                mode: null,
+                providerId: null,
+                requestResponseDumpFileName: null,
+                recordWriter: null,
+                cancellationToken: cts.Token,
+                workspaceId: "ws-released",
+                ownerUserId: Alice
+            );
+        await Wait.UntilAsync(
+            () => socket.SentContains("\"code\":\"workspace_session_released\"") || pool.ActiveAgentCount > 0,
+            "the connection either refuses the release stamp or reaches the forbidden create",
+            cancellationToken: cts.Token
+        );
+        if (!handlerTask.IsCompleted)
+        {
+            await cts.CancelAsync();
+        }
+        await handlerTask;
+
+        _ = socket.SentContains("\"code\":\"workspace_session_released\"").Should().BeTrue();
+        pool.ActiveAgentCount.Should().Be(0, "loading a deep link must not remount its released workspace");
+        _ = socket.CloseAsyncCalled.Should().BeTrue();
+        _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+    }
+
     /// <summary>The mode a conversation gets when nothing pinned one - what these threads run under.</summary>
     private static AgentProfile DefaultMode() => SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
 
@@ -305,7 +415,7 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
             NullLogger<MultiTurnAgentPool>.Instance
         );
 
-    private static ChatWebSocketManager CreateManager(MultiTurnAgentPool pool) =>
+    private static ChatWebSocketManager CreateManager(MultiTurnAgentPool pool, IConversationStore? store = null) =>
         new(
             pool,
             new WebSocketConnectionRegistry(),
@@ -315,7 +425,7 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
                 new AuthOptions(),
                 NullLogger<PendingAuthCoordinator>.Instance
             ),
-            new InMemoryConversationStore(),
+            store ?? new InMemoryConversationStore(),
             NullLogger<ChatWebSocketManager>.Instance
         );
 

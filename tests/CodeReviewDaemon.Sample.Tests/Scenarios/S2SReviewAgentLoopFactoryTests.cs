@@ -250,6 +250,79 @@ public sealed class S2SReviewAgentLoopFactoryTests
     }
 
     [Fact]
+    public async Task Create_validates_a_resumed_threads_scope_before_sending_and_does_not_reprovision()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/thread-persisted/review-scope",
+                "{\"engagementId\":\"17\",\"roundId\":\"31\"}"
+            )
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-resumed\",\"response\":{\"text\":\"resumed answer\"}}"
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http)
+            .Create(
+                Profile,
+                modelId: null,
+                threadId: "review-run-7-a",
+                reviewWorkspace: Workspace,
+                resumeHostedThreadId: "thread-persisted",
+                reviewScope: new ReviewConversationScope("17", "31")
+            );
+
+        _ = await DriveAsync(agent, "synthesize now");
+
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .ContainInOrder(
+                (HttpMethod.Get, "/api/conversations/capabilities"),
+                (HttpMethod.Get, "/api/conversations/thread-persisted/review-scope"),
+                (HttpMethod.Post, "/api/conversations/thread-persisted/messages")
+            );
+        handler
+            .Requests.Should()
+            .NotContain(request =>
+                request.Body != null && request.Body.Contains("\"modeId\"", StringComparison.Ordinal)
+            );
+    }
+
+    [Fact]
+    public async Task Create_fails_closed_before_sending_when_a_resumed_threads_scope_differs()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/thread-persisted/review-scope",
+                "{\"engagementId\":\"17\",\"roundId\":\"30\"}"
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http)
+            .Create(
+                Profile,
+                modelId: null,
+                threadId: "review-run-7-a",
+                reviewWorkspace: Workspace,
+                resumeHostedThreadId: "thread-persisted",
+                reviewScope: new ReviewConversationScope("17", "31")
+            );
+
+        var act = () => DriveAsync(agent, "synthesize now");
+
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*review scope*");
+        handler.Requests.Should().NotContain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
     public async Task Create_without_a_resume_thread_still_provisions_a_fresh_conversation()
     {
         var handler = new FakeHttpMessageHandler()
@@ -352,6 +425,30 @@ public sealed class S2SReviewAgentLoopFactoryTests
             .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
             .Subject;
         provision.Body.Should().Contain("\"reasoningEffort\":\"xhigh\"");
+    }
+
+    [Fact]
+    public async Task Create_puts_the_review_scope_on_the_provision_wire()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http)
+            .Create(
+                Profile,
+                modelId: null,
+                threadId: "review-run-7-a",
+                reviewWorkspace: Workspace,
+                reviewScope: new ReviewConversationScope("17", "31")
+            );
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain("\"reviewScope\":{\"engagementId\":\"17\",\"roundId\":\"31\"}");
     }
 
     [Fact]

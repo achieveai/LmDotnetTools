@@ -167,6 +167,22 @@ try
     _ = builder.Services.AddLifecycleDelivery(builder.Configuration);
     _ = builder.Services.AddRemoteToolApproval(builder.Configuration);
 
+    var reviewAuditBaseUrl = builder.Configuration[ConversationReviewScope.BridgeBaseUrlConfigKey];
+    var reviewAuditSecret = builder.Configuration[ConversationReviewScope.BridgeSecretConfigKey];
+    if (!string.IsNullOrWhiteSpace(reviewAuditBaseUrl) && !string.IsNullOrWhiteSpace(reviewAuditSecret))
+    {
+        _ = builder.Services.AddSingleton(
+            new ReviewAuditBridge(
+                new HttpClient
+                {
+                    BaseAddress = new Uri(reviewAuditBaseUrl, UriKind.Absolute),
+                    Timeout = Timeout.InfiniteTimeSpan,
+                },
+                reviewAuditSecret
+            )
+        );
+    }
+
     // AddLifecycleControlPlane is called unconditionally, and the disabled case is the one that needs
     // it. The SDK emits an ApplicationPartAttribute for every referenced assembly that references MVC,
     // so LmAgentInfra's controllers — the lifecycle ones included — are discovered here whether or not
@@ -400,6 +416,13 @@ try
         // The gateway is frequently offline; a short timeout fails fast instead of holding the
         // request for the default 100s while the catalog is a best-effort, read-only browse.
         GatewayHttpClient(TimeSpan.FromSeconds(10)),
+        sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
+    ));
+    _ = builder.Services.AddSingleton<ISessionMarketplaceCatalogClient>(sp => new MarketplaceCatalogClient(
+        sandboxOptions,
+        // Session creation fails closed without a catalog. Allow a cold gateway to finish its first
+        // read rather than applying the best-effort browse budget to this required authorization step.
+        GatewayHttpClient(sandboxOptions.SessionCatalogTimeout),
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
@@ -775,6 +798,7 @@ try
         // only when a Lifecycle flag is set, so on a default configuration this is null and every loop
         // falls back to MultiTurnLifecycleServices.Disabled — the sample behaves exactly as before.
         var hostLifecycleServices = sp.GetService<MultiTurnLifecycleServices>();
+        var reviewAuditBridge = sp.GetService<ReviewAuditBridge>();
 
         // Web tools (WebFetch/WebSearch) fallback provider. Built ONCE for the process (this factory
         // runs once for the singleton pool) and shared across conversations — the provider owns a
@@ -865,12 +889,23 @@ try
                 // sub-agent spawned from one — sizes its context against the model's window (#681). A bundle
                 // minted here for the purpose publishes nothing and stores nothing, so the loop's lifecycle
                 // behaviour is unchanged; it only gains the window.
-                var lifecycleServices = capacityResolver is null
+                var baseLifecycleServices = capacityResolver is null
                     ? context.LifecycleServices
                     : (context.LifecycleServices ?? new MultiTurnLifecycleServices()) with
                     {
                         CapacityResolver = capacityResolver,
                     };
+                var reviewScope = ConversationReviewScope
+                    .ReadAsync(conversationStore, threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                var lifecycleServices = ConversationReviewScope.DeriveLifecycleServices(
+                    baseLifecycleServices,
+                    reviewAuditBridge,
+                    reviewScope,
+                    context.ProviderId,
+                    mode.Id
+                );
                 // Anchor the model to the real current date. Injected once at the single mode entry
                 // point so every derived system prompt (workspace suffix, medical context, etc.)
                 // carries it. Without it, models fall back to a training-era date, distrust
@@ -990,14 +1025,33 @@ try
                         }
                     }
 
-                    // Use the liveness-checked variant: the gateway evicts idle sessions on its own
-                    // schedule, and reusing a cached-but-evicted handle silently strips the session's
-                    // marketplace-provided tools (e.g. sandbox-Skill). This recreates the session on a
-                    // gateway 404 so the agent always gets the full tool set without a process restart.
+                    // Resolve the session AND register this agent's threadId against it in ONE registry
+                    // call. Registration has to happen HERE — at the one boundary every sandbox-backed
+                    // conversation passes through — rather than further down beside the subagent binding,
+                    // which several provider branches (Copilot chief among them) return before ever
+                    // reaching. Two things read that index and both are silently wrong when a thread is
+                    // missing from it: the context-discovery webhook fans a context_file delivery out to
+                    // the registered threads, and WorkspacePluginSelectionService.WaitForIdleAsync asks it
+                    // which threads to check for an in-flight run — an unregistered thread reads as
+                    // "idle", so a plugin-selection migration would tear down a session mid-turn.
+                    //
+                    // Acquiring and registering as one call is what keeps a concurrent workspace release
+                    // honest: the registry holds a claim on this workspace's session slot for the whole
+                    // resolution, so a release cannot delete the session between our resolving it and our
+                    // registering against it — however long this thread is descheduled in between. Split
+                    // back into GetOrCreateLiveSessionAsync + RegisterThread, that gap reopens.
+                    //
+                    // It is the liveness-checked resolve underneath: the gateway evicts idle sessions on
+                    // its own schedule, and reusing a cached-but-evicted handle silently strips the
+                    // session's marketplace-provided tools (e.g. sandbox-Skill). That recreates the session
+                    // on a gateway 404 so the agent always gets the full tool set without a process
+                    // restart. Idempotent, and mode-switch recreations preserve threadId by design (and
+                    // don't fire the pool's ThreadRemoved event), so the registration survives them.
                     sandboxSession = sandboxRegistry
-                        .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
+                        .AcquireSessionForAgentAsync(workspaceRef, threadId, callerCredential)
                         .GetAwaiter()
                         .GetResult();
+
                     // The effective credential is the caller's or the process default (never null) — used for
                     // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
                     // interactive UI) so the file-browser resolver can distinguish an interactive owner from
@@ -1008,17 +1062,6 @@ try
                         callerCredential,
                         sandboxSession.SessionId
                     );
-                    // Register this agent's threadId against the session HERE — at the one boundary every
-                    // sandbox-backed conversation passes through — rather than further down beside the
-                    // subagent binding, which several provider branches (Copilot chief among them) return
-                    // before ever reaching. Two things read this index and both are silently wrong when a
-                    // thread is missing from it: the context-discovery webhook fans a context_file delivery
-                    // out to the registered threads, and WorkspacePluginSelectionService.WaitForIdleAsync
-                    // asks it which threads to check for an in-flight run — an unregistered thread reads as
-                    // "idle", so a plugin-selection migration would tear down a session mid-turn.
-                    // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
-                    // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
-                    sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
@@ -2036,6 +2079,16 @@ try
                             rootCollaboration.AgentId
                         );
                     }
+
+                    subAgentOptions = RegisterReviewPublicationTools(
+                        filteredRegistry,
+                        subAgentOptions,
+                        TryBuildReviewPublicationBridge(
+                            ReviewPublicationScope.ReadAsync(conversationStore, threadId).GetAwaiter().GetResult(),
+                            Environment.GetEnvironmentVariable(ReviewPublicationBridgeUrlVariable),
+                            Environment.GetEnvironmentVariable(ReviewPublicationBridgeSecretVariable)
+                        )
+                    );
 
                     // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
                     // sample's shared conversation store so a focused child can be replayed via the
@@ -3640,6 +3693,47 @@ public partial class Program
                 ),
             };
     }
+
+    private static readonly HttpClient s_reviewPublicationHttpClient = new(
+        new HttpClientHandler { AllowAutoRedirect = false }
+    )
+    {
+        Timeout = Timeout.InfiniteTimeSpan,
+    };
+
+    internal const string ReviewPublicationBridgeUrlVariable = "REVIEW_PUBLICATION_BRIDGE_URL";
+    internal const string ReviewPublicationBridgeSecretVariable = "REVIEW_PUBLICATION_BRIDGE_SECRET";
+
+    internal static SubAgentOptions? RegisterReviewPublicationTools(
+        FunctionRegistry registry,
+        SubAgentOptions? subAgentOptions,
+        IReviewPublicationBridge? bridge
+    )
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        if (bridge is null)
+        {
+            return subAgentOptions;
+        }
+
+        _ = registry.AddProvider(new ReviewPublicationFunctionProvider(bridge));
+        return subAgentOptions is null
+            ? null
+            : subAgentOptions with
+            {
+                NonInheritedToolNames =
+                [
+                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                    .. ReviewPublicationFunctionProvider.ToolNames,
+                ],
+            };
+    }
+
+    internal static IReviewPublicationBridge? TryBuildReviewPublicationBridge(
+        ReviewPublicationScope? scope,
+        string? bridgeUrl,
+        string? bridgeSecret
+    ) => ReviewPublicationBridgeClient.TryCreate(s_reviewPublicationHttpClient, scope, bridgeUrl, bridgeSecret);
 
     internal static SubAgentSessionBinding BindConversationSubAgents(
         SandboxSessionRegistry registry,

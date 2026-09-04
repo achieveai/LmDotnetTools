@@ -183,6 +183,340 @@ internal sealed class GitHubPrProvider : IPrProvider
         };
     }
 
+    public async Task<ProviderInlineAnchorSnapshot> GetInlineAnchorSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        string expectedHeadSha,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedHeadSha);
+
+        var initialHead = await GetCurrentHeadShaAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(initialHead, expectedHeadSha, StringComparison.Ordinal))
+        {
+            return new ProviderInlineAnchorSnapshot(initialHead ?? string.Empty, []);
+        }
+
+        var files = new List<ProviderInlineAnchorFile>();
+        var url = $"{BaseUrl}/repos/{repo.OrgOrOwner}/{repo.RepoName}/pulls/{prId}/files" + "?per_page=100";
+        for (var page = 1; url is not null && page <= MaxPagesPerPoll; page++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
+            var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+            request.Headers.UserAgent.ParseAdd(UserAgent);
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            foreach (var file in document.RootElement.EnumerateArray())
+            {
+                var path = StringOf(file, "filename");
+                var patch = StringOf(file, "patch");
+                if (path is null || patch is null)
+                {
+                    continue;
+                }
+
+                var manifest = UnifiedDiffParser.Parse(
+                    $"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{patch}",
+                    headSha: expectedHeadSha
+                );
+                var entry = manifest.FindFile(path);
+                if (entry is null)
+                {
+                    continue;
+                }
+
+                files.Add(
+                    new ProviderInlineAnchorFile(
+                        path,
+                        [.. entry.Hunks.SelectMany(hunk => hunk.ChangedRightRanges)],
+                        CoalesceLines(
+                            entry.Hunks.SelectMany(hunk => hunk.DeletedLines.Select(line => line.OldLineNumber))
+                        )
+                    )
+                );
+            }
+
+            url = NextPageUrl(response);
+        }
+
+        if (url is not null)
+        {
+            throw new InvalidOperationException(
+                $"GitHub inline-anchor inventory exceeded the configured {MaxPagesPerPoll}-page bound."
+            );
+        }
+
+        var finalHead = await GetCurrentHeadShaAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        return string.Equals(finalHead, expectedHeadSha, StringComparison.Ordinal)
+            ? new ProviderInlineAnchorSnapshot(expectedHeadSha, files)
+            : new ProviderInlineAnchorSnapshot(finalHead ?? string.Empty, []);
+    }
+
+    public async Task<ProviderEngagementSnapshot> GetEngagementSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        ProviderActivityWatermark? after,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentNullException.ThrowIfNull(daemonReceiptIds);
+
+        using var pullRequest = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        var root = pullRequest.RootElement;
+        var upperBound = ParseTimestamp(root, "updated_at") ?? DateTimeOffset.MaxValue;
+        var observedActivity = new List<ProviderDiscussionRef>();
+        var repoBase = $"{BaseUrl}/repos/{repo.OrgOrOwner}/{repo.RepoName}";
+        var pullsBase = $"{repoBase}/pulls/{prId}";
+
+        await ReadActivityAsync(
+            $"{pullsBase}/reviews",
+            element => MapReview(element),
+            observedActivity,
+            after,
+            upperBound,
+            daemonReceiptIds,
+            cancellationToken
+        );
+        await ReadActivityAsync(
+            $"{pullsBase}/comments?sort=created&direction=asc",
+            element => MapReviewComment(element),
+            observedActivity,
+            after,
+            upperBound,
+            daemonReceiptIds,
+            cancellationToken
+        );
+        await ReadActivityAsync(
+            $"{repoBase}/issues/{prId}/comments",
+            element => MapIssueComment(element),
+            observedActivity,
+            after,
+            upperBound,
+            daemonReceiptIds,
+            cancellationToken
+        );
+
+        var activity = observedActivity
+            .Where(candidate => after is null || candidate.Watermark.CompareTo(after) > 0)
+            .ToArray();
+        var fallback = after ?? new ProviderActivityWatermark(Provider, DateTimeOffset.UnixEpoch, "seed:0");
+        return ProviderEngagementSnapshot.Create(
+            MapLifecycle(root),
+            StringOf(root.GetProperty("head"), "sha") ?? string.Empty,
+            StringOf(root.GetProperty("base"), "sha") ?? string.Empty,
+            fallback,
+            activity,
+            observedActivity
+        );
+    }
+
+    private async Task ReadActivityAsync(
+        string url,
+        Func<JsonElement, ProviderDiscussionRef?> map,
+        ICollection<ProviderDiscussionRef> destination,
+        ProviderActivityWatermark? after,
+        DateTimeOffset upperBound,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    )
+    {
+        for (var page = 1; page <= MaxPagesPerPoll; page++)
+        {
+            var separator = url.Contains('?', StringComparison.Ordinal) ? '&' : '?';
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{url}{separator}per_page=100&page={page}"
+            ).WithOperation(SandboxOperation.ReadProviderMetadata);
+            var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+            request.Headers.UserAgent.ParseAdd(UserAgent);
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var count = 0;
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                count++;
+                if (map(element) is not { } candidate || IsDaemonReceipt(candidate, daemonReceiptIds))
+                {
+                    continue;
+                }
+
+                if (candidate.PublishedAt <= upperBound)
+                {
+                    destination.Add(candidate);
+                }
+            }
+
+            if (count < GitHubMaxPageSize)
+            {
+                return;
+            }
+        }
+
+        _logger.LogWarning(
+            "GitHub engagement activity at {Url} stopped after {Pages} page(s); later activity may be deferred.",
+            url,
+            MaxPagesPerPoll
+        );
+    }
+
+    private static bool IsDaemonReceipt(ProviderDiscussionRef activity, IReadOnlySet<string> daemonReceiptIds) =>
+        daemonReceiptIds.Contains(activity.ProviderObjectId);
+
+    private ProviderDiscussionRef? MapReview(JsonElement review)
+    {
+        var id = StableIdOf(review);
+        var body = StringOf(review, "body");
+        var publishedAt = ParseTimestamp(review, "submitted_at");
+        if (id is null || body is null || publishedAt is null)
+        {
+            return null;
+        }
+
+        return new ProviderDiscussionRef(
+            Provider,
+            id,
+            id,
+            $"review:{id}",
+            null,
+            StringOf(review, "html_url"),
+            null,
+            null,
+            null,
+            null,
+            StringOf(review, "state"),
+            null,
+            publishedAt.Value,
+            LoginOf(review, "user") ?? string.Empty,
+            body,
+            ProviderDiscussionKind.Review
+        );
+    }
+
+    private ProviderDiscussionRef? MapReviewComment(JsonElement comment)
+    {
+        var id = StableIdOf(comment);
+        var body = StringOf(comment, "body");
+        var publishedAt = ParseTimestamp(comment, "created_at");
+        if (id is null || body is null || publishedAt is null)
+        {
+            return null;
+        }
+
+        var parent = StableIdOf(comment, "in_reply_to_id");
+        var endLine = IntOf(comment, "line") ?? IntOf(comment, "original_line");
+        return new ProviderDiscussionRef(
+            Provider,
+            parent ?? id,
+            id,
+            $"review-comment:{id}",
+            parent,
+            StringOf(comment, "html_url"),
+            StringOf(comment, "path"),
+            StringOf(comment, "side") ?? StringOf(comment, "start_side"),
+            IntOf(comment, "start_line") ?? endLine,
+            endLine,
+            null,
+            null,
+            publishedAt.Value,
+            LoginOf(comment, "user") ?? string.Empty,
+            body,
+            ProviderDiscussionKind.Comment
+        );
+    }
+
+    private ProviderDiscussionRef? MapIssueComment(JsonElement comment)
+    {
+        var id = StableIdOf(comment);
+        var body = StringOf(comment, "body");
+        var publishedAt = ParseTimestamp(comment, "created_at");
+        if (id is null || body is null || publishedAt is null)
+        {
+            return null;
+        }
+
+        return new ProviderDiscussionRef(
+            Provider,
+            id,
+            id,
+            $"issue-comment:{id}",
+            null,
+            StringOf(comment, "html_url"),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            publishedAt.Value,
+            LoginOf(comment, "user") ?? string.Empty,
+            body,
+            ProviderDiscussionKind.Comment
+        );
+    }
+
+    private static string? StableIdOf(JsonElement element, string property = "id") =>
+        element.TryGetProperty(property, out var value)
+            ? value.ValueKind switch
+            {
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                _ => null,
+            }
+            : null;
+
+    private static int? IntOf(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out var result)
+            ? result
+            : null;
+
+    private static IReadOnlyList<LineRange> CoalesceLines(IEnumerable<int> lines)
+    {
+        var ordered = lines.Distinct().Order().ToArray();
+        if (ordered.Length == 0)
+        {
+            return [];
+        }
+
+        var ranges = new List<LineRange>();
+        var start = ordered[0];
+        var previous = start;
+        foreach (var line in ordered[1..])
+        {
+            if (line == previous + 1)
+            {
+                previous = line;
+                continue;
+            }
+
+            ranges.Add(new LineRange(start, previous - start + 1));
+            start = previous = line;
+        }
+
+        ranges.Add(new LineRange(start, previous - start + 1));
+        return ranges;
+    }
+
     /// <summary>
     /// Classifies a single PR's lifecycle via <c>GET /repos/{owner}/{repo}/pulls/{number}</c> — Open,
     /// Merged, or Abandoned (closed without merging). Used by the PR-lifecycle sweep (a later task) to
@@ -309,7 +643,7 @@ internal sealed class GitHubPrProvider : IPrProvider
         var state = pr.GetProperty("state").GetString();
         return string.Equals(state, "open", StringComparison.OrdinalIgnoreCase)
             ? PrLifecycleState.Open
-            : PrLifecycleState.Closed;
+            : PrLifecycleState.Abandoned;
     }
 
     /// <summary>Parses an ISO-8601 timestamp property (e.g. <c>created_at</c>/<c>updated_at</c>) to a

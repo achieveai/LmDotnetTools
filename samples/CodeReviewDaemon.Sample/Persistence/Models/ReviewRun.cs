@@ -24,6 +24,12 @@ internal sealed record ReviewRun
     public required string VariantId { get; init; }
     public required string Mode { get; init; }
 
+    /// <summary>
+    /// The admitted <see cref="EngagementRoundIntent.CodeReview"/> round that owns this run. Null for
+    /// pre-v9 rows and for legacy direct execution. This association is not part of commit identity.
+    /// </summary>
+    public long? EngagementRoundId { get; init; }
+
     // ── Reproducibility inputs (§6) ──────────────────────────────────────────────────────────────
     public string? MergeSha { get; init; }
     public string? ModelProvider { get; init; }

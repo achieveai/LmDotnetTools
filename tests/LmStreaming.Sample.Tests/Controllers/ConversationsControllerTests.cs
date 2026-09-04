@@ -31,7 +31,8 @@ public class ConversationsControllerTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null
+        ConversationStatusResolver? statusResolver = null,
+        ReviewAuditBridge? reviewAuditBridge = null
     )
     {
         return new ConversationsController(
@@ -48,7 +49,8 @@ public class ConversationsControllerTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
+            reviewAuditBridge
         );
     }
 
@@ -1286,6 +1288,68 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task Provision_UnknownWorkspace_ReturnsStablePreMintRefusalCode()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: Mock.Of<IWorkspaceStore>()
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "missing-workspace",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+            },
+            CancellationToken.None
+        );
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        JsonSerializer.Serialize(notFound.Value).Should().Contain("\"code\":\"workspace_not_found\"");
+        (await store.ListThreadsAsync(ct: CancellationToken.None))
+            .Should()
+            .BeEmpty("the stable refusal code certifies that no conversation was minted");
+    }
+
+    [Fact]
+    public async Task Provision_UnknownMode_ReturnsStablePreMintRefusalCode()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            Mock.Of<IChatModeStore>(),
+            workspaceStore: workspaceStore.Object
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = "missing-mode",
+            },
+            CancellationToken.None
+        );
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        JsonSerializer.Serialize(notFound.Value).Should().Contain("\"code\":\"mode_not_found\"");
+        (await store.ListThreadsAsync(ct: CancellationToken.None))
+            .Should()
+            .BeEmpty("the stable refusal code certifies that no conversation was minted");
+    }
+
+    [Fact]
     public async Task Provision_PersistsTheCallerInstructions_AndTheAgentBuildReadsThemBack()
     {
         // The link that did not exist. The daemon's whole review methodology, output contract and
@@ -1590,6 +1654,227 @@ public class ConversationsControllerTests
 
         var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
         readBack.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Provision_rejects_review_scope_before_persisting_when_the_audit_bridge_is_unavailable()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.CodeReviewDaemonModeId,
+                ReviewScope = new ReviewConversationScope("17", "31"),
+            },
+            CancellationToken.None
+        );
+
+        var unavailable = Assert.IsType<ObjectResult>(result);
+        unavailable.StatusCode.Should().Be(503);
+        JsonSerializer.Serialize(unavailable.Value).Should().Contain("review_audit_bridge_unavailable");
+        (await store.ListThreadsAsync(ct: CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Provision_Persists_a_valid_review_scope_only_for_the_review_daemon_mode()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+        using var reviewAuditHttp = new HttpClient(new Mock<HttpMessageHandler>().Object)
+        {
+            BaseAddress = new Uri("http://review-daemon/"),
+        };
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry,
+            reviewAuditBridge: new ReviewAuditBridge(reviewAuditHttp, "bridge-secret")
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.CodeReviewDaemonModeId,
+                ReviewScope = new ReviewConversationScope("17", "31"),
+            },
+            CancellationToken.None
+        );
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+        (await ConversationReviewScope.ReadAsync(store, threadId)).Should().Be(new ReviewConversationScope("17", "31"));
+    }
+
+    [Theory]
+    [InlineData("", "31")]
+    [InlineData(" ", "31")]
+    [InlineData("engagement-17", "31")]
+    [InlineData("17", "")]
+    [InlineData("17", "round-31")]
+    public async Task Provision_Rejects_blank_or_nonnumeric_review_scope_ids(string engagementId, string roundId)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.CodeReviewDaemonModeId,
+                ReviewScope = new ReviewConversationScope(engagementId, roundId),
+            },
+            CancellationToken.None
+        );
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        (await store.ListThreadsAsync(ct: CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Provision_Rejects_review_scope_on_an_ordinary_mode()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                ReviewScope = new ReviewConversationScope("17", "31"),
+            },
+            CancellationToken.None
+        );
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        (await store.ListThreadsAsync(ct: CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetReviewScope_returns_the_exact_immutable_scope_for_a_hosted_review_conversation()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-review-scoped";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.SetItem(ConversationReviewScope.EngagementIdPropertyKey, "17")
+                    .SetItem(ConversationReviewScope.RoundIdPropertyKey, "31"),
+            },
+            CancellationToken.None
+        );
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.GetReviewScope(ThreadId, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result).Value.Should().Be(new ReviewConversationScope("17", "31"));
+    }
+
+    [Fact]
+    public async Task GetReviewScope_fails_closed_when_the_hosted_conversation_has_no_review_scope()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-ordinary";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            },
+            CancellationToken.None
+        );
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.GetReviewScope(ThreadId, CancellationToken.None);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        JsonSerializer.Serialize(notFound.Value).Should().Contain("review_scope_missing");
+    }
+
+    [Fact]
+    public async Task SwitchMode_rejects_changing_a_review_scoped_conversation_out_of_daemon_mode()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-review-scoped";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.CodeReviewDaemonModeId)
+                    .SetItem(ConversationReviewScope.EngagementIdPropertyKey, "17")
+                    .SetItem(ConversationReviewScope.RoundIdPropertyKey, "31"),
+            },
+            CancellationToken.None
+        );
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SwitchMode(
+            ThreadId,
+            new SwitchModeRequest { ModeId = SystemChatModes.DefaultModeId },
+            CancellationToken.None
+        );
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        JsonSerializer.Serialize(conflict.Value).Should().Contain("review_scope_mode_mismatch");
+        (await ConversationReviewScope.ReadAsync(store, ThreadId)).Should().Be(new ReviewConversationScope("17", "31"));
     }
 
     [Fact]

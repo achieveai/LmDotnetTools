@@ -78,4 +78,54 @@ internal sealed class MockPrProvider : IPrProvider
         HeadShaCalls++;
         return Task.FromResult(CurrentHeadSha);
     }
+
+    public ProviderEngagementSnapshot? EngagementSnapshot { get; set; }
+
+    public int EngagementSnapshotCalls { get; private set; }
+
+    public ProviderActivityWatermark? LastEngagementAfter { get; private set; }
+
+    public IReadOnlySet<string> LastDaemonReceiptIds { get; private set; } =
+        new HashSet<string>(StringComparer.Ordinal);
+
+    public Task<ProviderEngagementSnapshot> GetEngagementSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        ProviderActivityWatermark? after,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    )
+    {
+        EngagementSnapshotCalls++;
+        LastEngagementAfter = after;
+        LastDaemonReceiptIds = daemonReceiptIds.ToHashSet(StringComparer.Ordinal);
+        return Task.FromResult(
+            EngagementSnapshot
+                ?? ProviderEngagementSnapshot.Create(
+                    PrLifecycleState.Open,
+                    CurrentHeadSha ?? string.Empty,
+                    string.Empty,
+                    after ?? new ProviderActivityWatermark(Provider, DateTimeOffset.UnixEpoch, "seed:0"),
+                    []
+                )
+        );
+    }
+
+    public ProviderInlineAnchorSnapshot? InlineAnchorSnapshot { get; set; }
+
+    public int InlineAnchorSnapshotCalls { get; private set; }
+
+    public string? LastInlineAnchorExpectedHeadSha { get; private set; }
+
+    public Task<ProviderInlineAnchorSnapshot> GetInlineAnchorSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        string expectedHeadSha,
+        CancellationToken cancellationToken
+    )
+    {
+        InlineAnchorSnapshotCalls++;
+        LastInlineAnchorExpectedHeadSha = expectedHeadSha;
+        return Task.FromResult(InlineAnchorSnapshot ?? new ProviderInlineAnchorSnapshot(expectedHeadSha, []));
+    }
 }

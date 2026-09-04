@@ -36,7 +36,7 @@ internal sealed class JudgeAgent
     /// Readers must handle both versions — every v1 row is permanently unknown-provenance, and its
     /// <c>0</c> permanently ambiguous, which is exactly why the version field exists.
     /// </summary>
-    public const int JudgeArtifactSchemaVersion = 2;
+    public const int JudgeArtifactSchemaVersion = 3;
 
     public const string JudgeArtifactKind = "judge";
 
@@ -157,10 +157,15 @@ internal sealed class JudgeAgent
         // parser already falls back to it for every reply it could read but not score.
         var rationale = ballot?.Reasoning ?? collected.Text;
 
-        // Persist the bounded v2 shape — AC#7 plus §6.3's provenance. No auto-routing, no skill
+        // Persist the bounded v3 shape — AC#7, §6.3's provenance, and nullable exact source links. No
         // rewriting. The self-preference relation is stated rather than left to be derived: §3.2's
         // axis is unmeasurable retrospectively, so a reader who compares nothing must still be able
         // to see that a grade was issued by the model that wrote what it graded.
+        var ballotStatus =
+            verdict.Ballots.Count > 0 ? "Counted"
+            : excluded?.Ballot.Abstained == true ? "Abstained"
+            : excluded is not null ? "Excluded"
+            : "NoBallot";
         var payload = new JudgeArtifactPayload(
             score,
             rationale,
@@ -168,7 +173,15 @@ internal sealed class JudgeAgent
             request.JudgeModelId,
             request.GeneratorModelId,
             SelfGraded(request),
-            verdict.Ballots.Count
+            verdict.Ballots.Count,
+            ballotStatus,
+            ballot?.AbstainReason,
+            excluded?.ExclusionReason,
+            ReviewRubric.RubricId,
+            ReviewRubric.RubricVersion,
+            request.SystemPromptSource,
+            request.RequestSource,
+            request.ResponseSource
         );
         var artifact = _store.AddArtifact(
             new ReviewArtifact
@@ -315,13 +328,22 @@ internal sealed record JudgeRequest(long ReviewRunId, string Provider, string Va
 
     /// <summary>The model that produced the review being graded.</summary>
     public string? GeneratorModelId { get; init; }
+
+    /// <summary>The exact persisted rendered system-prompt source, when correlation has completed.</summary>
+    public AuditSourceReference? SystemPromptSource { get; init; }
+
+    /// <summary>The exact persisted judging-input source, when correlation has completed.</summary>
+    public AuditSourceReference? RequestSource { get; init; }
+
+    /// <summary>The exact persisted judge-response source, when correlation has completed.</summary>
+    public AuditSourceReference? ResponseSource { get; init; }
 }
 
 /// <summary>The judge's persisted verdict plus the id of the <c>judge</c> artifact it was written to.</summary>
 internal sealed record JudgeVerdict(int? Score, string Rationale, string VariantId, long ArtifactId);
 
 /// <summary>
-/// The exact, bounded shape of a <c>judge</c> artifact payload (AC#7, schema v2). New fields must be
+/// The exact, bounded shape of a <c>judge</c> artifact payload (AC#7, schema v3). New fields must be
 /// additive and optional to preserve append-compatibility.
 /// </summary>
 /// <param name="Score">
@@ -363,6 +385,16 @@ internal sealed record JudgeVerdict(int? Score, string Rationale, string Variant
 /// How many ballots the reduction counted. Zero distinguishes "no ballot survived" from "one ballot
 /// scored", which a null <see cref="Score"/> alone does not.
 /// </param>
+/// <param name="BallotStatus">Counted, abstained, excluded, or absent.</param>
+/// <param name="AbstentionReason">Why the ballot declined to score, when it abstained.</param>
+/// <param name="ExclusionReason">Why aggregation excluded the ballot, when it did.</param>
+/// <param name="RubricId">Stable rubric identity used for this grade.</param>
+/// <param name="RubricVersion">Exact rubric version used for this grade.</param>
+/// <param name="SystemPromptSource">
+/// Exact rendered system-prompt source reference, or null while correlation is unknown.
+/// </param>
+/// <param name="RequestSource">Exact judging-input source reference, or null while correlation is unknown.</param>
+/// <param name="ResponseSource">Exact judge-response source reference, or null while correlation is unknown.</param>
 internal sealed record JudgeArtifactPayload(
     int? Score,
     string Rationale,
@@ -370,5 +402,13 @@ internal sealed record JudgeArtifactPayload(
     string? JudgeModelId,
     string? GeneratorModelId,
     bool? SelfGraded,
-    int BallotCount
+    int BallotCount,
+    string BallotStatus = "Unknown",
+    string? AbstentionReason = null,
+    string? ExclusionReason = null,
+    string RubricId = "unknown",
+    string RubricVersion = "unknown",
+    AuditSourceReference? SystemPromptSource = null,
+    AuditSourceReference? RequestSource = null,
+    AuditSourceReference? ResponseSource = null
 );

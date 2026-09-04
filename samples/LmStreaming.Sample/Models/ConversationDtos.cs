@@ -3,6 +3,9 @@ using StoredVisibility = AchieveAi.LmDotnetTools.LmCore.Identity.Visibility;
 
 namespace LmStreaming.Sample.Models;
 
+/// <summary>The immutable daemon engagement and round bound to a hosted review conversation.</summary>
+public sealed record ReviewConversationScope(string EngagementId, string RoundId);
+
 /// <summary>
 /// Summary of a conversation for listing purposes.
 /// </summary>
@@ -230,6 +233,35 @@ public record ProvisionConversationRequest
     /// the field. Non-empty values are capability-shaped before reaching the provider.
     /// </summary>
     public string? ReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Immutable engagement/round correlation for a <c>code-review-daemon</c> conversation. Null for ordinary
+    /// conversations. The server validates that both identifiers are nonblank numeric strings.
+    /// </summary>
+    public ReviewConversationScope? ReviewScope { get; init; }
+
+    /// <summary>
+    /// Optional pull request this conversation's parent agent may publish one review round to through the
+    /// daemon's typed backend. Accepted only on an authenticated service-to-service request and only together
+    /// with a matching <see cref="ReviewScope"/> in the code-review-daemon mode.
+    /// </summary>
+    public ReviewPublicationScopeRequest? ReviewPublicationScope { get; init; }
+}
+
+/// <summary>
+/// The host-owned part of the daemon's typed publication scope. Per-action ids and evidence are supplied by
+/// the parent review agent at call time and are deliberately absent here.
+/// </summary>
+public sealed record ReviewPublicationScopeRequest
+{
+    public long RoundId { get; init; }
+    public string? Provider { get; init; }
+    public long RepoId { get; init; }
+    public string? PrId { get; init; }
+    public string? ExpectedHeadSha { get; init; }
+
+    /// <summary>False is collect-only. Model input cannot override this host-owned value.</summary>
+    public bool LivePostingAuthorized { get; init; }
 }
 
 /// <summary>
@@ -345,6 +377,46 @@ public record SendMessageResponse
     /// safe retries can fail closed instead of retrying into a duplicate review.
     /// </summary>
     public bool IdempotencyKeyHonored { get; init; }
+}
+
+/// <summary>
+/// Result of handing a conversation's pooled workspace back.
+/// </summary>
+public record ReleaseWorkspaceSessionResponse
+{
+    public required string ThreadId { get; init; }
+
+    /// <summary>
+    /// The conversation is released: no agent is pooled for it and no send can remount its workspace.
+    /// Always true on a 2xx — a release that could not reach that state answers 4xx instead.
+    /// </summary>
+    public required bool Released { get; init; }
+
+    /// <summary>
+    /// What happened to the underlying gateway session, from
+    /// <c>ConversationsController.WorkspaceSessionOutcomes</c>: <c>nothing_to_release</c>,
+    /// <c>retained</c> (another conversation is still bound), <c>released</c>, or
+    /// <c>unconfirmed</c>. Distinct from <see cref="Released"/>, which is about THIS conversation.
+    /// </summary>
+    public required string SessionOutcome { get; init; }
+
+    /// <summary>Why the teardown was <c>unconfirmed</c>; <c>null</c> for every other outcome.</summary>
+    public string? UnconfirmedReason { get; init; }
+
+    /// <summary>
+    /// Always <see langword="false"/>, and deliberately present rather than omitted so a caller reading
+    /// only this field cannot mistake silence for a guarantee. The gateway deletes its session record
+    /// BEFORE its best-effort container teardown and reports nothing about the latter, so no response it
+    /// can produce today proves the writable mount is gone. A caller that needs the slot back must retire
+    /// it. See <see cref="MountQuiescenceNotObservable"/>.
+    /// </summary>
+    public required bool MountQuiescenceConfirmed { get; init; }
+
+    /// <summary>Why <see cref="MountQuiescenceConfirmed"/> is false; always <see cref="MountQuiescenceNotObservable"/> today.</summary>
+    public required string MountQuiescenceEvidence { get; init; }
+
+    /// <summary>The gateway exposes no signal for backend container teardown, so quiescence is unobservable.</summary>
+    public const string MountQuiescenceNotObservable = "gateway_does_not_report_backend_teardown";
 }
 
 /// <summary>

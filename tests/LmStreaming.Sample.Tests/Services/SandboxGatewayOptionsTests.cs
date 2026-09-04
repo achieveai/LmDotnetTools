@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
@@ -7,6 +9,109 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </summary>
 public class SandboxGatewayOptionsTests
 {
+    [Fact]
+    public void SessionCatalogTimeout_DefaultsToTheDocumentedBudget()
+    {
+        // The default is what an operator who configures nothing actually gets, and it is the value the
+        // fix depends on: a cold gateway's first catalog read takes many times the best-effort browse
+        // budget, so a default that merely matched the browse client would leave the 503 in place.
+        new SandboxGatewayOptions()
+            .SessionCatalogTimeout.Should()
+            .Be(TimeSpan.FromSeconds(120));
+        SandboxGatewayOptions.DefaultSessionCatalogTimeoutSeconds.Should().Be(120);
+    }
+
+    [Fact]
+    public void SessionCatalogTimeout_HonoursAnOperatorValueInsideTheBounds()
+    {
+        // Non-vacuity guard for every bound below: an in-range value must pass through untouched, or
+        // the property would be a constant wearing a setter.
+        var options = new SandboxGatewayOptions { SessionCatalogTimeoutSeconds = 45 };
+
+        options.SessionCatalogTimeout.Should().Be(TimeSpan.FromSeconds(45));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    public void SessionCatalogTimeout_TreatsAbsentOrNonsensicalValuesAsUnconfigured(int configured)
+    {
+        // Zero is what a missing/blank binding produces, and a negative budget has no meaning at all.
+        // Both resolve to the DEFAULT rather than to the minimum: an operator who configured nothing
+        // must not silently end up on the tightest budget the type allows.
+        var options = new SandboxGatewayOptions { SessionCatalogTimeoutSeconds = configured };
+
+        options.SessionCatalogTimeout.Should().Be(TimeSpan.FromSeconds(120));
+    }
+
+    [Fact]
+    public void SessionCatalogTimeout_RaisesAValueBelowTheFloor()
+    {
+        // Below the floor the session check gives up faster than the browse client it was split away
+        // from, which is strictly worse than not configuring it — the exact outage this option exists
+        // to prevent, re-entered through configuration.
+        var options = new SandboxGatewayOptions { SessionCatalogTimeoutSeconds = 1 };
+
+        options
+            .SessionCatalogTimeout.Should()
+            .Be(TimeSpan.FromSeconds(SandboxGatewayOptions.MinSessionCatalogTimeoutSeconds));
+        SandboxGatewayOptions.MinSessionCatalogTimeoutSeconds.Should().Be(10);
+    }
+
+    [Fact]
+    public void SessionCatalogTimeout_CapsAValueAboveTheCeiling()
+    {
+        // Session creation blocks a request while this runs, so an unbounded budget lets one
+        // misconfigured line hang every create against a gateway that is simply dead.
+        var options = new SandboxGatewayOptions { SessionCatalogTimeoutSeconds = int.MaxValue };
+
+        options
+            .SessionCatalogTimeout.Should()
+            .Be(TimeSpan.FromSeconds(SandboxGatewayOptions.MaxSessionCatalogTimeoutSeconds));
+        SandboxGatewayOptions.MaxSessionCatalogTimeoutSeconds.Should().Be(300);
+    }
+
+    [Fact]
+    public void SessionCatalogTimeout_AcceptsTheBoundsThemselves()
+    {
+        // The bounds are inclusive. Pinned separately because a clamp written with the wrong
+        // comparison passes every test above and still rejects the two values it documents.
+        new SandboxGatewayOptions
+        {
+            SessionCatalogTimeoutSeconds = SandboxGatewayOptions.MinSessionCatalogTimeoutSeconds,
+        }
+            .SessionCatalogTimeout.Should()
+            .Be(TimeSpan.FromSeconds(SandboxGatewayOptions.MinSessionCatalogTimeoutSeconds));
+
+        new SandboxGatewayOptions
+        {
+            SessionCatalogTimeoutSeconds = SandboxGatewayOptions.MaxSessionCatalogTimeoutSeconds,
+        }
+            .SessionCatalogTimeout.Should()
+            .Be(TimeSpan.FromSeconds(SandboxGatewayOptions.MaxSessionCatalogTimeoutSeconds));
+    }
+
+    [Fact]
+    public void SessionCatalogTimeout_BindsFromTheConfigurationSection()
+    {
+        // The property is only useful if the NAME an operator writes in appsettings reaches it. Bound
+        // through the real binder rather than an object initializer, so a rename that breaks the
+        // config key fails here instead of in production.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [$"{SandboxGatewayOptions.SectionName}:SessionCatalogTimeoutSeconds"] = "90",
+                }
+            )
+            .Build();
+
+        var options = configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>();
+
+        options!.SessionCatalogTimeout.Should().Be(TimeSpan.FromSeconds(90));
+    }
+
     [Fact]
     public void ResolveWorkspace_FallsBackToBaseAndLeaf_WhenWorkspacePathUnset()
     {

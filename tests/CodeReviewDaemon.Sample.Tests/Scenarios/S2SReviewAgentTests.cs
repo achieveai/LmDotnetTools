@@ -26,7 +26,8 @@ public sealed class S2SReviewAgentTests
     private static S2SReviewAgent NewAgent(
         LmStreamingS2SClient client,
         string? title,
-        string? existingThreadId = null
+        string? existingThreadId = null,
+        string? reasoningEffort = null
     ) =>
         new(
             client,
@@ -41,7 +42,8 @@ public sealed class S2SReviewAgentTests
             overallTimeout: TimeSpan.FromSeconds(5),
             terminalConfirmDelay: TimeSpan.FromMilliseconds(1),
             interruptedGrace: TimeSpan.FromMilliseconds(50),
-            existingThreadId: existingThreadId
+            existingThreadId: existingThreadId,
+            reasoningEffort: reasoningEffort
         );
 
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
@@ -470,6 +472,190 @@ public sealed class S2SReviewAgentTests
                 r => r.Method == HttpMethod.Post && r.Uri.ToString().Contains("/messages", StringComparison.Ordinal),
                 "the rejoined turn sent nothing, the unarmed turn after it sent normally"
             );
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_records_a_provision_intent_before_the_host_can_accept_the_conversation()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-minted\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}"
+            );
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+        var intentStartedBeforeProvision = false;
+        var associated = new List<string>();
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() =>
+        {
+            intentStartedBeforeProvision =
+                handler.Requests.Count(r =>
+                    r.Method == HttpMethod.Post && r.Uri.AbsolutePath.TrimEnd('/') == "/api/conversations"
+                ) == 0;
+            return new ConversationProvisionObserver(associated.Add, () => { });
+        });
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        intentStartedBeforeProvision.Should().BeTrue();
+        associated.Should().Equal("thread-minted");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_associates_the_parsed_thread_before_later_contract_rejection()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-associated\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null, reasoningEffort: "xhigh");
+        var associated = new List<string>();
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() => new ConversationProvisionObserver(associated.Add, () => { }));
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*did not acknowledge*");
+        associated.Should().Equal("thread-associated");
+        agent.ThreadId.Should().BeEmpty("the rejected contract must not become an active review conversation");
+        handler.CountRequests("/messages").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_retracts_only_a_definitive_pre_mint_refusal()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(
+                HttpMethod.Post,
+                "api/conversations",
+                "{\"error\":\"workspace missing\",\"code\":\"workspace_not_found\"}",
+                HttpStatusCode.NotFound
+            );
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+        var associated = new List<string>();
+        var retractions = 0;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() =>
+            new ConversationProvisionObserver(associated.Add, () => retractions++)
+        );
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<ReviewHostPreMintRefusalException>();
+        retractions.Should().Be(1);
+        associated.Should().BeEmpty();
+        handler.CountRequests("/messages").Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "{\"error\":\"legacy host\"}")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "{\"code\":\"sandbox_unavailable\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "not-json")]
+    public async Task ExecuteRunAsync_keeps_ambiguous_provision_failures_unretracted(HttpStatusCode status, string body)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "api/conversations", body, status);
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+        var associated = new List<string>();
+        var retractions = 0;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() =>
+            new ConversationProvisionObserver(associated.Add, () => retractions++)
+        );
+        var exception = await Record.ExceptionAsync(async () => _ = await DriveAsync(agent, "review this PR"));
+
+        exception.Should().NotBeNull();
+        exception.Should().NotBeOfType<ReviewHostPreMintRefusalException>();
+        retractions.Should().Be(0);
+        associated.Should().BeEmpty();
+        handler.CountRequests("/messages").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_never_calls_the_host_when_the_provision_intent_cannot_be_recorded()
+    {
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities();
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() => throw new InvalidOperationException("claim store is down"));
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*claim store is down*");
+        TurnRequests(handler).Should().BeEmpty("provisioning cannot begin without its durable intent");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_leaves_the_pre_provision_intent_unassociated_when_host_acceptance_is_lost()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-lost\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+        var intentStarted = false;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() =>
+        {
+            intentStarted = true;
+            return new ConversationProvisionObserver(
+                _ => throw new InvalidOperationException("process died before association"),
+                () => { }
+            );
+        });
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*died before association*");
+        intentStarted.Should().BeTrue();
+        handler
+            .Requests.Count(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.TrimEnd('/') == "/api/conversations")
+            .Should()
+            .Be(1, "the host accepted after the intent was durable");
+        handler.CountRequests("/messages").Should().Be(0, "an unassociated conversation must not start a review turn");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_does_not_start_a_provision_intent_when_resuming_a_conversation()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}"
+            );
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            title: null,
+            existingThreadId: "thread-persisted"
+        );
+        var intentStarts = 0;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationProvision(() =>
+        {
+            intentStarts++;
+            return new ConversationProvisionObserver(_ => { }, () => { });
+        });
+
+        _ = await DriveAsync(agent, "synthesize the final review");
+
+        intentStarts.Should().Be(0);
     }
 
     /// <summary>

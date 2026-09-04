@@ -9,6 +9,7 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// agent that skill IS how it reviews) and the <c>code-reviewer:*</c> sub-agents the review dispatches.
 /// </summary>
 /// <param name="HasReviewSkill">True when the required review skill is present in an allowed marketplace.</param>
+/// <param name="HasContextGatherer">True when the exact PR context gatherer is present.</param>
 /// <param name="ReviewerAgentCount">How many <c>code-reviewer</c> sub-agents the catalog exposes.</param>
 /// <param name="MarketplaceErrors">
 /// Per-marketplace load errors the gateway reported (<c>SandboxMarketplaceEntry.Error</c>). A marketplace that
@@ -17,26 +18,28 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// </param>
 internal sealed record GatewaySkillSupport(
     bool HasReviewSkill,
+    bool HasContextGatherer,
     int ReviewerAgentCount,
     IReadOnlyList<string> MarketplaceErrors
 )
 {
-    /// <summary>A review needs BOTH halves: the skill that defines the review procedure and at least one
-    /// sub-agent to run the deep passes with.</summary>
-    public bool IsSupported => HasReviewSkill && ReviewerAgentCount > 0;
+    /// <summary>A review needs its procedure, the exact context gatherer, and deep-review sub-agents.</summary>
+    public bool IsSupported => HasReviewSkill && HasContextGatherer && ReviewerAgentCount > 0;
 
     /// <summary>Operator-readable summary of what the probe did and did not find. Names only plugin/skill
     /// identifiers and gateway-reported errors — never a credential.</summary>
     public string Describe() =>
         $"skill '{GatewaySkillProbe.RequiredPlugin}:{GatewaySkillProbe.RequiredSkill}'="
         + (HasReviewSkill ? "present" : "MISSING")
+        + $", agent '{GatewaySkillProbe.RequiredPlugin}:{GatewaySkillProbe.RequiredContextGatherer}'="
+        + (HasContextGatherer ? "present" : "MISSING")
         + $", {GatewaySkillProbe.RequiredPlugin} sub-agents={ReviewerAgentCount}"
         + (MarketplaceErrors.Count > 0 ? $", marketplace errors=[{string.Join("; ", MarketplaceErrors)}]" : "");
 }
 
 /// <summary>
 /// Asks the gateway — WITHOUT provisioning a sandbox session — whether the marketplaces the daemon is
-/// configured against actually surface Revobot's review prerequisites.
+/// configured against actually surface Revobot's review prerequisites, including the exact context gatherer.
 /// </summary>
 /// <remarks>
 /// This exists because the S2S path has no daemon-side session to inspect: the review runs inside a
@@ -67,6 +70,9 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
 
     /// <summary>The skill <c>daemon-prompts.yaml</c> makes mandatory ("that skill IS how you review").</summary>
     internal const string RequiredSkill = "pr-review";
+
+    /// <summary>The exact installed agent that must produce review context before specialist review.</summary>
+    internal const string RequiredContextGatherer = "pr-context-gatherer";
 
     /// <summary>A catalog browse is a single small GET; it must not inherit a command-sized deadline.</summary>
     private static readonly TimeSpan S_probeTimeout = TimeSpan.FromSeconds(30);
@@ -114,6 +120,7 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
 
         var errors = new List<string>();
         var hasSkill = false;
+        var hasContextGatherer = false;
         var agentCount = 0;
 
         foreach (var entry in catalog.Marketplaces)
@@ -134,10 +141,13 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
                 hasSkill |= plugin.Skills.Any(s =>
                     string.Equals(s.Name, RequiredSkill, StringComparison.OrdinalIgnoreCase)
                 );
+                hasContextGatherer |= plugin.Agents.Any(agent =>
+                    string.Equals(agent.Name, RequiredContextGatherer, StringComparison.OrdinalIgnoreCase)
+                );
             }
         }
 
-        var support = new GatewaySkillSupport(hasSkill, agentCount, errors);
+        var support = new GatewaySkillSupport(hasSkill, hasContextGatherer, agentCount, errors);
         _logger.LogInformation(
             "Gateway marketplace preview for [{Marketplaces}]: {Support}",
             marketplaces.Count > 0 ? string.Join(",", marketplaces) : "(gateway default)",

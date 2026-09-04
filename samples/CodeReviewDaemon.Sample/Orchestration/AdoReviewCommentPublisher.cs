@@ -69,7 +69,7 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
                 var content = comment.TryGetProperty("content", out var c) ? c.GetString() : null;
                 if (IdempotencyMarker.Matches(content, idempotencyKey))
                 {
-                    return new PostedComment(thread.GetProperty("id").GetRawText());
+                    return ThreadReceipt(thread, comment);
                 }
             }
         }
@@ -105,10 +105,287 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        var id = document.RootElement.GetProperty("id").GetRawText();
-        _logger.LogInformation("Posted ADO review thread {ThreadId} on PR {PrId}.", id, target.PrId);
-        return new PostedComment(id);
+        var root = document.RootElement;
+        var threadId = RequiredId(root, "id");
+        var comment = root.GetProperty("comments")[0];
+        _logger.LogInformation("Posted ADO review thread {ThreadId} on PR {PrId}.", threadId, target.PrId);
+        return ThreadReceipt(root, comment);
     }
+
+    public async Task<PostedComment> PostLocatedThreadAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        AdoThreadRequest thread,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(thread);
+        ValidateSpan(thread.Span);
+        ValidatePullRequestContext(thread.PullRequestContext);
+        ArgumentException.ThrowIfNullOrWhiteSpace(thread.Body);
+
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post,
+            ThreadsUrl(target),
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
+        request.Content = JsonContent.Create(
+            new
+            {
+                comments = new[]
+                {
+                    new
+                    {
+                        parentCommentId = 0,
+                        content = IdempotencyMarker.Embed(thread.Body, idempotencyKey),
+                        commentType = 1,
+                    },
+                },
+                status = 1,
+                threadContext = ThreadContextPayload(thread.Span),
+                pullRequestThreadContext = thread.PullRequestContext,
+            }
+        );
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = await ParseAsync(response, cancellationToken);
+        var receipt = ThreadReceipt(document.RootElement, document.RootElement.GetProperty("comments")[0]);
+        return receipt with
+        {
+            Span = receipt.Span ?? thread.Span,
+            IterationContext = receipt.IterationContext ?? thread.PullRequestContext,
+        };
+    }
+
+    public async Task<PostedComment> ReplyToThreadAsync(
+        ReviewCommentTarget target,
+        string idempotencyKey,
+        AdoThreadReplyRequest reply,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(reply);
+        var threadId = RequireNumericId(reply.ThreadId, nameof(reply.ThreadId));
+        var parentCommentId = RequireNumericId(reply.ParentCommentId, nameof(reply.ParentCommentId));
+        ArgumentException.ThrowIfNullOrWhiteSpace(reply.Body);
+
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post,
+            ThreadCommentsUrl(target, threadId),
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
+        request.Content = JsonContent.Create(
+            new
+            {
+                parentCommentId = long.Parse(parentCommentId, CultureInfo.InvariantCulture),
+                content = IdempotencyMarker.Embed(reply.Body, idempotencyKey),
+                commentType = 1,
+            }
+        );
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = await ParseAsync(response, cancellationToken);
+        var comment = document.RootElement;
+        var commentId = RequiredId(comment, "id");
+        return new PostedComment(
+            ThreadCommentReceiptId(threadId, commentId),
+            ThreadId: threadId,
+            CommentId: commentId,
+            ParentCommentId: OptionalId(comment, "parentCommentId") ?? parentCommentId,
+            Permalink: LinkOf(comment),
+            Status: reply.ThreadStatus,
+            Span: reply.Span,
+            IterationContext: reply.PullRequestContext
+        );
+    }
+
+    private static PostedComment ThreadReceipt(JsonElement thread, JsonElement comment)
+    {
+        var threadId = RequiredId(thread, "id");
+        var commentId = RequiredId(comment, "id");
+        return new PostedComment(
+            ThreadCommentReceiptId(threadId, commentId),
+            ThreadId: threadId,
+            CommentId: commentId,
+            ParentCommentId: OptionalId(comment, "parentCommentId"),
+            Permalink: LinkOf(comment),
+            Status: StatusOf(thread),
+            Span: SpanOf(thread),
+            IterationContext: PullRequestContextOf(thread)
+        );
+    }
+
+    private static IReadOnlyDictionary<string, object> ThreadContextPayload(ProviderCommentSpan span)
+    {
+        var result = new Dictionary<string, object> { ["filePath"] = span.Path };
+        var prefix = span.Side == "RIGHT" ? "right" : "left";
+        result[$"{prefix}FileStart"] = Position(span.StartLine ?? span.EndLine, span.StartOffset);
+        result[$"{prefix}FileEnd"] = Position(span.EndLine, span.EndOffset);
+        return result;
+    }
+
+    private static object Position(int line, int? offset) => new { line, offset = offset ?? 1 };
+
+    private static void ValidateSpan(ProviderCommentSpan span)
+    {
+        ArgumentNullException.ThrowIfNull(span);
+        ArgumentException.ThrowIfNullOrWhiteSpace(span.Path);
+        if (span.Side is not ("LEFT" or "RIGHT"))
+        {
+            throw new ArgumentException("Comment side must be LEFT or RIGHT.", nameof(span));
+        }
+
+        if (
+            span.EndLine <= 0
+            || span.StartLine is <= 0
+            || span.StartLine > span.EndLine
+            || span.StartOffset is <= 0
+            || span.EndOffset is <= 0
+        )
+        {
+            throw new ArgumentException("Comment lines and offsets must form a positive ascending span.", nameof(span));
+        }
+    }
+
+    private static void ValidatePullRequestContext(AdoPullRequestThreadContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (
+            context.ChangeTrackingId <= 0
+            || context.IterationContext.FirstComparingIteration < 0
+            || context.IterationContext.SecondComparingIteration <= 0
+        )
+        {
+            throw new ArgumentException("ADO change and iteration context must be positive.", nameof(context));
+        }
+    }
+
+    private static ProviderCommentSpan? SpanOf(JsonElement thread)
+    {
+        if (!thread.TryGetProperty("threadContext", out var context) || context.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var path = StringOf(context, "filePath");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var side =
+            context.TryGetProperty("rightFileStart", out var right) && right.ValueKind == JsonValueKind.Object
+                ? "RIGHT"
+                : "LEFT";
+        var prefix = side == "RIGHT" ? "right" : "left";
+        var start = PositionOf(context, $"{prefix}FileStart");
+        var end = PositionOf(context, $"{prefix}FileEnd");
+        if (start.Line is null && end.Line is null)
+        {
+            return null;
+        }
+
+        return new ProviderCommentSpan(
+            path,
+            side,
+            start.Line ?? end.Line,
+            end.Line ?? start.Line!.Value,
+            start.Offset,
+            end.Offset
+        );
+    }
+
+    private static (int? Line, int? Offset) PositionOf(JsonElement context, string name)
+    {
+        if (!context.TryGetProperty(name, out var position) || position.ValueKind != JsonValueKind.Object)
+        {
+            return (null, null);
+        }
+
+        return (IntOf(position, "line"), IntOf(position, "offset"));
+    }
+
+    private static AdoPullRequestThreadContext? PullRequestContextOf(JsonElement thread)
+    {
+        if (
+            !thread.TryGetProperty("pullRequestThreadContext", out var context)
+            || context.ValueKind != JsonValueKind.Object
+            || IntOf(context, "changeTrackingId") is not { } changeTrackingId
+            || !context.TryGetProperty("iterationContext", out var iteration)
+            || iteration.ValueKind != JsonValueKind.Object
+            || IntOf(iteration, "firstComparingIteration") is not { } first
+            || IntOf(iteration, "secondComparingIteration") is not { } second
+        )
+        {
+            return null;
+        }
+
+        return new AdoPullRequestThreadContext(changeTrackingId, new AdoIterationContext(first, second));
+    }
+
+    private static int? IntOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.TryGetInt32(out var parsed) ? parsed : null;
+
+    private static string? StringOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static string? StatusOf(JsonElement thread) =>
+        thread.TryGetProperty("status", out var status)
+            ? status.ValueKind switch
+            {
+                JsonValueKind.String => status.GetString(),
+                JsonValueKind.Number => status.GetRawText(),
+                _ => null,
+            }
+            : null;
+
+    private static string? LinkOf(JsonElement comment) =>
+        comment.TryGetProperty("_links", out var links)
+        && links.ValueKind == JsonValueKind.Object
+        && links.TryGetProperty("self", out var self)
+        && self.ValueKind == JsonValueKind.Object
+            ? StringOf(self, "href")
+            : null;
+
+    private static string RequiredId(JsonElement element, string name) =>
+        OptionalId(element, name) ?? throw new JsonException($"Provider response omitted '{name}'.");
+
+    private static string? OptionalId(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value)
+            ? value.ValueKind switch
+            {
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.String => value.GetString(),
+                _ => null,
+            }
+            : null;
+
+    private static string RequireNumericId(string value, string parameterName) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out _)
+            ? value
+            : throw new ArgumentException("Provider thread/comment IDs must be numeric.", parameterName);
+
+    private static async Task<JsonDocument> ParseAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+    }
+
+    private static string ThreadCommentReceiptId(string threadId, string commentId) =>
+        $"thread:{threadId}:comment:{commentId}";
+
+    private static string ThreadCommentsUrl(ReviewCommentTarget target, string threadId) =>
+        $"{BaseUrl}/{target.Repo.OrgOrOwner}/{target.Repo.Project}/_apis/git/repositories/{target.Repo.RepoName}"
+        + $"/pullRequests/{target.PrId}/threads/{threadId}/comments?api-version={ApiVersion}";
 
     private static string ThreadsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/{target.Repo.OrgOrOwner}/{target.Repo.Project}/_apis/git/repositories/{target.Repo.RepoName}"

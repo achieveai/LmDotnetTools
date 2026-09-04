@@ -1,4 +1,6 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -33,8 +35,18 @@ internal interface IDeadlineBoundedReviewLoop
 /// after it.
 /// </para>
 /// </summary>
+internal sealed record ConversationProvisionObserver(Action<string> Associate, Action Retract);
+
 internal interface IResumableReviewTurn
 {
+    /// <summary>
+    /// Registers a callback invoked synchronously immediately before a new hosted conversation is provisioned.
+    /// The callback must durably record that provisioning may begin and returns terminal first-write callbacks:
+    /// associate the exact parsed thread id, or retract only when the host proves it refused before minting.
+    /// If recording fails, provisioning must not begin. A resumed thread invokes neither callback.
+    /// </summary>
+    void ObserveConversationProvision(Func<ConversationProvisionObserver> onConversationProvisioning);
+
     /// <summary>
     /// Registers a callback invoked the instant a hosted conversation is MINTED for this loop — before the
     /// first turn is sent, and therefore before any sub-agent fan-out exists.
@@ -111,6 +123,64 @@ internal sealed class ReviewAgent
     }
 
     /// <summary>
+    /// Dispatches the installed PR context gatherer as a dedicated first turn and accepts only its sourced
+    /// schema-v1 manifest. The bootstrap is serialized as compact navigation data; it is not expanded into a
+    /// diff or provider-body dump here.
+    /// </summary>
+    public async Task<DynamicContextGatheringResult> GatherContextAsync(
+        DynamicContextBootstrap bootstrap,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(bootstrap);
+        const string gathererTemplate = "code-reviewer:pr-context-gatherer";
+        var input = $$"""
+            Dispatch the installed `{{gathererTemplate}}` agent now.
+            This is a context-gathering turn, not a code-review or publication turn.
+            Follow the supplied references through PR-scoped read-only tools. Perform at least two scoped reads.
+            Return only one JSON object matching context-manifest schema version 1. Every material claim must cite
+            one or more exact, non-trivial provider, commit, file, or discussion references that appear verbatim in
+            successful scoped read results. The host will validate those references and attach immutable audit source
+            record ids and accepted hashes; do not invent those host-owned values. Mark any missing repo, head, or
+            workspace scope as a required gap instead of guessing.
+
+            Bootstrap JSON:
+            {{JsonSerializer.Serialize(bootstrap)}}
+            """;
+
+        var result = await RunTurnAsync(input, deadlineUtc, cancellationToken).ConfigureAwait(false);
+        DynamicContextManifestDraft manifest;
+        try
+        {
+            manifest =
+                JsonSerializer.Deserialize<DynamicContextManifestDraft>(
+                    result.ReviewText,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                ) ?? throw new InvalidOperationException("The context gatherer returned an empty manifest.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("The context gatherer returned malformed manifest JSON.", ex);
+        }
+
+        if (manifest.Claims is null || manifest.Gaps is null)
+        {
+            throw new InvalidOperationException("The context gatherer returned malformed manifest JSON.");
+        }
+
+        ValidateManifest(manifest, bootstrap);
+        _logger.LogInformation(
+            "Context gathering turn {RunId} produced semantic schema {SchemaVersion} with {ClaimCount} claim(s) on thread {ThreadId}; host evidence validation is still required.",
+            result.RunId,
+            manifest.Version,
+            manifest.Claims.Count,
+            result.ThreadId
+        );
+        return new DynamicContextGatheringResult(manifest, result.RunId, result.ThreadId);
+    }
+
+    /// <summary>
     /// Sends <paramref name="input"/> as one user turn and collects the assistant's provisional review text.
     /// Tolerates a blank answer: this turn is never the authoritative review, so an empty provisional is a
     /// fact about a parent that deferred everything to its children, not a failure.
@@ -180,6 +250,38 @@ internal sealed class ReviewAgent
             allowInlinePosting
         );
         return result;
+    }
+
+    private static void ValidateManifest(DynamicContextManifestDraft manifest, DynamicContextBootstrap bootstrap)
+    {
+        if (manifest.Version != DynamicContextManifest.SchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"The context manifest schema version {manifest.Version} is unsupported; expected {DynamicContextManifest.SchemaVersion}."
+            );
+        }
+
+        if (manifest.EngagementRoundId != bootstrap.EngagementRoundId)
+        {
+            throw new InvalidOperationException("The context manifest names a different engagement round.");
+        }
+
+        if (
+            manifest.Claims.Any(claim =>
+                string.IsNullOrWhiteSpace(claim.ClaimId)
+                || string.IsNullOrWhiteSpace(claim.Text)
+                || claim.Citations.Count == 0
+                || claim.Citations.Any(string.IsNullOrWhiteSpace)
+            )
+        )
+        {
+            throw new InvalidOperationException("Every material context claim must carry a bounded citation.");
+        }
+
+        if (manifest.Gaps.Any(gap => string.IsNullOrWhiteSpace(gap.Scope)))
+        {
+            throw new InvalidOperationException("Every context gap must identify its scope.");
+        }
     }
 
     /// <summary>

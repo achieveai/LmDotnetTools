@@ -15,6 +15,9 @@ internal enum CloneFailureKind
     /// <summary>A network/DNS/gateway-reachability failure — likely transient, worth a retry.</summary>
     TransientGateway,
 
+    /// <summary>An existing checkout points at a different remote than the configured review store.</summary>
+    OriginMismatch,
+
     /// <summary>An unrecognized failure; the raw git stderr is surfaced verbatim.</summary>
     Unknown,
 }

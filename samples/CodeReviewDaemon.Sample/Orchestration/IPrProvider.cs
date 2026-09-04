@@ -44,7 +44,42 @@ internal interface IPrProvider
     /// </para>
     /// </summary>
     Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads one frozen provider-native engagement snapshot after <paramref name="after"/>. Exact provider
+    /// object IDs in <paramref name="daemonReceiptIds"/> are omitted from external activity; author or body
+    /// heuristics must not be used as a substitute.
+    /// </summary>
+    Task<ProviderEngagementSnapshot> GetEngagementSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        ProviderActivityWatermark? after,
+        IReadOnlySet<string> daemonReceiptIds,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"Provider '{Provider}' does not expose engagement snapshots.");
+
+    /// <summary>
+    /// Reads the provider's current inline-comment anchors for the exact expected PR head. Implementations
+    /// must fail closed when the provider cannot prove that the returned anchors belong to that head.
+    /// </summary>
+    Task<ProviderInlineAnchorSnapshot> GetInlineAnchorSnapshotAsync(
+        RepoIdentity repo,
+        string prId,
+        string expectedHeadSha,
+        CancellationToken cancellationToken
+    ) => throw new NotSupportedException($"Provider '{Provider}' does not expose inline anchors.");
 }
+
+/// <summary>Provider-proven line anchors for one exact PR head.</summary>
+internal sealed record ProviderInlineAnchorSnapshot(string HeadSha, IReadOnlyList<ProviderInlineAnchorFile> Files);
+
+/// <summary>Line ranges that accept native inline comments on each side of one changed file.</summary>
+internal sealed record ProviderInlineAnchorFile(
+    string Path,
+    IReadOnlyList<LineRange> RightRanges,
+    IReadOnlyList<LineRange> LeftRanges,
+    AdoPullRequestThreadContext? AdoContext = null
+);
 
 /// <summary>
 /// A single PR's Open/Merged/Abandoned classification returned by <see cref="IPrProvider.GetPrStateAsync"/>.

@@ -19,6 +19,10 @@ public sealed class CodeReviewDaemonOptionsTests
         options.EnableJudgeAgent.Should().BeFalse();
         options.EnableABVariants.Should().BeFalse();
         options.EnableAdoProvider.Should().BeFalse("the daemon is GitHub-only until ADO is enabled");
+        options.EnableTypedReviewPublication.Should().BeFalse();
+        options.EnableEngagementCoordinator.Should().BeFalse();
+        options.EnableEngagementEligibility.Should().BeFalse();
+        options.EnableEngagementShadowMode.Should().BeFalse();
         options.EnabledRepos.Should().BeEmpty("no repo is reviewed until explicitly allow-listed");
         options.DatabasePath.Should().BeNull("the default database path is resolved at startup, not bound");
     }
@@ -35,6 +39,10 @@ public sealed class CodeReviewDaemonOptionsTests
                     ["CodeReviewDaemon:EnableJudgeAgent"] = "true",
                     ["CodeReviewDaemon:EnableABVariants"] = "true",
                     ["CodeReviewDaemon:EnableAdoProvider"] = "true",
+                    ["CodeReviewDaemon:EnableTypedReviewPublication"] = "true",
+                    ["CodeReviewDaemon:EnableEngagementCoordinator"] = "true",
+                    ["CodeReviewDaemon:EnableEngagementEligibility"] = "true",
+                    ["CodeReviewDaemon:EnableEngagementShadowMode"] = "true",
                     ["CodeReviewDaemon:EnabledRepos:0"] = "achieveai/LmDotnetTools",
                     ["CodeReviewDaemon:EnabledRepos:1"] = "contoso/widgets",
                     ["CodeReviewDaemon:JudgeModelId"] = "anthropic/claude-opus-4",
@@ -50,6 +58,10 @@ public sealed class CodeReviewDaemonOptionsTests
         options.EnableJudgeAgent.Should().BeTrue();
         options.EnableABVariants.Should().BeTrue();
         options.EnableAdoProvider.Should().BeTrue();
+        options.EnableTypedReviewPublication.Should().BeTrue();
+        options.EnableEngagementCoordinator.Should().BeTrue();
+        options.EnableEngagementEligibility.Should().BeTrue();
+        options.EnableEngagementShadowMode.Should().BeTrue();
         options.EnabledRepos.Should().Equal("achieveai/LmDotnetTools", "contoso/widgets");
         // A misspelled key binds to "" without complaint, and "" is precisely the value that keeps the
         // judge on the reviewer's own model — the failure this option exists to make visible.

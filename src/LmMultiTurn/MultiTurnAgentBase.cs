@@ -73,6 +73,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // State
     private string? _currentRunId;
     private string? _latestRunId;
+    private string? _currentTurnGenerationId;
     private readonly object _stateLock = new();
     private readonly object _historyLock = new();
 
@@ -297,6 +298,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 return _latestRunId;
             }
+        }
+    }
+
+    /// <summary>Builds the active model turn's child-cause identity with its spawning tool call.</summary>
+    internal string? GetCurrentAuditParentTurnId(string? spawningToolCallId)
+    {
+        lock (_stateLock)
+        {
+            return
+                LifecycleServices.IsAuditEnabled
+                && _currentRunId is { } runId
+                && _currentTurnGenerationId is { } generationId
+                ? Audit.AuditMessageSerializer.BuildParentTurnId(ThreadId, runId, generationId, spawningToolCallId)
+                : null;
         }
     }
 
@@ -2563,7 +2578,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// reported by the finalizer with the run's own outcome, which is what keeps error,
     /// cancellation, and teardown from needing a copy of this logic in each loop.
     /// </remarks>
-    protected void BeginTurn(string runId, string generationId) => Lifecycle.TurnStarted(runId, generationId);
+    protected void BeginTurn(string runId, string generationId)
+    {
+        lock (_stateLock)
+        {
+            _currentTurnGenerationId = generationId;
+        }
+
+        Lifecycle.TurnStarted(runId, generationId);
+    }
 
     /// <summary>
     /// Folds a message the current turn produced into that turn's lifecycle report.
@@ -2592,12 +2615,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// subscriber receives is the same shape and the same guarantee either way: one final report per
     /// generation the loop accepted, never a streaming fragment.
     /// </remarks>
-    protected Task CompleteTurnAsync(
+    protected async Task CompleteTurnAsync(
         string runId,
         string generationId,
         string? outcome = null,
         CancellationToken ct = default
-    ) => Lifecycle.TurnCompletedAsync(runId, generationId, outcome ?? LifecycleTurnOutcomes.Completed, ct: ct);
+    )
+    {
+        _ = await Lifecycle.TurnCompletedAsync(runId, generationId, outcome ?? LifecycleTurnOutcomes.Completed, ct: ct);
+
+        lock (_stateLock)
+        {
+            if (string.Equals(_currentTurnGenerationId, generationId, StringComparison.Ordinal))
+            {
+                _currentTurnGenerationId = null;
+            }
+        }
+    }
 
     /// <summary>
     /// Reports the discovered context a provider request is about to carry, reading it back out of
@@ -2782,6 +2816,30 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ct: ct
         );
 
+        lock (_stateLock)
+        {
+            _latestRunId = runId;
+            _currentRunId = null;
+        }
+
+        // Finish the run's own metadata write before broadcasting completion. A completion observer may
+        // persist derived terminal metadata through the same store; publishing first lets this run's
+        // pre-terminal provenance stamp land afterward and overwrite that terminal state as Running.
+        // Once the lifecycle CAS above wins, no later path can republish this run's terminal message.
+        // Provider overrides therefore cannot let a best-effort metadata failure suppress completion.
+        try
+        {
+            await UpdateMetadataAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(
+                ex,
+                "Metadata update failed while completing run {RunId}; publishing completion anyway",
+                runId
+            );
+        }
+
         await PublishToAllAsync(
             new RunCompletedMessage
             {
@@ -2798,12 +2856,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ct
         );
 
-        lock (_stateLock)
-        {
-            _latestRunId = runId;
-            _currentRunId = null;
-        }
-
         if (isError)
         {
             Logger.LogWarning("Run {RunId} completed with error: {ErrorMessage}", runId, errorMessage);
@@ -2812,9 +2864,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         {
             Logger.LogInformation("Run {RunId} completed. WasForked: {WasForked}", runId, wasForked);
         }
-
-        // Persist metadata after run completes
-        await UpdateMetadataAsync(ct);
     }
 
     /// <summary>

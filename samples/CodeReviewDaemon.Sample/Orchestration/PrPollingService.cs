@@ -61,6 +61,10 @@ internal sealed class PrPollingService : BackgroundService
     private readonly TimeProvider _timeProvider;
     private readonly ReviewProgressReporter? _progress;
     private readonly int _firstReviewLookbackDays;
+    private readonly PrEngagementCoordinator? _engagementCoordinator;
+    private readonly CodeReviewDaemonOptions _engagementOptions;
+    private readonly EngagementRoundExecutionPolicy _engagementRoundExecutionPolicy;
+    private readonly EngagementCutoverSeeder? _engagementCutoverSeeder;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -72,7 +76,13 @@ internal sealed class PrPollingService : BackgroundService
         Func<CancellationToken, Task>? sweepAsync = null,
         TimeProvider? timeProvider = null,
         ReviewProgressReporter? progress = null,
-        int? firstReviewLookbackDays = null
+        int? firstReviewLookbackDays = null,
+        PrEngagementCoordinator? engagementCoordinator = null,
+        CodeReviewDaemonOptions? engagementOptions = null,
+        IEnumerable<IEngagementRoundExecutor>? engagementRoundExecutors = null,
+        EngagementCutoverSeeder? engagementCutoverSeeder = null,
+        EngagementRoundRunner? engagementRoundRunner = null,
+        EngagementRoundExecutionPolicy? engagementRoundExecutionPolicy = null
     )
     {
         _targets = [.. targets];
@@ -87,6 +97,32 @@ internal sealed class PrPollingService : BackgroundService
         _firstReviewLookbackDays = firstReviewLookbackDays is > 0
             ? firstReviewLookbackDays.Value
             : CodeReviewDaemonOptions.DefaultFirstReviewSentinelLookbackDays;
+        _engagementCoordinator = engagementCoordinator;
+        _engagementOptions = engagementOptions ?? new CodeReviewDaemonOptions();
+        _engagementCutoverSeeder = engagementCutoverSeeder;
+        var runner =
+            engagementRoundRunner
+            ?? new EngagementRoundRunner(
+                store,
+                engagementRoundExecutors ?? [],
+                _engagementOptions,
+                _timeProvider,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<EngagementRoundRunner>.Instance
+            );
+        _engagementRoundExecutionPolicy =
+            engagementRoundExecutionPolicy
+            ?? new EngagementRoundExecutionPolicy(
+                _engagementOptions,
+                engagementCutoverSeeder ?? new EngagementCutoverSeeder(store, providers, _timeProvider),
+                runner
+            );
+        if (_engagementOptions.EnableEngagementCoordinator && _engagementCoordinator is null)
+        {
+            throw new ArgumentException(
+                "An engagement coordinator is required when coordinator rollout is enabled.",
+                nameof(engagementCoordinator)
+            );
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -228,6 +264,32 @@ internal sealed class PrPollingService : BackgroundService
     /// </summary>
     internal async Task PollOnceAsync(CancellationToken cancellationToken)
     {
+        if (_engagementOptions.EnableEngagementCoordinator && _engagementCutoverSeeder is null)
+        {
+            throw new InvalidOperationException(
+                "An engagement cutover seeder is required when coordinator rollout is enabled."
+            );
+        }
+
+        if (_engagementOptions.EnableEngagementCoordinator && !_engagementCutoverSeeder!.IsComplete)
+        {
+            try
+            {
+                _ = await _engagementCutoverSeeder.SeedAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Engagement cutover seeding failed; eligibility remains disabled while target observation continues."
+                );
+            }
+        }
+
         foreach (var target in _targets)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -314,7 +376,14 @@ internal sealed class PrPollingService : BackgroundService
             // resume from its first incomplete stage on a later poll; here we just log and move on.
             try
             {
-                _ = await _orchestrator.RunAsync(seed, cancellationToken);
+                if (!_engagementOptions.EnableEngagementCoordinator)
+                {
+                    _ = await _orchestrator.RunAsync(seed, cancellationToken);
+                    continue;
+                }
+
+                await ObserveEngagementAsync(provider, repoId, target.Repo, pr, seed, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -332,6 +401,40 @@ internal sealed class PrPollingService : BackgroundService
         }
 
         _store.SaveCursor(page.NextCursor);
+    }
+
+    private async Task ObserveEngagementAsync(
+        IPrProvider provider,
+        long repoId,
+        RepoIdentity repo,
+        PullRequestDescriptor descriptor,
+        ReviewRun seed,
+        CancellationToken cancellationToken
+    )
+    {
+        var existing = _store.GetEngagement(provider.Provider, repoId, descriptor.PrId);
+        var receipts = _store.GetPostedProviderReceiptIds(repoId, descriptor.PrId);
+        var snapshot = await provider
+            .GetEngagementSnapshotAsync(repo, descriptor.PrId, existing?.LatestActivity, receipts, cancellationToken)
+            .ConfigureAwait(false);
+        var decision =
+            existing?.ActiveRoundId is { } activeRoundId
+            && _store.GetEngagementRound(activeRoundId)?.Status == EngagementRoundStatus.Running
+                ? await _engagementCoordinator!
+                    .ReconcileAsync(repoId, repo, descriptor, snapshot, cancellationToken)
+                    .ConfigureAwait(false)
+                : await _engagementCoordinator!
+                    .ObserveAsync(repoId, repo, descriptor, snapshot, cancellationToken)
+                    .ConfigureAwait(false);
+        _logger.LogInformation(
+            "Engagement decision {Decision} ({ReasonCode}) for PR {PrId} on {Provider}.",
+            decision.Kind,
+            decision.ReasonCode,
+            descriptor.PrId,
+            provider.Provider
+        );
+
+        await _engagementRoundExecutionPolicy.RunAsync(decision, seed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

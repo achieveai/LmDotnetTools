@@ -58,6 +58,10 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// (e.g. gpt-5.6-terra) succeeds. When null it fires for every tool-assisted Create regardless of model.</summary>
     public string? ThrowOnlyForModel { get; set; }
 
+    /// <summary>An optional failure raised by the hosted fake after the daemon records a provision intent but
+    /// before any thread id is minted. Only the resumable/S2S double observes it.</summary>
+    public Exception? ThrowDuringProvision { get; set; }
+
     /// <summary>Model ids passed to <see cref="Create"/>, in call order (null = the run's configured model).</summary>
     public List<string?> ModelIds { get; } = [];
 
@@ -79,6 +83,10 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// hosted conversation rather than resume a persisted one).</summary>
     public List<string?> ResumeHostedThreadIds { get; } = [];
 
+    public List<ReviewConversationScope?> ReviewScopes { get; } = [];
+
+    public List<ReviewPublicationConversationScope?> ReviewPublicationScopes { get; } = [];
+
     /// <summary>
     /// When true, every created loop is wrapped in a <see cref="ResumableFakeLoop"/> — the hosted (S2S) path,
     /// whose turns are durable on a process-outliving host. Left false the double is deliberately NON-resumable,
@@ -92,6 +100,8 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// object that implements the capability.</summary>
     public List<ResumableFakeLoop> ResumableLoops { get; } = [];
 
+    private readonly Dictionary<string, int> _mintCounts = new(StringComparer.Ordinal);
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
@@ -99,7 +109,9 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null
+        string? resumeHostedThreadId = null,
+        ReviewConversationScope? reviewScope = null,
+        ReviewPublicationConversationScope? publicationScope = null
     )
     {
         CreatedProfileIds.Add(profile.Id);
@@ -110,6 +122,8 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ModelIds.Add(modelId);
         WorkspaceIds.Add(reviewWorkspace?.WorkspaceId);
         ResumeHostedThreadIds.Add(resumeHostedThreadId);
+        ReviewScopes.Add(reviewScope);
+        ReviewPublicationScopes.Add(publicationScope);
 
         if (
             toolContext is not null
@@ -166,7 +180,13 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
             return decorated;
         }
 
-        var loop = new ResumableFakeLoop(decorated, resumeHostedThreadId, $"hosted-{threadId}");
+        var mintCount = _mintCounts.TryGetValue(threadId, out var priorCount) ? priorCount + 1 : 1;
+        _mintCounts[threadId] = mintCount;
+        var mintedThreadId = mintCount == 1 ? $"hosted-{threadId}" : $"hosted-{threadId}-{mintCount}";
+        var loop = new ResumableFakeLoop(decorated, resumeHostedThreadId, mintedThreadId)
+        {
+            ThrowDuringProvision = ThrowDuringProvision,
+        };
         ResumableLoops.Add(loop);
         return loop;
     }

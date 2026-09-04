@@ -61,6 +61,8 @@ internal sealed class S2SReviewAgent
     private readonly string? _systemPrompt;
     private readonly string? _subAgentModelId;
     private readonly string? _reasoningEffort;
+    private readonly ReviewConversationScope? _reviewScope;
+    private readonly ReviewPublicationConversationScope? _publicationScope;
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
@@ -72,12 +74,14 @@ internal sealed class S2SReviewAgent
 
     private string? _threadId;
     private bool _hostContractVerified;
+    private bool _resumeScopeVerified;
     private string? _currentRunId;
     private DateTimeOffset? _deadlineUtc;
     private int _spawnSuppressionDepth;
     private string? _armedIdempotencyKey;
     private string? _armedAcceptedInputId;
     private Action<string>? _onInputAccepted;
+    private Func<ConversationProvisionObserver>? _onConversationProvisioning;
     private Action<string>? _onRunConversationMinted;
 
     /// <summary>
@@ -103,7 +107,9 @@ internal sealed class S2SReviewAgent
         Action<string>? onConversationMinted = null,
         string? existingThreadId = null,
         string? subAgentModelId = null,
-        string? reasoningEffort = null
+        string? reasoningEffort = null,
+        ReviewConversationScope? reviewScope = null,
+        ReviewPublicationConversationScope? publicationScope = null
     )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -116,6 +122,8 @@ internal sealed class S2SReviewAgent
         _systemPrompt = systemPrompt;
         _subAgentModelId = subAgentModelId;
         _reasoningEffort = reasoningEffort;
+        _reviewScope = reviewScope;
+        _publicationScope = publicationScope;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _onConversationMinted = onConversationMinted;
@@ -158,6 +166,13 @@ internal sealed class S2SReviewAgent
 
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
+
+    /// <inheritdoc />
+    public void ObserveConversationProvision(Func<ConversationProvisionObserver> onConversationProvisioning)
+    {
+        ArgumentNullException.ThrowIfNull(onConversationProvisioning);
+        _onConversationProvisioning = onConversationProvisioning;
+    }
 
     /// <inheritdoc />
     public void ObserveConversationMint(Action<string> onConversationMinted)
@@ -311,16 +326,50 @@ internal sealed class S2SReviewAgent
 
         if (_threadId is not null)
         {
-            // A seeded thread is a RESUME. Whether it is still the right conversation to continue on — same
-            // workspace, same review lifecycle — is decided by whoever seeded it, before this agent exists;
-            // there is nothing here that could re-derive it, and re-provisioning would silently discard the
-            // in-flight sub-agent tree the caller is resuming onto.
+            if (_reviewScope is not null && !_resumeScopeVerified)
+            {
+                var persisted = await _client.GetReviewScopeAsync(_threadId, ct).ConfigureAwait(false);
+                if (persisted != _reviewScope)
+                {
+                    throw new ReviewHostContractException(
+                        $"Hosted conversation '{_threadId}' has review scope "
+                            + $"'{persisted.EngagementId}/{persisted.RoundId}', expected "
+                            + $"'{_reviewScope.EngagementId}/{_reviewScope.RoundId}'."
+                    );
+                }
+
+                _resumeScopeVerified = true;
+            }
+
+            // A seeded thread is a RESUME. Validate immutable review scope above when one is supplied, then
+            // reuse the thread: re-provisioning would discard the in-flight sub-agent tree being resumed.
             return _threadId;
         }
 
-        var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, _reasoningEffort, ct)
-            .ConfigureAwait(false);
+        var provisionObserver = _onConversationProvisioning?.Invoke();
+        string threadId;
+        try
+        {
+            threadId = await _client
+                .ProvisionAsync(
+                    _workspaceId,
+                    _providerId,
+                    _modeId,
+                    _systemPrompt,
+                    _subAgentModelId,
+                    _reasoningEffort,
+                    ct,
+                    provisionObserver?.Associate,
+                    _reviewScope,
+                    _publicationScope
+                )
+                .ConfigureAwait(false);
+        }
+        catch (ReviewHostPreMintRefusalException)
+        {
+            provisionObserver?.Retract();
+            throw;
+        }
         _threadId = threadId;
         _logger.LogInformation(
             "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "

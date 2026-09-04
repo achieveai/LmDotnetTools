@@ -59,11 +59,15 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
             Cursor = cursor,
         };
 
-    private GitHubPrProvider Provider(FakeHttpMessageHandler handler) =>
+    private GitHubPrProvider Provider(
+        FakeHttpMessageHandler handler,
+        int maxPagesPerPoll = CodeReviewDaemonOptions.DefaultMaxPagesPerPoll
+    ) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubPrProvider>()
+            LoggerFactory.CreateLogger<GitHubPrProvider>(),
+            maxPagesPerPoll
         );
 
     [Fact]
@@ -277,6 +281,405 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         page.PullRequests.Should().BeEmpty();
         page.NextCursor.CursorVersion.Should().Be(PrPollingService.CursorVersion);
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_unifies_provider_native_discussion_and_excludes_only_exact_receipts()
+    {
+        const string pr = """
+            {
+              "number": 7,
+              "state": "open",
+              "merged_at": null,
+              "updated_at": "2026-09-02T13:00:00Z",
+              "head": { "sha": "head-7" },
+              "base": { "sha": "base-7" }
+            }
+            """;
+        const string reviews = """
+            [
+              { "id": 101, "state": "COMMENTED", "body": "daemon summary",
+                "submitted_at": "2026-09-02T12:00:00Z", "user": { "login": "review-bot" } },
+              { "id": 102, "state": "COMMENTED", "body": "same author, human-authored review",
+                "submitted_at": "2026-09-02T12:03:00Z", "user": { "login": "review-bot" } }
+            ]
+            """;
+        const string reviewComments = """
+            [
+              { "id": 201, "body": "line finding", "path": "src/a.cs", "line": 11, "side": "RIGHT",
+                "start_line": 10, "start_side": "RIGHT", "created_at": "2026-09-02T12:01:00Z",
+                "html_url": "https://github.test/review/201", "user": { "login": "alice" } },
+              { "id": 202, "in_reply_to_id": 201, "body": "reply", "path": "src/a.cs", "line": 11,
+                "side": "RIGHT", "created_at": "2026-09-02T12:02:00Z",
+                "html_url": "https://github.test/review/202", "user": { "login": "bob" } }
+            ]
+            """;
+        const string issueComments = """
+            [
+              { "id": 301, "body": "PR-level question", "created_at": "2026-09-02T12:04:00Z",
+                "html_url": "https://github.test/issue/301", "user": { "login": "carol" } }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", reviewComments)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", issueComments)
+            .OnJson(HttpMethod.Get, "/pulls/7", pr);
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(
+                Repo,
+                "7",
+                new ProviderActivityWatermark(
+                    "github",
+                    new DateTimeOffset(2026, 9, 2, 11, 59, 0, TimeSpan.Zero),
+                    "seed:0"
+                ),
+                new HashSet<string>(["review:101"], StringComparer.Ordinal),
+                CancellationToken.None
+            );
+
+        snapshot.Lifecycle.Should().Be(PrLifecycleState.Open);
+        snapshot.HeadSha.Should().Be("head-7");
+        snapshot.BaseSha.Should().Be("base-7");
+        snapshot.ExternalActivity.Select(activity => activity.CommentId).Should().Equal("201", "202", "102", "301");
+        snapshot.ExternalActivity.Should().NotContain(activity => activity.Body == "daemon summary");
+        snapshot
+            .ExternalActivity.Should()
+            .ContainSingle(activity => activity.Body == "same author, human-authored review");
+        snapshot
+            .ExternalActivity.Single(activity => activity.CommentId == "102")
+            .ProviderObjectId.Should()
+            .Be("review:102");
+        snapshot
+            .ExternalActivity.Single(activity => activity.CommentId == "301")
+            .ProviderObjectId.Should()
+            .Be("issue-comment:301");
+        var reply = snapshot.ExternalActivity.Single(activity => activity.CommentId == "202");
+        reply.ProviderObjectId.Should().Be("review-comment:202");
+        reply.ThreadId.Should().Be("201");
+        reply.ParentCommentId.Should().Be("201");
+        reply.Path.Should().Be("src/a.cs");
+        reply.Side.Should().Be("RIGHT");
+        reply.EndLine.Should().Be(11);
+        snapshot.LatestObserved.Should().Be(snapshot.ExternalActivity[^1].Watermark);
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_maps_a_closed_unmerged_pr_to_abandoned()
+    {
+        const string pr = """
+            { "number": 7, "state": "closed", "merged_at": null, "updated_at": "2026-09-02T12:03:00Z",
+              "head": { "sha": "head-7" }, "base": { "sha": "base-7" } }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7", pr);
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(Repo, "7", null, new HashSet<string>(), CancellationToken.None);
+
+        snapshot.Lifecycle.Should().Be(PrLifecycleState.Abandoned);
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_retains_the_parent_of_an_in_window_review_reply_as_ancestor_only()
+    {
+        const string pr = """
+            { "number": 7, "state": "open", "merged_at": null, "updated_at": "2026-09-02T12:03:00Z",
+              "head": { "sha": "head-7" }, "base": { "sha": "base-7" } }
+            """;
+        const string reviewComments = """
+            [
+              { "id": 200, "body": "original question", "created_at": "2026-09-02T12:00:00Z",
+                "path": "src/a.cs", "line": 10, "side": "RIGHT", "user": { "login": "alice" } },
+              { "id": 201, "in_reply_to_id": 200, "body": "the retry is per attempt",
+                "created_at": "2026-09-02T12:02:00Z", "path": "src/a.cs", "line": 10,
+                "side": "RIGHT", "user": { "login": "bob" } }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", reviewComments)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7", pr);
+        var after = new ProviderActivityWatermark(
+            "github",
+            new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero),
+            "review-comment:200"
+        );
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(Repo, "7", after, new HashSet<string>(), CancellationToken.None);
+
+        snapshot.ExternalActivity.Should().ContainSingle().Which.CommentId.Should().Be("201");
+        snapshot.AncestorActivity.Should().ContainSingle().Which.CommentId.Should().Be("200");
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_applies_the_frozen_pr_upper_bound_and_prior_watermark()
+    {
+        const string pr = """
+            { "number": 7, "state": "open", "merged_at": null, "updated_at": "2026-09-02T12:03:00Z",
+              "head": { "sha": "head-7" }, "base": { "sha": "base-7" } }
+            """;
+        const string issueComments = """
+            [
+              { "id": 300, "body": "already consumed", "created_at": "2026-09-02T12:00:00Z",
+                "user": { "login": "alice" } },
+              { "id": 301, "body": "inside frozen window", "created_at": "2026-09-02T12:02:00Z",
+                "user": { "login": "alice" } },
+              { "id": 302, "body": "arrived after snapshot", "created_at": "2026-09-02T12:04:00Z",
+                "user": { "login": "alice" } }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", issueComments)
+            .OnJson(HttpMethod.Get, "/pulls/7", pr);
+        var after = new ProviderActivityWatermark(
+            "github",
+            new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero),
+            "issue-comment:300"
+        );
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(Repo, "7", after, new HashSet<string>(), CancellationToken.None);
+
+        snapshot.ExternalActivity.Should().ContainSingle().Which.CommentId.Should().Be("301");
+        snapshot.LatestObserved.Should().Be(snapshot.ExternalActivity[0].Watermark);
+    }
+
+    [Fact]
+    public async Task Engagement_snapshot_reads_every_activity_page_within_the_frozen_boundary()
+    {
+        const string pr = """
+            { "number": 7, "state": "open", "merged_at": null, "updated_at": "2026-09-02T12:03:00Z",
+              "head": { "sha": "head-7" }, "base": { "sha": "base-7" } }
+            """;
+        var firstPage =
+            "["
+            + string.Join(
+                ',',
+                Enumerable
+                    .Range(1, 100)
+                    .Select(id =>
+                        $$"""{ "id": {{id}}, "body": "page-one", "created_at": "2026-09-02T12:01:00Z", "user": { "login": "alice" } }"""
+                    )
+            )
+            + "]";
+        const string secondPage = """
+            [
+              { "id": 101, "body": "page-two", "created_at": "2026-09-02T12:02:00Z",
+                "user": { "login": "bob" } },
+              { "id": 102, "body": "after-frozen-boundary", "created_at": "2026-09-02T12:04:00Z",
+                "user": { "login": "carol" } }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/issues/7/comments", StringComparison.Ordinal)
+                    && request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal),
+                _ => JsonResponse(secondPage)
+            )
+            .OnJson(HttpMethod.Get, "/issues/7/comments", firstPage)
+            .OnJson(HttpMethod.Get, "/pulls/7", pr);
+
+        var snapshot = await Provider(handler)
+            .GetEngagementSnapshotAsync(
+                Repo,
+                "7",
+                after: null,
+                new HashSet<string>(StringComparer.Ordinal),
+                CancellationToken.None
+            );
+
+        handler
+            .Requests.Count(request =>
+                request.Uri.AbsolutePath.EndsWith("/issues/7/comments", StringComparison.Ordinal)
+            )
+            .Should()
+            .Be(2);
+        snapshot.ExternalActivity.Should().HaveCount(101);
+        snapshot.ExternalActivity.Should().ContainSingle(activity => activity.ProviderObjectId == "issue-comment:101");
+        snapshot.ExternalActivity.Should().NotContain(activity => activity.ProviderObjectId == "issue-comment:102");
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_reads_every_current_pr_file_for_the_expected_head()
+    {
+        const string files = """
+            [
+              {
+                "filename": "src/Retry.cs",
+                "status": "modified",
+                "patch": "@@ -10,1 +10,3 @@\n keep\n+added one\n+added two"
+              },
+              {
+                "filename": "src/Old.cs",
+                "status": "removed",
+                "patch": "@@ -4,2 +0,0 @@\n-old one\n-old two"
+              }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7/files", files)
+            .OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7?", """{ "number": 7, "head": { "sha": "head-7" } }""")
+            .OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", """{ "number": 7, "head": { "sha": "head-7" } }""");
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "7", "head-7", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-7");
+        snapshot.Files.Should().HaveCount(2);
+        snapshot.Files[0].Path.Should().Be("src/Retry.cs");
+        snapshot.Files[0].RightRanges.Should().Equal(new LineRange(11, 2));
+        snapshot.Files[0].LeftRanges.Should().BeEmpty();
+        snapshot.Files[1].Path.Should().Be("src/Old.cs");
+        snapshot.Files[1].RightRanges.Should().BeEmpty();
+        snapshot.Files[1].LeftRanges.Should().Equal(new LineRange(4, 2));
+        handler
+            .Requests.Should()
+            .ContainSingle(request => request.Uri.AbsolutePath.EndsWith("/pulls/7/files", StringComparison.Ordinal))
+            .Which.Uri.Query.Should()
+            .Contain("per_page=100");
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_follows_every_files_page()
+    {
+        const string firstPage = """
+            [
+              {
+                "filename": "src/First.cs",
+                "patch": "@@ -1,1 +1,2 @@\n keep\n+first"
+              }
+            ]
+            """;
+        const string secondPage = """
+            [
+              {
+                "filename": "src/Second.cs",
+                "patch": "@@ -8,1 +8,2 @@\n keep\n+second"
+              }
+            ]
+            """;
+        var headReads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/pulls/7/files", StringComparison.Ordinal)
+                    && request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal),
+                _ => JsonResponse(secondPage)
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/pulls/7/files", StringComparison.Ordinal),
+                _ =>
+                    JsonResponse(
+                        firstPage,
+                        (
+                            "Link",
+                            "<https://api.github.com/repos/acme/widgets/pulls/7/files?per_page=100&page=2>; rel=\"next\""
+                        )
+                    )
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/pulls/7", StringComparison.Ordinal),
+                _ =>
+                {
+                    headReads++;
+                    return JsonResponse("""{ "head": { "sha": "head-7" } }""");
+                }
+            );
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "7", "head-7", CancellationToken.None);
+
+        snapshot.Files.Select(file => file.Path).Should().Equal("src/First.cs", "src/Second.cs");
+        handler.CountRequests("/pulls/7/files").Should().Be(2);
+        headReads.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_is_empty_when_the_head_changes_during_inventory()
+    {
+        var headReads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/files",
+                """[{ "filename": "src/Retry.cs", "patch": "@@ -1,1 +1,2 @@\n keep\n+added" }]"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/pulls/7", StringComparison.Ordinal),
+                _ =>
+                    JsonResponse(
+                        headReads++ == 0 ? """{ "head": { "sha": "head-7" } }""" : """{ "head": { "sha": "head-8" } }"""
+                    )
+            );
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "7", "head-7", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-8");
+        snapshot.Files.Should().BeEmpty();
+        headReads.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_fails_closed_when_files_exceed_the_page_bound()
+    {
+        const string page = """[{ "filename": "src/Retry.cs", "patch": "@@ -1,1 +1,2 @@\n keep\n+added" }]""";
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/pulls/7/files", StringComparison.Ordinal),
+                _ =>
+                    JsonResponse(
+                        page,
+                        (
+                            "Link",
+                            "<https://api.github.com/repos/acme/widgets/pulls/7/files?per_page=100&page=2>; rel=\"next\""
+                        )
+                    )
+            )
+            .OnJson(HttpMethod.Get, "/pulls/7", """{ "head": { "sha": "head-7" } }""");
+
+        var act = () =>
+            Provider(handler, maxPagesPerPoll: 1)
+                .GetInlineAnchorSnapshotAsync(Repo, "7", "head-7", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*page bound*");
+        handler.CountRequests("/pulls/7/files").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Inline_anchor_snapshot_does_not_authorize_a_file_without_a_patch()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/files", """[{ "filename": "src/TooLarge.cs", "status": "modified" }]""")
+            .OnJson(HttpMethod.Get, "/pulls/7", """{ "head": { "sha": "head-7" } }""");
+
+        var snapshot = await Provider(handler)
+            .GetInlineAnchorSnapshotAsync(Repo, "7", "head-7", CancellationToken.None);
+
+        snapshot.HeadSha.Should().Be("head-7");
+        snapshot.Files.Should().BeEmpty();
     }
 
     [Fact]

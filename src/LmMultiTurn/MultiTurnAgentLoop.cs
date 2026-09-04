@@ -14,9 +14,11 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
@@ -181,6 +183,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private readonly object _recoveryBudgetLock = new();
     private readonly Dictionary<string, int> _recoveryBudgetByRunId = [];
     private int _restoredParkRecoveryBudget;
+    private long _auditSequence;
 
     private const string RecoveryBudgetProperty = "recovery_budget_spent";
 
@@ -600,7 +603,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 lifecycleServices: subAgentLifecycleServices ?? LifecycleServices,
                 // This loop's own collaboration handle, from which the manager derives each child's.
                 collaboration: collaboration
-            );
+            )
+            {
+                AuditParentTurnIdResolver = GetCurrentAuditParentTurnId,
+            };
 
             SubAgentTools = new SubAgentToolProvider(SubAgentManager, source, subAgentOptions.ExposedToolNames);
 
@@ -661,16 +667,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             StringComparer.Ordinal
         );
 
-        // Create publishing middleware that publishes to subscribers
-        // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
-        var publishingMiddleware = new MessagePublishingMiddleware(PublishToAllAsync);
-
-        // Build the complete middleware stack (loop owns the pipeline)
-        // Response path order: Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall
-        _agent = providerAgent
+        // Keep the legacy publisher and live streaming behavior when audit is disabled. An audited
+        // loop cannot publish fragments before it has a complete durable source record, so it omits the
+        // pre-joiner publisher and emits only canonical messages after the final audit gate accepts them.
+        var transformedAgent = providerAgent
             .WithMessageTransformation(loggerFactory?.CreateLogger<MessageTransformationMiddleware>())
-            .WithMiddleware(new JsonFragmentUpdateMiddleware())
-            .WithMiddleware(publishingMiddleware)
+            .WithMiddleware(new JsonFragmentUpdateMiddleware());
+        var publishingAgent = LifecycleServices.IsAuditEnabled
+            ? transformedAgent
+            : transformedAgent.WithMiddleware(new MessagePublishingMiddleware(PublishToAllAsync));
+
+        // Build the complete middleware stack (loop owns the pipeline).
+        // Response path without audit: Provider -> Transformation -> JsonFragment -> Publishing -> Joiner
+        // -> ToolCall. With audit: Provider -> Transformation -> JsonFragment -> Joiner -> ToolCall ->
+        // CanonicalAuditAndPublishing.
+        var agent = publishingAgent
             .WithMiddleware(
                 new MessageUpdateJoinerMiddleware(
                     name: "MessageJoiner",
@@ -678,6 +689,73 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 )
             )
             .WithMiddleware(toolCallMiddleware);
+        _agent = LifecycleServices.IsAuditEnabled
+            ? agent.WithMiddleware(
+                CaptureAndPublishProviderMessagesAsync,
+                CaptureAndPublishProviderMessagesStreamingAsync
+            )
+            : agent;
+    }
+
+    private async Task<IEnumerable<IMessage>> CaptureAndPublishProviderMessagesAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken ct
+    )
+    {
+        var messages = await agent.GenerateReplyAsync(context.Messages, context.Options, ct);
+        foreach (var message in messages)
+        {
+            await CaptureAndPublishProviderMessageAsync(message, context.Options, ct);
+        }
+
+        return messages;
+    }
+
+    private async Task<IAsyncEnumerable<IMessage>> CaptureAndPublishProviderMessagesStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken ct
+    )
+    {
+        var messages = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, ct);
+        return CaptureAndPublishProviderMessagesStreamingAsync(messages, context.Options, ct);
+    }
+
+    private async IAsyncEnumerable<IMessage> CaptureAndPublishProviderMessagesStreamingAsync(
+        IAsyncEnumerable<IMessage> messages,
+        GenerateReplyOptions? options,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        await foreach (var message in messages.WithCancellation(ct))
+        {
+            await CaptureAndPublishProviderMessageAsync(message, options, ct);
+            yield return message;
+        }
+    }
+
+    private async ValueTask CaptureAndPublishProviderMessageAsync(
+        IMessage message,
+        GenerateReplyOptions? options,
+        CancellationToken ct
+    )
+    {
+        if (!ReplayMessagePolicy.IsCanonicalOrControl(message))
+        {
+            return;
+        }
+
+        await CaptureAuditAsync(
+            options?.RunId ?? CurrentRunId ?? string.Empty,
+            options?.GenerationId ?? message.GenerationId ?? string.Empty,
+            MultiTurnAuditRecordTypes.ModelResponse,
+            AuditMessageSerializer.SerializeMessage(message),
+            message.Role.ToString().ToLowerInvariant(),
+            options?.ModelId,
+            ct
+        );
+        await PublishToAllAsync(message, ct);
     }
 
     /// <summary>
@@ -912,7 +990,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ct: ct
             );
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
             // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
@@ -1495,17 +1573,30 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // The wrap-up reads the same view a turn would (an active checkpoint stays in force) but
             // never runs the policy: it is not a place a compaction may start (spec 679 §5.1).
-            var messagesToSend = (_compaction?.BuildView() ?? GetMessagesWithSystemPrompt()).Concat([
+            List<IMessage> messagesToSend =
+            [
+                .. _compaction?.BuildView() ?? GetMessagesWithSystemPrompt(),
                 wrapUpInstruction,
-            ]);
+            ];
+            await CaptureAuditAsync(
+                runId,
+                wrapUpGenerationId,
+                MultiTurnAuditRecordTypes.ModelRequest,
+                AuditMessageSerializer.SerializeRequest(messagesToSend),
+                role: null,
+                options.ModelId,
+                ct
+            );
 
             IAsyncEnumerable<IMessage> stream;
             try
             {
                 stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ShouldCaptureStreamGap(ex, ct))
             {
+                await CaptureStreamGapAsync(runId, wrapUpGenerationId, options.ModelId, ex, ct);
+
                 // The wrap-up is best-effort: if the model call itself fails, still close the run on a
                 // deterministic status rather than propagating (which would fail the whole run) or
                 // leaving it on a tool result. The lifecycle turn remains an error even though the run gets
@@ -1517,26 +1608,50 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
 
             var producedText = false;
-            await foreach (var msg in stream.WithCancellation(ct))
+            var attempt = new TurnAttemptState(wrapUpGenerationId);
+            try
             {
-                // Drop any tool call the model emits despite the instruction: do not execute it and do
-                // not persist it. Not executing guarantees the turn adds no new work and ends on text;
-                // not persisting avoids a dangling tool_use with no tool_result that would break a later
-                // resume. It was already surfaced to subscribers by the in-pipeline publishing middleware
-                // (result-less pill), which is cosmetic and rare.
-                if (msg is ToolCallMessage or ToolsCallMessage or ToolCallUpdateMessage or ToolsCallUpdateMessage)
+                await foreach (var msg in stream.WithCancellation(ct))
                 {
-                    continue;
-                }
+                    if (!attempt.Observe(msg))
+                    {
+                        ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+                        continue;
+                    }
 
-                AddToHistory(msg);
-                ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+                    // Canonical response audit and subscriber publication already succeeded in the
+                    // final middleware before this message reached the loop.
 
-                // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
-                if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
-                {
-                    producedText = true;
+                    // A complete tool call is provider source evidence even though wrap-up policy rejects it
+                    // from conversation history and execution. Persisting it would leave a dangling tool_use
+                    // with no result and break a later resume; executing it would defeat the turn cap.
+                    if (msg is ToolCallMessage or ToolsCallMessage)
+                    {
+                        ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+                        continue;
+                    }
+
+                    AddToHistory(msg);
+                    ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+
+                    // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
+                    if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
+                    {
+                        producedText = true;
+                    }
                 }
+            }
+            catch (Exception ex) when (ShouldCaptureStreamGap(ex, ct))
+            {
+                await CaptureStreamGapAsync(runId, wrapUpGenerationId, options.ModelId, ex, ct);
+                turnOutcome = LifecycleTurnOutcomes.Error;
+                Logger.LogWarning(
+                    ex,
+                    "Wrap-up provider stream was interrupted for run {RunId}; publishing fallback status",
+                    runId
+                );
+                await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+                return;
             }
 
             if (!producedText)
@@ -1951,6 +2066,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         await ObserveContextAsync(runId, generationId, messagesToSend, usage: null, ct);
 
         var attempt = new TurnAttemptState(generationId);
+        await CaptureAuditAsync(
+            runId,
+            generationId,
+            MultiTurnAuditRecordTypes.ModelRequest,
+            AuditMessageSerializer.SerializeRequest(messagesToSend),
+            role: null,
+            modelId: options.ModelId,
+            ct
+        );
 
         try
         {
@@ -2037,6 +2161,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             {
                 await attempt.SettleToolTasksAsync();
             }
+            catch (AuditCaptureException)
+            {
+                throw;
+            }
             catch (Exception toolFailure)
             {
                 Logger.LogWarning(
@@ -2049,8 +2177,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             return new TurnExecutionResult(attempt) { Overflow = ex };
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested && IsRetryableStreamInterruption(ex))
+        catch (Exception ex) when (ShouldCaptureStreamGap(ex, ct))
         {
+            await CaptureStreamGapAsync(runId, generationId, options.ModelId, ex, ct);
+
+            if (!IsRetryableStreamInterruption(ex))
+            {
+                throw;
+            }
+
             // Terminally account for every tool this attempt dispatched BEFORE handing recovery back
             // to the run loop: these executions are still running against the same host, and letting
             // one land while the replacement attempt is streaming is exactly the duplicated-effect
@@ -2060,6 +2195,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             try
             {
                 await attempt.SettleToolTasksAsync();
+            }
+            catch (AuditCaptureException)
+            {
+                throw;
             }
             catch (Exception toolFailure)
             {
@@ -2094,6 +2233,124 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         return new TurnExecutionResult(attempt);
+    }
+
+    private async ValueTask CaptureAuditAsync(
+        string runId,
+        string generationId,
+        string recordType,
+        ReadOnlyMemory<byte> content,
+        string? role,
+        string? modelId,
+        CancellationToken ct,
+        AuditCaptureOutcome outcome = AuditCaptureOutcome.Complete,
+        string? gapReason = null
+    )
+    {
+        if (!LifecycleServices.IsAuditEnabled)
+        {
+            return;
+        }
+
+        var sink = LifecycleServices.AuditSink!;
+        var scope = LifecycleServices.AuditScope!;
+        var sequence = Interlocked.Increment(ref _auditSequence);
+        var contentSha256 = AuditMessageSerializer.ComputeSha256(content.Span);
+        var record = new ModelTurnAuditRecord(
+            AuditMessageSerializer.BuildRecordId(
+                scope,
+                ThreadId,
+                runId,
+                generationId,
+                sequence,
+                recordType,
+                contentSha256
+            ),
+            scope,
+            ThreadId,
+            runId,
+            generationId,
+            LifecycleServices.AuditParentTurnId,
+            sequence,
+            recordType,
+            role,
+            modelId,
+            LifecycleServices.ProviderId,
+            content,
+            contentSha256,
+            content.Length,
+            outcome,
+            gapReason,
+            LifecycleServices.TimeProvider.GetUtcNow()
+        );
+
+        try
+        {
+            await sink.RecordAsync(record, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new AuditCaptureException(recordType, ex);
+        }
+    }
+
+    private static bool ShouldCaptureStreamGap(Exception exception, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        for (var candidate = exception; candidate is not null; candidate = candidate.InnerException)
+        {
+            if (candidate is AuditCaptureException)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private ValueTask CaptureStreamGapAsync(
+        string runId,
+        string generationId,
+        string? modelId,
+        Exception exception,
+        CancellationToken ct
+    ) =>
+        CaptureAuditAsync(
+            runId,
+            generationId,
+            MultiTurnAuditRecordTypes.StreamGap,
+            ReadOnlyMemory<byte>.Empty,
+            role: null,
+            modelId,
+            ct,
+            AuditCaptureOutcome.Gap,
+            GetStreamInterruptionReason(exception)
+        );
+
+    private static string GetStreamInterruptionReason(Exception exception)
+    {
+        for (var candidate = exception; candidate is not null; candidate = candidate.InnerException)
+        {
+            if (candidate is HttpIOException httpIoException)
+            {
+                return $"{candidate.GetType().Name}:{httpIoException.HttpRequestError}";
+            }
+
+            if (candidate is HttpRequestException httpRequestException)
+            {
+                return $"{candidate.GetType().Name}:{httpRequestException.HttpRequestError}";
+            }
+        }
+
+        return exception.GetType().Name;
     }
 
     /// <summary>
@@ -2350,6 +2607,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             return result;
         }
 
+        await CaptureAuditAsync(
+            runId,
+            generationId,
+            MultiTurnAuditRecordTypes.ToolResult,
+            AuditMessageSerializer.SerializeMessage(result),
+            result.Role.ToString().ToLowerInvariant(),
+            DefaultOptions.ModelId,
+            ct
+        );
         await PublishToolCompletedAsync(result, toolCall, runId, generationId, elapsed, wasDeferred: false, ct);
 
         // Non-deferred result. Add text-only version to LLM history (captions are in the
@@ -2940,24 +3206,47 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ToolCallResultMessage newMessage;
         try
         {
-            (oldMessage, newMessage) = UpdateToolResultByCallId(
-                toolCallId,
-                existing =>
-                {
-                    if (existing.IsDeferred)
+            var current = UpdateToolResultByCallId(toolCallId, existing => existing).New;
+            if (current.IsDeferred)
+            {
+                newMessage = ApplyResolution(current, result, isError, truncated);
+                var auditMessage = contentBlocks is { Count: > 0 }
+                    ? newMessage with
                     {
-                        return ApplyResolution(existing, result, isError, truncated);
+                        ContentBlocks = contentBlocks,
                     }
-
-                    if (existing.Result == result && existing.IsError == isError)
-                    {
-                        alreadyIdentical = true;
-                        return existing;
-                    }
-
-                    throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
-                }
-            );
+                    : newMessage;
+                await CaptureAuditAsync(
+                    current.RunId ?? pending.Entry.RunId ?? LatestRunId ?? string.Empty,
+                    current.GenerationId ?? pending.Entry.GenerationId ?? string.Empty,
+                    MultiTurnAuditRecordTypes.ToolResult,
+                    AuditMessageSerializer.SerializeMessage(auditMessage),
+                    auditMessage.Role.ToString().ToLowerInvariant(),
+                    DefaultOptions.ModelId,
+                    ct
+                );
+                (oldMessage, newMessage) = UpdateToolResultByCallId(toolCallId, _ => newMessage);
+            }
+            else if (current.Result == result && current.IsError == isError)
+            {
+                alreadyIdentical = true;
+                oldMessage = current;
+                newMessage = current;
+            }
+            else
+            {
+                throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
+            }
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            _delayed.AbortResolve(pending);
+            return (ResolveToolCallOutcome.Cancelled, ex);
+        }
+        catch (AuditCaptureException ex)
+        {
+            _delayed.AbortResolve(pending);
+            return (ResolveToolCallOutcome.StoreFailed, ex);
         }
         catch (Exception ex)
         {

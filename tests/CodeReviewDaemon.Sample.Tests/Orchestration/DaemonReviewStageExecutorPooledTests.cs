@@ -1,8 +1,9 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -42,6 +43,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
     private const string LmStreamingBaseUrl = "http://localhost:5051";
 
+    /// <summary>
+    /// The review host's workspace-release route, as a suffix of the request URL. Deliberately named in ONE
+    /// place: it is a cross-repo wire contract (the host serves it, the daemon calls it), so a test that spelt
+    /// it out inline would keep passing against a scripted route the real host does not serve.
+    /// </summary>
+    private const string ReleaseRoute = "/workspace-session/release";
+
     /// <summary>The deep-link the Posted stage must append on the S2S path. The hosted loop reports
     /// <c>hosted-{threadId}</c> — standing in for the id LmStreaming MINTS at provision, which is deliberately
     /// NOT the daemon's own <c>review-run-{id}-primary</c> thread id.</summary>
@@ -78,6 +86,171 @@ public sealed class DaemonReviewStageExecutorPooledTests
         payload.GetProperty("CheckoutRoot").GetString().Should().Be("/workspace/store/repos/LmDotnetTools");
         payload.GetProperty("StoreRoot").GetString().Should().Be("/workspace/store");
         payload.GetProperty("Diff").GetString().Should().Contain("Foo.cs");
+    }
+
+    /// <summary>
+    /// Issue #647 — the pooled path's context artifact must carry the merge-base commit id
+    /// <c>ReviewSlotPreparer.PrepareAsync</c> resolved, not just the diff it took from the prepared
+    /// checkout. <see cref="FakeReviewSlotPreparer.MergeBaseSha"/> stands in for that resolution.
+    /// </summary>
+    [Fact]
+    public async Task S2S_ContextReady_persists_the_slot_claim_before_any_preparation_or_host_git()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        var claimSeenAtPreparation = false;
+        fixture.Preparer.BeforePrepare = () =>
+        {
+            claimSeenAtPreparation = fixture.Store.ListUnresolvedReviewSlotClaims().Any(c => c.ReviewRunId == run.Id);
+        };
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        claimSeenAtPreparation
+            .Should()
+            .BeTrue("preparation can provision or mutate the slot and must follow durability");
+        var claim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        claim.ReviewRunId.Should().Be(run.Id);
+        claim.SlotHostPath.Should().Be(Path.GetFullPath(fixture.Pool.Leased.Single().HostPath));
+    }
+
+    [Fact]
+    public async Task S2S_ContextReady_retires_without_preparation_when_the_slot_claim_cannot_be_persisted()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        fixture.Pool.AfterLease = fixture.Store.Dispose;
+
+        Func<Task> act = async () =>
+            await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        fixture.Preparer.PrepareCount.Should().Be(0);
+        fixture.HostRunner.Commands.Should().BeEmpty();
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.Pool.RetireCount.Should().Be(1, "an address with no durable claim cannot be recycled safely");
+    }
+
+    [Fact]
+    public async Task S2S_every_fresh_hosted_arm_records_and_associates_its_exact_provision_intent()
+    {
+        using var fixture = Fixture.CreateS2S(judge: true, abVariants: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\":8.0,\"reasoning\":\"grounded\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var claim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        claim
+            .Intents.Should()
+            .HaveCount(3, "the primary, comparison, and judge each provision one hosted conversation");
+        claim
+            .Intents.Should()
+            .OnlyContain(
+                intent => intent.ThreadId != null && intent.AssociatedAt != null,
+                "every host-returned thread must be associated with the exact pre-provision intent"
+            );
+        claim
+            .Intents.Select(intent => intent.ThreadId)
+            .Should()
+            .BeEquivalentTo(
+                fixture.Factory.ResumableLoops.SelectMany(loop => loop.MintedThreadIds),
+                "the durable intent ledger must enumerate every fresh hosted arm"
+            );
+    }
+
+    [Fact]
+    public async Task S2S_dynamic_context_gatherer_is_owned_and_released_before_the_slot_returns()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var releaseObservedAtReturn = false;
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
+        fixture.Pool.BeforeReturn = () =>
+        {
+            releaseObservedAtReturn = fixture.S2SHandler.CountRequests(ReleaseRoute) == 1;
+        };
+        var run = fixture.SeedRun(withEngagementRound: true);
+        var gathererParentThreadId = $"hosted-{DaemonReviewStageExecutor.ThreadId(run, $"{run.VariantId}-context")}";
+        fixture.Factory.DecorateCreatedAgent = agent =>
+        {
+            agent.CompletionSource = new StaticCompletionSource(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "gatherer-1",
+                        ThreadId = "gatherer-thread",
+                        ParentThreadId = gathererParentThreadId,
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Completed,
+                        Name = "context-gatherer",
+                        Template = DynamicContextEvidenceValidator.GathererTemplate,
+                    },
+                ])
+            );
+            return agent;
+        };
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = JsonSerializer.Serialize(
+            SemanticManifest(run.EngagementRoundId!.Value)
+        );
+        fixture.StoreGathererToolResult(run, "source-file", "Read", "file:src/Foo.cs");
+        fixture.StoreGathererToolResult(run, "source-pr", "mcp__github__get_pull_request", "pull-request:118");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var gathererLoop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
+        var gathererThreadId = gathererLoop.MintedThreadIds.Should().ContainSingle().Subject;
+        var claim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        claim.Intents.Should().ContainSingle().Which.ThreadId.Should().Be(gathererThreadId);
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(conversation =>
+                conversation.ThreadId == gathererThreadId && conversation.ReleasedAt == null
+            );
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(1);
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(conversation =>
+                conversation.ThreadId == gathererThreadId && conversation.ReleasedAt != null
+            );
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().BeEmpty();
+        fixture.Pool.ReturnCount.Should().Be(1, "the gatherer mount was released before the slot became reusable");
+        releaseObservedAtReturn.Should().BeTrue("release durability must precede pool reuse");
+        fixture.Pool.RetireCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task S2S_a_definitive_pre_mint_refusal_durably_retracts_the_exact_provision_intent()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Factory.ThrowDuringProvision = new ReviewHostPreMintRefusalException(
+            "workspace_not_found",
+            "refused before mint"
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<ReviewHostPreMintRefusalException>();
+        var intent = fixture
+            .Store.ListUnresolvedReviewSlotClaims()
+            .Should()
+            .ContainSingle()
+            .Subject.Intents.Should()
+            .ContainSingle()
+            .Subject;
+        intent.ThreadId.Should().BeNull();
+        intent.AssociatedAt.Should().BeNull();
+        intent.RetractedAt.Should().NotBeNull("the host proved that this attempt minted no conversation");
+        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().BeEmpty();
     }
 
     /// <summary>
@@ -335,6 +508,27 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer attempts one re-clone");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
         fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
+    }
+
+    [Fact]
+    public async Task ContextReady_retires_the_slot_when_pre_handoff_cleanup_throws()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new InvalidOperationException("prepare failed"));
+        fixture.Provisioner.DestroyFailure = new InvalidOperationException("teardown failed");
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("prepare failed");
+        fixture.Pool.ReturnCount.Should().Be(0, "failed teardown cannot establish that the address is reusable");
+        fixture.Pool.RetireCount.Should().Be(1, "cleanup failure must not consume the pool permit");
+        fixture
+            .Logs.Capturing.MessagesAtLevel(LogLevel.Error)
+            .Should()
+            .Contain(message => message.Contains("pre-handoff cleanup failed", StringComparison.Ordinal));
+        var replacement = await fixture.Pool.LeaseAsync(CancellationToken.None);
+        replacement.Index.Should().Be(1, "the next lease proceeds at a fresh address");
     }
 
     [Fact]
@@ -2061,27 +2255,408 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task S2S_review_releases_before_preparing_the_workspace_after_a_restart()
+    public async Task Reviewed_adopts_the_synthesis_answer_the_host_finished_after_the_budget_expired()
     {
         using var fixture = Fixture.CreateS2S(slots: 2);
         var run = fixture.SeedRun();
 
-        // Process A persists ContextReady with slot 0, then disappears with all process-local lease/workspace caches.
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        const string hostedThreadId = "thread-persisted";
+        const string synthesisInputId = "input-late";
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            hostedThreadId,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            LifecycleOf(fixture, run, "ws-review-slot-0")
+        );
+        SeedSynthesisRequest(fixture, run, synthesisInputId, hostedThreadId);
+        _ = fixture.S2SHandler.OnJson(
+            HttpMethod.Get,
+            $"api/conversations/{hostedThreadId}/status?inputId={synthesisInputId}",
+            "{\"status\":\"Completed\",\"runId\":\"run-late\",\"response\":{\"text\":\"the exact late review\"}}"
+        );
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var review = fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind);
+        review.Should().NotBeNull();
+        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(review!.Payload);
+        payload.Should().NotBeNull();
+        payload!.ReviewText.Should().Be("the exact late review");
+        payload.RunId.Should().Be("run-late");
+        payload.ThreadId.Should().Be(hostedThreadId);
+        fixture.Factory.CreatedAgents.Should().BeEmpty("the completed hosted turn is already authoritative");
+        fixture.Pool.LeaseCount.Should().Be(1, "late-result recovery must happen before a replacement lease");
+        fixture.Preparer.PrepareCount.Should().Be(1, "late-result recovery must not prepare a replacement slot");
+        fixture.S2SHandler.CountRequests($"status?inputId={synthesisInputId}").Should().Be(1);
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(request =>
+                request.Method == HttpMethod.Post
+                && request.Uri.AbsolutePath.Equals("/api/conversations", StringComparison.Ordinal)
+            );
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_start_a_replacement_review_when_the_exact_expired_synthesis_is_still_in_progress()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var oldClaim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        const string hostedThreadId = "thread-persisted";
+        const string synthesisInputId = "input-late";
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            hostedThreadId,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            LifecycleOf(fixture, run, "ws-review-slot-0")
+        );
+        SeedSynthesisRequest(fixture, run, synthesisInputId, hostedThreadId);
+        _ = fixture.S2SHandler.OnJson(
+            HttpMethod.Get,
+            $"api/conversations/{hostedThreadId}/status?inputId={synthesisInputId}",
+            "{\"status\":\"InProgress\",\"runId\":\"run-late\"}"
+        );
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should()
+            .ThrowAsync<LateSynthesisUnresolvedException>()
+            .WithMessage("*exact accepted synthesis*InProgress*");
+        fixture
+            .Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Should()
+            .BeNull("an in-progress host turn has no authoritative review yet");
+        fixture.Factory.CreatedAgents.Should().BeEmpty("the exact hosted turn is still running");
+        fixture.Pool.LeaseCount.Should().Be(1, "status recovery must happen before a replacement lease");
+        fixture.Preparer.PrepareCount.Should().Be(1, "status recovery must not prepare a replacement slot");
+        fixture.S2SHandler.CountRequests($"status?inputId={synthesisInputId}").Should().Be(1);
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(0, "the running host turn must remain intact");
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().Contain(claim => claim.Id == oldClaim.Id);
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(request =>
+                request.Method == HttpMethod.Post
+                && request.Uri.AbsolutePath.Equals("/api/conversations", StringComparison.Ordinal)
+            );
+    }
+
+    [Theory]
+    [InlineData("{}", "unavailable")]
+    [InlineData("{\"status\":\"Completed\",\"runId\":\"run-late\",\"response\":{\"text\":\"   \"}}", "Completed")]
+    [InlineData("{\"status\":\"Errored\",\"runId\":\"run-late\"}", "Errored")]
+    [InlineData("{\"status\":\"Interrupted\",\"runId\":\"run-late\"}", "Interrupted")]
+    public async Task Reviewed_defers_replacement_when_the_exact_expired_synthesis_has_no_readable_terminal_answer(
+        string statusResponse,
+        string expectedStatus
+    )
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var oldClaim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        const string hostedThreadId = "thread-persisted";
+        const string synthesisInputId = "input-late";
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            hostedThreadId,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            LifecycleOf(fixture, run, "ws-review-slot-0")
+        );
+        SeedSynthesisRequest(fixture, run, synthesisInputId, hostedThreadId);
+        _ = fixture.S2SHandler.OnJson(
+            HttpMethod.Get,
+            $"api/conversations/{hostedThreadId}/status?inputId={synthesisInputId}",
+            statusResponse
+        );
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should()
+            .ThrowAsync<LateSynthesisUnresolvedException>()
+            .WithMessage($"*exact accepted synthesis*{expectedStatus}*");
+        fixture
+            .Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Should()
+            .BeNull("there is no authoritative nonblank terminal answer");
+        fixture.Factory.CreatedAgents.Should().BeEmpty("the exact hosted turn remains authoritative");
+        fixture.Pool.LeaseCount.Should().Be(1, "reconciliation must happen before a replacement lease");
+        fixture.Preparer.PrepareCount.Should().Be(1, "reconciliation must not prepare a replacement slot");
+        fixture.S2SHandler.CountRequests($"status?inputId={synthesisInputId}").Should().Be(1);
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(0, "unresolved hosted state must remain intact");
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().Contain(claim => claim.Id == oldClaim.Id);
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(request =>
+                request.Method == HttpMethod.Post
+                && request.Uri.AbsolutePath.Equals("/api/conversations", StringComparison.Ordinal)
+            );
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_adopt_an_expired_synthesis_from_an_older_context_generation()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        const string hostedThreadId = "thread-persisted";
+        const string synthesisInputId = "input-late";
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            hostedThreadId,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            LifecycleOf(fixture, run, "ws-review-slot-0")
+        );
+        SeedSynthesisRequest(fixture, run, synthesisInputId, hostedThreadId);
+        var priorContext = fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind);
+        priorContext.Should().NotBeNull();
+        _ = fixture.Store.AddArtifact(priorContext! with { Id = 0 });
+        _ = fixture.S2SHandler.OnJson(
+            HttpMethod.Get,
+            $"api/conversations/{hostedThreadId}/status?inputId={synthesisInputId}",
+            "{\"status\":\"Completed\",\"runId\":\"run-late\",\"response\":{\"text\":\"the stale late review\"}}"
+        );
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var review = fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind);
+        review.Should().NotBeNull();
+        JsonSerializer
+            .Deserialize<ReviewArtifactPayload>(review!.Payload)!
+            .ReviewText.Should()
+            .NotBe("the stale late review");
+        fixture
+            .S2SHandler.CountRequests($"status?inputId={synthesisInputId}")
+            .Should()
+            .Be(0, "the persisted synthesis belongs to an older context generation");
+        fixture.Factory.CreatedAgents.Should().ContainSingle("the current context requires a fresh review");
+        fixture.Pool.LeaseCount.Should().Be(2);
+        fixture.Preparer.PrepareCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task S2S_review_releases_the_prior_workspace_before_leasing_or_preparing_after_a_restart()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        // Process A completes a review on slot 0, then disappears with its process-local lease/workspace caches.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var releaseCountBeforeResume = fixture.S2SHandler.CountRequests(ReleaseRoute);
+        var hostGitBeforeResume = fixture.HostRunner.Commands.Count;
+        var releaseCountAtReplacementLease = -1;
+        var hostGitAtReplacementLease = -1;
+        fixture.Pool.BeforeLease = () =>
+        {
+            releaseCountAtReplacementLease = fixture.S2SHandler.CountRequests(ReleaseRoute);
+            hostGitAtReplacementLease = fixture.HostRunner.Commands.Count;
+        };
         var resumed = fixture.BuildExecutor();
 
         await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         fixture.Pool.LeaseCount.Should().Be(2);
+        releaseCountAtReplacementLease
+            .Should()
+            .Be(
+                releaseCountBeforeResume + 1,
+                "the old hosted mount must be positively released before a replacement address is leased"
+            );
+        hostGitAtReplacementLease
+            .Should()
+            .Be(hostGitBeforeResume, "replacement preparation and host git must follow the old mount's release");
         fixture
             .Factory.WorkspaceIds.Should()
-            .ContainSingle()
-            .Which.Should()
-            .Be(
-                "ws-review-slot-1",
-                "the hosted workspace must be prepared from the newly leased slot, not a cached bare PR clone"
+            .Equal(
+                ["ws-review-slot-0", "ws-review-slot-1"],
+                "the resumed review must run on the newly leased slot, not the released hosted workspace"
             );
         fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
+    }
+
+    [Theory]
+    [InlineData(nameof(ReviewStage.Reviewed), false)]
+    [InlineData(nameof(ReviewStage.Judged), true)]
+    [InlineData(nameof(ReviewStage.Posted), false)]
+    public async Task S2S_resumed_stage_releases_the_prior_workspace_before_replacement_work(
+        string resumedStageName,
+        bool judge
+    )
+    {
+        var resumedStage = Enum.Parse<ReviewStage>(resumedStageName);
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: judge);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        if (resumedStage == ReviewStage.Posted)
+        {
+            await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        }
+
+        var releaseCountBeforeResume = fixture.S2SHandler.CountRequests(ReleaseRoute);
+        var hostGitBeforeResume = fixture.HostRunner.Commands.Count;
+        var releaseCountAtReplacementLease = -1;
+        var hostGitAtReplacementLease = -1;
+        fixture.Pool.BeforeLease = () =>
+        {
+            releaseCountAtReplacementLease = fixture.S2SHandler.CountRequests(ReleaseRoute);
+            hostGitAtReplacementLease = fixture.HostRunner.Commands.Count;
+        };
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(resumedStage, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed stage must actually lease a replacement slot");
+        releaseCountAtReplacementLease
+            .Should()
+            .Be(
+                releaseCountBeforeResume + 1,
+                "the old hosted mount must be positively released before a replacement address is leased"
+            );
+        hostGitAtReplacementLease
+            .Should()
+            .Be(hostGitBeforeResume, "replacement preparation and host git must follow the old mount's release");
+    }
+
+    [Fact]
+    public async Task S2S_disabled_prior_conversation_allows_replacement_on_a_fresh_address_but_withholds_the_old_one()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var oldClaim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "released": true,
+                  "sessionOutcome": "released",
+                  "mountQuiescenceConfirmed": false,
+                  "mountQuiescenceEvidence": "gateway_does_not_report_backend_teardown"
+                }
+                """,
+                Encoding.UTF8,
+                "application/json"
+            ),
+        };
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .Equal(
+                ["ws-review-slot-0", "ws-review-slot-1"],
+                "a disabled conversation cannot remount, while its unproven old address stays out of circulation"
+            );
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().Contain(claim => claim.Id == oldClaim.Id);
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(conversation =>
+                conversation.ThreadId == oldClaim.Intents.Single().ThreadId
+                && conversation.ConversationReleasedAt != null
+                && conversation.ReleasedAt == null
+            );
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task S2S_unconfirmed_prior_release_refuses_all_replacement_work()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var leaseCountBeforeResume = fixture.Pool.LeaseCount;
+        var hostGitBeforeResume = fixture.HostRunner.Commands.Count;
+        var preparationCountBeforeResume = fixture.Provisioner.GetOrCreateForSlotCalls;
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = new StringContent("{\"busy\":true}", Encoding.UTF8, "application/json"),
+        };
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*will not be leased or prepared*");
+        fixture.Pool.LeaseCount.Should().Be(leaseCountBeforeResume);
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(preparationCountBeforeResume);
+        fixture.HostRunner.Commands.Count.Should().Be(hostGitBeforeResume);
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task S2S_disabled_conversation_invalidates_a_checkpoint_even_when_its_identity_matches_the_replacement_slot()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"released\":true,\"sessionOutcome\":\"released\"," + "\"mountQuiescenceConfirmed\":false}",
+                Encoding.UTF8,
+                "application/json"
+            ),
+        };
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var releasedThreadId = fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle()
+            .Subject.ThreadId;
+        var replacementContextGeneration = fixture.Store.GetArtifacts(run.Id).Max(artifact => artifact.Id) + 2;
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            releasedThreadId,
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            new ReviewLifecycleIdentity(
+                DaemonReviewStageExecutor.S2SModality,
+                DaemonReviewStageExecutor.ThreadId(run, run.VariantId),
+                "ws-review-slot-1",
+                run.ModelId,
+                ToolAssisted: false,
+                replacementContextGeneration
+            )
+        );
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .HaveCount(2, "both the original and resumed review create a turn")
+            .And.EndWith(
+                (string?)null,
+                "a released hosted conversation is a deep link only and cannot be resumed as a live pooled session"
+            );
+        fixture
+            .Factory.ResumableLoops.SelectMany(loop => loop.MintedThreadIds)
+            .Should()
+            .HaveCount(2, "the replacement lifecycle must mint its own hosted conversation");
     }
 
     /// <summary>
@@ -2453,24 +3028,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task S2S_returns_the_slot_without_destroying_a_session_the_daemon_does_not_own()
+    public async Task S2S_returns_the_slot_after_host_quiescence_without_destroying_a_session_the_daemon_does_not_own()
     {
         using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
 
-        // The inverse of the two cases above, and the reason both teardown sites are guarded on S2S. There,
-        // BuildToolContextAsync returns BEFORE provisioning, so the daemon owns no session to destroy — while
-        // the container that does exist belongs to the review host and must OUTLIVE the run: the posted
-        // comment's ?threadId= deep-link is the entire reason this path exists, and tearing the conversation
-        // down at teardown would 404 that link the moment the review finished.
+        // The inverse of the two daemon-owned teardown cases above. BuildToolContextAsync returns before local
+        // provisioning on S2S, so the daemon owns no local session to destroy. The review host instead confirms
+        // backend quiescence while preserving the conversation that backs the posted deep link.
         fixture.CleanupOrder.Should().NotContain("destroy");
         fixture
             .CleanupOrder.Should()
             .ContainSingle()
             .Which.Should()
-            .Be("return", "the slot still goes back to the pool — only the session teardown is skipped");
+            .Be("return", "positive host quiescence permits reuse without deleting the conversation");
     }
 
     [Fact]
@@ -2785,19 +3359,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Posted_skips_the_strip_on_S2S_because_the_slot_is_still_mounted_into_a_live_container()
+    public async Task Posted_skips_the_strip_on_S2S_after_backend_quiescence_is_confirmed()
     {
         using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
 
-        // The strip is only safe once the session teardown has made the store quiescent, and that teardown is
-        // excluded on S2S by design: the container belongs to the review host and must outlive the run so the
-        // posted comment's deep link keeps working. StripAsync opens by deleting every *.lock under .git, so
-        // running it here would delete a live index.lock and admit a SECOND writer — the hygiene function
-        // becoming the very race it exists to prevent. Skipping leaves the store dirty until its next lease,
-        // which is what clean-on-entry is for and what the call site's catch already tolerates.
+        // Backend quiescence makes returning the address safe, but the persisted conversation still backs the
+        // posted deep link and is not daemon-owned teardown state. StripAsync opens by deleting every *.lock
+        // under .git, so the S2S path never turns that hygiene pass into a second teardown mechanism. The next
+        // lease's clean-on-entry owns checkout cleanup after the prior mount is positively quiescent.
         var commands = fixture.HostRunner.Commands.Select(Join).ToList();
         commands
             .Should()
@@ -2948,6 +3521,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public async Task S2S_posts_host_side_with_the_deep_link_once_and_still_commits_only_the_notes_dir()
     {
         using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
@@ -2984,6 +3558,643 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned on the terminal stage on S2S too");
     }
 
+    // ── hosted-workspace release before the pooled slot is touched or returned ───────────────────
+
+    [Fact]
+    public async Task S2S_shipped_release_retires_the_old_slot_and_retains_notes_in_the_isolated_host_checkout()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        var oldSlotGitAtRelease = -1;
+        fixture.WorkspaceRelease = _ =>
+        {
+            oldSlotGitAtRelease = fixture.HostRunner.Commands.Count;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"released\":true,\"sessionOutcome\":\"released\","
+                        + "\"mountQuiescenceConfirmed\":false,"
+                        + "\"mountQuiescenceEvidence\":\"gateway_does_not_report_backend_teardown\"}",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
+            };
+        };
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture
+            .HostRunner.Commands.Count.Should()
+            .Be(oldSlotGitAtRelease, "no git may touch the old pooled checkout after release begins");
+        fixture
+            .RetentionFileSystem.Writes.Should()
+            .Contain(path => path.StartsWith("/host/review-store/PRs/") && path.EndsWith("review.md"));
+        var clone = fixture
+            .RetentionRunner.Commands.Should()
+            .ContainSingle(command => command.Argv.Contains("clone"))
+            .Subject;
+        clone.Argv.Should().ContainInOrder("clone", StoreUrl, "/host/review-store");
+        fixture
+            .Store.ListUnresolvedReviewSlotClaims()
+            .Should()
+            .ContainSingle("backend mount quiescence remains unproven");
+        fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(entry => entry.Operation == "push-reviewbot" && entry.Status == OutboxStatus.Posted);
+    }
+
+    [Fact]
+    public async Task S2S_post_publishes_before_a_blocked_release_and_runs_no_later_workspace_work()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        var leaseCountBeforeResume = fixture.Pool.LeaseCount;
+        var preparationCountBeforeResume = fixture.Provisioner.GetOrCreateForSlotCalls;
+        var hostGitBeforeResume = fixture.HostRunner.Commands.Count;
+        var postCountAtRelease = -1;
+        fixture.WorkspaceRelease = _ =>
+        {
+            postCountAtRelease = fixture.Publisher.PostCount;
+            return new HttpResponseMessage(HttpStatusCode.Conflict)
+            {
+                Content = new StringContent("{\"busy\":true}", Encoding.UTF8, "application/json"),
+            };
+        };
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*will not be leased or prepared*");
+        postCountAtRelease.Should().Be(1, "provider delivery is independent of pooled-workspace settlement");
+        fixture.Publisher.PostCount.Should().Be(1);
+        fixture.Pool.LeaseCount.Should().Be(leaseCountBeforeResume);
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(preparationCountBeforeResume);
+        fixture.HostRunner.Commands.Count.Should().Be(hostGitBeforeResume);
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().NotBeEmpty();
+    }
+
+    /// <summary>
+    /// The ORDER that makes the pooled S2S path safe. The review host's containers outlive the run with the
+    /// leased slot mounted into them, so the workspace release has to happen before anything else touches
+    /// that store: before the notes commit (which runs host git in it), before the strip, and before the
+    /// address goes back into circulation. Asserted as a real ordering over the shared cleanup log and the
+    /// host-git command stream rather than as "the call happened", because a release that lands after the
+    /// commit is exactly as broken as one that never happens.
+    /// </summary>
+    [Fact]
+    public async Task S2S_releases_every_hosted_workspace_before_the_notes_commit_and_the_slot_return()
+    {
+        using var fixture = Fixture.CreateS2S(judge: true);
+        var released = new List<string>();
+        var hostGitAtFirstRelease = -1;
+        fixture.WorkspaceRelease = req =>
+        {
+            released.Add(req.RequestUri!.AbsolutePath);
+            if (hostGitAtFirstRelease < 0)
+            {
+                hostGitAtFirstRelease = fixture.HostRunner.Commands.Count;
+            }
+
+            return ReleaseConfirmed();
+        };
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        // The baseline is taken at the START of the terminal stage rather than at zero, because the earlier
+        // stages legitimately run host git in the slot while the review is still live.
+        var hostGitBeforePosting = fixture.HostRunner.Commands.Count;
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+        // Every arm's conversation is released — the judge mints its own against the same workspace, and its
+        // thread id never reaches an artifact, so an artifact-keyed release would leave that mount open.
+        released
+            .Should()
+            .HaveCount(2, "the review and the judge each mint their own conversation over the same slot")
+            .And.OnlyContain(p => p.EndsWith(ReleaseRoute, StringComparison.Ordinal));
+        released
+            .Should()
+            .Contain(p =>
+                p.Contains($"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}", StringComparison.Ordinal)
+            );
+
+        hostGitAtFirstRelease
+            .Should()
+            .Be(hostGitBeforePosting, "the release runs before the notes commit's first host-git command");
+        fixture
+            .HostRunner.Commands.Count.Should()
+            .BeGreaterThan(hostGitBeforePosting, "the notes commit still runs once the release is confirmed");
+        fixture.CleanupOrder.Should().Equal("return");
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.Pool.RetireCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A confirmed release is stamped on the ledger row, and the row SURVIVES: the conversation must go on
+    /// resolving behind the deep-link posted on the PR, so retention expiry stays the only thing that deletes
+    /// one. Also pins that the ledger can enumerate every thread id the run owns, not just the review's.
+    /// </summary>
+    [Fact]
+    public async Task S2S_release_records_the_run_owned_conversations_and_deletes_none_of_them()
+    {
+        using var fixture = Fixture.CreateS2S(judge: true);
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        var owned = fixture.Store.ListRunHostedConversations(run.Id);
+        owned.Should().HaveCount(2);
+        owned.Should().OnlyContain(c => c.ReleasedAt != null);
+        owned.Should().Contain(c => c.ThreadId == $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}");
+        fixture
+            .Store.ListUnresolvedReviewSlotClaims()
+            .Should()
+            .BeEmpty("every provision intent received positive host release confirmation");
+
+        // The deep-link ledger still holds every row — release is not deletion.
+        fixture
+            .Store.ListDeepLinkConversationsMintedBefore(DateTimeOffset.UtcNow.AddDays(1))
+            .Select(c => c.ThreadId)
+            .Should()
+            .BeEquivalentTo(owned.Select(c => c.ThreadId));
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(
+                r => r.Method == HttpMethod.Delete,
+                "retention expiry is the only path that discards a hosted conversation"
+            );
+    }
+
+    [Fact]
+    public async Task S2S_a_known_thread_cannot_hide_a_later_unassociated_provision_intent()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var claim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        _ = fixture.Store.AppendReviewProvisionIntent(claim.Id, run.Id);
+        var baseline = fixture.HostRunner.Commands.Count;
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(0, "the lost thread id cannot be enumerated");
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.HostRunner.Commands.Count.Should().Be(baseline, "an ambiguously mounted store cannot be touched");
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Which.Id.Should().Be(claim.Id);
+    }
+
+    [Fact]
+    public async Task S2S_an_ambiguous_intent_withholds_the_old_address_but_allows_a_fresh_replacement()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var oldClaim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        _ = fixture.Store.AppendReviewProvisionIntent(oldClaim.Id, run.Id);
+        var hostGitBeforeResume = fixture.HostRunner.Commands.Count;
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(2, "replacement work must proceed at a fresh address");
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .Equal(
+                ["ws-review-slot-0", "ws-review-slot-1"],
+                "the unresolved old address cannot be prepared or remounted"
+            );
+        fixture
+            .HostRunner.Commands.Skip(hostGitBeforeResume)
+            .Select(Describe)
+            .Should()
+            .NotContain(command => command.Contains("/pool/review-slot-0", StringComparison.Ordinal));
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().Contain(claim => claim.Id == oldClaim.Id);
+    }
+
+    [Fact]
+    public async Task S2S_a_retracted_only_intent_settles_its_claim_and_returns_the_slot()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var claim = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        var intentId = fixture.Store.AppendReviewProvisionIntent(claim.Id, run.Id);
+        fixture.Store.RetractReviewProvisionIntent(intentId);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().BeEmpty();
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.Pool.RetireCount.Should().Be(0);
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(0, "a pre-mint refusal created no conversation");
+    }
+
+    [Fact]
+    public async Task S2S_mixed_backend_release_and_conversation_disablement_withholds_the_claim_and_current_slot()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
+        var releaseNumber = 0;
+        fixture.WorkspaceRelease = _ =>
+        {
+            releaseNumber++;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    releaseNumber == 1
+                        ? "{\"released\":true,\"sessionOutcome\":\"released\"," + "\"mountQuiescenceConfirmed\":true}"
+                        : "{\"released\":true,\"sessionOutcome\":\"released\"," + "\"mountQuiescenceConfirmed\":false}",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
+            };
+        };
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(2);
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(conversation =>
+                conversation.ReleasedAt == null && conversation.ConversationReleasedAt != null
+            );
+        fixture
+            .Store.ListUnresolvedReviewSlotClaims()
+            .Should()
+            .ContainSingle("one address-withheld thread conservatively withholds the shared slot claim");
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.Pool.RetireCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task S2S_repeating_after_conversation_disablement_does_not_call_the_host_again()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"released\":true,\"sessionOutcome\":\"released\"," + "\"mountQuiescenceConfirmed\":false}",
+                Encoding.UTF8,
+                "application/json"
+            ),
+        };
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+        var afterDisablement = fixture.S2SHandler.CountRequests(ReleaseRoute);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        afterDisablement.Should().Be(1);
+        fixture
+            .S2SHandler.CountRequests(ReleaseRoute)
+            .Should()
+            .Be(afterDisablement, "the durable disabled marker makes another identical host call unnecessary");
+        fixture.Pool.LeaseCount.Should().Be(2, "the repeated terminal stage proceeds on a fresh address");
+        fixture.Pool.ReturnCount.Should().Be(0, "neither old address has backend-quiescence proof");
+        fixture.Pool.RetireCount.Should().Be(2);
+    }
+
+    /// <summary>
+    /// A repeated release is idempotent. The shape production produces is a restart: the run's terminal stage
+    /// already ran and released, the process died, and the stranded-run reconciler drives Posted again on a
+    /// daemon that re-leases a slot for it. The second pass finds every conversation already stamped released,
+    /// so the host is asked nothing and the first release instant survives.
+    /// </summary>
+    [Fact]
+    public async Task S2S_repeating_the_terminal_stage_does_not_re_release_an_already_released_conversation()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+        var afterFirst = fixture.S2SHandler.CountRequests(ReleaseRoute);
+        afterFirst.Should().Be(1);
+        var stampedAt = fixture.Store.ListRunHostedConversations(run.Id).Single().ReleasedAt;
+        stampedAt.Should().NotBeNull();
+
+        var resumed = fixture.BuildExecutor();
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // Non-vacuity: without a second lease the terminal stage's release block is never entered at all, and
+        // "no second call" would hold for a test that did nothing.
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed run must actually hold a slot again");
+        fixture
+            .S2SHandler.CountRequests(ReleaseRoute)
+            .Should()
+            .Be(afterFirst, "an already-released conversation has nothing left to release");
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Single()
+            .ReleasedAt.Should()
+            .Be(stampedAt, "the first release instant is the one that happened; a repeat must not overwrite it");
+    }
+
+    /// <summary>
+    /// The host reports work still in flight on the workspace. The mount is then KNOWN to be live, so the
+    /// slot may be neither committed into nor stripped nor returned — it is retired, exactly once.
+    /// </summary>
+    [Fact]
+    public async Task S2S_a_busy_release_retires_the_slot_and_runs_no_host_git()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = new StringContent("{\"busy\":true}", Encoding.UTF8, "application/json"),
+        };
+        var run = fixture.SeedRun();
+
+        var baseline = await RunUpToPostedAsync(fixture, run);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0, "returning the address would hand a live container's store on");
+        fixture
+            .HostRunner.Commands.Count.Should()
+            .Be(baseline, "neither the notes commit nor the strip may run git in a store a container still holds");
+        fixture.Store.ListRunHostedConversations(run.Id).Should().OnlyContain(c => c.ReleasedAt == null);
+    }
+
+    /// <summary>
+    /// The 200 that proves nothing. The review host's own teardown deletes its session row FIRST and only
+    /// then attempts a best-effort backend destroy, answering 200 either way — so a success status without an
+    /// explicit backend-unmount assertion establishes that the host FORGOT the session, not that the mount is
+    /// gone. This is the case a naive "it returned 2xx, we're done" client gets wrong, and the one that costs
+    /// a duplicated mount rather than an error anybody sees.
+    /// <para>
+    /// The three unconfirmed shapes are separate cases because they fail for different reasons and a client
+    /// can get any one of them right while getting the others wrong: the field is ABSENT (today's host, which
+    /// cannot yet assert quiescence at all); the field is present and literally <c>false</c> (a host that
+    /// tried and knows it did not succeed — the shape that a truthiness-based read would invert); and the body
+    /// is not JSON at all (a proxy or error page, which must not throw its way past the decision).
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("{\"released\":false}")]
+    [InlineData("{\"sessionOutcome\":\"released\"}")]
+    [InlineData("released")]
+    public async Task S2S_a_release_that_does_not_assert_the_unmount_is_not_confirmation_and_retires_the_slot(
+        string body
+    )
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8),
+        };
+        var run = fixture.SeedRun();
+
+        var baseline = await RunUpToPostedAsync(fixture, run);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(1, "the host was asked");
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.HostRunner.Commands.Count.Should().Be(baseline);
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .OnlyContain(c => c.ReleasedAt == null, "an unasserted unmount is not a release to record");
+    }
+
+    /// <summary>
+    /// Version skew. A host predating the release route answers 404/405 and will answer it identically
+    /// forever, so it must be charged once — retire — rather than retried until some budget runs out. The
+    /// count is the assertion: one call, one retirement, no loop.
+    /// </summary>
+    [Fact]
+    public async Task S2S_an_unknown_thread_does_not_stop_release_of_another_run_owned_conversation()
+    {
+        using var fixture = Fixture.CreateS2S(judge: true);
+        var releaseNumber = 0;
+        string? missingThreadPath = null;
+        fixture.WorkspaceRelease = request =>
+        {
+            releaseNumber++;
+            if (releaseNumber == 1)
+            {
+                missingThreadPath = request.RequestUri!.AbsolutePath;
+            }
+
+            return releaseNumber == 1
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        "{\"code\":\"unknown_thread\",\"message\":\"Conversation not found.\"}",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+                : ReleaseConfirmed();
+        };
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture
+            .S2SHandler.CountRequests(ReleaseRoute)
+            .Should()
+            .Be(2, "a missing conversation does not prove that its sibling conversation is gone");
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(c => c.ReleasedAt != null, "the remaining conversation reached backend quiescence");
+        fixture
+            .Store.ListRunHostedConversations(run.Id)
+            .Should()
+            .ContainSingle(
+                c =>
+                    missingThreadPath != null
+                    && missingThreadPath.Contains(c.ThreadId, StringComparison.Ordinal)
+                    && c.ReleasedAt == null
+                    && c.ConversationReleasedAt != null,
+                "the exact unknown thread is durably known not to accept or remount"
+            );
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle();
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.Pool.RetireCount.Should().Be(1, "unknown-thread does not prove the old address is quiescent");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.MethodNotAllowed)]
+    public async Task S2S_an_old_host_without_the_release_route_retires_once_rather_than_retrying(HttpStatusCode status)
+    {
+        using var fixture = Fixture.CreateS2S(judge: true);
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(status) { Content = new StringContent("nope") };
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture
+            .S2SHandler.CountRequests(ReleaseRoute)
+            .Should()
+            .Be(1, "an absent route is a property of the HOST, so the remaining conversations add nothing");
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The failure/cancel path, not the Posted one: a run that dies before its terminal stage reaches the
+    /// orchestrator's <c>finally</c>, which releases the lease. The same rule applies there — an unconfirmed
+    /// release retires the address instead of returning it.
+    /// </summary>
+    [Fact]
+    public async Task S2S_the_terminal_failure_path_releases_and_retires_when_the_host_will_not_confirm()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.WorkspaceRelease = _ => new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+        // What PrOrchestrator's terminal finally does on a failed/cancelled run.
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.S2SHandler.CountRequests(ReleaseRoute).Should().Be(1);
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.CleanupOrder.Should().Equal("retire");
+    }
+
+    /// <summary>
+    /// The same terminal failure path with a host that DOES confirm: the slot goes back normally. Present so
+    /// the retirement above is a statement about the host's answer rather than about the failure path.
+    /// </summary>
+    [Fact]
+    public async Task S2S_the_terminal_failure_path_returns_the_slot_when_the_host_confirms_the_unmount()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.Pool.RetireCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The gap the deep-link ledger could not see: the host accepts a provision and its ownership row is later
+    /// lost. The append-only provision-intent history still names that exact hosted thread, so terminal cleanup
+    /// can release it rather than treating an empty deep-link mapping as proof that nothing was minted. Modelled
+    /// by dropping the deep-link rows after a completed review wrote them.
+    /// </summary>
+    [Fact]
+    public async Task S2S_a_lost_deep_link_row_is_recovered_from_the_provision_intent()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Store.ListRunHostedConversations(run.Id).Should().NotBeEmpty();
+        foreach (var conversation in fixture.Store.ListRunHostedConversations(run.Id))
+        {
+            fixture.Store.RemoveDeepLinkConversation(conversation.ThreadId);
+        }
+
+        // The durable proof that provisioning could already have happened: the orchestrator stamps a stage
+        // only once that stage completed, so ContextReady means a review attempt has been possible.
+        fixture.Store.UpdateReviewRunState(
+            run.Id,
+            ReviewStage.ContextReady,
+            WorkflowStatus.Running,
+            PrLifecycleState.Open
+        );
+        var baseline = fixture.HostRunner.Commands.Count;
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture
+            .S2SHandler.CountRequests(ReleaseRoute)
+            .Should()
+            .Be(
+                1,
+                "the append-only provision intent still identifies the exact hosted thread after the deep-link row is lost"
+            );
+        fixture.Pool.RetireCount.Should().Be(0);
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "the exact provisioned thread received positive host release confirmation");
+        fixture
+            .HostRunner.Commands.Count.Should()
+            .BeGreaterThan(baseline, "host git may resume only after the recovered thread is released");
+    }
+
+    /// <summary>
+    /// Drives every stage up to (not including) Posted and answers how many host-git commands ran on the
+    /// way. That count is the baseline an ordering assertion about the TERMINAL stage measures against: a
+    /// live review legitimately runs git in its own slot (the diff, prior notes) long before the release, so
+    /// "no host git" can only ever mean "none after this point".
+    /// </summary>
+    private static async Task<int> RunUpToPostedAsync(Fixture fixture, ReviewRun run)
+    {
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        return fixture.HostRunner.Commands.Count;
+    }
+
+    private sealed class StaticCompletionSource(ReviewSubAgentTreeSnapshot snapshot) : IReviewSubAgentCompletionSource
+    {
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        ) => Task.FromResult(snapshot);
+    }
+
+    private static DynamicContextManifestDraft SemanticManifest(long roundId) =>
+        new(
+            DynamicContextManifest.SchemaVersion,
+            roundId,
+            [
+                new DynamicContextClaimDraft(
+                    "claim-1",
+                    "The changed file is part of this pull request.",
+                    ["file:src/Foo.cs"]
+                ),
+            ],
+            [
+                new DynamicContextGap("repository", DynamicContextGapState.Linked, true, null),
+                new DynamicContextGap("head", DynamicContextGapState.Linked, true, null),
+                new DynamicContextGap("workspace", DynamicContextGapState.Linked, true, null),
+            ]
+        );
+
+    private static HttpResponseMessage ReleaseConfirmed() =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"released\":true,\"sessionOutcome\":\"released\",\"mountQuiescenceConfirmed\":true}",
+                Encoding.UTF8,
+                "application/json"
+            ),
+        };
+
     /// <summary>
     /// G15 — the isolation gate. This is the whole point of mounting a leased SLOT as the LmStreaming
     /// workspace leaf: two reviews that overlap in time must get two slots, two single-segment leaves, two
@@ -2999,6 +4210,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public async Task S2S_two_overlapping_reviews_get_isolated_slots_workspaces_and_notes_dirs()
     {
         using var fixture = Fixture.CreateS2S(slots: 2);
+        fixture.WorkspaceRelease = _ => ReleaseConfirmed();
         var first = fixture.SeedRun("118");
         var second = fixture.SeedRun("222");
 
@@ -3359,6 +4571,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
             }
         );
 
+    private static void SeedSynthesisRequest(Fixture fixture, ReviewRun run, string inputId, string hostedThreadId) =>
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.SynthesisRequestArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new SynthesisRequestPayload(inputId, run.Id.ToString(CultureInfo.InvariantCulture), hostedThreadId)
+                ),
+            }
+        );
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
@@ -3366,6 +4592,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         private readonly ReviewSlotWorkspace? _slotWorkspace;
         private readonly HttpClient? _s2sHttp;
         private readonly S2SReviewWorkspacePreparer? _s2sPreparer;
+        private readonly LmStreamingS2SClient? _s2sClient;
 
         /// <param name="s2s">Whether the review runs over the LmStreaming S2S API (wires the preparer) or
         /// in-process.</param>
@@ -3376,7 +4603,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// exactly the "UseS2SReviewAgent on, pool never onboarded" operator misconfiguration PR #230 closes.</param>
         /// <param name="judge">Turns on the judge stage (off by default, as in production), so a test can drive
         /// <c>Judged</c> as a stage that does real work rather than one that returns immediately.</param>
-        private Fixture(bool s2s, int slots, bool wirePool = true, bool judge = false)
+        /// <param name="abVariants">Turns on the independent comparison arm so a test can enumerate every
+        /// provision-capable loop that shares one pooled slot claim.</param>
+        private Fixture(bool s2s, int slots, bool wirePool = true, bool judge = false, bool abVariants = false)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -3425,6 +4654,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // for the other cases while keeping the flag from being the reason a real defect goes unseen.
                 EnableReviewFeedbackAgent = true,
                 EnableJudgeAgent = judge,
+                EnableABVariants = abVariants,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -3486,9 +4716,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
                         }
                     );
 
+                // The workspace-release route a CURRENT review host serves. Registered for every S2S fixture
+                // because the terminal stage now calls it before it lets host git near the slot or gives the
+                // slot back — a test that wants an OLD host, a busy one, or one that answers 200 without
+                // asserting the unmount re-points <see cref="WorkspaceRelease"/> instead of racing the route
+                // table (first match wins, and this one is registered at construction).
+                _ = S2SHandler.On(
+                    req =>
+                        req.Method == HttpMethod.Post
+                        && req.RequestUri is not null
+                        && req.RequestUri.ToString().Contains(ReleaseRoute, StringComparison.Ordinal),
+                    req => WorkspaceRelease(req)
+                );
+
                 _s2sHttp = new HttpClient(S2SHandler) { BaseAddress = new Uri(LmStreamingBaseUrl + "/") };
+                _s2sClient = new LmStreamingS2SClient(_s2sHttp, "secret", "app-id", "app-key");
                 _s2sPreparer = new S2SReviewWorkspacePreparer(
-                    new LmStreamingS2SClient(_s2sHttp, "secret", "app-id", "app-key"),
+                    _s2sClient,
                     new GitRunner(S2SGit),
                     "/pool",
                     reviewMarketplace: "code-reviewer",
@@ -3496,8 +4740,44 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 );
             }
 
+            var retentionRunner = new FakeSandboxCommandRunner()
+                .OnArgvContains(
+                    "rev-parse --is-inside-work-tree",
+                    new SandboxCommandResult(1, string.Empty, "not a git repo")
+                )
+                .OnArgvContains(
+                    "rev-parse review/lmdotnettools-118",
+                    new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+                );
+            RetentionRunner = retentionRunner;
+            RetentionFileSystem = new FakeSandboxFileSystem()
+                .Seed("/host/review-store/README.md", "# ReviewBot")
+                .Seed("/host/review-store/PRs/.gitkeep", string.Empty)
+                .Seed("/host/review-store/KnowledgeBase/.gitkeep", string.Empty)
+                .Seed("/host/review-store/KnowledgeBase/_toc.md", "# Knowledge Base");
+            HostRetention = wirePool
+                ? new HostRetentionWorkspace(RetentionRunner, RetentionFileSystem, "/host/review-store", StoreUrl)
+                : null;
+
             Executor = BuildExecutor();
         }
+
+        /// <summary>
+        /// How the scripted review host answers a workspace release. Defaults to the shipped host: the
+        /// conversation is disabled, but the gateway cannot confirm backend quiescence. Tests that require a
+        /// future host with truthful mount evidence opt in through <see cref="ReleaseConfirmed"/>.
+        /// </summary>
+        public Func<HttpRequestMessage, HttpResponseMessage> WorkspaceRelease { get; set; } =
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"released\":true,\"sessionOutcome\":\"released\","
+                        + "\"mountQuiescenceConfirmed\":false,"
+                        + "\"mountQuiescenceEvidence\":\"gateway_does_not_report_backend_teardown\"}",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
+            };
 
         /// <summary>
         /// Builds an executor over the fixture's SHARED store/pool/preparer/provisioner. Each executor has its
@@ -3515,7 +4795,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 Logs,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace,
-                preparer: _s2sPreparer
+                preparer: _s2sPreparer,
+                s2sClient: _s2sClient,
+                hostRetention: HostRetention
             );
 
         public ReviewStore Store { get; }
@@ -3536,6 +4818,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
+        public FakeSandboxCommandRunner RetentionRunner { get; }
+        public FakeSandboxFileSystem RetentionFileSystem { get; }
+        public HostRetentionWorkspace? HostRetention { get; }
         public FakeSandboxFileSystem BootFileSystem { get; } = new();
         public FakeReviewSlotPool Pool { get; }
         public FakeReviewSlotPreparer Preparer { get; }
@@ -3554,7 +4839,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
         /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
         /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
-        public static Fixture CreateS2S(int slots = 1, bool judge = false) => new(s2s: true, slots, judge: judge);
+        public static Fixture CreateS2S(int slots = 1, bool judge = false, bool abVariants = false) =>
+            new(s2s: true, slots, judge: judge, abVariants: abVariants);
 
         /// <summary>The "explicit non-pooled S2S" variant (PR #230): <c>UseS2SReviewAgent</c> is on — so the
         /// S2S preparer is wired, mirroring Program.cs's unconditional registration — but none of the pool's
@@ -3584,19 +4870,69 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string prId = "118",
             string? prAuthor = null,
             string mode = "collect-only",
-            RepoIdentity? repo = null
+            RepoIdentity? repo = null,
+            bool withEngagementRound = false
         )
         {
-            var repoId = Store.EnsureRepo(
+            var identity =
                 repo
-                    ?? new RepoIdentity
-                    {
-                        Provider = "github",
-                        OrgOrOwner = "achieveai",
-                        RepoName = "LmDotnetTools",
-                        RepoStableId = "repo-stable-1",
-                    }
-            );
+                ?? new RepoIdentity
+                {
+                    Provider = "github",
+                    OrgOrOwner = "achieveai",
+                    RepoName = "LmDotnetTools",
+                    RepoStableId = "repo-stable-1",
+                };
+            var repoId = Store.EnsureRepo(identity);
+            long? engagementRoundId = null;
+            if (withEngagementRound)
+            {
+                var observedAt = new DateTimeOffset(2026, 9, 3, 1, 2, 3, TimeSpan.Zero);
+                var activity = new ProviderActivityWatermark(identity.Provider, observedAt, "wm-1");
+                var engagement = Store.CreateOrGetEngagement(
+                    new PrEngagement(
+                        0,
+                        repoId,
+                        identity.Provider,
+                        prId,
+                        PrLifecycleState.Open,
+                        "head-sha",
+                        "base-sha",
+                        null,
+                        activity,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        observedAt
+                    )
+                );
+                engagementRoundId = Store
+                    .TryAdmitRound(
+                        new EngagementRound(
+                            0,
+                            engagement.Id,
+                            EngagementRoundIntent.CodeReview,
+                            EngagementRoundStatus.Pending,
+                            "head-sha",
+                            "base-sha",
+                            null,
+                            activity,
+                            0,
+                            null,
+                            0,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null
+                        )
+                    )!
+                    .Id;
+            }
+
             return Store.CreateOrGetReviewRun(
                 new ReviewRun
                 {
@@ -3609,10 +4945,85 @@ public sealed class DaemonReviewStageExecutorPooledTests
                     ReviewKind = "full",
                     VariantId = "primary",
                     Mode = mode,
+                    EngagementRoundId = engagementRoundId,
                     Stage = ReviewStage.Discovered,
                     WorkflowStatus = WorkflowStatus.Running,
                     PrLifecycleState = PrLifecycleState.Open,
                 }
+            );
+        }
+
+        public AuditSourceRecord StoreGathererToolResult(ReviewRun run, string recordId, string toolName, string result)
+        {
+            var roundId = run.EngagementRoundId!.Value;
+            var engagementId = Store.GetEngagementRound(roundId)!.PrEngagementId.ToString(CultureInfo.InvariantCulture);
+            var toolCallId = $"call-{recordId}";
+            var functionArgs = toolName switch
+            {
+                "Read" => """{"file_path":"/workspace/store/repos/LmDotnetTools/src/Foo.cs"}""",
+                "mcp__github__get_pull_request" => """{"owner":"achieveai","repo":"LmDotnetTools","pull_number":118}""",
+                _ => "{}",
+            };
+            var callContent = AuditMessageSerializer.SerializeMessage(
+                new ToolCallMessage
+                {
+                    ToolCallId = toolCallId,
+                    FunctionName = toolName,
+                    FunctionArgs = functionArgs,
+                    Role = Role.Assistant,
+                }
+            );
+            _ = Store.StoreAuditRecord(
+                new ModelTurnAuditRecord(
+                    $"{recordId}-call",
+                    new MultiTurnAuditScope(engagementId, roundId.ToString(CultureInfo.InvariantCulture)),
+                    "gatherer-thread",
+                    "gather-run-1",
+                    "gather-generation-1",
+                    null,
+                    Store.ListAuditRecordsForRound(roundId).Count + 1,
+                    MultiTurnAuditRecordTypes.ModelResponse,
+                    "assistant",
+                    "claude-opus-5",
+                    "anthropic",
+                    callContent,
+                    AuditMessageSerializer.ComputeSha256(callContent),
+                    callContent.Length,
+                    AuditCaptureOutcome.Complete,
+                    null,
+                    DateTimeOffset.UtcNow
+                )
+            );
+
+            var content = AuditMessageSerializer.SerializeMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = toolName,
+                    Result = result,
+                    Role = Role.User,
+                }
+            );
+            return Store.StoreAuditRecord(
+                new ModelTurnAuditRecord(
+                    recordId,
+                    new MultiTurnAuditScope(engagementId, roundId.ToString(CultureInfo.InvariantCulture)),
+                    "gatherer-thread",
+                    "gather-run-1",
+                    "gather-generation-1",
+                    null,
+                    Store.ListAuditRecordsForRound(roundId).Count + 1,
+                    MultiTurnAuditRecordTypes.ToolResult,
+                    "user",
+                    "claude-opus-5",
+                    "anthropic",
+                    content,
+                    AuditMessageSerializer.ComputeSha256(content),
+                    content.Length,
+                    AuditCaptureOutcome.Complete,
+                    null,
+                    DateTimeOffset.UtcNow
+                )
             );
         }
 
@@ -3658,17 +5069,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// destroyed before the slot is returned.</summary>
         public List<string>? Order { get; set; }
 
+        public Action? BeforeLease { get; set; }
+        public Action? AfterLease { get; set; }
+        public Action? BeforeReturn { get; set; }
+
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
             // Gated because the isolation gate leases from two reviews at once: an unsynchronized index would
             // hand the SAME slot to both and manufacture the very collision the test exists to rule out.
             lock (_gate)
             {
+                BeforeLease?.Invoke();
                 LeaseCount++;
                 var index = _next++;
                 var host = $"{_root}/{_dirPrefix}{index}";
                 var slot = new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch");
                 Leased.Add(slot);
+                AfterLease?.Invoke();
                 return Task.FromResult(slot);
             }
         }
@@ -3677,6 +5094,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             lock (_gate)
             {
+                BeforeReturn?.Invoke();
                 ReturnCount++;
                 Returned.Add(slot);
                 Order?.Add("return");
@@ -3723,6 +5141,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
         public Queue<Exception> ThrowThenSucceed { get; } = new();
+
+        public Action? BeforePrepare { get; set; }
 
         /// <summary>Every checkout handed back, in prepare order — the isolation gate asserts two concurrent
         /// reviews were prepared into two different slot stores and two different notes dirs.</summary>
@@ -3800,6 +5220,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             CancellationToken cancellationToken
         )
         {
+            BeforePrepare?.Invoke();
             PreparedCheckout checkout;
             lock (_gate)
             {

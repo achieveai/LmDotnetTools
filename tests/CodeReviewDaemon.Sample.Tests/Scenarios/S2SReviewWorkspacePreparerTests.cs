@@ -228,6 +228,76 @@ public sealed class S2SReviewWorkspacePreparerTests
     }
 
     [Fact]
+    public async Task PrepareDiscussionAsync_prepares_the_exact_head_without_a_review_run_or_pool_slot()
+    {
+        var git = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse --is-inside-work-tree",
+            new SandboxCommandResult(1, string.Empty, "not a repo")
+        );
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-discussion\",\"name\":\"Discussion PR #118\",\"directoryRelPath\":\""
+                    + GithubLeaf
+                    + "\",\"marketplaces\":[\"code-reviewer\"]}"
+            );
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, git);
+
+        var prepared = await preparer.PrepareDiscussionAsync(
+            MakeRepo("github", project: null),
+            "github",
+            "118",
+            "base-discussion",
+            "head-discussion",
+            CancellationToken.None
+        );
+
+        prepared
+            .Should()
+            .Be(new PreparedReviewWorkspace(GithubLeaf, "ws-discussion", $"{BasePath}/{GithubLeaf}", "118"));
+        S2SReviewWorkspacePreparer.SanitizeLeaf(prepared.Leaf).Should().Be(prepared.Leaf);
+        git.Commands.Select(command => string.Join(" ", command.Argv))
+            .Should()
+            .Contain(command =>
+                command.Contains("fetch origin base-discussion head-discussion", StringComparison.Ordinal)
+            )
+            .And.Contain(command => command.Contains("checkout --force head-discussion", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PrepareDiscussionAsync_reuses_the_workspace_on_retry()
+    {
+        var git = new FakeSandboxCommandRunner();
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/workspaces",
+            "[{\"id\":\"ws-discussion\",\"name\":\"Discussion PR #118\",\"directoryRelPath\":\""
+                + GithubLeaf
+                + "\",\"marketplaces\":[\"code-reviewer\"]}]"
+        );
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, git);
+
+        var prepared = await preparer.PrepareDiscussionAsync(
+            MakeRepo("github", project: null),
+            "github",
+            "118",
+            "base-sha",
+            "head-sha",
+            CancellationToken.None
+        );
+
+        prepared.WorkspaceId.Should().Be("ws-discussion");
+        handler
+            .Requests.Where(request => request.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
+            .Should()
+            .OnlyContain(request => request.Method == HttpMethod.Get);
+    }
+
+    [Fact]
     public async Task PrepareAsync_reuses_an_existing_workspace_for_the_same_leaf_without_creating_a_duplicate()
     {
         // The probe succeeds (default result) so no clone happens; the existing workspace whose DirectoryRelPath

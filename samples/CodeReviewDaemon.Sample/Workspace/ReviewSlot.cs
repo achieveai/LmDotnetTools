@@ -13,17 +13,10 @@ internal interface IReviewSlotPool
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Releases the lease WITHOUT putting the address back into circulation, for a slot whose host paths could
-    /// not be established as contained (<see cref="SlotAddressUnusableException"/>).
-    /// <para>
-    /// The distinction from <see cref="ReturnAsync"/> is the whole reason this exists. Returning is for a slot
-    /// whose next lease might go differently, which is every ordinary failure. A refusal is not one: it is a
-    /// statement about the ADDRESS, and it stays true until somebody looks at the disk. The free list is a
-    /// stack, so returning a refused index makes it the very next one handed out — one planted entry would then
-    /// consume a slot's worth of the pool's throughput on a run that cannot possibly prepare, indefinitely.
-    /// Retiring costs a directory name and nothing else: the gate is released either way, so the pool goes on
+    /// Releases the lease WITHOUT putting the address back into circulation. Used when an address is unsafe to
+    /// reuse, including an uncontained host path or a hosted workspace whose backend quiescence is unconfirmed.
+    /// Retiring costs a directory name and nothing else: the gate is released either way, so the pool continues
     /// serving its full concurrency at a fresh address.
-    /// </para>
     /// </summary>
     Task RetireAsync(ReviewSlot slot, CancellationToken cancellationToken);
 }
@@ -41,6 +34,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private readonly SemaphoreSlim _gate;
     private readonly Lock _freeIndexesLock = new();
     private readonly Stack<int> _freeIndexes = new();
+    private readonly HashSet<int> _quarantinedIndexes;
     private int _nextIndex;
 
     public ReviewSlotPool(
@@ -48,7 +42,8 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         string? hostRoot,
         string scratchDirName,
         ILogger<ReviewSlotPool> logger,
-        string slotDirPrefix = "slot-"
+        string slotDirPrefix = "slot-",
+        IReadOnlyCollection<string>? quarantinedHostPaths = null
     )
     {
         if (maxSlots < 1)
@@ -65,6 +60,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         _scratchDirName = scratchDirName;
         _slotDirPrefix = slotDirPrefix;
         _gate = new SemaphoreSlim(maxSlots, maxSlots);
+        _quarantinedIndexes = ParseQuarantinedIndexes(quarantinedHostPaths);
     }
 
     public string SlotDirectoryName(int index) => $"{_slotDirPrefix}{index}";
@@ -81,11 +77,17 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             Directory.CreateDirectory(slot.ScratchPath);
             return slot;
         }
-        catch (SlotAddressUnusableException)
+        catch (SlotAddressUnusableException ex)
         {
             // Every other failure here is about this attempt, so the index goes back on the free list and the next
             // lease retries it. A refusal is about the ADDRESS, and it will still be true on the next lease, so it
             // is retired instead — see the reasoning on IReviewSlotPool.RetireAsync.
+            _logger.LogError(
+                ex,
+                "Retiring slot index {SlotIndex} at {HostPath}: its host paths could not be established as contained.",
+                slot.Index,
+                slot.HostPath
+            );
             Retire(slot);
             throw;
         }
@@ -122,10 +124,9 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
     private void Retire(ReviewSlot slot)
     {
-        _logger.LogError(
-            "Retiring slot index {SlotIndex} at {HostPath}: its host paths could not be established as contained. "
-                + "The address is not returned to the pool; concurrency is unaffected and the next lease allocates a "
-                + "fresh one.",
+        _logger.LogWarning(
+            "Retiring slot index {SlotIndex} at {HostPath}. The address is not returned to the pool; concurrency "
+                + "is unaffected and the next lease allocates a fresh one.",
             slot.Index,
             slot.HostPath
         );
@@ -181,9 +182,90 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     {
         lock (_freeIndexesLock)
         {
-            return _freeIndexes.Count > 0 ? _freeIndexes.Pop() : _nextIndex++;
+            while (_freeIndexes.TryPop(out var recycled))
+            {
+                if (!_quarantinedIndexes.Contains(recycled))
+                {
+                    return recycled;
+                }
+            }
+
+            while (_quarantinedIndexes.Contains(_nextIndex))
+            {
+                _nextIndex++;
+            }
+
+            return _nextIndex++;
         }
     }
+
+    private HashSet<int> ParseQuarantinedIndexes(IReadOnlyCollection<string>? hostPaths)
+    {
+        var indexes = new HashSet<int>();
+        if (hostPaths is null)
+        {
+            return indexes;
+        }
+
+        var root = Path.GetFullPath(_hostRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var rootPrefix = root + Path.DirectorySeparatorChar;
+        foreach (var hostPath in hostPaths)
+        {
+            if (string.IsNullOrWhiteSpace(hostPath))
+            {
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(hostPath);
+            if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                LogIgnoredQuarantine(hostPath);
+                continue;
+            }
+
+            var relativePath = fullPath[rootPrefix.Length..];
+            var separatorIndex = relativePath.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
+            var slotLeaf = separatorIndex < 0 ? relativePath : relativePath[..separatorIndex];
+            if (!TryParseSlotIndex(slotLeaf, out var index))
+            {
+                LogIgnoredQuarantine(hostPath);
+                continue;
+            }
+
+            if (separatorIndex >= 0)
+            {
+                _logger.LogWarning(
+                    "Historical unresolved path {QuarantinedHostPath} is beneath current slot address {SlotHostPath}; "
+                        + "quarantining the slot ancestor because the persisted path may identify a mounted descendant.",
+                    hostPath,
+                    Path.Combine(root, slotLeaf)
+                );
+            }
+
+            _ = indexes.Add(index);
+        }
+
+        return indexes;
+    }
+
+    private bool TryParseSlotIndex(string leaf, out int index)
+    {
+        index = -1;
+        return leaf.StartsWith(_slotDirPrefix, StringComparison.Ordinal)
+            && int.TryParse(leaf.AsSpan(_slotDirPrefix.Length), out index)
+            && index >= 0
+            && string.Equals(leaf, SlotDirectoryName(index), StringComparison.Ordinal);
+    }
+
+    private void LogIgnoredQuarantine(string hostPath) =>
+        _logger.LogError(
+            "Ignoring historical unresolved slot path {QuarantinedHostPath}: it cannot collide with an address "
+                + "issued by the current pool root {PoolRoot} and slot prefix {SlotPrefix}. The historical claim "
+                + "remains unresolved in durable state.",
+            hostPath,
+            _hostRoot,
+            _slotDirPrefix
+        );
 
     private ReviewSlot BuildSlot(int index)
     {

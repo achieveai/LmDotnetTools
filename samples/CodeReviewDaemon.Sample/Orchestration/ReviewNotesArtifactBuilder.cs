@@ -1,7 +1,10 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
 
@@ -119,9 +122,15 @@ internal static partial class UntrustedTranscriptText
         var text = Sanitize(raw);
         if (text.Length > maxChars)
         {
-            var dropped = text.Length - maxChars;
+            var prefixLength = maxChars;
+            if (prefixLength > 0 && char.IsHighSurrogate(text[prefixLength - 1]))
+            {
+                prefixLength--;
+            }
+
+            var dropped = text.Length - prefixLength;
             text =
-                text[..maxChars]
+                text[..prefixLength]
                 + $"\n\n[daemon: truncated — {dropped.ToString("N0", CultureInfo.InvariantCulture)} "
                 + "further characters omitted]";
         }
@@ -157,7 +166,13 @@ internal static partial class UntrustedTranscriptText
         text = WhitespaceRun().Replace(text, " ").Trim();
         if (text.Length > maxChars)
         {
-            text = text[..maxChars] + "…";
+            var prefixLength = maxChars;
+            if (prefixLength > 0 && char.IsHighSurrogate(text[prefixLength - 1]))
+            {
+                prefixLength--;
+            }
+
+            text = text[..prefixLength] + "…";
         }
 
         return text.Length == 0 ? "(none)" : text;
@@ -269,6 +284,296 @@ internal sealed class ReviewNotesArtifactBuilder
         _transcripts = transcripts;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
+
+    /// <summary>
+    /// Builds a bounded human projection from exact, content-addressed audit source records. Complete source
+    /// identity blocks are emitted only while they fit; accounting discloses source references that could not
+    /// be named. Missing records are rendered as GAP rather than as an empty successful turn.
+    /// </summary>
+    public static string BuildAuditProjection(
+        ReviewStore store,
+        long engagementRoundId,
+        IReadOnlyList<AuditSourceReference> sources
+    )
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(sources);
+
+        const int footerReserve = 600;
+        var contentLimit = UntrustedTranscriptText.MaxArtifactChars - footerReserve;
+        var builder = new StringBuilder()
+            .Append("# Audit source projection — round ")
+            .AppendLine(engagementRoundId.ToString(CultureInfo.InvariantCulture))
+            .AppendLine()
+            .AppendLine(
+                "Bodies below are bounded projections. Source IDs and SHA-256 hashes identify the complete records."
+            )
+            .AppendLine();
+        var includedItems = 0;
+        var deliberatelyOmittedItems = 0;
+        var unnamedSourceReferences = 0;
+        long includedBytes = 0;
+        long deliberateOmittedBytes = 0;
+        var missingItems = 0;
+
+        foreach (var source in sources)
+        {
+            var record = store.GetAuditRecord(source.SourceRecordId);
+            if (record is null)
+            {
+                missingItems++;
+                var gap = new StringBuilder()
+                    .Append("## GAP — `")
+                    .Append(UntrustedTranscriptText.Inline(source.SourceRecordId, 160))
+                    .AppendLine("`")
+                    .Append("- SHA-256: `")
+                    .Append(UntrustedTranscriptText.Inline(source.ContentSha256, 80))
+                    .AppendLine("`")
+                    .AppendLine("- Reason: source record unavailable")
+                    .AppendLine()
+                    .ToString();
+                if (!TryAppendCompleteBlock(builder, gap, contentLimit))
+                {
+                    unnamedSourceReferences++;
+                }
+
+                continue;
+            }
+
+            if (record.EngagementRoundId != engagementRoundId)
+            {
+                throw new InvalidOperationException(
+                    $"Audit source '{source.SourceRecordId}' belongs to round {record.EngagementRoundId}, not {engagementRoundId}."
+                );
+            }
+
+            if (!StringComparer.Ordinal.Equals(record.ContentSha256, source.ContentSha256))
+            {
+                throw new InvalidOperationException(
+                    $"Audit source '{source.SourceRecordId}' hash does not match the requested exact source reference."
+                );
+            }
+
+            var header = new StringBuilder()
+                .Append("## Source `")
+                .Append(UntrustedTranscriptText.Inline(record.Id, 160))
+                .AppendLine("`")
+                .Append("- SHA-256: `")
+                .Append(UntrustedTranscriptText.Inline(record.ContentSha256, 80))
+                .AppendLine("`")
+                .Append("- Exact bytes: ")
+                .AppendLine(record.ByteCount.ToString("N0", CultureInfo.InvariantCulture))
+                .Append("- Capture: ")
+                .AppendLine(record.CaptureOutcome.ToString())
+                .AppendLine()
+                .ToString();
+            if (!TryAppendCompleteBlock(builder, header, contentLimit))
+            {
+                unnamedSourceReferences++;
+                if (record.CaptureOutcome == AuditSourceCaptureOutcome.Complete)
+                {
+                    deliberatelyOmittedItems++;
+                    deliberateOmittedBytes += record.ByteCount;
+                }
+                else
+                {
+                    missingItems++;
+                }
+
+                continue;
+            }
+
+            if (record.CaptureOutcome != AuditSourceCaptureOutcome.Complete)
+            {
+                missingItems++;
+                builder
+                    .Append("**GAP:** ")
+                    .AppendLine(UntrustedTranscriptText.Inline(record.GapReasonCode, 160))
+                    .AppendLine();
+                continue;
+            }
+
+            var sourceContent = store.ReadAuditContent(record.Id);
+            var projectionSafety = ClassifyProjectionSafety(record.RecordType, sourceContent);
+            if (projectionSafety is AuditProjectionSafety.ContainsReasoning)
+            {
+                deliberatelyOmittedItems++;
+                deliberateOmittedBytes += record.ByteCount;
+                builder.AppendLine("**Reasoning payload withheld from projection.**").AppendLine();
+                continue;
+            }
+
+            if (projectionSafety is AuditProjectionSafety.UnverifiedModelRequest)
+            {
+                deliberatelyOmittedItems++;
+                deliberateOmittedBytes += record.ByteCount;
+                builder
+                    .AppendLine("**Model request payload withheld because its canonical shape could not be verified.**")
+                    .AppendLine();
+                continue;
+            }
+
+            var projectedBody = UntrustedTranscriptText.Sanitize(Encoding.UTF8.GetString(sourceContent));
+            var remaining = contentLimit - builder.Length;
+            string? fencedBody = null;
+            var projectedChars = 0;
+            if (remaining > 0)
+            {
+                (fencedBody, projectedChars) = BuildBoundedFence(projectedBody, remaining);
+            }
+
+            if (fencedBody is null || (includedItems > 0 && projectedChars < projectedBody.Length))
+            {
+                deliberatelyOmittedItems++;
+                deliberateOmittedBytes += record.ByteCount;
+                continue;
+            }
+
+            builder.AppendLine(fencedBody).AppendLine();
+            includedItems++;
+            var projectedBytes = Encoding.UTF8.GetByteCount(projectedBody.AsSpan(0, projectedChars));
+            includedBytes += Math.Min(record.ByteCount, projectedBytes);
+            deliberateOmittedBytes += record.ByteCount - Math.Min(record.ByteCount, projectedBytes);
+        }
+
+        var footer = new StringBuilder()
+            .AppendLine("## Projection accounting")
+            .Append("- item(s) deliberately omitted from this projection: ")
+            .AppendLine(deliberatelyOmittedItems.ToString("N0", CultureInfo.InvariantCulture))
+            .Append("- byte(s) deliberately omitted from this projection: ")
+            .AppendLine(deliberateOmittedBytes.ToString("N0", CultureInfo.InvariantCulture))
+            .Append("- byte(s) included in this projection: ")
+            .AppendLine(includedBytes.ToString("N0", CultureInfo.InvariantCulture))
+            .Append("- unavailable/GAP item(s): ")
+            .AppendLine(missingItems.ToString("N0", CultureInfo.InvariantCulture))
+            .Append("- source reference(s) not named in this projection: ")
+            .AppendLine(unnamedSourceReferences.ToString("N0", CultureInfo.InvariantCulture))
+            .ToString();
+
+        if (builder.Length + footer.Length > UntrustedTranscriptText.MaxArtifactChars)
+        {
+            throw new InvalidOperationException("Audit projection accounting exceeded its reserved budget.");
+        }
+
+        return builder.Append(footer).ToString();
+    }
+
+    private static AuditProjectionSafety ClassifyProjectionSafety(string recordType, ReadOnlySpan<byte> content)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(content.ToArray());
+            var root = document.RootElement;
+            if (IsReasoningMessage(root))
+            {
+                return AuditProjectionSafety.ContainsReasoning;
+            }
+
+            if (!string.Equals(recordType, MultiTurnAuditRecordTypes.ModelRequest, StringComparison.Ordinal))
+            {
+                return AuditProjectionSafety.Safe;
+            }
+
+            if (
+                root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("messages", out var messages)
+                || messages.ValueKind != JsonValueKind.Array
+            )
+            {
+                return AuditProjectionSafety.UnverifiedModelRequest;
+            }
+
+            foreach (var entry in messages.EnumerateArray())
+            {
+                if (
+                    entry.ValueKind != JsonValueKind.Object
+                    || !entry.TryGetProperty("runtime_type", out var runtimeType)
+                    || runtimeType.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(runtimeType.GetString())
+                    || !entry.TryGetProperty("message", out var message)
+                    || message.ValueKind != JsonValueKind.Object
+                )
+                {
+                    return AuditProjectionSafety.UnverifiedModelRequest;
+                }
+
+                if (IsReasoningMessage(message))
+                {
+                    return AuditProjectionSafety.ContainsReasoning;
+                }
+            }
+
+            return AuditProjectionSafety.Safe;
+        }
+        catch (JsonException)
+        {
+            return string.Equals(recordType, MultiTurnAuditRecordTypes.ModelRequest, StringComparison.Ordinal)
+                ? AuditProjectionSafety.UnverifiedModelRequest
+                : AuditProjectionSafety.Safe;
+        }
+    }
+
+    private static bool IsReasoningMessage(JsonElement message) =>
+        message.ValueKind == JsonValueKind.Object
+        && message.TryGetProperty("$type", out var type)
+        && type.ValueKind == JsonValueKind.String
+        && string.Equals(type.GetString(), "reasoning", StringComparison.OrdinalIgnoreCase);
+
+    private enum AuditProjectionSafety
+    {
+        Safe,
+        ContainsReasoning,
+        UnverifiedModelRequest,
+    }
+
+    private static bool TryAppendCompleteBlock(StringBuilder builder, string block, int limit)
+    {
+        if (builder.Length + block.Length > limit)
+        {
+            return false;
+        }
+
+        builder.Append(block);
+        return true;
+    }
+
+    private static (string? Fence, int ProjectedChars) BuildBoundedFence(string body, int budget)
+    {
+        var complete = UntrustedTranscriptText.Fence(body, maxChars: body.Length);
+        if (complete.Length + Environment.NewLine.Length <= budget)
+        {
+            return (complete, body.Length);
+        }
+
+        var low = 0;
+        var high = body.Length - 1;
+        var bestRequestedLength = -1;
+        while (low <= high)
+        {
+            var candidateLength = low + ((high - low) / 2);
+            var candidate = UntrustedTranscriptText.Fence(body, maxChars: candidateLength);
+            if (candidate.Length + Environment.NewLine.Length <= budget)
+            {
+                bestRequestedLength = candidateLength;
+                low = candidateLength + 1;
+            }
+            else
+            {
+                high = candidateLength - 1;
+            }
+        }
+
+        if (bestRequestedLength < 0)
+        {
+            return (null, 0);
+        }
+
+        var projectedChars = EffectivePrefixLength(body, bestRequestedLength);
+        return (UntrustedTranscriptText.Fence(body, maxChars: bestRequestedLength), projectedChars);
+    }
+
+    private static int EffectivePrefixLength(string body, int requestedLength) =>
+        requestedLength > 0 && char.IsHighSurrogate(body[requestedLength - 1]) ? requestedLength - 1 : requestedLength;
 
     /// <summary>
     /// Produces the round's artifacts, relative to <paramref name="notesRelPath"/> (the lease's per-PR notes

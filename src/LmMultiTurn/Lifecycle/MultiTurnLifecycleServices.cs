@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Audit;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
@@ -84,6 +85,20 @@ public sealed record MultiTurnLifecycleServices
     public string? ModelId { get; init; }
 
     /// <summary>
+    /// Host-supplied provider identity for audit provenance. Never inferred from <see cref="ModelId"/>.
+    /// </summary>
+    public string? ProviderId { get; init; }
+
+    /// <summary>Durable destination for exact model-turn source records.</summary>
+    public IMultiTurnAuditSink? AuditSink { get; init; }
+
+    /// <summary>The engagement and round that own records from this loop.</summary>
+    public MultiTurnAuditScope? AuditScope { get; init; }
+
+    /// <summary>The immutable parent turn that caused this spawned agent, when applicable.</summary>
+    public string? AuditParentTurnId { get; init; }
+
+    /// <summary>
     /// Sizes a request before dispatch for the per-generation context observation (#681). Null uses
     /// <see cref="DefaultContextTokenEstimator"/>. Rides on the bundle so a spawned agent inherits it
     /// through <see cref="ForSpawnedAgent"/> and no loop constructor grows a parameter for it.
@@ -109,7 +124,10 @@ public sealed record MultiTurnLifecycleServices
     /// <summary>
     /// Whether this bundle asks the loop to do anything at all beyond its baseline behavior.
     /// </summary>
-    public bool IsEnabled => PublishesEvents || LifecycleStore != null || Approval.IsEnabled;
+    public bool IsEnabled => PublishesEvents || LifecycleStore != null || Approval.IsEnabled || IsAuditEnabled;
+
+    /// <summary>Whether exact model-turn audit capture is configured.</summary>
+    public bool IsAuditEnabled => AuditSink != null && AuditScope != null;
 
     /// <summary>
     /// Stamps a host-supplied bundle with the identity of the loop that is about to use it.
@@ -132,28 +150,49 @@ public sealed record MultiTurnLifecycleServices
         MultiTurnLifecycleServices? services,
         string agentKind,
         string? modelId = null
-    ) =>
-        services == null || ReferenceEquals(services, Disabled)
-            ? Disabled
-            : services with
-            {
-                AgentKind = agentKind,
-                ModelId = services.ModelId ?? modelId,
-            };
+    )
+    {
+        if (services == null || ReferenceEquals(services, Disabled))
+        {
+            return Disabled;
+        }
+
+        if (services.AuditSink == null != (services.AuditScope == null))
+        {
+            throw new ArgumentException(
+                "AuditSink and AuditScope must either both be configured or both be absent.",
+                nameof(services)
+            );
+        }
+
+        if (services.IsAuditEnabled && !string.Equals(agentKind, LifecycleAgentKinds.Raw, StringComparison.Ordinal))
+        {
+            throw new NotSupportedException(
+                $"Agent kind '{agentKind}' does not support exact model-turn audit capture."
+            );
+        }
+
+        return services with
+        {
+            AgentKind = agentKind,
+            ModelId = services.ModelId ?? modelId,
+        };
+    }
 
     /// <summary>
     /// Derives the bundle for an agent this one is spawning.
     /// </summary>
     /// <param name="parent">The spawning agent's bundle, possibly null.</param>
     /// <param name="lineage">Where the child came from, captured at spawn time.</param>
+    /// <param name="auditParentTurnId">The immutable parent-turn identity captured with the spawn.</param>
     /// <returns>
     /// The child's bundle, or <see cref="Disabled"/> when the parent observes nothing — lineage
     /// with no subscriber to read it is bookkeeping nobody asked for.
     /// </returns>
     /// <remarks>
-    /// The child keeps the parent's publisher, allocator, store, and approval gate: a sub-agent's
-    /// events belong in the same ordered stream as its parent's, and a host that gates the parent's
-    /// tools did not mean to leave the child's ungated.
+    /// The child keeps the parent's publisher, allocator, store, approval gate, audit sink/scope, and
+    /// provider identity: its events and source records belong to the same host-owned engagement, and
+    /// a host that gates the parent's tools did not mean to leave the child's ungated.
     /// <para>
     /// <see cref="ModelId"/> is cleared. It described the parent's model, and carrying it forward
     /// would make the child's own model — resolved from its template, its override, or inherited —
@@ -163,7 +202,11 @@ public sealed record MultiTurnLifecycleServices
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="lineage"/> is <see langword="null"/>.</exception>
-    public static MultiTurnLifecycleServices ForSpawnedAgent(MultiTurnLifecycleServices? parent, AgentLineage lineage)
+    public static MultiTurnLifecycleServices ForSpawnedAgent(
+        MultiTurnLifecycleServices? parent,
+        AgentLineage lineage,
+        string? auditParentTurnId = null
+    )
     {
         ArgumentNullException.ThrowIfNull(lineage);
 
@@ -173,6 +216,7 @@ public sealed record MultiTurnLifecycleServices
             {
                 Lineage = lineage,
                 ModelId = null,
+                AuditParentTurnId = auditParentTurnId,
             };
     }
 

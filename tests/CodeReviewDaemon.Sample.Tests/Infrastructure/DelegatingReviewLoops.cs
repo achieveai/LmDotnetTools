@@ -82,6 +82,7 @@ internal sealed class ResumableFakeLoop(IMultiTurnAgent inner, string? resumeHos
         IDeadlineBoundedReviewLoop
 {
     private string? _hostedThreadId = resumeHostedThreadId;
+    private Func<ConversationProvisionObserver>? _onConversationProvisioning;
     private Action<string>? _onConversationMinted;
     private string? _armedIdempotencyKey;
     private string? _armedResumeInputId;
@@ -117,6 +118,15 @@ internal sealed class ResumableFakeLoop(IMultiTurnAgent inner, string? resumeHos
 
     /// <summary>Conversations this loop minted (at most one, and none at all when it resumed one).</summary>
     public List<string> MintedThreadIds { get; } = [];
+
+    /// <summary>An optional definitive or ambiguous failure raised during first-time provisioning.</summary>
+    public Exception? ThrowDuringProvision { get; set; }
+
+    public void ObserveConversationProvision(Func<ConversationProvisionObserver> onConversationProvisioning)
+    {
+        ArgumentNullException.ThrowIfNull(onConversationProvisioning);
+        _onConversationProvisioning = onConversationProvisioning;
+    }
 
     public void ObserveConversationMint(Action<string> onConversationMinted)
     {
@@ -163,6 +173,18 @@ internal sealed class ResumableFakeLoop(IMultiTurnAgent inner, string? resumeHos
             return;
         }
 
+        var provisionObserver = _onConversationProvisioning?.Invoke();
+        if (ThrowDuringProvision is not null)
+        {
+            if (ThrowDuringProvision is ReviewHostPreMintRefusalException)
+            {
+                provisionObserver?.Retract();
+            }
+
+            throw ThrowDuringProvision;
+        }
+
+        provisionObserver?.Associate(mintedThreadId);
         _hostedThreadId = mintedThreadId;
         MintedThreadIds.Add(mintedThreadId);
         _onConversationMinted?.Invoke(mintedThreadId);

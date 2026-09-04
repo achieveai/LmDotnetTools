@@ -28,19 +28,93 @@ internal sealed class LmStreamingS2SClient
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    /// <summary>
+    /// Total attempts (first try plus retries) for a request that is SAFE to repeat. Three, not "until the
+    /// budget runs out": every attempt is also a chance for the daemon's own stage deadline to expire while
+    /// a review sits waiting, and a host that answered three transient responses in a row is not having a
+    /// blip.
+    /// </summary>
+    private const int MaxTransientAttempts = 3;
+
+    /// <summary>
+    /// The longest this client will pause between attempts. A <c>Retry-After</c> LONGER than this is not
+    /// shortened — the retry is abandoned instead, because shortening it would ignore the very instruction
+    /// the header exists to give while still costing the caller its deadline.
+    /// </summary>
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The review host's own <c>code</c> values for "nothing was queued, try again shortly". Every one of
+    /// them is documented at its throw site in <c>ConversationsController</c> as leaving no accepted input
+    /// behind — which is what makes repeating the call safe rather than merely likely to work.
+    /// <para>
+    /// A 503 with any OTHER code — or with no code at all — is NOT retried. <c>provider_unavailable</c>,
+    /// for instance, is a configuration answer that will be identical next time, and an unrecognized code
+    /// is by definition one whose queueing behaviour this client has not been told. Retrying either is how
+    /// a bounded retry turns into an amplifier.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> RetryableTransientCodes = new(StringComparer.Ordinal)
+    {
+        // The gateway could not be reached or was still coming up; no session, so no turn.
+        "sandbox_unavailable",
+        // The thread's session is being replaced and its current run must finish first ("Retry shortly").
+        "sandbox_session_refresh_deferred",
+        // The send raced a pool swap: "Nothing was queued and nothing recorded."
+        "agent_replaced",
+        // The input queue refused the turn and the host released its own admission record.
+        "queue_full",
+    };
+
+    private static readonly IReadOnlyDictionary<string, HttpStatusCode> PreMintRefusalCodes = new Dictionary<
+        string,
+        HttpStatusCode
+    >(StringComparer.Ordinal)
+    {
+        ["reasoning_effort_invalid"] = HttpStatusCode.BadRequest,
+        ["provider_unavailable"] = HttpStatusCode.ServiceUnavailable,
+        ["workspace_not_found"] = HttpStatusCode.NotFound,
+        ["mode_not_found"] = HttpStatusCode.NotFound,
+    };
+
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string? _s2sSecret;
     private readonly string? _sandboxAppId;
     private readonly string? _sandboxAppKey;
+    private readonly TimeProvider _timeProvider;
+    private readonly Func<TimeSpan, CancellationToken, Task> _retryDelayAsync;
 
-    public LmStreamingS2SClient(HttpClient httpClient, string? s2sSecret, string? sandboxAppId, string? sandboxAppKey)
+    /// <param name="httpClient">Transport; its <see cref="HttpClient.BaseAddress"/> and
+    /// <see cref="HttpClient.Timeout"/> are the review host address and the per-request budget.</param>
+    /// <param name="s2sSecret">Inbound S2S shared secret, header-only.</param>
+    /// <param name="sandboxAppId">Gateway app id forwarded so the session binds to the daemon.</param>
+    /// <param name="sandboxAppKey">Gateway app key forwarded alongside it.</param>
+    /// <param name="timeProvider">
+    /// Clock used only to resolve a <c>Retry-After</c> expressed as an HTTP DATE. Injectable so that
+    /// behaviour is testable as arithmetic rather than as a race against the wall clock.
+    /// </param>
+    /// <param name="retryDelayAsync">
+    /// How the client waits between attempts. Injectable for the same reason: a test asserts the DURATION
+    /// the host asked for was honoured, which is a claim about the value passed here — making a test sleep
+    /// for it would prove the same thing more slowly and less exactly.
+    /// </param>
+    public LmStreamingS2SClient(
+        HttpClient httpClient,
+        string? s2sSecret,
+        string? sandboxAppId,
+        string? sandboxAppKey,
+        TimeProvider? timeProvider = null,
+        Func<TimeSpan, CancellationToken, Task>? retryDelayAsync = null
+    )
     {
         _httpClient = httpClient;
         _baseUrl = httpClient.BaseAddress?.ToString() ?? "the configured LmStreaming base URL";
         _s2sSecret = s2sSecret;
         _sandboxAppId = sandboxAppId;
         _sandboxAppKey = sandboxAppKey;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _retryDelayAsync = retryDelayAsync ?? ((delay, token) => Task.Delay(delay, _timeProvider, token));
     }
 
     /// <summary>
@@ -132,7 +206,10 @@ internal sealed class LmStreamingS2SClient
         string? systemPromptAppendix,
         string? subAgentModelId,
         string? reasoningEffort,
-        CancellationToken ct
+        CancellationToken ct,
+        Action<string>? onThreadIdParsed = null,
+        ReviewConversationScope? reviewScope = null,
+        ReviewPublicationConversationScope? publicationScope = null
     )
     {
         using var response = await ExecuteAsync(
@@ -148,53 +225,60 @@ internal sealed class LmStreamingS2SClient
                 // Do not normalize empty to null: empty explicitly asks the host to omit effort, while null
                 // leaves the provider's default intact.
                 ReasoningEffort = reasoningEffort,
+                ReviewScope = reviewScope,
+                ReviewPublicationScope = publicationScope,
             },
             ct
         );
 
-        // The host's provision route answers 404 for an unresolvable mode (and for an unknown
-        // workspace) — before this branch existed that surfaced as a bare HttpRequestException
-        // ("response status code does not indicate success: 404"), naming neither the mode nor the
-        // host, on every review. Named here and thrown as a CONTRACT failure (bounded retries):
-        // a mode id the host cannot resolve stays unresolvable until an operator fixes the
-        // configuration or the host's Prompts.yaml, so retrying is pure amplification.
+        // Read once. Error classification and the successful thread parse must observe the same response
+        // bytes; relying on a second content read is not valid for every HttpContent implementation.
+        var body = await response.Content.ReadAsStringAsync(ct);
+        var errorCode = ReadErrorCode(body);
+        if (
+            errorCode is not null
+            && PreMintRefusalCodes.TryGetValue(errorCode, out var refusalStatus)
+            && response.StatusCode == refusalStatus
+        )
+        {
+            var requestedContract =
+                errorCode == "reasoning_effort_invalid"
+                    ? $" Requested reasoning effort: '{reasoningEffort ?? "(absent)"}'."
+                    : string.Empty;
+            throw new ReviewHostPreMintRefusalException(
+                errorCode,
+                $"The LmStreaming review host at {_baseUrl} definitively refused to provision the review "
+                    + $"conversation before minting it (HTTP {(int)response.StatusCode}, code '{errorCode}')."
+                    + requestedContract
+            );
+        }
+
+        // A legacy or unknown 404 remains a contract error for operator diagnosis, but it is NOT proof that
+        // no conversation was minted. Only the status/code pairs above authorize retracting the durable intent.
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            var detail = await response.Content.ReadAsStringAsync(ct);
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} refused to provision the review conversation "
                     + $"(POST api/conversations returned 404). The configured mode id '{modeId}' "
                     + $"(CodeReviewDaemon:LmStreamingModeId) most likely does not resolve on that host - "
-                    + $"check the host's Prompts.yaml / user modes. Host response: {detail}"
+                    + $"check the host's Prompts.yaml / user modes. Host response: {body}"
             );
         }
 
         if (response.StatusCode == HttpStatusCode.BadRequest)
         {
-            var detail = await response.Content.ReadAsStringAsync(ct);
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} rejected the review-conversation contract "
                     + $"(POST api/conversations returned 400). Requested reasoning effort: "
-                    + $"'{reasoningEffort ?? "(absent)"}'. Host response: {detail}"
+                    + $"'{reasoningEffort ?? "(absent)"}'. Host response: {body}"
             );
         }
 
         _ = response.EnsureSuccessStatusCode();
-        var body = await response.Content.ReadAsStringAsync(ct);
         var threadId = ReadStringProperty(body, "threadId");
+        onThreadIdParsed?.Invoke(threadId);
         if (reasoningEffort is not null && !ReadBoolProperty(body, "reasoningEffortAccepted"))
         {
-            try
-            {
-                _ = await DeleteConversationAsync(threadId, ct).ConfigureAwait(false);
-            }
-            catch (Exception) when (!ct.IsCancellationRequested)
-            {
-                // Cleanup is best-effort. The stable contract error below is more actionable than a secondary
-                // delete failure, and the retention sweeper cannot know this id because provisioning never
-                // returned it to the caller.
-            }
-
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} did not acknowledge requested root reasoning effort "
                     + $"'{reasoningEffort}'. Upgrade the review host before running this review."
@@ -202,6 +286,19 @@ internal sealed class LmStreamingS2SClient
         }
 
         return threadId;
+    }
+
+    /// <summary>Reads the immutable engagement and round bound to a hosted review conversation.</summary>
+    public async Task<ReviewConversationScope> GetReviewScopeAsync(string threadId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        var body = await SendReadAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/review-scope",
+            body: null,
+            ct
+        );
+        return Deserialize<ReviewConversationScope>(body);
     }
 
     /// <summary>Updates a conversation's title/preview metadata (e.g. a human-readable "Review PR #n").</summary>
@@ -242,6 +339,68 @@ internal sealed class LmStreamingS2SClient
 
         _ = response.EnsureSuccessStatusCode();
         return true;
+    }
+
+    /// <summary>
+    /// Asks the review host to disable <paramref name="threadId"/> while keeping its persisted deep link.
+    /// Literal <c>released:true</c> plus a known successful <c>sessionOutcome</c> proves the conversation accepts no
+    /// send and cannot remount. Literal <c>mountQuiescenceConfirmed:true</c> additionally proves backend quiescence.
+    /// Missing, false, malformed, unknown, or bare successful responses prove neither fact.
+    /// </summary>
+    public async Task<S2SWorkspaceReleaseResult> ReleaseWorkspaceAsync(string threadId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        using var response = await ExecuteAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/workspace-session/release",
+            body: null,
+            ct
+        );
+
+        var detail = await response.Content.ReadAsStringAsync(ct);
+        if (
+            response.StatusCode == HttpStatusCode.NotFound
+            && string.Equals(ReadErrorCode(detail), "unknown_thread", StringComparison.Ordinal)
+        )
+        {
+            return new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.ConversationMissing, detail);
+        }
+
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            return new S2SWorkspaceReleaseResult(
+                S2SWorkspaceReleaseOutcome.Unsupported,
+                $"The LmStreaming review host at {_baseUrl} does not implement workspace release "
+                    + $"(POST api/conversations/{{id}}/workspace-session/release returned {(int)response.StatusCode})."
+            );
+        }
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            return new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.Busy, detail);
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        if (ReadOptionalFlag(detail, "busy"))
+        {
+            return new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.Busy, detail);
+        }
+
+        if (!ReadOptionalFlag(detail, "released"))
+        {
+            return new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.Unconfirmed, detail);
+        }
+
+        var sessionOutcome = ReadOptionalStringProperty(detail, "sessionOutcome");
+        if (sessionOutcome is not ("released" or "nothing_to_release"))
+        {
+            return new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.Unconfirmed, detail);
+        }
+
+        return ReadOptionalFlag(detail, "mountQuiescenceConfirmed")
+            ? new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.Released, detail)
+            : new S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome.ConversationReleased, detail);
     }
 
     /// <summary>
@@ -354,7 +513,11 @@ internal sealed class LmStreamingS2SClient
                 SuppressSubAgentSpawning = suppressSubAgentSpawning,
                 IdempotencyKey = idempotencyKey,
             },
-            ct
+            ct,
+            // The key is what makes the repeat safe, so it is also what gates the retry: without one, a
+            // second attempt would queue a second review turn. Blank counts as absent — a whitespace key
+            // is not an idempotency guarantee.
+            repeatable: !string.IsNullOrWhiteSpace(idempotencyKey)
         );
 
         if (suppressSubAgentSpawning && !ReadBoolProperty(body, "spawningSuppressed"))
@@ -497,14 +660,189 @@ internal sealed class LmStreamingS2SClient
         _ = response.EnsureSuccessStatusCode();
     }
 
-    private async Task<string> SendReadAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    private async Task<string> SendReadAsync(
+        HttpMethod method,
+        string path,
+        object? body,
+        CancellationToken ct,
+        bool repeatable = false
+    )
     {
-        using var response = await ExecuteAsync(method, path, body, ct);
+        using var response = await ExecuteAsync(method, path, body, ct, repeatable);
         _ = response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync(ct);
     }
 
+    /// <summary>
+    /// Sends one request, retrying ONLY when the call is safe to repeat and the host said so itself.
+    /// <para>
+    /// <c>repeatable</c> means repeating this exact call cannot create a second side effect. <c>GET</c>
+    /// qualifies by definition and is admitted below without the caller saying anything; anything else has
+    /// to state it, and today only a keyed message send does — the host reconciles a repeat against its
+    /// durable accepted-input ledger, so the second attempt recovers the first input rather than queueing
+    /// another minutes-long review turn. This is deliberately NOT "retry POSTs": an unkeyed send, a
+    /// provision and a workspace create all have effects a repeat would duplicate, so they get exactly one
+    /// attempt.
+    /// </para>
+    /// <para>
+    /// The keyed send's claim rests on a precondition established elsewhere and NOT re-checked here:
+    /// <see cref="EnsureHostContractAsync"/> has already refused to proceed against a host that does not
+    /// advertise <c>messageIdempotency</c>. That ordering matters — the retry decision is taken from the
+    /// TRANSIENT response, long before the success body's <c>idempotencyKeyHonored</c> could confirm
+    /// anything, so a host that ignores keys would be retried into a second review turn if the capability
+    /// gate were not already behind us.
+    /// </para>
+    /// </summary>
     private async Task<HttpResponseMessage> ExecuteAsync(
+        HttpMethod method,
+        string path,
+        object? body,
+        CancellationToken ct,
+        bool repeatable = false
+    )
+    {
+        var mayRetry = repeatable || method == HttpMethod.Get;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var response = await SendOnceAsync(method, path, body, ct).ConfigureAwait(false);
+
+            TimeSpan? delay;
+            try
+            {
+                if (!mayRetry || attempt >= MaxTransientAttempts)
+                {
+                    return response;
+                }
+
+                delay = await ResolveTransientRetryDelayAsync(response, attempt, ct).ConfigureAwait(false);
+                if (delay is null)
+                {
+                    return response;
+                }
+            }
+            catch
+            {
+                // Every path that does NOT hand the response back to the caller owns disposing it, and
+                // reading the retry metadata is such a path — one that can fail for reasons unrelated to
+                // the retry decision. ReadAsStringAsync raises InvalidOperationException for a
+                // Content-Type whose charset it cannot resolve, and OperationCanceledException when the
+                // stage deadline expires mid-read. Without this the response (and its connection) is held
+                // until a finalizer runs, so a host answering transiently with a malformed charset leaks
+                // one pooled connection per attempt exactly while the daemon is retrying hardest.
+                response.Dispose();
+                throw;
+            }
+
+            response.Dispose();
+
+            // The caller's token governs the wait, so a stage deadline that expires mid-backoff ends the
+            // request here instead of after another attempt. Nothing has been queued at this point — that
+            // is what the retryable codes guarantee — so cancelling here loses no work.
+            await _retryDelayAsync(delay.Value, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Decides whether <paramref name="response"/> is a transient answer worth repeating, and how long to
+    /// wait first. <c>null</c> means "do not retry" — including for every status that is not
+    /// <c>429</c>/<c>503</c>, which is what keeps this from becoming a blanket retry.
+    /// </summary>
+    private async Task<TimeSpan?> ResolveTransientRetryDelayAsync(
+        HttpResponseMessage response,
+        int attempt,
+        CancellationToken ct
+    )
+    {
+        if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable))
+        {
+            return null;
+        }
+
+        // 429 IS the retryable answer — the status itself means "you asked too fast, ask again later", and
+        // it carries no queued turn. 503 is ambiguous by comparison (the host uses it for both transient
+        // and terminal conditions alike), so it has to name a code this client recognizes.
+        if (
+            response.StatusCode == HttpStatusCode.ServiceUnavailable
+            && !RetryableTransientCodes.Contains(await ReadErrorCodeAsync(response, ct).ConfigureAwait(false) ?? "")
+        )
+        {
+            return null;
+        }
+
+        var requested = ReadRetryAfter(response);
+        if (requested is { } wait)
+        {
+            // Honour it or give up; never split the difference. Waiting less than asked is the behaviour
+            // Retry-After exists to prevent.
+            return wait > MaxRetryDelay ? null
+                : wait < TimeSpan.Zero ? TimeSpan.Zero
+                : wait;
+        }
+
+        // No instruction from the host: back off exponentially from one second (1s, then 2s), capped.
+        var backoff = TimeSpan.FromSeconds(Math.Pow(2, attempt - 1));
+        return backoff > MaxRetryDelay ? MaxRetryDelay : backoff;
+    }
+
+    /// <summary>
+    /// Reads the host's machine-readable <c>code</c> from an error body. Anything unreadable answers
+    /// <c>null</c>, which the caller treats as "not a documented transient" — an unparseable body is not
+    /// evidence that a repeat is safe.
+    /// </summary>
+    private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response, CancellationToken ct) =>
+        ReadErrorCode(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+
+    private static string? ReadErrorCode(string body)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            return
+                doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("code", out var code)
+                && code.ValueKind == JsonValueKind.String
+                ? code.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>Retry-After</c> in either wire form: delta-seconds, or an HTTP date resolved against the
+    /// injected clock. A date already in the past reads as zero rather than as a negative wait.
+    /// </summary>
+    private TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter is null)
+        {
+            return null;
+        }
+
+        if (retryAfter.Delta is { } delta)
+        {
+            return delta;
+        }
+
+        if (retryAfter.Date is { } date)
+        {
+            var wait = date - _timeProvider.GetUtcNow();
+            return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+        }
+
+        return null;
+    }
+
+    private async Task<HttpResponseMessage> SendOnceAsync(
         HttpMethod method,
         string path,
         object? body,
@@ -607,6 +945,49 @@ internal sealed class LmStreamingS2SClient
     {
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.True;
+    }
+
+    private static string? ReadOptionalStringProperty(string body, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return
+                doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(propertyName, out var value)
+                && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool ReadOptionalFlag(string body, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(propertyName, out var value)
+                && value.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static T Deserialize<T>(string body)
@@ -868,6 +1249,19 @@ internal sealed record S2SWorkspace(
 /// </summary>
 internal sealed record S2SStatusResult(string Status, string? RunId, string? ResponseText);
 
+/// <summary>The result of asking the review host to release a conversation's workspace mount.</summary>
+internal enum S2SWorkspaceReleaseOutcome
+{
+    Released,
+    ConversationReleased,
+    ConversationMissing,
+    Busy,
+    Unsupported,
+    Unconfirmed,
+}
+
+internal sealed record S2SWorkspaceReleaseResult(S2SWorkspaceReleaseOutcome Outcome, string? Detail);
+
 /// <summary>
 /// Thrown when the review host cannot honour a message-level contract this review depends on — per-turn
 /// spawn suppression or message idempotency — either because it predates the contract or because it
@@ -880,7 +1274,18 @@ internal sealed record S2SStatusResult(string Status, string? RunId, string? Res
 /// failed are unaffected.
 /// </para>
 /// </summary>
-internal sealed class ReviewHostContractException(string message) : InvalidOperationException(message);
+internal class ReviewHostContractException(string message) : InvalidOperationException(message);
+
+/// <summary>
+/// A stable provision response that proves the host rejected the request before minting a conversation.
+/// Callers may retract their durable provision intent only for this exception; every other failure remains
+/// ambiguous because an unobserved conversation may exist.
+/// </summary>
+internal sealed class ReviewHostPreMintRefusalException(string code, string message)
+    : ReviewHostContractException(message)
+{
+    public string Code { get; } = code;
+}
 
 /// <summary>
 /// Thrown when the daemon cannot open a TCP connection to the LmStreaming review host (it is not running).
