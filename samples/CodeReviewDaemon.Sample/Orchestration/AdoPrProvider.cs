@@ -768,11 +768,16 @@ internal sealed class AdoPrProvider : IPrProvider
             throw new InvalidDataException("ADO iteration inventory did not contain an array of iterations.");
         }
 
+        // Validate every entry's sourceRefCommit.commitId (via .ToArray() forcing the Select to fully run)
+        // BEFORE any exact-head matching. A lenient per-entry read here (treating a malformed entry as "no
+        // commit id" the same way CommitId does for the legitimately-absent PR-envelope fields) would let an
+        // unclassifiable entry masquerade as "not a match" beside a genuine exact-head hit, authorizing
+        // anchors without ever proving the whole iteration inventory was classifiable.
         var matches = iterationEntries
             .EnumerateArray()
-            .Where(iteration =>
-                string.Equals(CommitId(iteration, "sourceRefCommit"), expectedHeadSha, StringComparison.Ordinal)
-            )
+            .Select(iteration => (Iteration: iteration, CommitId: RequireSourceRefCommitId(iteration)))
+            .Where(entry => string.Equals(entry.CommitId, expectedHeadSha, StringComparison.Ordinal))
+            .Select(entry => entry.Iteration)
             .ToArray();
         if (matches.Length != 1)
         {
@@ -887,6 +892,33 @@ internal sealed class AdoPrProvider : IPrProvider
         return string.Equals(finalHead, expectedHeadSha, StringComparison.Ordinal)
             ? new ProviderInlineAnchorSnapshot(expectedHeadSha, files)
             : new ProviderInlineAnchorSnapshot(finalHead ?? string.Empty, []);
+    }
+
+    /// <summary>
+    /// Validates and returns one ADO iteration entry's <c>sourceRefCommit.commitId</c> before
+    /// <see cref="GetInlineAnchorSnapshotAsync"/> compares it against the expected head. Unlike
+    /// <see cref="CommitId"/> — used for PR-envelope fields where a missing commit is an ordinary "not yet
+    /// merged" outcome — an iteration entry with no classifiable commit identity is a data-integrity failure:
+    /// silently treating it as "not a match" would let it hide beside a genuine exact-head match and authorize
+    /// anchors without proving the whole iteration inventory was actually classifiable.
+    /// </summary>
+    private static string RequireSourceRefCommitId(JsonElement iteration)
+    {
+        if (
+            iteration.ValueKind != JsonValueKind.Object
+            || !iteration.TryGetProperty("sourceRefCommit", out var commit)
+            || commit.ValueKind != JsonValueKind.Object
+            || !commit.TryGetProperty("commitId", out var id)
+            || id.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(id.GetString())
+        )
+        {
+            throw new InvalidDataException(
+                "ADO iteration entry did not contain a well-formed sourceRefCommit.commitId."
+            );
+        }
+
+        return id.GetString()!;
     }
 
     private static bool TryGetNextIterationChangesPage(

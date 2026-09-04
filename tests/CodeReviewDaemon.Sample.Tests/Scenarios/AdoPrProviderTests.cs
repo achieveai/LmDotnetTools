@@ -800,6 +800,41 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     }
 
     [Theory]
+    [InlineData("{ \"id\": 5 }")]
+    [InlineData("{ \"id\": 5, \"sourceRefCommit\": \"not-an-object\" }")]
+    [InlineData("{ \"id\": 5, \"sourceRefCommit\": {} }")]
+    [InlineData("{ \"id\": 5, \"sourceRefCommit\": { \"commitId\": 123 } }")]
+    [InlineData("{ \"id\": 5, \"sourceRefCommit\": { \"commitId\": \"   \" } }")]
+    [InlineData("\"not-an-object-entry\"")]
+    public async Task Inline_anchor_snapshot_fails_closed_on_a_malformed_iteration_entry_alongside_a_valid_exact_head_match(
+        string malformedEntry
+    )
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/iterations",
+                $$"""
+                { "value": [
+                    { "id": 2, "sourceRefCommit": { "commitId": "head-42" } },
+                    {{malformedEntry}}
+                  ] }
+                """
+            )
+            .OnJson(HttpMethod.Get, "/pullrequests/42?", """{ "lastMergeSourceCommit": { "commitId": "head-42" } }""");
+
+        var act = () => Provider(handler).GetInlineAnchorSnapshotAsync(Repo, "42", "head-42", CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidDataException>();
+        handler
+            .CountRequests("/pullrequests/42?")
+            .Should()
+            .Be(1, "the malformed inventory must be rejected before any final head reread");
+        handler.CountRequests("/iterations?").Should().Be(1);
+        handler.CountRequests("/changes").Should().Be(0);
+    }
+
+    [Theory]
     [InlineData("0")]
     [InlineData("-1")]
     [InlineData("3.5")]
