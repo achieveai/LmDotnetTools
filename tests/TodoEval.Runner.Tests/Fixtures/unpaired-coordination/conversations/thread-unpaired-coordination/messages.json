@@ -1,0 +1,8 @@
+[
+  {
+    "messageType": "ToolCallMessage",
+    "generationId": "r1",
+    "role": "Assistant",
+    "messageJson": "{\"function_name\":\"WaitForAgents\",\"function_args\":\"{\\\"agents\\\":[\\\"agent-1\\\"],\\\"timeoutSeconds\\\":30}\",\"tool_call_id\":\"call_unpaired_wait\"}"
+  }
+]

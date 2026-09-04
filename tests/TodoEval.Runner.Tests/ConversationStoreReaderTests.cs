@@ -14,6 +14,11 @@ public class ConversationStoreReaderTests
     private static ConversationStoreReader.ThreadData Load(string threadId) =>
         ConversationStoreReader.LoadThread(Path.Combine(ConversationsDir, threadId));
 
+    private static ConversationStoreReader.ThreadData LoadFixture(string fixture, string threadId) =>
+        ConversationStoreReader.LoadThread(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", fixture, "conversations", threadId)
+        );
+
     [Fact]
     public void StormThread_PairsCallsToResults_AndTalliesPerTool()
     {
@@ -57,6 +62,19 @@ public class ConversationStoreReaderTests
         var thread = Load("thread-errors");
 
         thread.PerTool["list-notes"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
+    }
+
+    [Fact]
+    public void UnpairedCoordinationCall_RecordsOnlyTheCallAndPairingGap()
+    {
+        var thread = LoadFixture("unpaired-coordination", "thread-unpaired-coordination");
+
+        thread.TotalToolCalls.Should().Be(1);
+        thread.CoordinationToolCallCount.Should().Be(1);
+        thread.UnpairedToolCalls.Should().Be(1);
+        thread.PerTool["WaitForAgents"].Should().Be(new ToolStats { Calls = 1, Errors = 0 });
+        thread.WaitOutcomes.Should().BeEmpty("an unpaired call has no outcome to classify");
+        thread.OpenObligationResults.Should().Be(0, "an unpaired call has no result fields to record");
     }
 
     [Fact]

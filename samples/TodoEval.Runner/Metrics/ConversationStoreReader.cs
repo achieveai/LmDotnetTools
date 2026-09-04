@@ -320,7 +320,10 @@ internal static class ConversationStoreReader
                 else
                 {
                     coordinationToolCalls++;
-                    coordination.Record(tool, result, isError);
+                    if (hasResult)
+                    {
+                        coordination.Record(tool, result, isError);
+                    }
                 }
 
                 if (!perTool.TryGetValue(tool, out var stats))
