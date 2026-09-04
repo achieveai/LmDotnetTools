@@ -215,16 +215,18 @@ if (daemonOptions.EnableReviewAuditIngestion)
     builder.Services.AddSingleton<CodeReviewDaemon.Sample.Controllers.ReviewAuditIngestionService>();
 }
 
-if (daemonOptions.EnableTypedReviewPublication)
-{
-    builder.Services.AddSingleton<IReviewPublicationOperations>(sp => new ReviewPublicationCoordinator(
-        sp.GetRequiredService<ReviewStore>(),
-        sp.GetServices<IPrProvider>(),
-        sp.GetServices<IReviewCommentPublisher>(),
-        TimeProvider.System,
-        sp.GetRequiredService<ILoggerFactory>()
-    ));
-}
+// Registered unconditionally: EnableTypedReviewPublication only gates the private HTTP bridge
+// route (see DaemonControllerFeatureProvider below and the ReviewBridgeSecret guard above). The
+// coordinator itself is side-effect-free to construct and stays collect-only until a caller
+// passes LivePostingAuthorized per action, so in-process consumers (e.g. the discussion round
+// policy) can compose it regardless of whether the HTTP route is exposed.
+builder.Services.AddSingleton<IReviewPublicationOperations>(sp => new ReviewPublicationCoordinator(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetServices<IPrProvider>(),
+    sp.GetServices<IReviewCommentPublisher>(),
+    TimeProvider.System,
+    sp.GetRequiredService<ILoggerFactory>()
+));
 
 // The refusal ledger (#536). Every capability gate that DENIES something writes here, because the absence
 // of a Posted row in review_outbox was never evidence that nothing was posted: a review sub-agent posting
@@ -1065,7 +1067,27 @@ builder.Services.AddSingleton<IRoundObservationSink>(sp => new ReviewStoreRoundO
     sp.GetRequiredService<ReviewStore>(),
     TimeProvider.System
 ));
-builder.Services.AddSingleton<IEngagementRoundExecutor, DisabledDiscussionRoundExecutor>();
+
+// Discussion rounds reuse the S2S review-agent surface (mandatory under UseS2SReviewAgent) and
+// the same publication coordinator as code-review rounds. The production policy enforces that
+// specialist spawning stays suppressed for the parent discussion turn and that finalization
+// never authorizes live posting on its own (see ProductionDiscussionRoundPolicy).
+builder.Services.AddSingleton<IDiscussionRoundPolicy>(sp => new ProductionDiscussionRoundPolicy(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<S2SReviewWorkspacePreparer>(),
+    sp.GetRequiredService<IReviewAgentLoopFactory>(),
+    sp.GetRequiredService<IRoundObservationSink>(),
+    sp.GetRequiredService<IReviewPublicationOperations>(),
+    sp.GetRequiredService<CodeReviewDaemonOptions>(),
+    TimeProvider.System,
+    sp.GetRequiredService<ILoggerFactory>()
+));
+builder.Services.AddSingleton<IEngagementRoundExecutor>(sp => new EngagementDiscussionRoundExecutor(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetServices<IPrProvider>(),
+    sp.GetRequiredService<IDiscussionRoundPolicy>(),
+    sp.GetRequiredService<ILogger<EngagementDiscussionRoundExecutor>>()
+));
 if (daemonOptions.EnableKnowledgeAgent || daemonOptions.EnableReviewFeedbackAgent)
 {
     builder.Services.AddSingleton<MergedCloseKnowledgeExtraction>(sp =>

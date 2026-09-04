@@ -135,8 +135,8 @@ public sealed class DaemonEngagementWiringTests
             .Should()
             .ContainSingle(executor => executor.Intent == EngagementRoundIntent.DiscussionFollowUp)
             .Subject;
-        discussion.Should().BeOfType<DisabledDiscussionRoundExecutor>();
-        discussion.IsAvailable.Should().BeFalse();
+        discussion.Should().BeOfType<EngagementDiscussionRoundExecutor>();
+        discussion.IsAvailable.Should().BeTrue();
         factory
             .Services.GetRequiredService<IRoundObservationSink>()
             .Should()
