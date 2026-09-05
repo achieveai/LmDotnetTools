@@ -26,7 +26,40 @@ public sealed class HostRetentionTests
     private const string CrossRepoStoreUrl = "https://github.com/acme/CrossRepoReviews.git";
 
     [Fact]
-    public async Task Post_Retention_RunsOnHostRunner_NotSandbox()
+    public void Retention_defaults_are_stable_and_isolated_but_explicit_roots_are_preserved()
+    {
+        var first = HostRetentionWorkspace.ResolveRoot(null, "tenant-a", ReviewBotRepoUrl);
+        first.Should().Be(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", ReviewBotRepoUrl));
+        first.Should().Be(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", ReviewBotRepoUrl[..^4]));
+        first.Should().NotBe(HostRetentionWorkspace.ResolveRoot(null, "tenant-b", ReviewBotRepoUrl));
+        first.Should().NotBe(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", CrossRepoStoreUrl));
+        HostRetentionWorkspace
+            .ResolveRoot("/explicit", "tenant-a", ReviewBotRepoUrl)
+            .Should()
+            .Be(Path.Combine("/explicit", "review-store-retention"));
+        const string credentialUrl = "https://secret@github.com/acme/AchieveAiReviews.git?token=secret";
+        first.Should().Be(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", credentialUrl));
+        first.Should().NotContain("secret");
+        HostRetentionWorkspace
+            .ResolveRoot(null, "tenant-a", "git@github.com:acme/reviews.git")
+            .Should()
+            .NotBeNullOrEmpty();
+        HostRetentionWorkspace
+            .ResolveRoot(null, "tenant-a", "invalid")
+            .Should()
+            .NotBe(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", "other-invalid"));
+        HostRetentionWorkspace
+            .ResolveRoot(null, "tenant-a", "git@GitHub.com:acme/reviews.git")
+            .Should()
+            .Be(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", "git@github.com:acme/reviews.git"));
+        const string otherPort = "https://github.com:8443/acme/AchieveAiReviews.git";
+        first.Should().NotBe(HostRetentionWorkspace.ResolveRoot(null, "tenant-a", otherPort));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Post_Retention_RunsOnHostRunner_NotSandbox(bool failOnce)
     {
         var sandbox = new FakeSandboxCommandRunner()
             .OnArgvContains(
@@ -46,7 +79,11 @@ public sealed class HostRetentionTests
         var sandboxFileSystem = new FakeSandboxFileSystem();
 
         var host = new FakeSandboxCommandRunner()
-            .OnArgvContains("remote get-url origin", new SandboxCommandResult(0, ReviewBotRepoUrl + "\n", string.Empty))
+            .OnArgvContainsSequence(
+                "remote get-url origin",
+                new SandboxCommandResult(0, failOnce ? CrossRepoStoreUrl : ReviewBotRepoUrl, string.Empty),
+                new SandboxCommandResult(0, ReviewBotRepoUrl, string.Empty)
+            )
             .OnArgvContains(
                 "rev-parse review/lmdotnettools-118",
                 new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
@@ -75,6 +112,12 @@ public sealed class HostRetentionTests
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        if (failOnce)
+        {
+            var post = () => executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+            var failure = await post.Should().ThrowAsync<ReviewFinalizationException>();
+            failure.Which.InnerException!.Message.Should().Contain("OriginMismatch");
+        }
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
         var hostCommands = host.Commands.Select(c => string.Join(' ', c.Argv)).ToList();

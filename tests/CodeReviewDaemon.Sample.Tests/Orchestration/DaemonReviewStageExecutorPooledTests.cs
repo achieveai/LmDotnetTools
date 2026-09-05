@@ -3632,13 +3632,16 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var act = () => resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*will not be leased or prepared*");
+        var failure = await act.Should().ThrowAsync<ReviewFinalizationException>();
+        failure.Which.InnerException!.Message.Should().Contain("will not be leased or prepared");
         postCountAtRelease.Should().Be(1, "provider delivery is independent of pooled-workspace settlement");
         fixture.Publisher.PostCount.Should().Be(1);
         fixture.Pool.LeaseCount.Should().Be(leaseCountBeforeResume);
         fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(preparationCountBeforeResume);
         fixture.HostRunner.Commands.Count.Should().Be(hostGitBeforeResume);
         fixture.Store.ListUnresolvedReviewSlotClaims().Should().NotBeEmpty();
+        await act.Should().ThrowAsync<ReviewFinalizationException>();
+        fixture.Publisher.PostCount.Should().Be(1, "a finalization retry must replay the delivery receipt");
     }
 
     /// <summary>
@@ -3786,6 +3789,63 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_current_unprovisioned_slot_returns_despite_an_older_uncertain_claim()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var current = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        var oldClaim = fixture.Store.AppendReviewSlotClaim(run.Id, Path.GetFullPath("/pool/retired-slot"));
+        _ = fixture.Store.AppendReviewProvisionIntent(oldClaim, run.Id);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.ReturnCount.Should().Be(1, "the current slot was never mounted");
+        fixture.Pool.RetireCount.Should().Be(0);
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Which.Id.Should().Be(oldClaim);
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().NotContain(c => c.Id == current.Id);
+    }
+
+    [Fact]
+    public async Task S2S_failed_preparation_returns_its_unprovisioned_slot_despite_old_uncertainty()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        var oldClaim = fixture.Store.AppendReviewSlotClaim(run.Id, Path.GetFullPath("/pool/retired-slot"));
+        _ = fixture.Store.AppendReviewProvisionIntent(oldClaim, run.Id);
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new IOException("test disk full"));
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await act.Should().ThrowAsync<IOException>();
+
+        fixture.Preparer.PrepareCount.Should().Be(1);
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.Pool.RetireCount.Should().Be(0);
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Which.Id.Should().Be(oldClaim);
+    }
+
+    [Fact]
+    public async Task S2S_conflicting_claim_at_the_current_address_is_not_resolved_or_returned()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var current = fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle().Subject;
+        var conflicting = fixture.Store.AppendReviewSlotClaim(run.Id, current.SlotHostPath);
+        _ = fixture.Store.AppendReviewProvisionIntent(conflicting, run.Id);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture
+            .Store.ListUnresolvedReviewSlotClaims()
+            .Select(c => c.Id)
+            .Should()
+            .BeEquivalentTo<long>([current.Id, conflicting]);
+    }
+
+    [Fact]
     public async Task S2S_a_retracted_only_intent_settles_its_claim_and_returns_the_slot()
     {
         using var fixture = Fixture.CreateS2S();
@@ -3868,8 +3928,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
             .Should()
             .Be(afterDisablement, "the durable disabled marker makes another identical host call unnecessary");
         fixture.Pool.LeaseCount.Should().Be(2, "the repeated terminal stage proceeds on a fresh address");
-        fixture.Pool.ReturnCount.Should().Be(0, "neither old address has backend-quiescence proof");
-        fixture.Pool.RetireCount.Should().Be(2);
+        fixture.Pool.ReturnCount.Should().Be(1, "the replacement slot has no provision intents");
+        fixture.Pool.RetireCount.Should().Be(1, "only the original mounted address is withheld");
+        fixture.Store.ListUnresolvedReviewSlotClaims().Should().ContainSingle();
     }
 
     /// <summary>

@@ -4437,7 +4437,7 @@ internal sealed class ReviewStore : IMultiTurnAuditSink, IDisposable
         }
     }
 
-    public IReadOnlyList<ReviewSlotClaimRow> ListUnresolvedReviewSlotClaims()
+    public IReadOnlyList<ReviewSlotClaimRow> ListUnresolvedReviewSlotClaims(long? includeClaimId = null)
     {
         using var gate = _gate.EnterScope();
         var claims = new List<ReviewSlotClaimRow>();
@@ -4448,9 +4448,10 @@ internal sealed class ReviewStore : IMultiTurnAuditSink, IDisposable
                    i.retracted_at
             FROM review_slot_claim c
             LEFT JOIN review_provision_intent i ON i.slot_claim_id = c.id
-            WHERE c.resolved_at IS NULL
+            WHERE c.resolved_at IS NULL OR c.id = $includeClaimId
             ORDER BY c.id, i.id;
             """;
+        _ = command.Parameters.AddWithValue("$includeClaimId", (object?)includeClaimId ?? DBNull.Value);
         using var reader = command.ExecuteReader();
         ReviewSlotClaimRow? current = null;
         var intents = new List<ReviewProvisionIntentRow>();

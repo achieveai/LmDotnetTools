@@ -686,9 +686,6 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
 {
     builder.Services.AddSingleton(sp =>
     {
-        var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
-            ? Path.Combine(AppContext.BaseDirectory, "workspaces")
-            : daemonOptions.WorkspaceHostRoot;
         var runner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
@@ -697,7 +694,11 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
         return new HostRetentionWorkspace(
             runner,
             new HostFileSystem(),
-            Path.Combine(hostRoot, "review-store-retention"),
+            HostRetentionWorkspace.ResolveRoot(
+                daemonOptions.WorkspaceHostRoot,
+                daemonAppId,
+                daemonOptions.ResolvedStoreUrl!
+            ),
             daemonOptions.ResolvedStoreUrl!
         );
     });

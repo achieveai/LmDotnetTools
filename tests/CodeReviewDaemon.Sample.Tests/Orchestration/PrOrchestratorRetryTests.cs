@@ -392,6 +392,47 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         executor.FailStageCalls.Should().Be(2, "a transient posting failure must not be parked");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Finalization_budget_survives_reconstruction_and_clears_on_recovery(bool recover)
+    {
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Posted,
+            () => new ReviewFinalizationException(new IOException("private-path-and-token"))
+        );
+        var run = SeedRun();
+        var first = Orchestrator(executor, durableBudget: 2);
+        var attempt = () => first.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewFinalizationException>();
+        _store.GetReviewRun(run.Id)!.GovernedFailureCount.Should().Be(1);
+
+        using var reopened = new ReviewStore(_db.ConnectionString);
+        var resumed = new PrOrchestrator(
+            reopened,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            maxDurableRetryAttempts: 2,
+            clock: () => _now
+        );
+        executor.Enabled = !recover;
+        var retry = () => resumed.RunAsync(reopened.GetReviewRun(run.Id)!, CancellationToken.None);
+        if (recover)
+        {
+            await retry.Should().NotThrowAsync();
+            reopened.GetReviewRun(run.Id)!.GovernedFailureCount.Should().Be(0);
+            reopened.GetReviewRun(run.Id)!.WorkflowStatus.Should().Be(WorkflowStatus.Completed);
+        }
+        else
+        {
+            await retry.Should().ThrowAsync<ReviewFinalizationException>();
+            reopened.GetReviewRun(run.Id)!.ParkedAt.Should().NotBeNull();
+            reopened.GetReviewRun(run.Id)!.ParkReason.Should().NotContain("private-path-and-token");
+            _ = await resumed.ReconcileAsync(reopened.GetReviewRun(run.Id)!, CancellationToken.None);
+            executor.FailStageCalls.Should().Be(2);
+        }
+    }
+
     // ── the durable budget and the permanent park ─────────────────────────────────────────────────
     //
     // The in-memory budget above is real but erasable: StrandedRunReconciler resumes a stuck run roughly

@@ -265,11 +265,7 @@ internal sealed class PrOrchestrator
             return;
         }
 
-        // A FIXED phrase, never ex.Message. This value lands in a persisted column and, through the notifier,
-        // in a public pull-request comment — and the governed types carry raw external output in their
-        // messages: ReviewHostContractException embeds the review host's HTTP response body, SlotCorruptException
-        // embeds git's stderr. Interpolating either publishes host names, paths and command output to whoever
-        // can read the PR. The stage stays: it is the daemon's own vocabulary, not external input.
+        // Public notices use fixed phrases; raw diagnostics remain in protected operator logs.
         var reason = $"{stage}: {DescribeGovernedFailure(ex)}";
 
         // False means somebody already parked this row. The notice hangs off this boolean, so a second park
@@ -279,9 +275,7 @@ internal sealed class PrOrchestrator
             return;
         }
 
-        // The RAW exception, deliberately, and it is the only place it survives. This is a protected operator
-        // log; the sanitized phrase above is what the pull request gets, and diagnosing why a review parked
-        // needs the host body / git stderr the phrase deliberately drops.
+        // Preserve the raw exception only in the protected operator log.
         _logger.LogError(
             ex,
             "review_run PARKED-PERMANENT run {RunId} pr {PrId} head {HeadSha} after {Attempts} durable "
@@ -307,10 +301,7 @@ internal sealed class PrOrchestrator
         }
         catch (Exception notifyFailure)
         {
-            // Swallowed HERE rather than at the notifier, because the justification is the caller's: this runs
-            // inside a catch block that is about to rethrow the stage's own exception, and letting a failed
-            // courtesy comment replace it would hide the actual review failure from every log and every
-            // caller. The park itself is already durable in the store, so nothing is lost but the notice.
+            // Parking is already durable; a failed notice must not replace the stage's original failure.
             _logger.LogWarning(
                 notifyFailure,
                 "Review run {RunId} was parked, but the park notice could not be delivered.",
@@ -320,24 +311,9 @@ internal sealed class PrOrchestrator
     }
 
     /// <summary>
-    /// The public vocabulary for a park: one short, stable, operator-meaningful phrase per governed exception
-    /// type, chosen by TYPE and never derived from the exception's text.
+    /// Fixed public park reasons, never exception text. The same table supplies the replay allow-list;
+    /// unknown runtime types use the neutral fallback rather than exposing diagnostic details.
     /// </summary>
-    /// <remarks>
-    /// The phrases carry no paths, hosts, credentials or command output, because everything here is persisted
-    /// in <c>review_run.park_reason</c> and posted verbatim to a pull request anyone with read access can see.
-    /// The types it maps are the ones <see cref="IsGovernedFailure"/> admits.
-    /// <para>
-    /// This table is the SINGLE source of truth for that vocabulary: <see cref="DescribeGovernedFailure"/>
-    /// reads it to choose a phrase and <see cref="KnownParkPhrases"/> is derived from it, so a phrase added
-    /// here for a new governed type cannot silently fall out of the replay allow-list below.
-    /// </para>
-    /// <para>
-    /// Keyed on the EXACT runtime type, which is equivalent to the type patterns this replaces because every
-    /// mapped exception is <c>sealed</c>. Should one be unsealed later, a derived type simply misses the table
-    /// and degrades to <see cref="UnclassifiedParkPhrase"/> — vaguer, never leakier.
-    /// </para>
-    /// </remarks>
     private static readonly FrozenDictionary<Type, string> GovernedFailurePhrases = new Dictionary<Type, string>
     {
         [typeof(ReviewBarrierDeadlineException)] = "the review did not finish within its time budget",
@@ -351,13 +327,10 @@ internal sealed class PrOrchestrator
         [typeof(SlotCorruptException)] = "the review workspace could not be cleaned for use",
         [typeof(SlotAddressUnusableException)] = "the review workspace path could not be used safely",
         [typeof(SlotProbeUnansweredException)] = "the state of the review workspace could not be established",
+        [typeof(ReviewFinalizationException)] = "review retention or workspace finalization could not complete",
     }.ToFrozenDictionary();
 
-    /// <summary>
-    /// Every phrase this build's <see cref="DescribeGovernedFailure"/> can produce — the mapped vocabulary plus
-    /// the unclassified default — DERIVED from the one table rather than restated, so the allow-list cannot
-    /// drift away from what parking actually writes.
-    /// </summary>
+    /// <summary>Derive the replay allow-list from the same vocabulary used when parking.</summary>
     private static readonly FrozenSet<string> KnownParkPhrases = GovernedFailurePhrases
         .Values.Append(UnclassifiedParkPhrase)
         .ToFrozenSet(StringComparer.Ordinal);
@@ -553,43 +526,20 @@ internal sealed class PrOrchestrator
         stage is ReviewStage.ContextReady or ReviewStage.Reviewed or ReviewStage.Judged or ReviewStage.Posted;
 
     /// <summary>
-    /// Whether <paramref name="ex"/> is a failure the governor should charge against the run's budget. Any
-    /// ContextReady failure qualifies (the stuck-slot hot-loop). At Reviewed only five do:
-    /// <see cref="ReviewBarrierDeadlineException"/> — the sub-agent completion barrier spent the review's whole
-    /// absolute deadline waiting on a tree that never settled, so the next round would wait exactly as long on
-    /// exactly the same tree; <see cref="ReviewCheckpointCorruptException"/>, where the stage cannot read
-    /// the checkpoint that says whether a hosted tree is already running, and re-reading it will keep failing;
-    /// <see cref="ReviewHostContractException"/>, where the review host cannot keep a message contract the
-    /// turn depends on — an incompatibility that reproduces identically on every attempt, and whose attempts
-    /// are not free (each one can leave another turn running on the host); <see
-    /// cref="LateSynthesisUnresolvedException"/>, where the exact accepted hosted turn has no usable answer and
-    /// replacement is deliberately deferred, so an unchanged checkpoint would otherwise be read forever; and
-    /// <see cref="SentinelUnauthorizedException"/>, where the review answered that nothing had changed on a PR
-    /// holding no earlier review — a question answered from the STORE, so the next poll asks the same question
-    /// of the same rows and refuses identically, having paid for a full fanned-out review to get there. All
-    /// five are stuck reviews, not transients: they have to park eventually. A provider blip, a host 5xx or a
-    /// blank synthesis from a fresh turn stays outside the budget and keeps retrying.
+    /// Bounds workspace preparation, local finalization, and the listed stuck-review failures.
+    /// Provider-publication failures remain retryable outside this budget.
     /// </summary>
     private static bool IsGovernedFailure(ReviewStage stage, Exception ex)
     {
-        // Slot PREPARATION is governed wherever it runs, not only under the stage it usually runs under. The
-        // slot lease lives in memory only, so a run that persisted Stage=ContextReady in an earlier process (a
-        // restart, or a resume after RetryPending) arrives at Reviewed/Judged/Posted with no lease and
-        // re-prepares a slot there. These are the same stuck-store conditions ContextReady already
-        // parks — a store that will not clone, a tree that will not clean, a path that cannot be established
-        // as contained — and none of them is made better by waiting one more poll interval. Tagged with a
-        // later stage they used to escape the budget entirely and busy-loop forever (issue #218 item 7).
-        // A cleanliness probe that will not answer joins them, and is the mildest of the four: nothing
-        // re-clones or retires the slot for it, so it RETRIES by construction — which is exactly why it needs
-        // the budget. A probe that loses its output on every attempt would otherwise busy-loop a stage that
-        // can never make progress, and the transient case it exists for is retried and gone long before the
-        // budget is reached.
+        // Replacement preparation can occur in later stages after an in-memory lease is lost.
+        // Charge these failures by type, including bounded post-delivery finalization.
         if (
             ex
             is SlotNeedsRecloneException
                 or SlotCorruptException
                 or SlotAddressUnusableException
                 or SlotProbeUnansweredException
+                or ReviewFinalizationException
         )
         {
             return true;

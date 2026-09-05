@@ -813,58 +813,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     public async Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken)
     {
-        // Drop this run's cached preparation too. It is NOT what makes a later attempt safe — that is
-        // CurrentPreparedWorkspace, which refuses an entry whose lease the run no longer holds, and which keeps
-        // working if a future path releases without coming through here. This is about size: the executor is a
-        // singleton, so an entry left behind by every run the daemon ever processes is never collected.
+        // Bound the singleton cache; CurrentPreparedWorkspace independently rejects lost leases.
         _ = _preparedWorkspaces.TryRemove(runId, out _);
 
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
-            // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the slot
-            // returns to the pool, so a cancelled/failed run — which reaches here via the orchestrator's terminal
-            // finally without running the Posted-stage cleanup — can't leave session-side work racing the next
-            // lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a no-op when no
-            // session was provisioned, and harmless if the Posted stage already destroyed it.
-            // (Skipped on S2S: BuildToolContextAsync returns before provisioning anything, so the daemon owns
-            // no session — the container belongs to the review host. DestroyAsync is a documented no-op there,
-            // but state the invariant at the call site rather than leaving it to be inferred.)
-            //
-            // The teardown runs inside a try/finally whose finally DISPOSES OF THE SLOT. The TryRemove above has
-            // already happened — that atomicity is what stops a concurrent release from double-returning into
-            // the pool's semaphore — so from here on nothing else can ever give this slot back. A throw
-            // between the two would therefore leak pool capacity for the life of the process, permanently
-            // (issue #218 item 11). ReviewSessionProvisioner swallows its own failures today and its comment
-            // calls that swallow load-bearing for exactly this reason; the disposal must not DEPEND on a
-            // promise kept in another class, one refactor away from being broken.
-            //
-            // WHICH disposal is the question this path now also answers. On S2S the slot is mounted into a
-            // review-host container the daemon does not own, and returning it while that mount is live is how
-            // two runs come to share one store. So the S2S hosted workspaces are released FIRST, and the
-            // finally returns the slot only on a positive host confirmation; anything else retires it. The
-            // flag starts false so an unexpected throw anywhere above lands on the safe side — except on the
-            // non-S2S path, where TryReleaseHostedWorkspacesAsync answers Reusable immediately and a later
-            // DestroyAsync failure therefore still returns the slot exactly as it always did.
+            // Removal owns disposal exactly once. Settle THIS address before returning it; an old
+            // run-owned mount at another address is not evidence about the current lease.
             var releaseConfirmed = false;
             try
             {
                 releaseConfirmed =
-                    await TryReleaseHostedWorkspacesAsync(runId, CancellationToken.None).ConfigureAwait(false)
-                    == HostedWorkspaceSettlement.Reusable;
+                    await TryReleaseHostedWorkspacesAsync(runId, CancellationToken.None, lease.Slot, lease.SlotClaimId)
+                        .ConfigureAwait(false) == HostedWorkspaceSettlement.Reusable;
 
                 if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
                 {
                     await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
                 }
             }
-            // Catches OperationCanceledException too (issue #472 item 4). The usual reason to re-throw one is
-            // that it reports the CALLER's cancellation — but nothing here is cancellable: DestroyAsync is
-            // handed CancellationToken.None above, so an OCE arriving from it was raised against some token
-            // inside the provisioner and says nothing about this call. Letting it out is worse than useless,
-            // because this method runs in the orchestrator's TERMINAL finally: an exception thrown there
-            // REPLACES the one already in flight, so a cancelled teardown erases the run's actual cause of
-            // death and every log and retry decision downstream reads a cancellation instead. The slot was
-            // never at risk either way — the finally below disposes of it before anything propagates.
+            // Non-cancellable terminal cleanup must not replace the original run failure.
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -903,19 +871,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
     }
 
-    /// <summary>
-    /// Records that <paramref name="run"/> owns the hosted conversation <paramref name="threadId"/>, so the
-    /// terminal stage can find and release its mount. Invoked from the mint observer of EVERY arm — the
-    /// review, the judge, each A/B variant — because each mints its own conversation over the same leased
-    /// slot and only the review's thread id ever reaches an artifact.
-    /// <para>
-    /// Contained rather than fatal, but not silently: a failed write is remembered in
-    /// <see cref="_hostedTrackingLost"/>, which makes the run's release UNCONFIRMED and therefore retires its
-    /// slot. Letting the exception out would take down a review over a bookkeeping write; swallowing it would
-    /// leave a live mount indistinguishable from a run that minted nothing, and hand the slot to the next
-    /// review underneath it.
-    /// </para>
-    /// </summary>
+    /// <summary>Tracks every hosted arm; failed persistence withholds reuse via _hostedTrackingLost.</summary>
     private void TrackHostedConversation(ReviewRun run, string? threadId, string? title)
     {
         if (string.IsNullOrWhiteSpace(threadId))
@@ -942,14 +898,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Settles every hosted conversation this run owns. Backend quiescence makes its old slot reusable;
-    /// durable conversation disablement permits work on a fresh address while permanently withholding the old
-    /// one; any ambiguous ownership or host answer blocks replacement work. Claims resolve only in the first
-    /// case, or when their empty intent history proves provisioning never began.
+    /// Settles run ownership before replacement, or only the supplied lease before returning its address.
+    /// Backend quiescence (or no provisioning) permits reuse; disablement alone withholds the old address.
     /// </summary>
     private async Task<HostedWorkspaceSettlement> TryReleaseHostedWorkspacesAsync(
         long runId,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        ReviewSlot? slot = null,
+        long? slotClaimId = null
     )
     {
         if (!_options.UseS2SReviewAgent)
@@ -972,8 +928,46 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         List<RunHostedConversationRow> hostedConversations;
         try
         {
-            claims = [.. _store.ListUnresolvedReviewSlotClaims().Where(c => c.ReviewRunId == runId)];
+            var allClaims = _store.ListUnresolvedReviewSlotClaims(slotClaimId);
+            claims = [.. allClaims.Where(c => c.ReviewRunId == runId)];
             hostedConversations = [.. _store.ListRunHostedConversations(runId)];
+            if (slot is not null)
+            {
+                var current = claims.SingleOrDefault(c => c.Id == slotClaimId);
+                var comparison = OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal;
+                var path = Path.GetFullPath(slot.HostPath).TrimEnd(Path.DirectorySeparatorChar);
+                bool SameAddress(ReviewSlotClaimRow claim) =>
+                    string.Equals(
+                        Path.GetFullPath(claim.SlotHostPath).TrimEnd(Path.DirectorySeparatorChar),
+                        path,
+                        comparison
+                    );
+                if (
+                    current is null
+                    || !SameAddress(current)
+                    || allClaims.Any(c => c.Id != current.Id && SameAddress(c))
+                )
+                {
+                    return HostedWorkspaceSettlement.Blocked;
+                }
+
+                // Only this lease's intents can authorize its return. Historical uncertainty at
+                // another address must not retire a fresh, never-provisioned replacement.
+                var threads = current.Intents.Select(i => i.ThreadId).ToHashSet(StringComparer.Ordinal);
+                var knownThreads = claims
+                    .SelectMany(c => c.Intents)
+                    .Select(i => i.ThreadId)
+                    .ToHashSet(StringComparer.Ordinal);
+                if (hostedConversations.Any(c => c.ReleasedAt is null && !knownThreads.Contains(c.ThreadId)))
+                {
+                    return HostedWorkspaceSettlement.Blocked;
+                }
+
+                claims = [current];
+                hostedConversations = [.. hostedConversations.Where(c => threads.Contains(c.ThreadId))];
+            }
         }
         catch (Exception ex)
         {
@@ -1007,36 +1001,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .Where(c => c.ReleasedAt is null && c.ConversationReleasedAt is null)
             .Select(c => c.ThreadId)
             .ToHashSet(StringComparer.Ordinal);
-        foreach (var threadId in activeIntents.Select(i => i.ThreadId!))
+        pendingThreadIds.UnionWith(
+            activeIntents
+                .Select(i => i.ThreadId!)
+                .Where(id => !reusableThreadIds.Contains(id) && !disabledThreadIds.Contains(id))
+        );
+        if (pendingThreadIds.Count == 0 && claims.Count == 0 && ReviewAttemptCouldHaveProvisioned(runId))
         {
-            if (!reusableThreadIds.Contains(threadId) && !disabledThreadIds.Contains(threadId))
-            {
-                _ = pendingThreadIds.Add(threadId);
-            }
+            _logger.LogError("Run {RunId}: no durable ownership proves its prior mounts are quiescent.", runId);
+            return HostedWorkspaceSettlement.Blocked;
         }
 
-        if (pendingThreadIds.Count == 0)
-        {
-            if (claims.Count == 0 && ReviewAttemptCouldHaveProvisioned(runId))
-            {
-                _logger.LogError(
-                    "Run {RunId}: a review attempt has already run on the S2S path, but no durable hosted-workspace "
-                        + "ownership can prove that provisioning never began or enumerate what must be released.",
-                    runId
-                );
-                return HostedWorkspaceSettlement.Blocked;
-            }
-
-            if (disabledThreadIds.Count != 0)
-            {
-                return HostedWorkspaceSettlement.AddressWithheld;
-            }
-
-            ResolveClaims(claims);
-            return HostedWorkspaceSettlement.Reusable;
-        }
-
-        if (_s2sClient is null)
+        if (pendingThreadIds.Count != 0 && _s2sClient is null)
         {
             _logger.LogError(
                 "Run {RunId}: {Count} hosted conversation(s) are mounted over its pooled slot but no review-host "
@@ -1056,7 +1032,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             S2SWorkspaceReleaseResult result;
             try
             {
-                result = await _s2sClient.ReleaseWorkspaceAsync(threadId, cancellationToken).ConfigureAwait(false);
+                result = await _s2sClient!.ReleaseWorkspaceAsync(threadId, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1082,19 +1058,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     );
                     break;
                 case S2SWorkspaceReleaseOutcome.ConversationReleased:
-                    _store.MarkHostedConversationReleased(threadId, _timeProvider.GetUtcNow());
-                    if (settlement != HostedWorkspaceSettlement.Blocked)
-                    {
-                        settlement = HostedWorkspaceSettlement.AddressWithheld;
-                    }
-
-                    _logger.LogWarning(
-                        "Run {RunId}: hosted conversation {ThreadId} is durably disabled, but backend mount "
-                            + "quiescence is unobservable. Its old slot address remains withheld.",
-                        runId,
-                        threadId
-                    );
-                    break;
                 case S2SWorkspaceReleaseOutcome.ConversationMissing:
                     _store.MarkHostedConversationReleased(threadId, _timeProvider.GetUtcNow());
                     if (settlement != HostedWorkspaceSettlement.Blocked)
@@ -1103,8 +1066,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     }
 
                     _logger.LogWarning(
-                        "Run {RunId}: hosted conversation {ThreadId} is absent, but absence does not prove backend "
-                            + "mount quiescence. Its old slot address remains withheld.",
+                        "Run {RunId}: hosted conversation {ThreadId} is absent or disabled, but backend "
+                            + "mount quiescence is unconfirmed. Its old slot address remains withheld.",
                         runId,
                         threadId
                     );
@@ -1133,28 +1096,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         if (settlement == HostedWorkspaceSettlement.Reusable)
         {
-            ResolveClaims(claims);
-        }
-
-        return settlement;
-
-        void ResolveClaims(IEnumerable<ReviewSlotClaimRow> settledClaims)
-        {
             var settledAt = _timeProvider.GetUtcNow();
-            foreach (var claim in settledClaims)
+            foreach (var claim in claims)
             {
                 _store.ResolveReviewSlotClaim(claim.Id, settledAt);
             }
         }
+
+        return settlement;
     }
 
-    /// <summary>
-    /// Settles ownership left by an earlier process before a resumed stage leases or prepares another slot.
-    /// Startup quarantine prevents the old address from being reissued, but it does not unmount the hosted
-    /// conversation that still owns it. A replacement lease may therefore begin only after every old provision
-    /// intent has positive release evidence. Unknown or failed releases remain quarantined and fail the stage
-    /// closed; there is no current lease to retire in this process.
-    /// </summary>
+    /// <summary>Blocks replacement while prior hosted work remains active; withheld addresses stay quarantined.</summary>
     private async Task SettlePriorHostedWorkspacesBeforeReplacementLeaseAsync(
         ReviewRun run,
         CancellationToken cancellationToken
@@ -1183,22 +1135,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Whether this run has already reached a point at which an S2S review turn could have provisioned a
-    /// hosted conversation — read from the run's DURABLE stage, so it answers the same way in the process
-    /// that crashed and the one that resumed. The boundary is a COMPLETED <see cref="ReviewStage.ContextReady"/>,
-    /// because the orchestrator stamps a stage once it is done: the run whose Reviewed stage is running (and
-    /// therefore minting) still reads ContextReady, and stamping the mint's own stage would answer too late
-    /// to be of any use.
-    /// <para>
-    /// The stage is the honest signal precisely because it is written by the orchestrator rather than by the
-    /// mint path: every candidate closer to the mint (the lifecycle checkpoint, the ownership row itself) is
-    /// written by the very callback whose loss this question exists to detect, so using one would answer
-    /// "nothing was minted" in exactly the case where something was.
-    /// </para>
-    /// <para>
-    /// A run whose stage cannot be read answers <c>true</c>. That is the fail-closed direction: an
-    /// unanswerable question about a live mount is not evidence there is none.
-    /// </para>
+    /// ContextReady is stamped before provisioning can begin. Use that durable boundary, not a mint
+    /// callback that may have been lost; unreadable state conservatively means a mount may exist.
     /// </summary>
     private bool ReviewAttemptCouldHaveProvisioned(long runId)
     {
@@ -1817,8 +1755,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     if (_options.UseS2SReviewAgent && !refused)
                     {
                         refused =
-                            await TryReleaseHostedWorkspacesAsync(run.Id, CancellationToken.None).ConfigureAwait(false)
-                            != HostedWorkspaceSettlement.Reusable;
+                            await TryReleaseHostedWorkspacesAsync(run.Id, CancellationToken.None, slot, slotClaimId)
+                                .ConfigureAwait(false) != HostedWorkspaceSettlement.Reusable;
                     }
                 }
                 catch (Exception ex)
@@ -5962,11 +5900,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
-        // Posting is owned by the review AGENT: it calls the code-reviewer:post-pr-review skill from inside
-        // its sandbox session (see the review prompt's step 6). This terminal stage no longer posts to the
-        // provider — it reads the persisted review only to gate RETENTION (commit/push the notes) and to free
-        // the pooled slot + sandbox session. An empty review retains nothing; the run row still prevents
-        // re-review, and the slot/session are still freed below, so nothing is leaked or looped.
+        // Publish through the outbox before independent notes retention and slot cleanup.
         var reviewArtifact = ReadReviewArtifact(run.Id);
         var reviewText = reviewArtifact.ReviewText;
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
@@ -5979,38 +5913,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             );
         }
 
-        // Host-side single-summary posting. Two ways it fires:
-        //   • S2S path (UseS2SReviewAgent) — MANDATORY: the LmStreaming-hosted agent is domain-agnostic and
-        //     CANNOT post to a GitHub/ADO PR (agent-inline posting was forced off in RunReviewAttemptAsync), so
-        //     this host-side post is the ONLY delivery path, for BOTH providers, and it carries the deep-link.
-        //   • In-process path — an OFF-by-default fallback (EnableHostSummaryFallback) for a run that produced
-        //     review text but couldn't post inline.
-        // Posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
-        // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
+        // S2S requires host posting; in-process review may opt into the same outbox-backed fallback.
         var postHostSide = _options.UseS2SReviewAgent || _options.EnableHostSummaryFallback;
         var wouldPost = hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide;
 
-        // #421: the head-currency guard, again, at the DELIVERY boundary. ValidateReviewStillCurrentAsync runs
-        // in the Reviewed stage; this post happens in a separate stage, minutes later, and a force-push landing
-        // in between still published the stale artifact — the same externally visible failure as #331 in a
-        // narrower window. The read is deliberately gated on `wouldPost`: a run that was never going to publish
-        // must not spend a request asking about a head it will not act on.
+        // Recheck currency at delivery: synthesis may predate a force-push or PR close.
         var headMoved = wouldPost && await HeadMovedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
 
-        // #430: the lifecycle sibling of the same guard, at the same boundary, for the same reason. The
-        // synthesis-time check reads the run's PERSISTED lifecycle — stamped once at discovery and never
-        // refreshed on this path — so a PR that merges or closes during the minutes between Reviewed and
-        // Posted was still commented on. Gated on `wouldPost` like the head read, and on `!headMoved` as well:
-        // a run already refusing to publish must not spend a second request to reach the same answer.
         var prClosed =
             wouldPost && !headMoved && await PrClosedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
 
-        // #225 item 2: whether this run's review was synthesized WITHOUT the list of comments already on the PR.
-        // Read once, here, because two decisions below depend on it and they must not be able to disagree: the
-        // post is suppressed, and the delivery-truthfulness gate has to accept "collected" as the truthful
-        // outcome for exactly the same reason it accepts it when posting is switched off. Read from the store
-        // rather than the in-memory run — the flag is written at the Reviewed stage and consumed here, which
-        // after a restart is a different process, and that retry is the one that most needs the answer.
+        // One durable read governs both publication authorization and truthful collect-only completion.
         var dedupContextLost = _store.WasDedupContextLost(run.Id);
         if (dedupContextLost)
         {
@@ -6038,47 +5951,70 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 .ConfigureAwait(false);
         }
 
-        // Resume safety belongs AFTER provider publication. Posting uses its own provider client and does not
-        // depend on the pooled workspace, so an old mount that is busy or ambiguous must not suppress the only
-        // delivery path. Once delivery is durable, settle the old ownership before any replacement lease,
-        // preparation, notes git, strip, or return. A blocked settlement throws here: the review stays delivered,
-        // the old address stays quarantined, and no unsafe local workspace operation follows.
+        try
+        {
+            await FinalizeReviewAsync(run, repo, provider, reviewText, hasContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+            when (ex
+                    is not (
+                        OperationCanceledException
+                        or SlotNeedsRecloneException
+                        or SlotCorruptException
+                        or SlotAddressUnusableException
+                        or SlotProbeUnansweredException
+                    )
+            )
+        {
+            throw new ReviewFinalizationException(ex);
+        }
+
+        if (postOutcome is { } delivered && IsDeliveryProven(delivered))
+        {
+            _store.MarkReviewPosted(run.Id, _timeProvider.GetUtcNow());
+        }
+
+        if (
+            postOutcome is { } outcome
+            && string.Equals(run.Mode, "post", StringComparison.Ordinal)
+            && _options.EnableCommentPosting
+            && !dedupContextLost
+            && !IsDeliveryProven(outcome)
+        )
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the {provider} review post did not reach the PR (outbox {outcome.OutboxId} outcome "
+                    + $"{outcome.Kind}); leaving the Posted stage retryable rather than completing undelivered."
+            );
+        }
+    }
+
+    private async Task FinalizeReviewAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        string provider,
+        string reviewText,
+        bool hasContent,
+        CancellationToken cancellationToken
+    )
+    {
+        // Delivery is independent of workspace retention. Never prepare a replacement over an uncertain mount.
         if (hasContent && UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
             await SettlePriorHostedWorkspacesBeforeReplacementLeaseAsync(run, cancellationToken).ConfigureAwait(false);
             _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
-        // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
-        // sandbox session is mounted OVER the leased slot, so a lingering sub-agent's git op inside it would
-        // otherwise race the host-side StripAsync/ReturnAsync on the SAME store (the concurrency window called
-        // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
-        // the session first terminates those child processes and unmounts, so the slot is quiescent before we
-        // touch it. Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
-        // Excluded on S2S for the same reason as ReleaseReviewLeaseAsync: BuildToolContextAsync returns
-        // before provisioning there, so the daemon owns no session to destroy — the container belongs to the
-        // review host and must OUTLIVE the run, because the posted comment's ?threadId= deep-link is the whole
-        // point of that path. DestroyAsync is a documented no-op with no session, so this guard states the
-        // invariant at the call site rather than leaving it to be inferred two files away. Note what the
-        // exclusion costs: quiescence below is a property this teardown ESTABLISHES, not one the lease implies,
-        // so on S2S it is simply absent and the slot is still mounted into a live container. That is why the
-        // strip below is skipped on the same condition — see the comment there.
+        // Tear down daemon-owned sessions before touching their stores. S2S conversations instead
+        // outlive reviews; their mount release is checked separately below.
         if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
             try
             {
                 await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
             }
-            // The sibling exit of the predicate ReleaseReviewLeaseAsync's catch closed (issue #479 item 2).
-            // The failure mode here is different and no less real: by this line the review comment has ALREADY
-            // been posted to the PR, so letting a best-effort teardown throw fails an otherwise-successful
-            // Posted stage — the run goes back to RetryPending and re-runs a terminal stage whose externally
-            // visible work is done. OperationCanceledException is the sharp case (a cancelled DestroyAsync is
-            // a teardown detail, not a statement that the caller wants the run abandoned) but the containment
-            // is deliberately by CLASS, not by type: nothing this teardown can report is worth undoing a
-            // delivered review. The slot below is unaffected either way — the orchestrator's terminal
-            // ReleaseReviewLeaseAsync returns it on every exit — so what is contained here is only the stage
-            // outcome.
+            // Best-effort teardown cannot undo provider delivery; terminal lease cleanup still runs.
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -6090,36 +6026,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
         }
 
-        // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
-        // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
-        // returns the slot; every other run uses the host ReviewBot retention checkout. On every path that owns a
-        // session it is torn down just ABOVE, so an empty review still frees its resources; on S2S there is no
-        // daemon-owned session to free, by design.
-        //
-        // The lease is read with TryGetValue and only REMOVED once retention has actually completed (or had
-        // nothing to do). Removing it up front made any retention failure permanent for the run: the retry came
-        // back lease-less and fell into the `else` branch below — the host ReviewBot checkout — which "succeeded"
-        // against a tree that has neither this PR's notes branch nor its prior notes. Strip + return still run
-        // exactly once, on the attempt that retained, and the removal happens before the return so a concurrent
-        // ReleaseReviewLeaseAsync can never double-return the slot.
+        // Retain notes before removing a safe lease. A failed commit must not move the retry to
+        // a checkout lacking this PR's notes. Atomic removal prevents double-return.
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
         {
-            // FIRST, before host git and before the slot moves: release every hosted workspace this run's
-            // conversations mount over the slot. On S2S the daemon owns no session to destroy (the teardown
-            // above is excluded there by design) and the container OUTLIVES the run, so until the review host
-            // says the mount is gone the store below is a live container's working tree. That is precisely
-            // what makes CommitPooledNotesAsync a race — it runs git on this same store — and it is the
-            // reason the strip is skipped on this path. Releasing here closes both: a confirmed release makes
-            // the store quiescent, and an unconfirmed one takes the whole cleanup off the table.
-            var settlement = await TryReleaseHostedWorkspacesAsync(run.Id, cancellationToken).ConfigureAwait(false);
+            // Release this slot's mounts before notes git or address reuse, not every historical slot.
+            var settlement = await TryReleaseHostedWorkspacesAsync(
+                    run.Id,
+                    cancellationToken,
+                    lease.Slot,
+                    lease.SlotClaimId
+                )
+                .ConfigureAwait(false);
             var releaseConfirmed = settlement == HostedWorkspaceSettlement.Reusable;
 
             if (!releaseConfirmed)
             {
-                // No notes commit, no strip, no return — every one of those runs git or hands the address out
-                // again while a container may still hold it. The lease is removed and the ADDRESS retired
-                // (once — the atomic TryRemove is what makes it once, exactly as the return below is), which
-                // costs a directory name and no pool capacity.
+                // Retire without touching the possibly mounted store; only its concurrency capacity returns.
                 if (_leasedReviews.TryRemove(run.Id, out _))
                 {
                     await _slotWorkspace.Pool.RetireAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
@@ -6147,19 +6070,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
             if (releaseConfirmed && _leasedReviews.TryRemove(run.Id, out _))
             {
-                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
-                // slot's store to a pristine state so the next lease starts clean with nothing left around.
-                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
-                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
-                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
-                //
-                // Still skipped on S2S, but the reason has narrowed. The strip opens by deleting every *.lock
-                // under .git on the premise that a leased slot has no concurrent git process — a premise the
-                // in-process session teardown above ESTABLISHES and the S2S path never did, which is why
-                // deleting a live index.lock there would admit a second writer rather than clean up after one.
-                // The confirmed release now establishes the same quiescence, so the premise holds; what does
-                // not change is that the checkout is still the tree a deep-link visitor browses, and wiping it
-                // under them buys only tidiness the next lease's clean-on-entry already guarantees.
+                // Notes are retained. Strip is best-effort; next-lease hygiene is authoritative.
+                // Leave S2S stores intact for conversation browsing.
                 if (!_options.UseS2SReviewAgent)
                 {
                     try
@@ -6192,52 +6104,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
 
-        // Whatever notes-artifact context survives here belongs to a review that never reached a commit gate
-        // (no content, no ReviewBot repo configured). Drop it: the entry is only meaningful to the commit that
-        // would have consumed it, and a re-run re-captures its own at the barrier.
+        // Release any unconsumed artifact context; retries recapture it at the barrier.
         _ = _artifactContexts.TryRemove(run.Id, out _);
-
-        // Delivery truthfulness (last, so the notes are already retained and the slot already freed): a run
-        // DISCOVERED in post mode is supposed to put this review on the PR. Completing the terminal stage
-        // records the run as done forever, so it may only do so on durable evidence that a provider comment
-        // exists — a fresh post, an adopted one, or a replay whose outbox row is Posted WITH a response id.
-        // A CollectedOnly or evidence-free ReplayNoOp leaves the stage retryable instead of quietly reporting a
-        // delivery that never happened. The no-new-findings sentinel is exempt by construction: it never posts,
-        // so it never reaches here — an intentional no-comment stays a success and is reported as such.
-        //
-        // Both conditions are required, and the second is the escape hatch. `run.Mode` is frozen at discovery,
-        // so a run discovered while posting was enabled keeps Mode="post" forever; if an operator then turns
-        // posting OFF, every attempt is authorized only to collect and can NEVER produce delivery evidence.
-        // Posted is not a governed stage, so gating on Mode alone would spin that run in an unbounded retry
-        // hot-loop over a config change it cannot influence. When the current configuration did not authorize a
-        // live post, collecting IS the truthful outcome — the run completes and reports what it actually did.
-        // #225 item 1: the durable half of the NEXT review's "new since my last review" cutoff, stamped on the
-        // same proof the gate below demands so the two can never disagree about whether this review reached the
-        // PR. An attempt is not evidence — see ReviewStore.MarkReviewPosted for why a hopeful stamp is worse
-        // than no stamp at all.
-        if (postOutcome is { } delivered && IsDeliveryProven(delivered))
-        {
-            _store.MarkReviewPosted(run.Id, _timeProvider.GetUtcNow());
-        }
-
-        // The third condition is the #225-item-2 sibling of the second, and it is required for the same reason.
-        // A run whose dedup context was lost is authorized only to collect, so it can never produce delivery
-        // evidence; gating without this term would throw on every attempt and spin the Posted stage — which is
-        // not governed — in the unbounded hot-loop the EnableCommentPosting escape hatch exists to prevent.
-        // Collecting IS the truthful outcome here: the run completes reporting exactly what it did.
-        if (
-            postOutcome is { } outcome
-            && string.Equals(run.Mode, "post", StringComparison.Ordinal)
-            && _options.EnableCommentPosting
-            && !dedupContextLost
-            && !IsDeliveryProven(outcome)
-        )
-        {
-            throw new InvalidOperationException(
-                $"Run {run.Id}: the {provider} review post did not reach the PR (outbox {outcome.OutboxId} outcome "
-                    + $"{outcome.Kind}); leaving the Posted stage retryable rather than completing undelivered."
-            );
-        }
     }
 
     /// <summary>

@@ -3228,7 +3228,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*malformed*");
+        var failure = await act.Should().ThrowAsync<ReviewFinalizationException>();
+        failure.Which.InnerException!.Message.Should().Contain("malformed");
     }
 
     [Fact]
