@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmMultiTurn API compatibility (R4)**: `IMultiTurnAgent.TrySendAsync` now defaults to `NotSupportedException` for older implementations. Restore obsolete positional cancellation overloads for scoped and unscoped conversation listings, and document nullable tool-call IDs.
+
 - **LmCore / LmMultiTurn (R3)**: Add `OriginalBytes` to truncated tool results and messages. Preserve original aggregate UTF-8 text size through conversion, deferred resolution and history; unknown legacy counts remain null and totals saturate at `int.MaxValue`.
 
 - **AnthropicProvider tests (R6)**: Verify the complete next-turn JSON request preserves signed thinking, tool use and its matching tool result during replay.

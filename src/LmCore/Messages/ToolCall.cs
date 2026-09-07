@@ -17,6 +17,10 @@ public record ToolCall
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int? Index { get; init; }
 
+    /// <summary>
+    /// Provider correlation identifier. May be absent in partial/provider payloads;
+    /// the multi-turn agent loop requires a nonempty ID before executing local function calls.
+    /// </summary>
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; init; }
@@ -80,7 +84,9 @@ public readonly record struct ToolCallResult
     }
 
     /// <summary>
-    /// The unique identifier for this tool call.
+    /// Identifier of the originating call, when supplied. Nullable for provider/caller
+    /// payloads without an ID. The multi-turn agent loop's local execution results preserve
+    /// the required originating call ID.
     /// </summary>
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -178,6 +184,11 @@ public readonly record struct ToolCallResult
 [JsonConverter(typeof(ToolCallResultMessageJsonConverter))]
 public record ToolCallResultMessage : IMessage
 {
+    /// <summary>
+    /// Identifier of the originating call, when supplied. Nullable for provider/caller
+    /// payloads without an ID. The multi-turn agent loop's local execution results preserve
+    /// the required originating call ID.
+    /// </summary>
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; init; }

@@ -61,12 +61,13 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// <param name="parentRunId">Parent run ID to fork from. If null, continues from latest run</param>
     /// <param name="ct">Cancellation token</param>
     /// <returns>The receipt if accepted and enqueued, or null if the input queue is full.</returns>
+    /// <exception cref="NotSupportedException">The implementation does not support non-blocking input.</exception>
     ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
         CancellationToken ct = default
-    );
+    ) => throw new NotSupportedException($"{GetType().Name} does not support non-blocking input.");
 
     /// <summary>
     /// Execute a single run synchronously (foreground-style).

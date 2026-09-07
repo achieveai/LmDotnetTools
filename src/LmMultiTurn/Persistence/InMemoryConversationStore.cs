@@ -200,6 +200,23 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
+    [Obsolete("Use ListThreadsAsync(limit, offset, options: null, ct: cancellationToken) instead.")]
+    public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        int limit,
+        int offset,
+        CancellationToken cancellationToken
+    ) => ListThreadsAsync(limit, offset, options: null, ct: cancellationToken);
+
+    /// <inheritdoc />
+    [Obsolete("Use ListThreadsAsync(scope, limit, offset, options: null, ct: cancellationToken) instead.")]
+    public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken
+    ) => ListThreadsAsync(scope, limit, offset, options: null, ct: cancellationToken);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
