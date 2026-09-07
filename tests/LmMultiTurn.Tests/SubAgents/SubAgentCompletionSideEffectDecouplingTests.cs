@@ -9,7 +9,9 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
 
@@ -227,7 +229,7 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
 
         var successorEntered = ArrangeParkThenAnswerProvider();
         _manager = CreateManager(
-            descendantQuestionSink: async (_, ct) =>
+            descendantQuestionSink: async (notification, ct) =>
             {
                 sinkEntered.TrySetResult();
                 await releaseSink.Task.WaitAsync(ct);
@@ -261,6 +263,190 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
         {
             _ = releaseSink.TrySetResult();
         }
+    }
+
+    [Fact]
+    public async Task AFailedOldQuestionNotification_DoesNotFaultOrReleaseTheDelayedSuccessor()
+    {
+        var sinkEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failSink = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var awaitingRelayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completedRelayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var relays = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        _parentMock
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<List<IMessage>, string?, string?, CancellationToken>(
+                (messages, _, _, _) =>
+                {
+                    foreach (var notification in messages.OfType<NotifyMessage>())
+                    {
+                        var detail = notification.Detail ?? string.Empty;
+                        relays.Enqueue(detail);
+                        if (detail.Contains("[AwaitingAnswer]", StringComparison.Ordinal))
+                        {
+                            _ = awaitingRelayed.TrySetResult();
+                        }
+                        if (detail.Contains("[Completed]", StringComparison.Ordinal))
+                        {
+                            _ = completedRelayed.TrySetResult();
+                        }
+                    }
+                    return ValueTask.FromResult(new SendReceipt("relayed", null, DateTimeOffset.UtcNow));
+                }
+            );
+        var logger = new CapturingLogger<SubAgentManager>();
+        var collaboration = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+        _ = collaboration.Directory.TryRegister(
+            collaboration.Context,
+            collaboration.Name,
+            AgentCollaborationStatuses.Running,
+            writeEndpoint: null
+        );
+        var successorEntered = ArrangeParkThenAnswerProvider(releaseAnswer.Task);
+        _manager = CreateManager(
+            collaboration: collaboration,
+            maxConcurrentSubAgents: 1,
+            logger: logger,
+            descendantQuestionSink: async (notification, ct) =>
+            {
+                _ = sinkEntered.TrySetResult();
+                await failSink.Task.WaitAsync(ct);
+                throw new InvalidOperationException("question sink failed");
+            }
+        );
+        var child = CaptureChildState(_manager);
+        _ = await _manager.SpawnAsync(
+            "test-agent",
+            "first task",
+            runInBackground: true,
+            role: "tester",
+            description: "Tests notification ownership."
+        );
+        await sinkEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var state = child.State!;
+        var loop = (MultiTurnAgentLoop)state.Agent;
+        try
+        {
+            var pending = (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle().Subject;
+            _ = await loop.TryResolveToolCallAsync(pending.ToolCallId, "{\"answers\":[]}");
+            await successorEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            _ = failSink.TrySetResult();
+            // This relay follows the failed notification, so the monitor has handled its failure.
+            await awaitingRelayed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            logger.CountAtLevelWithExceptionText(LogLevel.Error, "question sink failed").Should().Be(1);
+            state.Status.Should().Be(SubAgentStatus.Running);
+            DirectoryStatusOf(collaboration, state.AgentId).Should().Be(AgentCollaborationStatuses.Running);
+            state.Completion.Task.IsCompleted.Should().BeFalse();
+            state.MonitorTask!.IsCompleted.Should().BeFalse();
+
+            // A second child must queue until the healthy successor finishes, not steal its permit.
+            var nextClassified = new TaskCompletionSource<SubAgentState>(
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
+            _manager.BeforeClassifyingRunCompletionForTest = (candidate, completionMessage) =>
+            {
+                if (candidate.AgentId != state.AgentId)
+                {
+                    _ = nextClassified.TrySetResult(candidate);
+                }
+                return Task.CompletedTask;
+            };
+            var queued = await _manager.SpawnAsync(
+                "test-agent",
+                "next child",
+                runInBackground: true,
+                role: "tester",
+                description: "Probes the single execution slot."
+            );
+            using var queuedDoc = System.Text.Json.JsonDocument.Parse(queued);
+            queuedDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
+            var nextId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
+            _ = releaseAnswer.TrySetResult();
+            (await state.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("the answer");
+            await completedRelayed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var nextState = await nextClassified.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            nextState.AgentId.Should().Be(nextId);
+            (await nextState.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("the answer");
+            relays
+                .Count(r =>
+                    r.Contains($"id=\"{state.AgentId}\"", StringComparison.Ordinal)
+                    && r.Contains("[Completed]", StringComparison.Ordinal)
+                )
+                .Should()
+                .Be(1);
+            relays
+                .Count(r =>
+                    r.Contains($"id=\"{state.AgentId}\"", StringComparison.Ordinal)
+                    && r.Contains("[AwaitingAnswer]", StringComparison.Ordinal)
+                )
+                .Should()
+                .Be(1);
+        }
+        finally
+        {
+            _ = failSink.TrySetResult();
+            _ = releaseAnswer.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task AFailedCurrentQuestionNotification_FaultsItsCompletionAndReleasesCapacity()
+    {
+        var sinkEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failSink = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new CapturingLogger<SubAgentManager>();
+        _ = ArrangeParkThenAnswerProvider();
+        _manager = CreateManager(
+            maxConcurrentSubAgents: 1,
+            logger: logger,
+            descendantQuestionSink: async (notification, ct) =>
+            {
+                _ = sinkEntered.TrySetResult();
+                await failSink.Task.WaitAsync(ct);
+                throw new InvalidOperationException("current question sink failed");
+            }
+        );
+        var child = CaptureChildState(_manager);
+        _ = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        await sinkEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        _ = failSink.TrySetResult();
+        var completion = async () => await child.State!.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        _ = await completion
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("current question sink failed");
+        child.State!.Status.Should().Be(SubAgentStatus.Error);
+        logger.CountAtLevelWithExceptionText(LogLevel.Error, "current question sink failed").Should().Be(1);
+        var next = await _manager
+            .SpawnAsync("test-agent", "next child", runInBackground: false)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        next.Should().Contain("the answer");
+
+        // A notification failure must not retire the only completion consumer. The pending question
+        // remains answerable, and its later run must reacquire capacity and settle a fresh latch.
+        var state = child.State;
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _manager.BeforeClassifyingRunCompletionForTest = (candidate, completionMessage) =>
+        {
+            if (candidate.AgentId == state.AgentId)
+            {
+                _ = recovered.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        var loop = (MultiTurnAgentLoop)state.Agent;
+        var pending = (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle().Subject;
+        _ = await loop.TryResolveToolCallAsync(pending.ToolCallId, "{\"answers\":[]}");
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        (await state.Completion.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("the answer");
     }
 
     private static string? DirectoryStatusOf(AgentCollaborationSetup collaboration, string agentId) =>
@@ -334,7 +520,7 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
     /// tool every <see cref="MultiTurnAgentLoop"/> registers for itself) and whose second call — the
     /// delayed-result successor run the answer mints — signals the returned source.
     /// </summary>
-    private TaskCompletionSource ArrangeParkThenAnswerProvider()
+    private TaskCompletionSource ArrangeParkThenAnswerProvider(Task? releaseAnswer = null)
     {
         var successorEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
@@ -347,29 +533,29 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
                 )
             )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, _, _) =>
+                async (_, _, ct) =>
                 {
                     if (Interlocked.Increment(ref calls) == 1)
                     {
-                        return Task.FromResult(
-                            ToAsyncEnumerable([
-                                new ToolCallMessage
-                                {
-                                    Role = Role.Assistant,
-                                    ToolCallId = "ask-1",
-                                    FunctionName = AskUserQuestionToolProvider.ToolName,
-                                    FunctionArgs =
-                                        "{\"context\":\"needs a decision\",\"questions\":"
-                                        + "[{\"prompt\":\"which one?\",\"options\":[{\"label\":\"a\"}]}]}",
-                                },
-                            ])
-                        );
+                        return ToAsyncEnumerable([
+                            new ToolCallMessage
+                            {
+                                Role = Role.Assistant,
+                                ToolCallId = "ask-1",
+                                FunctionName = AskUserQuestionToolProvider.ToolName,
+                                FunctionArgs =
+                                    "{\"context\":\"needs a decision\",\"questions\":"
+                                    + "[{\"prompt\":\"which one?\",\"options\":[{\"label\":\"a\"}]}]}",
+                            },
+                        ]);
                     }
 
                     _ = successorEntered.TrySetResult();
-                    return Task.FromResult(
-                        ToAsyncEnumerable([new TextMessage { Text = "the answer", Role = Role.Assistant }])
-                    );
+                    if (releaseAnswer is not null)
+                    {
+                        await releaseAnswer.WaitAsync(ct);
+                    }
+                    return ToAsyncEnumerable([new TextMessage { Text = "the answer", Role = Role.Assistant }]);
                 }
             );
 
@@ -379,12 +565,14 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
     private SubAgentManager CreateManager(
         IConversationStore? store = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
+        int maxConcurrentSubAgents = 2,
+        ILogger<SubAgentManager>? logger = null
     )
     {
         var options = new SubAgentOptions
         {
-            MaxConcurrentSubAgents = 2,
+            MaxConcurrentSubAgents = maxConcurrentSubAgents,
             Templates = new Dictionary<string, SubAgentTemplate>
             {
                 ["test-agent"] = new()
@@ -404,7 +592,8 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
             options,
             new MutableSubAgentTemplateSource(options.Templates),
             collaboration: collaboration,
-            descendantQuestionSink: descendantQuestionSink
+            descendantQuestionSink: descendantQuestionSink,
+            logger: logger
         );
     }
 

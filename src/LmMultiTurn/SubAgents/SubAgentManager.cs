@@ -4509,7 +4509,55 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // still own their lifetime, and nothing is left detached.
                     if (sideEffects is { } effects)
                     {
-                        await RunCompletionSideEffectsAsync(state, effects, ct);
+                        var notificationFailure = await RunCompletionSideEffectsAsync(state, effects, ct);
+                        if (notificationFailure is not null)
+                        {
+                            await state.RunTransition.WaitAsync(ct);
+                            try
+                            {
+                                _logger.LogError(
+                                    notificationFailure,
+                                    "Failed to deliver descendant question for sub-agent {AgentId}, run {RunId}",
+                                    state.AgentId,
+                                    rcm.CompletedRunId
+                                );
+                                // A delayed answer may start without changing the lifecycle epoch: the
+                                // parked child is already Running. Compare actual run ownership instead,
+                                // and commit the fault/permit release atomically with admission.
+                                if (
+                                    state.CurrentRunGeneration == runGeneration
+                                    && (state.AdmittedRunId is null || state.AdmittedRunId == rcm.CompletedRunId)
+                                    && state.MarkRunFaulted(runGeneration)
+                                )
+                                {
+                                    state.SendToParentError = $"Monitor failed: {notificationFailure.Message}";
+                                    _ = state.TryCompleteWithException(notificationFailure);
+                                    gateGuard.ReleaseOnce(_concurrencyGate);
+                                    effects = new CompletionSideEffects(
+                                        state.LifecycleEpoch,
+                                        AgentCollaborationStatuses.Error,
+                                        DescendantQuestionText: null,
+                                        ParentRelayText: null
+                                    );
+                                }
+                                else
+                                {
+                                    // The old run still owes its relay, but cannot fault a successor.
+                                    effects = effects with
+                                    {
+                                        DescendantQuestionText = null,
+                                    };
+                                }
+                            }
+                            finally
+                            {
+                                _ = state.RunTransition.Release();
+                            }
+
+                            _ = await RunCompletionSideEffectsAsync(state, effects, ct);
+                            // Retain the subscription even for a current-owner notification failure:
+                            // a later answer can reactivate this warm loop and must still be observed.
+                        }
                     }
 
                     lastTextContent = null;
@@ -4547,7 +4595,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // terminal one, so a newer restart's Running publish is never clobbered. Routed through
                 // the same captured-then-performed shape as a graceful terminal so its store write and
                 // its status publish obey the same staleness rule.
-                await RunCompletionSideEffectsAsync(
+                _ = await RunCompletionSideEffectsAsync(
                     state,
                     new CompletionSideEffects(
                         state.LifecycleEpoch,
@@ -4655,7 +4703,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// admitted while the store call is still in flight, and a status published after that would tell
     /// the rest of the hierarchy a live delegate had finished.
     /// </remarks>
-    private async Task RunCompletionSideEffectsAsync(
+    private async Task<Exception?> RunCompletionSideEffectsAsync(
         SubAgentState state,
         CompletionSideEffects effects,
         CancellationToken ct
@@ -4670,16 +4718,25 @@ public sealed class SubAgentManager : IAsyncDisposable
             // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
             // state's own agent id: a completion is handled once per level of nesting, so whichever
             // level's direct child actually parked is the one attributed here, however deep it sits.
-            await _descendantQuestionSink(
-                NotifyMessage.Create(
-                    NotifyKinds.DescendantQuestion,
-                    detail: questionText,
-                    sourceToolName: "Agent",
-                    sourceToolCallId: state.AgentId,
-                    label: state.TemplateName
-                ),
-                ct
-            );
+            try
+            {
+                await _descendantQuestionSink(
+                    NotifyMessage.Create(
+                        NotifyKinds.DescendantQuestion,
+                        detail: questionText,
+                        sourceToolName: "Agent",
+                        sourceToolCallId: state.AgentId,
+                        label: state.TemplateName
+                    ),
+                    ct
+                );
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // Return only this delivery failure to the monitor for run-owned classification.
+                // Do not let it escape to the subscription-wide catch and fault a newer run.
+                return ex;
+            }
         }
 
         if (effects.TerminalStatus is { } terminalStatus)
@@ -4716,6 +4773,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             // background sub-agent's only answer.
             await SendToParentAsync(state, relayText);
         }
+
+        return null;
     }
 
     /// <summary>
