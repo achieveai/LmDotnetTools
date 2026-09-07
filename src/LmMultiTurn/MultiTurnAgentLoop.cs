@@ -64,6 +64,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private bool _generationOrdinalSeeded;
     private ContextObservation? _latestContextObservation;
 
+    // The owning manager admits every run, including direct input and delayed continuations,
+    // before it can call the provider. Root loops have no manager admission callback.
+    internal Func<string, CancellationToken, Task>? AdmitRunAsync { get; set; }
+
     /// <summary>
     /// Names of the tools that declare at least one required parameter, snapshot at construction from
     /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
@@ -141,6 +145,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
     // no CompactionSetup, in which case nothing on the request path changes.
     private readonly CompactionRuntime? _compaction;
+
+    internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
     // The sentinel carries nothing — it exists only to break RunLoopAsync out of its wait so it can
@@ -846,6 +852,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
                 var assignment = await StartRunAsync(realInputs, batchParent, ct, wasForked: isExplicitFork);
+                if (AdmitRunAsync is { } admitRun)
+                {
+                    await admitRun(assignment.RunId, ct);
+                }
+
                 await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
                 using var spawnSuppression = new RunSpawnSuppression(this);
@@ -1047,6 +1058,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ct: ct
             );
             return;
+        }
+
+        if (AdmitRunAsync is { } admitRun)
+        {
+            await admitRun(assignment.RunId, ct);
         }
 
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);

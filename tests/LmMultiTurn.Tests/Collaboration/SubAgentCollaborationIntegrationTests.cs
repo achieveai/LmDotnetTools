@@ -853,6 +853,177 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
     #region GetAgents
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task GetAgents_PrimaryAlias_ReachesTheTopLevelFromEveryDepth(int depth)
+    {
+        var root = AgentCollaborationSetup.CreateRoot(
+            new AgentCollaborationOptions { MaxDelegationDepth = 3 },
+            name: "conversation"
+        );
+        var endpoint = new RecordingEndpoint();
+        root.Directory.TryRegister(root.Context, root.Name, "running", endpoint).Succeeded.Should().BeTrue();
+        var caller = root;
+        for (var level = 1; level <= depth; level++)
+        {
+            (_, caller) = RegisterPeer(caller, $"level-{level}");
+        }
+
+        var (_, provider) = CreateManager(caller);
+        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        using var rosterDoc = JsonDocument.Parse(roster.Text);
+        var rootRow = rosterDoc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("agent_id").GetString() == root.AgentId);
+        rootRow.GetProperty("name").GetString().Should().Be("conversation");
+        rootRow.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeTrue();
+        var alias = rootRow.GetProperty("aliases").EnumerateArray().Single().GetString()!;
+        alias.Should().Be("primary");
+
+        var sent = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = alias,
+                content = "report",
+                msg_type = "question",
+            }
+        );
+        sent.IsError.Should().BeFalse(sent.Text);
+        var received = await endpoint.Received.WaitAsync(TimeSpan.FromSeconds(10));
+        received.FromAgentId.Should().Be(caller.AgentId);
+        received.Body.Should().Be("report");
+
+        var check = await InvokeAsync(provider, "CheckAgents", new { agent_ids = alias });
+        using var checkDoc = JsonDocument.Parse(check.Text);
+        checkDoc.RootElement.GetProperty("agents")[0].GetProperty("agent_id").GetString().Should().Be(root.AgentId);
+        var wait = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = alias, timeout_seconds = 1 });
+        wait.IsError.Should().BeFalse(wait.Text);
+        using var waitDoc = JsonDocument.Parse(wait.Text);
+        waitDoc.RootElement.GetProperty("status").GetString().Should().Be("not_waitable");
+        waitDoc.RootElement.GetProperty("not_waited")[0].GetProperty("agent_id").GetString().Should().Be(root.AgentId);
+    }
+
+    [Fact]
+    public async Task GetAgents_NameRoundTrip_ChecksWaitsAndMessagesTheSameChild()
+    {
+        var restart = new RestartCapturingTemplate();
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, restart.Template);
+        var childId = await SpawnAndResolveIdAsync(provider, "reviewer");
+        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        using var rosterDoc = JsonDocument.Parse(roster.Text);
+        var row = rosterDoc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("agent_id").GetString() == childId);
+        var name = row.GetProperty("name").GetString()!;
+        row.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeTrue();
+
+        var wait = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = name, timeout_seconds = 10 });
+        wait.IsError.Should().BeFalse(wait.Text);
+        var check = await InvokeAsync(provider, "CheckAgents", new { agent_ids = name });
+        using var checkDoc = JsonDocument.Parse(check.Text);
+        checkDoc.RootElement.GetProperty("agents")[0].GetProperty("agent_id").GetString().Should().Be(childId);
+        checkDoc.RootElement.GetProperty("agents")[0].GetProperty("status").GetString().Should().Be("completed");
+
+        var sent = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = name,
+                content = "follow-up",
+                msg_type = "question",
+            }
+        );
+        sent.IsError.Should().BeFalse(sent.Text);
+        var seen = await restart.Restarted.WaitAsync(TimeSpan.FromSeconds(10));
+        seen.OfType<AgentMessage>().Should().ContainSingle().Which.Body.Should().Be("follow-up");
+    }
+
+    [Fact]
+    public async Task CheckAgents_ContestedChildName_DoesNotBypassDirectoryAmbiguity()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var childId = await SpawnAndResolveIdAsync(provider, "reviewer");
+        _ = RegisterPeer(root, "reviewer");
+
+        var check = await InvokeAsync(provider, "CheckAgents", new { agent_ids = "reviewer" });
+        using var checkDoc = JsonDocument.Parse(check.Text);
+        checkDoc.RootElement.GetProperty("not_found").GetInt32().Should().Be(1);
+        var wait = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = "reviewer", timeout_seconds = 1 });
+        wait.IsError.Should().BeTrue();
+        var sent = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "reviewer",
+                content = "hi",
+                msg_type = "question",
+            }
+        );
+        sent.ErrorCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+
+        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        using var rosterDoc = JsonDocument.Parse(roster.Text);
+        foreach (
+            var row in rosterDoc
+                .RootElement.GetProperty("agents")
+                .EnumerateArray()
+                .Where(a => a.GetProperty("name").GetString() == "reviewer")
+        )
+        {
+            row.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeFalse();
+        }
+        var byId = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId, timeout_seconds = 10 });
+        byId.IsError.Should().BeFalse(byId.Text);
+    }
+
+    [Fact]
+    public async Task CheckAgents_ForeignIdWinsOverOwnedChildName_WithoutGrantingWaitOwnership()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, peer) = RegisterPeer(root, "peer");
+        var (_, provider) = CreateManager(root);
+        _ = await SpawnAndResolveIdAsync(provider, peer.AgentId);
+
+        var check = await InvokeAsync(provider, "CheckAgents", new { agent_ids = peer.AgentId });
+        using var doc = JsonDocument.Parse(check.Text);
+        doc.RootElement.GetProperty("agents")[0].GetProperty("agent_id").GetString().Should().Be(peer.AgentId);
+        doc.RootElement.GetProperty("agents")[0].GetProperty("recent_turns").GetArrayLength().Should().Be(0);
+        var wait = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = peer.AgentId, timeout_seconds = 1 });
+        wait.IsError.Should().BeFalse(wait.Text);
+        using var waitDoc = JsonDocument.Parse(wait.Text);
+        waitDoc.RootElement.GetProperty("status").GetString().Should().Be("not_waitable");
+        waitDoc.RootElement.GetProperty("not_waited")[0].GetProperty("agent_id").GetString().Should().Be(peer.AgentId);
+    }
+
+    [Theory]
+    [InlineData("primary")]
+    [InlineData("root")]
+    public async Task GetAgents_ContestedRootNames_DoNotAdvertiseUnusableAddresses(string contestedName)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, contestedName);
+        var (_, provider) = CreateManager(root);
+
+        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        using var doc = JsonDocument.Parse(roster.Text);
+        var row = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("agent_id").GetString() == root.AgentId);
+        row.GetProperty("name_resolves_to_agent").GetBoolean().Should().Be(contestedName != "root");
+        row.GetProperty("aliases").GetArrayLength().Should().Be(contestedName == "primary" ? 0 : 1);
+    }
+
     [Fact]
     public async Task GetAgents_ListsTheWholeCollaborationAndMarksTheCaller()
     {

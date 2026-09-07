@@ -149,6 +149,10 @@ internal class SubAgentState
     public required string Task { get; init; }
     public required IMultiTurnAgent Agent { get; set; }
 
+    // Serializes actual loop-run admission with the monitor's completion classification.
+    internal SemaphoreSlim RunTransition { get; } = new(1, 1);
+    internal string? AdmittedRunId { get; set; }
+
     // Where this sub-agent came from, captured once at spawn time. It lives here rather than in
     // SpawnAsync's locals because a restart rebuilds the loop long after the spawning run ended:
     // by then the parent's CurrentRunId has moved on, and re-deriving lineage would attribute the
@@ -536,12 +540,9 @@ internal class SubAgentState
     }
 
     /// <summary>
-    /// Begins a genuine terminal completion. Blocks new inject admissions (for an owned provider), waits
-    /// for any in-flight admitted send to finish so the imminent owned-provider disposal cannot overlap a
-    /// send through it, then flips the status terminal. The manager disposes the owned provider only
-    /// AFTER this returns; a continuation that arrives now observes the finished status (or the
-    /// disposing owned provider) and takes the restart path — recreating a fresh provider — instead of
-    /// injecting into the one being disposed.
+    /// Settles a run against continuation admission. Blocks new owned-provider inject admissions and
+    /// drains outstanding sends before publishing its outcome. A lifecycle-cancelled send is retried
+    /// by the manager. The provider remains owned by the reusable loop until runtime teardown.
     /// </summary>
     public async Task BeginTerminalDisposalAsync(bool isError)
     {
@@ -639,11 +640,18 @@ internal class SubAgentState
         old.Dispose();
     }
 
-    /// <summary>
-    /// Opens a new run generation for a restart (call under the restart transition, before starting the
-    /// restarted loop). The returned token guards the later <see cref="TryArmRunning"/> publish so a run
-    /// that completes and disposes before the publish executes cannot be resurrected to Running.
-    /// </summary>
+    /// <summary>Reactivates a loop without changing the generation held by its existing monitor.</summary>
+    internal void ReactivateCurrentEpoch()
+    {
+        lock (_lifecycleLock)
+        {
+            _terminalGeneration = -1;
+            _terminalAtUtc = null;
+            _status = SubAgentStatus.Running;
+        }
+    }
+
+    /// <summary>Opens a new loop/monitor epoch for a restart.</summary>
     public long BeginRunGeneration()
     {
         lock (_lifecycleLock)
@@ -1108,6 +1116,28 @@ internal class SubAgentState
 internal sealed class GateReleaseGuard
 {
     private int _released;
+
+    internal async Task AcquireIfReleasedAsync(SemaphoreSlim gate, CancellationToken ct)
+    {
+        if (Volatile.Read(ref _released) == 0)
+        {
+            return;
+        }
+
+        await gate.WaitAsync(ct);
+        if (Interlocked.CompareExchange(ref _released, 0, 1) != 1)
+        {
+            _ = gate.Release();
+            ct.ThrowIfCancellationRequested();
+            return;
+        }
+
+        if (ct.IsCancellationRequested)
+        {
+            ReleaseOnce(gate);
+            ct.ThrowIfCancellationRequested();
+        }
+    }
 
     /// <summary>
     /// Releases <paramref name="gate"/> exactly once for this guard's epoch. Over-releasing a

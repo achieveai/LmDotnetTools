@@ -34,6 +34,26 @@ public sealed class MessageMapperTests
         request.Input[0].Role.Should().Be("user");
     }
 
+    [Theory]
+    [InlineData(AgentMessageType.DelegateTask)]
+    [InlineData(AgentMessageType.Response)]
+    [InlineData(AgentMessageType.Question)]
+    [InlineData(AgentMessageType.Steer)]
+    public void Agent_message_keeps_payload_and_reply_routing(AgentMessageType messageType)
+    {
+        var message = AgentMessage.Create("message-1", messageType, "sender-id", "sender", "Please respond.");
+        var request = MessageMapper.BuildRequest(
+            [new TextMessage { Role = Role.Assistant, Text = "Done." }, message],
+            null
+        );
+        request.Input.Should().HaveCount(2);
+        var last = request.Input.Last();
+        last.Role.Should().Be("user");
+        last.Content.Should().ContainSingle();
+        last.Content![0].Type.Should().Be("input_text");
+        last.Content[0].Text.Should().Be(message.Text);
+    }
+
     [Fact]
     public void User_text_emits_input_text_part()
     {

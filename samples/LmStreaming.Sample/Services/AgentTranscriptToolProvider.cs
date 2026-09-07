@@ -97,8 +97,10 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
                     {
                         Name = "agent_id",
                         Description =
-                            "The id of the agent whose transcript you want, as reported by Agent, "
-                            + "CheckAgents, or GetAgents.",
+                            "The agent whose transcript you want, as reported by Agent, CheckAgents, or "
+                            + "GetAgents — either its agent_id or its exact name. The id is always "
+                            + "unambiguous; a name claimed by two agents is refused rather than guessed "
+                            + "at, so use the id when GetAgents shows a name does not resolve uniquely.",
                         ParameterType = new JsonSchemaObject { Type = new("string") },
                         IsRequired = true,
                     },

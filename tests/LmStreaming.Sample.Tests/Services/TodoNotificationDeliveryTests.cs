@@ -11,11 +11,12 @@ namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
 ///     #690: a todo nudge/digest addressed to a sub-agent whose run has FINISHED must go through the
-///     manager's lifecycle path. The finished child's loop is still alive and still accepts input, but
-///     its owned provider was disposed at completion — so a direct <c>TrySendAsync</c> is accepted and
-///     then starts a run that dies on its first provider call (78 doomed runs in the field, all
-///     <see cref="ObjectDisposedException" /> on the provider client). The manager path restarts the
-///     child with a fresh provider instead.
+///     manager's lifecycle path rather than a direct <c>TrySendAsync</c>, which bypasses the admission
+///     that reactivates an idle agent. Provider ownership follows the LOOP, not an individual run, so a
+///     finished child keeps its owned provider and the follow-up executes on that same live pipeline —
+///     the provider is disposed only when the runtime is torn down. (Historically completion disposed
+///     the owned provider, which is what produced the field's doomed runs: a direct send was accepted
+///     and then died on its first provider call with <see cref="ObjectDisposedException" />.)
 /// </summary>
 public sealed class TodoNotificationDeliveryTests
 {
@@ -85,10 +86,9 @@ public sealed class TodoNotificationDeliveryTests
     }
 
     [Fact]
-    public async Task DeliverAsync_ToFinishedSubAgentWithDisposedProvider_RestartsWithFreshProviderInsteadOfDoomedRun()
+    public async Task DeliverAsync_ToFinishedSubAgent_ReusesLiveOwnedProviderAndDeliversNotification()
     {
-        // Arrange: a template whose provider the child OWNS, so completion disposes it (the field shape:
-        // a tier/characteristics-routed provider client per run).
+        // An owned provider belongs to the reusable runtime, not to an individual completed run.
         var providers = new List<DisposeAwareProvider>();
         var template = new SubAgentTemplate
         {
@@ -135,22 +135,21 @@ public sealed class TodoNotificationDeliveryTests
             var spawnJson = await manager.SpawnAsync("worker", "first task", name: "alpha", runInBackground: true);
             var agentId = JsonDocument.Parse(spawnJson).RootElement.GetProperty("agent_id").GetString()!;
 
-            // The run finished AND its owned provider is gone: the exact state the field runs were in.
+            // Wait for actual completion, without requiring disposal of the reusable provider.
             await Wait.UntilAsync(
                 () =>
                 {
                     lock (providers)
                     {
                         return providers.Count == 1
-                            && providers[0].Disposed
                             && manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal);
                     }
                 },
-                "the child completed its first run and its owned provider was disposed",
+                "the child completed its first run",
                 TimeSpan.FromSeconds(10)
             );
-            var disposedProvider = providers[0];
-            disposedProvider.Calls.Should().Be(1, "the first run reached its provider exactly once");
+            var originalProvider = providers[0];
+            originalProvider.Calls.Should().Be(1, "the first run reached its provider exactly once");
 
             // Act: the board talks back to the finished child, the way Program.cs's nudge/digest do.
             var nudge = NotifyMessage.Create(
@@ -166,33 +165,30 @@ public sealed class TodoNotificationDeliveryTests
                 CancellationToken.None
             );
 
-            // Non-vacuity: wait until the notification reached SOME provider — the disposed one (the
-            // doomed run this issue is about) or a fresh one (the restart). A delivery nobody ran would
-            // otherwise pass the "no call after dispose" assertion for free.
+            // Non-vacuity: wait until a provider actually ran the notification. A delivery nobody
+            // executed would otherwise pass the no-call-after-dispose assertion for free.
             await Wait.UntilAsync(
                 () =>
                 {
                     lock (providers)
                     {
-                        return disposedProvider.CallsAfterDispose > 0 || providers.Skip(1).Any(p => p.Calls > 0);
+                        return originalProvider.Calls > 1 || providers.Skip(1).Any(p => p.Calls > 0);
                     }
                 },
                 "the notification was run through a provider",
                 TimeSpan.FromSeconds(10),
                 observed: () =>
-                    $"delivered={delivered}, providers={providers.Count}, callsAfterDispose={disposedProvider.CallsAfterDispose}"
+                    $"delivered={delivered}, providers={providers.Count}, callsAfterDispose={originalProvider.CallsAfterDispose}"
             );
 
-            // Assert: no run ever touched the disposed provider; the child was restarted on a fresh one
-            // and that fresh run carried the typed notification.
-            delivered.Should().BeTrue("the manager path admits a finished child by restarting it");
-            disposedProvider
-                .CallsAfterDispose.Should()
-                .Be(0, "a notification must never start a run against a provider disposed at completion");
-            providers.Should().HaveCount(2, "the restart built a fresh owned provider");
-            providers[1].Calls.Should().Be(1);
-            providers[1]
-                .Requests.Single()
+            // The same live provider handles the follow-up, including its typed notification.
+            delivered.Should().BeTrue("the manager admits a follow-up to a finished child");
+            originalProvider.CallsAfterDispose.Should().Be(0);
+            originalProvider.Disposed.Should().BeFalse();
+            providers.Should().ContainSingle("completion retains the reusable owned provider");
+            originalProvider.Calls.Should().Be(2);
+            originalProvider
+                .Requests.Last()
                 .OfType<NotifyMessage>()
                 .Should()
                 .ContainSingle(
