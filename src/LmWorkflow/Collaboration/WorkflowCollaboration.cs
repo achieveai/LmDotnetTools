@@ -304,7 +304,7 @@ internal sealed class WorkflowControllerRegistration
         // an answer this node can no longer give. Not awaited, because teardown is synchronous by
         // contract — but a discarded task still has to have its fault observed, or a fault it carries
         // resurfaces at GC as an UnobservedTaskException with no way back to this line. Same treatment
-        // as the other caller of this method (SubAgentManager.RetireFromCollaboration).
+        // as the other caller of this method (SubAgentManager.RetireAgent).
         _ = Setup
             .Bundle.NotifyAbandonedObligationsAsync(abandoned, Setup.AgentId)
             .ContinueWith(

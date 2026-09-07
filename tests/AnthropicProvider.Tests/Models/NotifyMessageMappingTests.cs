@@ -11,6 +11,37 @@ public class NotifyMessageMappingTests
 {
     private static readonly GenerateReplyOptions Options = new() { ModelId = "claude-3-7-sonnet-20250219" };
 
+    [Theory]
+    [InlineData(AgentMessageType.DelegateTask)]
+    [InlineData(AgentMessageType.Question)]
+    [InlineData(AgentMessageType.Steer)]
+    [InlineData(AgentMessageType.Response)]
+    public void AgentMessage_AfterCompletedAssistant_MapsFollowUpAndReplyEnvelope(AgentMessageType messageType)
+    {
+        var followUp = AgentMessage.Create(
+            "followup-1",
+            messageType,
+            "primary-id",
+            "primary",
+            body: "Please answer the follow-up."
+        );
+        var request = AnthropicRequest.FromMessages(
+            [new TextMessage { Text = "Original task completed.", Role = Role.Assistant }, followUp],
+            Options
+        );
+
+        var last = request.Messages.Last();
+        Assert.Equal("user", last.Role);
+        Assert.Contains(last.Content, content => content.Type == "text" && content.Text == followUp.Text);
+        if (followUp.ExpectsReply)
+        {
+            Assert.Contains(
+                last.Content,
+                content => content.Text!.Contains("reply-instruction") && content.Text.Contains("primary-id")
+            );
+        }
+    }
+
     [Fact]
     public void NotifyMessage_MapsToUserTextBlock_WithEnvelope()
     {

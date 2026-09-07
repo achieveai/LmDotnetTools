@@ -288,13 +288,16 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HandleRunCompletion_PendingMessageCompletion_DefersOwnedProviderDisposalUntilTerminalCompletion()
+    public async Task HandleRunCompletion_KeepsOwnedProviderAliveAcrossCompletions_DisposingItOnceAtShutdown()
     {
-        // The HasPendingMessages branch (SubAgentManager.HandleRunCompletionAsync) must NOT treat a
-        // pending (non-terminal) completion as terminal: it must leave the completion latch unresolved
-        // and the owned provider undisposed, and only the following terminal completion disposes the
-        // provider — exactly once. Without direct coverage this branch could regress while the rest of
-        // the suite stays green.
+        // Owned-provider lifetime is the LOOP's, not an individual run's. Two claims, one arrangement:
+        //   1. A pending (HasPendingMessages) completion is not terminal at all: the latch stays
+        //      unresolved, the status stays Running, the provider is untouched. (Unchanged invariant.)
+        //   2. The following TERMINAL completion settles the sub-agent but STILL must not dispose the
+        //      owned provider — the loop stays reusable, so a continuation injects into (or restarts on)
+        //      the same live pipeline. (Contract change: this test previously asserted the terminal
+        //      completion disposed the provider, back when completion owned provider lifetime.)
+        // The provider is torn down exactly once, at manager shutdown.
         var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
@@ -337,45 +340,77 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             .Be(0, "a HasPendingMessages completion must not dispose the owned provider");
         _manager.Peek(agentId).Should().Contain("\"running\"");
 
-        // The terminal completion disposes the owned provider exactly once.
+        // The TERMINAL completion settles the sub-agent — waiting on the published status is what makes
+        // the assertion below non-vacuous, since it proves the terminal branch actually ran — and must
+        // still leave the owned provider alive for the reusable loop.
         releaseTerminal.SetResult(true);
         await Wait.UntilAsync(
-            () => Volatile.Read(ref disposeCount) == 1,
-            "the owned provider was disposed exactly once",
+            () =>
+                _manager!.TryPeek(agentId, out var status)
+                && JsonDocument.Parse(status).RootElement.GetProperty("status").GetString() == "completed",
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10)
         );
-        Volatile.Read(ref disposeCount).Should().Be(1, "the terminal completion disposes the owned provider once");
+        Volatile
+            .Read(ref disposeCount)
+            .Should()
+            .Be(
+                0,
+                "provider ownership follows the loop, not the run: a terminal completion leaves the loop "
+                    + "reusable, so disposing its provider here would break the very next continuation"
+            );
+
+        // Shutdown is the one thing that ends the loop, so it is the one thing that disposes the
+        // provider — exactly once, not once per completed run.
+        await _manager.DisposeAsync();
+        Volatile.Read(ref disposeCount).Should().Be(1, "manager shutdown disposes the owned provider exactly once");
     }
 
     [Fact]
-    public async Task RestartRunAsync_AfterFailedTerminalDisposal_RebuildsFreshProviderInsteadOfReusingPoisoned()
+    public async Task RestartRunAsync_AfterAFailedRestartLeftAnUndisposedProvider_RetriesDisposalAndRebuildsInsteadOfLeakingIt()
     {
-        // Blocker A: if a terminal owned-provider disposal THROWS, the provider may be partially torn
-        // down. A later continuation must NOT reuse it — the restart path must rebuild a fresh provider.
-        // A failed disposal resets the dispose guard (HasDisposedOwnedProviderAgent == false), so without
-        // the poison flag the rebuild branch would be skipped and the partially-disposed provider reused.
+        // Blocker A, re-aimed at the loop-lifetime provider policy. A normal completion no longer
+        // disposes the owned provider, so the "poisoned at terminal disposal" trigger this test used to
+        // arrange no longer exists. The hazard it guarded does: the RESTART-FAILURE cleanup
+        // (RestartRunAsync's catch) disposes the loop, marks it disposed, and disposes the owned
+        // provider — and when THAT disposal throws, the dispose guard resets to Idle, leaving a DISPOSED
+        // LOOP owning a LIVE provider. The next continuation must rebuild the pipeline (the loop is
+        // dead) AND retry disposing the still-live provider before overwriting its slot; skipping the
+        // retry silently leaks it, because the handle is gone once the slot is replaced.
+        //
+        // Also pins the contract change itself: an ordinary completion must NOT rebuild anything.
         var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
-        // Agent #1 completes once (triggering terminal disposal), then keeps its subscription open; the
-        // restarted agent #2 just waits so the resumed run stays alive for assertions.
+        // Agent #1 completes once (so the follow-up is a restart, not an inject), keeps its subscription
+        // open on later epochs, and fails the RESTART's own send (call >= 2) so RestartRunAsync enters
+        // its failure cleanup. Agent #2 is the rebuild and just waits, so the resumed run stays alive.
         var agentCallCount = 0;
         _manager.TestAgentFactoryOverride = (_, _) =>
         {
             var idx = Interlocked.Increment(ref agentCallCount);
-            return new FakeMultiTurnAgent
-            {
-                SubscribeImpl = (_, ct) =>
-                    idx == 1
-                        ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
-                        : FakeMultiTurnAgent.WaitForeverStream(ct),
-            };
+            return idx == 1
+                ? new FakeMultiTurnAgent
+                {
+                    SubscribeImpl = (callIndex, ct) =>
+                        callIndex == 1
+                            ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                            : FakeMultiTurnAgent.WaitForeverStream(ct),
+                    SendImpl = callIndex =>
+                        callIndex == 1
+                            ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
+                            : ValueTask.FromException<SendReceipt>(
+                                new InvalidOperationException("restart send failed")
+                            ),
+                }
+                : new FakeMultiTurnAgent { SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct) };
         };
 
-        // Provider #1's terminal disposal throws the FIRST time (poison), then SUCCEEDS on the restart
-        // retry; provider #2 is the fresh rebuild. Failing-once-then-succeeding lets us assert the retry
-        // disposal path actually runs (a second attempt) rather than just that a replacement was created.
+        // Provider #1's disposal throws the FIRST time (the restart-failure cleanup swallows it, leaving
+        // the provider live behind a disposed loop) and SUCCEEDS on the rebuild's retry; provider #2 is
+        // the fresh replacement. Failing-once-then-succeeding is what lets the test assert the retry
+        // disposal actually RAN (a second attempt) rather than merely that a replacement was created.
         var providerCallCount = 0;
         var poisonedDisposeAttempts = 0;
         _manager.TestOwnedProviderOverride = (_, _) =>
@@ -404,7 +439,6 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // Wait until the first run has completed (its terminal disposal ran and threw).
         await Wait.UntilAsync(
             () =>
             {
@@ -420,19 +454,38 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         Volatile
             .Read(ref poisonedDisposeAttempts)
             .Should()
-            .Be(1, "the terminal disposal must have attempted (and failed) to dispose provider #1 exactly once");
-        providerCallCount.Should().Be(1, "only the initial provider exists before the continuation");
+            .Be(0, "a completed run leaves its loop reusable, so completion must not touch the owned provider");
 
-        // Act: a continuation restarts the finished run. Because provider #1's terminal disposal FAILED,
-        // the restart must rebuild a fresh provider (call #2), never reuse the poisoned instance.
-        _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+        // First continuation: no rebuild trigger exists yet, so the restart REUSES the live loop — and
+        // that reused loop's restart send fails, driving the cleanup that disposes the loop and (fails
+        // to) dispose the provider.
+        var failingRestart = () => _manager!.SendMessageAsync(agentId, "continue", runInBackground: true);
+        await failingRestart.Should().ThrowAsync<InvalidOperationException>().WithMessage("restart send failed");
 
-        providerCallCount.Should().Be(2, "the poisoned provider must be replaced with a fresh one on restart");
+        agentCallCount
+            .Should()
+            .Be(1, "a completion alone must not rebuild the pipeline — the restart reuses the live loop");
+        providerCallCount.Should().Be(1, "and therefore must not build a second provider either");
         Volatile
             .Read(ref poisonedDisposeAttempts)
             .Should()
-            .Be(2, "the restart must RETRY disposing the poisoned provider before swapping in the replacement");
-        _manager.Peek(agentId).Should().Contain("\"running\"", "the resumed run is live on the fresh provider");
+            .Be(1, "the restart-failure cleanup must have attempted (and failed) to dispose the owned provider once");
+
+        // Second continuation: the loop is disposed, so this one MUST rebuild — and must retry the
+        // still-pending provider disposal before overwriting the slot.
+        _ = await _manager.SendMessageAsync(agentId, "continue-again", runInBackground: true);
+
+        agentCallCount.Should().Be(2, "a restart onto a disposed loop must rebuild it, never send into it");
+        providerCallCount.Should().Be(2, "the rebuilt loop gets a fresh provider");
+        Volatile
+            .Read(ref poisonedDisposeAttempts)
+            .Should()
+            .Be(
+                2,
+                "the rebuild must RETRY disposing the still-live provider of the disposed loop before "
+                    + "overwriting the slot, or that handle is leaked forever"
+            );
+        _manager.Peek(agentId).Should().Contain("\"running\"", "the resumed run is live on the fresh pipeline");
     }
 
     [Fact]
@@ -453,27 +506,20 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         _manager.TestAgentFactoryOverride = (_, _) =>
         {
-            var which = Interlocked.Increment(ref agentCallCount);
-            if (which != 1)
-            {
-                // Agent #2 (the restart) stays running and uses the default succeeding send.
-                return new FakeMultiTurnAgent
-                {
-                    SentSink = sentSink,
-                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct),
-                };
-            }
+            _ = Interlocked.Increment(ref agentCallCount);
 
-            // Agent #1: spawn send (call 1) succeeds; the inject (call >= 2) signals it is in flight then
-            // BLOCKS on its token — the manager's linked lifecycle token — until terminal disposal cancels
-            // it. Its run completes terminally only AFTER the inject is in flight, so the lease is held when
-            // terminal disposal runs and the lifecycle-cancel path is exercised end to end.
+            // Send call 1 (spawn) succeeds. Call 2 (the inject) signals it is in flight then BLOCKS on
+            // its token — the manager's linked lifecycle token — until terminal disposal cancels it.
+            // Call 3 is the REDELIVERY the restart performs, and must succeed. Subscribe call 1 completes
+            // terminally only AFTER the inject is in flight (so the lease is held when the terminal lands
+            // and the lifecycle-cancel path runs end to end); the restarted epoch's subscription just
+            // stays open so the resumed run remains live.
             return new FakeMultiTurnAgent
             {
                 SentSink = sentSink,
                 SendWithTokenImpl = async (idx, sendCt) =>
                 {
-                    if (idx >= 2)
+                    if (idx == 2)
                     {
                         _ = injectStarted.TrySetResult(true);
                         await Task.Delay(Timeout.InfiniteTimeSpan, sendCt);
@@ -481,12 +527,17 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
                     return new SendReceipt(Guid.NewGuid().ToString("N"), null, DateTimeOffset.UtcNow);
                 },
-                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitThenCompleteStream(injectStarted.Task, "run-1", ct),
+                SubscribeImpl = (callIndex, ct) =>
+                    callIndex == 1
+                        ? FakeMultiTurnAgent.WaitThenCompleteStream(injectStarted.Task, "run-1", ct)
+                        : FakeMultiTurnAgent.WaitForeverStream(ct),
             };
         };
 
-        // Owned provider disposes cleanly at terminal completion, so HasDisposedOwnedProviderAgent drives
-        // the restart rebuild.
+        // An OWNED provider is what arms the lifecycle cancel at terminal completion
+        // (SubAgentState.BeginTerminalDisposalAsync cancels the lifecycle CTS only when the sub-agent
+        // owns its provider and a send lease is outstanding). It is no longer disposed there, so the
+        // restart below deliberately reuses this same live pipeline.
         _manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
 
         var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
@@ -509,12 +560,21 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
                 "resumed",
                 "the lifecycle-cancelled inject must be re-driven through the restart path, not surfaced as cancellation"
             );
-        agentCallCount.Should().Be(2, "the finished run must be restarted on a fresh agent");
-        sentSink
+        agentCallCount
             .Should()
-            .Contain(
-                "resumed-prompt",
-                "the user's prompt must reach the restarted run rather than being dropped on lifecycle cancellation"
+            .Be(
+                1,
+                "the terminal completion no longer disposes the owned provider, so the restart reuses the "
+                    + "live loop instead of rebuilding it"
+            );
+        sentSink
+            .Count(text => string.Equals(text, "resumed-prompt", StringComparison.Ordinal))
+            .Should()
+            .Be(
+                2,
+                "exactly the cancelled inject attempt plus ONE redelivery through the restarted run: fewer "
+                    + "means the user's prompt was dropped on lifecycle cancellation, more means it was "
+                    + "delivered twice"
             );
     }
 
@@ -573,31 +633,34 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var agentCallCount = 0;
         _manager.TestAgentFactoryOverride = (_, _) =>
         {
-            var which = Interlocked.Increment(ref agentCallCount);
-            if (which == 1)
-            {
-                // Agent #1 completes once (becomes restartable), then keeps its subscription open.
-                return new FakeMultiTurnAgent
-                {
-                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
-                };
-            }
+            _ = Interlocked.Increment(ref agentCallCount);
 
-            // Agent #2 (the restart): its monitor faults immediately; its restart SendAsync blocks on the
-            // gate so the test can confirm the fault was recorded (status Error) BEFORE TryArmRunning runs.
+            // Epoch 1 completes once (making the sub-agent restartable) and keeps its subscription open.
+            // The RESTARTED epoch's monitor faults immediately, while the restart's own SendAsync blocks
+            // on the gate so the test can confirm the fault was recorded (status Error) BEFORE
+            // TryArmRunning runs. Same loop instance across both epochs: a completion no longer disposes
+            // the owned provider, so the restart reuses the live pipeline rather than rebuilding it.
             return new FakeMultiTurnAgent
             {
-                SubscribeImpl = (_, _) =>
-                    FakeMultiTurnAgent.ThrowingStream(new InvalidOperationException("restarted monitor blew up")),
-                SendWithTokenImpl = async (_, sendCt) =>
+                SubscribeImpl = (callIndex, ct) =>
+                    callIndex == 1
+                        ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                        : FakeMultiTurnAgent.ThrowingStream(new InvalidOperationException("restarted monitor blew up")),
+                SendWithTokenImpl = async (callIndex, sendCt) =>
                 {
-                    await restartSendGate.Task.WaitAsync(sendCt);
-                    return new SendReceipt("restart-send", null, DateTimeOffset.UtcNow);
+                    if (callIndex >= 2)
+                    {
+                        await restartSendGate.Task.WaitAsync(sendCt);
+                    }
+
+                    return new SendReceipt($"send-{callIndex}", null, DateTimeOffset.UtcNow);
                 },
             };
         };
 
-        // Owned provider disposes cleanly at agent #1's terminal, so the restart rebuilds (agent #2).
+        // An owned provider is present (so the terminal transition takes the owned-provider path), but
+        // under loop-lifetime ownership it is no longer disposed at completion and therefore no longer
+        // forces a rebuild.
         _manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
 
         var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
@@ -650,6 +713,9 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
                 "error",
                 "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running"
             );
+        agentCallCount
+            .Should()
+            .Be(1, "the restart reused the live loop, so the faulting monitor is the SAME agent's second epoch");
     }
 
     [Fact]
@@ -1044,28 +1110,32 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         );
         manager.TestPerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromMilliseconds(200);
 
-        var instances = 0;
+        var runStarts = 0;
         manager.TestAgentFactoryOverride = (agentId, _) =>
-        {
-            var idx = Interlocked.Increment(ref instances);
-            return idx == 1
-                ? new FakeMultiTurnAgent
-                {
-                    ThreadId = $"subagent-{agentId}",
-                    // Epoch 1 finishes so the follow-up restarts it; its RunTask honours cancellation so
-                    // the PRE-rebuild await returns cleanly and the test reaches the failure-cleanup path.
-                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
-                }
-                : new FakeMultiTurnAgent
-                {
-                    ThreadId = $"subagent-{agentId}",
-                    // Epoch 2 (the replacement): its SendAsync throws, driving RestartRunAsync into the
-                    // catch, while its RunTask ignores cancellation -- the task the cleanup await bounds.
-                    SendImpl = _ =>
-                        ValueTask.FromException<SendReceipt>(new InvalidOperationException("restart send failed")),
-                    RunImpl = _ => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
-                };
-        };
+            new FakeMultiTurnAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                // Epoch 1 finishes so the follow-up restarts it; the replacement epoch's subscription
+                // just stays open. Same loop instance across both epochs: a completion no longer
+                // disposes the owned provider, so the restart reuses the live pipeline.
+                SubscribeImpl = (callIndex, ct) =>
+                    callIndex == 1
+                        ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                        : FakeMultiTurnAgent.WaitForeverStream(ct),
+                // The spawn send succeeds; the RESTART's send throws AFTER the replacement run/monitor
+                // have already started, driving RestartRunAsync into its failure-cleanup catch.
+                SendImpl = callIndex =>
+                    callIndex == 1
+                        ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
+                        : ValueTask.FromException<SendReceipt>(new InvalidOperationException("restart send failed")),
+                // Epoch 1's run honours cancellation so the restart's PRE-rebuild await returns cleanly
+                // and the test actually reaches the failure-cleanup path; epoch 2's run ignores its own
+                // token entirely -- that is the task the cleanup await must bound.
+                RunImpl = ct =>
+                    Interlocked.Increment(ref runStarts) == 1
+                        ? Task.Delay(Timeout.InfiniteTimeSpan, ct)
+                        : Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
+            };
         manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
         _manager = manager;
 

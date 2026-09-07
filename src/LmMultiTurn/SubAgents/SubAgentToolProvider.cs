@@ -622,7 +622,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "target",
-                    Description = "The recipient's agent_id (preferred — names can collide) or its name.",
+                    Description =
+                        "The recipient's agent_id, exact unique name, or alias from GetAgents. "
+                        + "'primary' addresses the top-level conversation, not your immediate parent. "
+                        + "IDs take precedence; use an ID when a name or alias collides.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -780,7 +783,9 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_ids",
-                    Description = "Comma-separated agent ids or names to check, e.g. " + "'agt_1, auth-reviewer'.",
+                    Description =
+                        "Comma-separated agent ids, exact unique names, or aliases from GetAgents, "
+                        + "e.g. 'primary, auth-reviewer'. IDs take precedence; shared names require IDs.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -878,7 +883,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 "List every agent in this collaboration — not just your own sub-agents — with its "
                 + "agent_id, name, role, description, and where it sits in the hierarchy. Use it "
                 + "to find who already owns a piece of work BEFORE spawning someone new to do it, "
-                + "and to get the agent_id to address with SendMessage.",
+                + "and to get an agent_id, exact unique name, or alias to address with SendMessage. "
+                + "name_resolves_to_agent indicates whether the displayed name selects that row; "
+                + "aliases lists usable alternative addresses. 'primary' names the top-level conversation "
+                + "at every hierarchy depth unless that address collides. Resolution does not grant access: "
+                + "check is_live and transcript_readable; WaitForAgents still covers only your own children.",
             Parameters = [],
         };
 
@@ -1735,6 +1744,11 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             agent_id = e.AgentId,
             name = e.Name,
+            name_resolves_to_agent = collaboration.Directory.Resolve(e.Name).Entry?.AgentId == e.AgentId,
+            aliases = e.Kind == AgentKind.Root
+            && collaboration.Directory.Resolve(AgentCollaborationDirectory.PrimaryAlias).Entry?.AgentId == e.AgentId
+                ? (string[])[AgentCollaborationDirectory.PrimaryAlias]
+                : [],
             role = e.Role,
             description = e.Description,
             kind = e.Kind.ToString(),

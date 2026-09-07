@@ -23,6 +23,31 @@ public record SubAgentOptions
     public int MaxConcurrentSubAgents { get; init; } = 5;
 
     /// <summary>
+    /// Maximum number of sub-agents this manager keeps ADMITTED at once — running, queued, or finished
+    /// and retained for a warm follow-up.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="MaxConcurrentSubAgents"/> bounds only how many run simultaneously, and a completed run
+    /// hands its permit straight back. Since a finished sub-agent now keeps its loop and its owned
+    /// provider alive so a follow-up resumes warm, nothing else stops a parent that spawns sequentially
+    /// from accumulating runtimes without limit. This is that bound.
+    /// </para>
+    /// <para>
+    /// It is a REFUSAL, never an eviction: an admitted sub-agent is never killed or torn down to make
+    /// room, so no existing child loses its history or its ability to resume. A spawn over the ceiling
+    /// is rejected with a recoverable, model-actionable tool result naming the ceiling.
+    /// </para>
+    /// <para>
+    /// Defaults to 32, matching <c>AgentCollaborationOptions.MaxTotalAgents</c> — under collaboration
+    /// that root-wide bound is the binding one, so hosts see the same number either way. A value below
+    /// <see cref="MaxConcurrentSubAgents"/> would refuse spawns the concurrency gate would happily admit,
+    /// so the effective ceiling is never lower than <see cref="MaxConcurrentSubAgents"/>.
+    /// </para>
+    /// </remarks>
+    public int MaxRetainedSubAgents { get; init; } = 32;
+
+    /// <summary>
     /// Maximum number of accepted spawns waiting for a concurrency slot. Once full, new over-capacity
     /// requests fail immediately with a recoverable <c>queue_full</c> tool result instead of retaining
     /// unbounded prompts and future billable work. Defaults to 100; set lower for constrained hosts.

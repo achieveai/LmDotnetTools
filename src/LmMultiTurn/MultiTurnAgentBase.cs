@@ -993,6 +993,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     #region Persistence
 
+    internal Task RecoverHistoryIfNeededAsync(CancellationToken ct = default) =>
+        _historyRecovered ? Task.CompletedTask : RecoverAsync(ct);
+
     /// <summary>
     /// Persists a message to the store. Called by AddToHistory when a store is configured.
     /// Override to customize persistence behavior.

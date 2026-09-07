@@ -241,15 +241,30 @@ public sealed class SubAgentManager : IAsyncDisposable
     public AgentCollaborationSetup? Collaboration { get; }
 
     /// <summary>
-    /// Per-agent collaboration bookkeeping, keyed by agent id.
+    /// Per-agent admission bookkeeping, keyed by agent id.
     /// </summary>
     /// <remarks>
     /// Kept beside the spawn rather than threaded through <see cref="StartWithHeldPermitAsync"/>,
     /// <see cref="QueuedSpawn"/>, and <see cref="SubAgentState"/> because the inline path, the defer
     /// queue, and the restart path all need the same two values at different times, and every one of
-    /// them already knows the agent id. Empty whenever collaboration is off.
+    /// them already knows the agent id. Holds an entry for EVERY admitted sub-agent, collaboration on
+    /// or off, so the one retirement path accounts for both ceilings.
     /// </remarks>
     private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The ceiling on sub-agents this manager keeps admitted at once, used only when collaboration is
+    /// OFF (see <see cref="SubAgentOptions.MaxRetainedSubAgents"/>).
+    /// </summary>
+    /// <remarks>
+    /// Under collaboration the root-wide <c>MaxTotalAgents</c> limiter is the binding bound and this one
+    /// would only duplicate it less accurately — a hierarchy shares the root's budget, not one manager's.
+    /// Without collaboration nothing else is total: <see cref="_concurrencyGate"/> bounds simultaneous
+    /// runs and a completion hands its permit straight back, while the completed child keeps its loop and
+    /// owned provider alive for a warm follow-up. This limiter is what makes that retention finite. It
+    /// refuses; it never evicts, so no admitted child is torn down to make room for a new one.
+    /// </remarks>
+    private readonly AgentCapacityLimiter _retainedAgents;
 
     /// <summary>
     /// The ordinal sequence (#705) for the ROOT conversation this manager belongs to — created here at the
@@ -257,8 +272,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private readonly SubAgentOrdinalAllocator _ordinals;
 
-    /// <summary>What the collaboration granted a spawn: the child's own handle, and its capacity slot.</summary>
-    private sealed record SubAgentAdmission(AgentCollaborationSetup Child, AgentCapacityLease Lease);
+    /// <summary>
+    /// What admission granted a spawn: its capacity slot, and — under collaboration — the child's own
+    /// handle. <see cref="Child"/> is null exactly when collaboration is off, which is also what says the
+    /// lease came from <see cref="_retainedAgents"/> rather than from the collaboration directory.
+    /// </summary>
+    private sealed record SubAgentAdmission(AgentCollaborationSetup? Child, AgentCapacityLease Lease);
 
     /// <summary>
     /// The child's handle on the collaboration, or null when collaboration is off or the id is unknown.
@@ -267,16 +286,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         _admissions.TryGetValue(agentId, out var admission) ? admission.Child : null;
 
     /// <summary>
-    /// Asks the collaboration to admit a spawn, reserving its capacity slot and publishing it in the
-    /// directory so it is addressable from the moment the spawn is accepted.
+    /// Admits a spawn against whichever total ceiling governs this manager, reserving its capacity slot
+    /// — and, under collaboration, publishing it in the directory so it is addressable from the moment
+    /// the spawn is accepted.
     /// </summary>
     /// <remarks>
-    /// No-op when collaboration is off. Registration happens HERE rather than in the child's own loop
-    /// because the directory takes an agent's endpoint at registration time, and only this manager can
-    /// deliver into a sub-agent whose lifecycle it owns.
+    /// Registration happens HERE rather than in the child's own loop because the directory takes an
+    /// agent's endpoint at registration time, and only this manager can deliver into a sub-agent whose
+    /// lifecycle it owns. With collaboration off there is no directory, but there is still a ceiling:
+    /// <see cref="_retainedAgents"/>, which bounds how many warm runtimes this manager keeps alive.
+    /// Either way the slot is charged ONCE per agent identity and returned only by
+    /// <see cref="RetireAgent"/>, so resuming an already-admitted child costs nothing.
     /// </remarks>
-    /// <exception cref="SubAgentCollaborationException">The collaboration refused the spawn.</exception>
-    private void AdmitToCollaboration(
+    /// <exception cref="SubAgentCollaborationException">The spawn was refused.</exception>
+    private void AdmitAgent(
         string agentId,
         string effectiveName,
         string templateName,
@@ -287,6 +310,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         if (Collaboration is not { } parent)
         {
+            // No collaboration, so no directory, no depth rule, and no role/description contract — but
+            // the same finiteness obligation. Refuse rather than evict: an admitted sub-agent keeps its
+            // history and its ability to resume, and the caller is told exactly what to do instead.
+            var retainedLease =
+                _retainedAgents.TryAcquire(agentId)
+                ?? throw new SubAgentCollaborationException(
+                    SubAgentCollaborationFailureCodes.CapacityExhausted,
+                    $"This agent already holds its maximum of {_retainedAgents.Capacity} sub-agents. "
+                        + "Finished sub-agents stay addressable, so send a follow-up message to an "
+                        + "existing one instead of spawning another."
+                );
+
+            _admissions[agentId] = new SubAgentAdmission(Child: null, retainedLease);
             return;
         }
 
@@ -402,26 +438,32 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Withdraws a sub-agent from the collaboration and returns its capacity slot.
+    /// Withdraws a sub-agent from admission and returns its capacity slot — to the collaboration when
+    /// one is in play, otherwise to this manager's own retained-runtime ceiling.
     /// </summary>
     /// <remarks>
     /// Deliberately NOT called when a run merely finishes: a completed background sub-agent stays
-    /// addressable (a later message restarts it), so it is still an admitted member and still occupies
-    /// a slot. Retirement belongs to the points where the agent stops existing — failed spawn rollback
-    /// and manager disposal.
+    /// addressable (a later message restarts it) and keeps its loop alive, so it is still an admitted
+    /// member and still occupies a slot. Retirement belongs to the points where the agent stops
+    /// existing — failed spawn rollback, queued-spawn cancellation, and manager disposal. Idempotent,
+    /// because those paths overlap.
     /// </remarks>
-    private void RetireFromCollaboration(string agentId, string status)
+    private void RetireAgent(string agentId, string status)
     {
-        if (Collaboration is not { } parent || !_admissions.TryRemove(agentId, out var admission))
+        if (!_admissions.TryRemove(agentId, out var admission))
         {
             return;
         }
 
-        // Retirement closes the obligations; telling their senders is what stops one of them waiting on
-        // an answer that can no longer come. Not awaited: retirement runs on teardown paths that are
-        // synchronous by contract, and the notification never throws.
-        var abandoned = parent.Bundle.RetireAgent(agentId, status);
-        ObserveTaskFault(parent.Bundle.NotifyAbandonedObligationsAsync(abandoned, agentId));
+        if (Collaboration is { } parent && admission.Child is not null)
+        {
+            // Retirement closes the obligations; telling their senders is what stops one of them waiting
+            // on an answer that can no longer come. Not awaited: retirement runs on teardown paths that
+            // are synchronous by contract, and the notification never throws.
+            var abandoned = parent.Bundle.RetireAgent(agentId, status);
+            ObserveTaskFault(parent.Bundle.NotifyAbandonedObligationsAsync(abandoned, agentId));
+        }
+
         _ = admission.Lease.Release();
     }
 
@@ -455,6 +497,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (options.MaxQueuedSubAgents < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "MaxQueuedSubAgents cannot be negative.");
+        }
+
+        if (options.MaxRetainedSubAgents <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxRetainedSubAgents must be greater than zero.");
         }
 
         // Checked here rather than where a spawned child builds its bounded output channel: that read
@@ -508,6 +555,15 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Fall back to a direct one-hop relay when no upstream root target was supplied.
         _descendantQuestionSink = descendantQuestionSink ?? RelayDescendantQuestionToParentAsync;
         _concurrencyGate = new SemaphoreSlim(options.MaxConcurrentSubAgents, options.MaxConcurrentSubAgents);
+
+        // The retained-runtime ceiling, raised to MaxConcurrentSubAgents when a host configured the two
+        // inconsistently. This is a deliberate, documented clamp rather than a silent rewrite of the
+        // configured value: a ceiling below the concurrency gate would refuse spawns the gate would
+        // admit, turning "how many may run at once" into a number the host cannot actually reach. See
+        // SubAgentOptions.MaxRetainedSubAgents.
+        _retainedAgents = new AgentCapacityLimiter(
+            Math.Max(options.MaxRetainedSubAgents, options.MaxConcurrentSubAgents)
+        );
 
         // Start the defer-queue pump. Its first action parks on _queueSignal (initialized above via its
         // field initializer), so this call returns to the ctor immediately without consuming a thread.
@@ -641,11 +697,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         // SendMessage target - as e.g. `reviewer-2`. An explicitly supplied name is always kept verbatim.
         var effectiveName = string.IsNullOrWhiteSpace(name) ? DeriveReadableName(templateName, ordinal) : name;
 
+        ct.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+
         // Admission to the collaboration happens BEFORE the concurrency permit and before the defer
         // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
         // collaboration will not accept must never occupy a local slot or sit in the queue. No-op when
         // collaboration is off.
-        AdmitToCollaboration(agentId, effectiveName, templateName, template, role, description);
+        AdmitAgent(agentId, effectiveName, templateName, template, role, description);
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -738,7 +797,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             // The spawn never reached the queue, so nothing downstream will ever retire it. Give the
             // collaboration its slot back here or the cap leaks one agent per rejected spawn.
-            RetireFromCollaboration(agentId, "error");
+            RetireAgent(agentId, "error");
             throw;
         }
 
@@ -898,6 +957,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             // Start the agent loop in the background
+            ConfigureRunAdmission(state, gateGuard);
             SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
             state.RunTask = agent.RunAsync(cts.Token);
@@ -931,7 +991,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // about an agent that was never constructed, and a lease left behind would
                 // shrink the whole hierarchy's capacity permanently.
                 gateGuard.ReleaseOnce(_concurrencyGate);
-                RetireFromCollaboration(agentId, AgentCollaborationStatuses.Error);
+                RetireAgent(agentId, AgentCollaborationStatuses.Error);
             }
             else
             {
@@ -1056,7 +1116,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // not hang past disposal. Routed through CancelQueuedSpawn (not a bare RemoveQueuedSpawn +
         // TrySetCanceled) so this exit also hands back the root-wide capacity lease and retires the
         // directory row admission took at queue time - the same accounting every other pre-start exit
-        // in this loop already gets. RetireFromCollaboration is idempotent, so this is safe even though
+        // in this loop already gets. RetireAgent is idempotent, so this is safe even though
         // DisposeAsync's own admissions sweep (see the loop over _admissions.Keys near the end of
         // DisposeAsync) would otherwise catch anything left behind here.
         while (_spawnQueue.TryDequeue(out var pending))
@@ -1076,7 +1136,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>
     /// Abandons a queued spawn that never got its held permit: drops the local queue bookkeeping,
-    /// hands back the collaboration admission the queue-time <see cref="AdmitToCollaboration"/> call
+    /// hands back the collaboration admission the queue-time <see cref="AdmitAgent"/> call
     /// already granted, and unblocks a foreground caller waiting on <see cref="QueuedSpawn.StateReady"/>.
     /// </summary>
     /// <remarks>
@@ -1087,12 +1147,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// stays charged against <c>MaxTotalAgents</c> and the directory entry stays "queued" forever — so
     /// repeated cancelled queued spawns permanently shrink the collaboration's capacity. No-op when
     /// collaboration is off, or when the admission was already retired (idempotent, like
-    /// <see cref="RetireFromCollaboration"/> itself).
+    /// <see cref="RetireAgent"/> itself).
     /// </remarks>
     private void CancelQueuedSpawn(QueuedSpawn queued, CancellationToken cancellationToken)
     {
         RemoveQueuedSpawn(queued);
-        RetireFromCollaboration(queued.AgentId, AgentCollaborationStatuses.Stopped);
+        RetireAgent(queued.AgentId, AgentCollaborationStatuses.Stopped);
         _ = queued.StateReady.TrySetCanceled(cancellationToken);
     }
 
@@ -1331,7 +1391,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     )
     {
         _ = _agents.TryRemove(agentId, out _);
-        RetireFromCollaboration(agentId, "error");
+        RetireAgent(agentId, "error");
         if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mappedId) && mappedId == agentId)
         {
             // This spawn owns the name only because it took it from a live predecessor. Restoring it
@@ -1442,10 +1502,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </para>
     /// <para>
     /// Public because a host's out-of-band notifications (a todo-board nudge or digest, #690) must take
-    /// THIS path too: a child that finished keeps a live loop that still accepts input, but its owned
-    /// provider was disposed at completion, so a direct <c>TrySendAsync</c> at the loop starts a run that
-    /// dies on its first provider call. Only this method restarts a finished child with a fresh provider
-    /// (or refuses observably), and <see cref="TryGetAgent"/> alone cannot tell a finished child apart.
+    /// THIS path too: a child whose run finished normally retains its loop and owned provider for warm
+    /// follow-ups. This method coordinates lifecycle and admission, rebuilding only when the existing
+    /// runtime is unusable (or refusing observably). <see cref="TryGetAgent"/> alone does not establish
+    /// whether the child can accept another run.
     /// </para>
     /// </remarks>
     public async Task<string> SendMessageAsync(
@@ -1456,6 +1516,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     )
     {
         ArgumentNullException.ThrowIfNull(message);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
 
         var messageLength = (message as ICanGetText)?.GetText()?.Length ?? 0;
         var agentId = ResolveAgentId(target);
@@ -1661,6 +1722,23 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private bool TryResolveAgentId(string target, out string agentId)
     {
+        if (Collaboration is { } collaboration)
+        {
+            // Use the same identity and ambiguity rules as messaging, without widening ownership.
+            var resolved = collaboration.Directory.Resolve(target).Entry;
+            if (
+                resolved is not null
+                && (_agents.ContainsKey(resolved.AgentId) || _queuedSpawns.ContainsKey(resolved.AgentId))
+            )
+            {
+                agentId = resolved.AgentId;
+                return true;
+            }
+
+            agentId = string.Empty;
+            return false;
+        }
+
         if (_agents.ContainsKey(target) || _queuedSpawns.ContainsKey(target))
         {
             agentId = target;
@@ -1821,11 +1899,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
-                // If the previous terminal disposal FAILED (poisoned), retry disposing that provider
-                // before swapping in the replacement so the partially-disposed instance isn't leaked.
-                // The disposal guard reset to Idle on the earlier failure, so this genuinely retries;
-                // when it had been cleanly disposed the flag is false and this block is skipped.
-                if (state.OwnedProviderTerminalDisposeFailed)
+                // A disposed loop may still own a live provider. Release that ownership before
+                // replacing its slot; the disposal guard also permits retry after a prior failure.
+                if (state.OwnedProviderAgent is not null)
                 {
                     try
                     {
@@ -1872,11 +1948,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 state.SwapLiveAgentAndSignalReplaced(replacementAgent);
             }
 
-            // Recover conversation history after replacing a completed owned-provider loop, so a
-            // continuation uses the fresh provider pipeline while retaining persisted context.
+            // Recover fresh loops before accepting a continuation, but never append persisted
+            // history again to a reused loop that already owns the same conversation.
             if (state.Store != null && state.Agent is MultiTurnAgentBase agentBase)
             {
-                _ = await agentBase.RecoverAsync();
+                await agentBase.RecoverHistoryIfNeededAsync(ct);
             }
 
             // Create new CTS and start the loop again
@@ -1888,6 +1964,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // and (b) the Running publish below is generation-guarded against a fast completion.
             state.ResetLifecycleCts();
             var runGeneration = state.BeginRunGeneration();
+            ConfigureRunAdmission(state, gateGuard);
 
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
@@ -1905,9 +1982,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Running while the directory still said "completed" would make the agent look terminal to
             // every other agent in the hierarchy, and a steer addressed to it would be refused for as
             // long as the restarted run lasted.
-            if (state.TryArmRunning(runGeneration))
+            await state.RunTransition.WaitAsync(ct);
+            try
             {
-                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+                if (state.TryArmRunning(runGeneration))
+                {
+                    SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+                }
+            }
+            finally
+            {
+                _ = state.RunTransition.Release();
             }
 
             _logger.LogInformation(
@@ -2670,7 +2755,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
         foreach (var agentId in _admissions.Keys.ToArray())
         {
-            RetireFromCollaboration(agentId, AgentCollaborationStatuses.Stopped);
+            RetireAgent(agentId, AgentCollaborationStatuses.Stopped);
         }
 
         // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
@@ -2701,7 +2786,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // blocked on StateReady unblocks with cancellation instead of hanging, then dispose the
         // defer-queue primitives. Routed through CancelQueuedSpawn for the same reason as the pump's
         // own tail drain: it must hand back the root-wide capacity lease too, not just unblock the
-        // caller. RetireFromCollaboration is idempotent, so this is harmless even for an entry the
+        // caller. RetireAgent is idempotent, so this is harmless even for an entry the
         // _admissions sweep above already retired.
         lock (_spawnQueue)
         {
@@ -3384,7 +3469,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // directory with an inbox and a write endpoint, addressable by anyone, and unable to answer:
             // with the default MaxDelegationDepth of 1 that silenced EVERY sub-agent. Handing the child
             // subAgentOptions gives it an independent SubAgentManager (own concurrency pool, own queue)
-            // while the shared bundle keeps capacity and depth root-wide, and AdmitToCollaboration still
+            // while the shared bundle keeps capacity and depth root-wide, and AdmitAgent still
             // refuses an over-depth spawn defensively. Without collaboration this stays null — the
             // historical recursion guard, where exactly one level of ordinary sub-agents exists.
             var childCollaboration = GetChildCollaboration(agentId);
@@ -4319,66 +4404,162 @@ public sealed class SubAgentManager : IAsyncDisposable
                         await beforeClassify(state, rcm);
                     }
 
-                    var awaitingQuestion =
-                        !rcm.HasPendingMessages && !rcm.IsError && await HasPendingAskUserQuestionAsync(state);
-
-                    // The window this closes (#262) opens the instant the question is resolved and closes
-                    // when the answer-triggered work produces its text: awaitingQuestion is already false
-                    // (the registry was emptied by the resolution), yet this run has nothing to hand back,
-                    // so the terminal branch would settle the caller with "(no text response)" and discard
-                    // the real answer that follows.
-                    //
-                    // TWO different runs can land here, and they are non-terminal for DIFFERENT reasons, so
-                    // they are gated separately. Collapsing them into one test is what re-opens #262:
-                    //
-                    //   A. `latchedThisRun` — the parked run's OWN completion, dequeued after the answer
-                    //      already emptied the deferred registry. This is the precise ordering the issue
-                    //      describes. Such a run necessarily emitted the AskUserQuestion tool call, so
-                    //      `sawModelOutput` is ALWAYS true for it and the veto below would wrongly call it
-                    //      terminal. It cannot be a disguised deadlock: reaching here means the question
-                    //      was resolved (awaitingQuestion false while ParkedOnQuestion is true), and a
-                    //      resolution always enqueues the follow-on run that carries the answer.
-                    //
-                    //   B. `!sawModelOutput` — a run that never reached the model at all: the
-                    //      zero-model-turn shape a resolution-triggered child run has when it is not the
-                    //      one clearing the last outstanding call (#227). Here the veto is what keeps the
-                    //      branch narrow, because a run that DID call the model and merely produced no
-                    //      returnable text (a thinking-only turn) is genuinely finished and must settle —
-                    //      absorbing that one would hang the caller whenever it was the agent's last word.
-                    //
-                    // Bounded to at most one A plus one B per parking: only one run can arm the latch, and
-                    // B consumes it (see HandleRunCompletionAsync).
-                    var awaitingAnswerText =
-                        !awaitingQuestion
-                        && !rcm.HasPendingMessages
-                        && !rcm.IsError
-                        && lastTextContent is null
-                        && state.ParkedOnQuestion
-                        && (latchedThisRun || !sawModelOutput);
-
-                    // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
-                    // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
-                    // nonterminal completion — either HasPendingMessages (another run will follow) or a
-                    // parked AskUserQuestion (the SAME loop/provider stay live awaiting the human's
-                    // answer) — keeps this sub-agent's resources busy, so releasing its permit now would
-                    // let another sub-agent start while this one is still active, exceeding
-                    // MaxConcurrentSubAgents. The permit is held until the run truly ends: the terminal
-                    // completion here, or the monitor's finally if the stream ends first. Idempotent, so
-                    // that fallback release is a safe no-op afterward.
-                    if (!rcm.HasPendingMessages && !awaitingQuestion && !awaitingAnswerText)
+                    await state.RunTransition.WaitAsync(ct);
+                    CompletionSideEffects? sideEffects;
+                    try
                     {
-                        gateGuard.ReleaseOnce(_concurrencyGate);
+                        if (state.AdmittedRunId is { } admittedRunId && admittedRunId != rcm.CompletedRunId)
+                        {
+                            lastTextContent = null;
+                            textGenerationId = null;
+                            sawModelOutput = false;
+                            latchedThisRun = false;
+                            _ = textBuilder.Clear();
+                            continue;
+                        }
+
+                        var awaitingQuestion =
+                            !rcm.HasPendingMessages && !rcm.IsError && await HasPendingAskUserQuestionAsync(state);
+
+                        // The window this closes (#262) opens the instant the question is resolved and closes
+                        // when the answer-triggered work produces its text: awaitingQuestion is already false
+                        // (the registry was emptied by the resolution), yet this run has nothing to hand back,
+                        // so the terminal branch would settle the caller with "(no text response)" and discard
+                        // the real answer that follows.
+                        //
+                        // TWO different runs can land here, and they are non-terminal for DIFFERENT reasons, so
+                        // they are gated separately. Collapsing them into one test is what re-opens #262:
+                        //
+                        //   A. `latchedThisRun` — the parked run's OWN completion, dequeued after the answer
+                        //      already emptied the deferred registry. This is the precise ordering the issue
+                        //      describes. Such a run necessarily emitted the AskUserQuestion tool call, so
+                        //      `sawModelOutput` is ALWAYS true for it and the veto below would wrongly call it
+                        //      terminal. It cannot be a disguised deadlock: reaching here means the question
+                        //      was resolved (awaitingQuestion false while ParkedOnQuestion is true), and a
+                        //      resolution always enqueues the follow-on run that carries the answer.
+                        //
+                        //   B. `!sawModelOutput` — a run that never reached the model at all: the
+                        //      zero-model-turn shape a resolution-triggered child run has when it is not the
+                        //      one clearing the last outstanding call (#227). Here the veto is what keeps the
+                        //      branch narrow, because a run that DID call the model and merely produced no
+                        //      returnable text (a thinking-only turn) is genuinely finished and must settle —
+                        //      absorbing that one would hang the caller whenever it was the agent's last word.
+                        //
+                        // Bounded to at most one A plus one B per parking: only one run can arm the latch, and
+                        // B consumes it (see HandleRunCompletionAsync).
+                        var awaitingAnswerText =
+                            !awaitingQuestion
+                            && !rcm.HasPendingMessages
+                            && !rcm.IsError
+                            && lastTextContent is null
+                            && state.ParkedOnQuestion
+                            && (latchedThisRun || !sawModelOutput);
+
+                        // A reusable loop can still be holding queued input or an unresolved delayed cause
+                        // when this completion arrives. That is another run about to start on the SAME loop,
+                        // so settling here would resolve the caller early and hand back a partial answer.
+                        var pendingWork =
+                            rcm.HasPendingMessages || state.Agent is MultiTurnAgentLoop { HasPendingLoopWork: true };
+                        if (pendingWork && !awaitingQuestion && !awaitingAnswerText)
+                        {
+                            lastTextContent = null;
+                            textGenerationId = null;
+                            sawModelOutput = false;
+                            latchedThisRun = false;
+                            _ = textBuilder.Clear();
+                            continue;
+                        }
+
+                        // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
+                        // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
+                        // nonterminal completion — either HasPendingMessages (another run will follow) or a
+                        // parked AskUserQuestion (the SAME loop/provider stay live awaiting the human's
+                        // answer) — keeps this sub-agent's resources busy, so releasing its permit now would
+                        // let another sub-agent start while this one is still active, exceeding
+                        // MaxConcurrentSubAgents. The permit is held until the run truly ends: the terminal
+                        // completion here, or the monitor's finally if the stream ends first. Idempotent, so
+                        // that fallback release is a safe no-op afterward.
+                        if (!rcm.HasPendingMessages && !awaitingQuestion && !awaitingAnswerText)
+                        {
+                            gateGuard.ReleaseOnce(_concurrencyGate);
+                        }
+
+                        sideEffects = await HandleRunCompletionAsync(
+                            state,
+                            rcm,
+                            lastTextContent,
+                            awaitingQuestion,
+                            awaitingAnswerText,
+                            latchedThisRun
+                        );
+                    }
+                    finally
+                    {
+                        _ = state.RunTransition.Release();
                     }
 
-                    await HandleRunCompletionAsync(
-                        state,
-                        rcm,
-                        lastTextContent,
-                        awaitingQuestion,
-                        awaitingAnswerText,
-                        latchedThisRun,
-                        ct
-                    );
+                    // Performed OFF the run-transition gate, deliberately. Everything above is the
+                    // transition itself — immutable, in-memory, and quick. What is left talks to the
+                    // child's store and to the parent's inbox, and either peer can block for as long as
+                    // it likes. Holding the gate across them would make the very next run of this warm
+                    // child — a direct follow-up, or a delayed tool result arriving — wait on the
+                    // parent's backpressure, since run admission takes the same gate. The monitor is
+                    // sequential per child, so awaiting them HERE keeps them ordered and keeps them this
+                    // monitor's work: the bounded MonitorTask awaits in DisposeAsync/RestartRunAsync
+                    // still own their lifetime, and nothing is left detached.
+                    if (sideEffects is { } effects)
+                    {
+                        var notificationFailure = await RunCompletionSideEffectsAsync(state, effects, ct);
+                        if (notificationFailure is not null)
+                        {
+                            await state.RunTransition.WaitAsync(ct);
+                            try
+                            {
+                                _logger.LogError(
+                                    notificationFailure,
+                                    "Failed to deliver descendant question for sub-agent {AgentId}, run {RunId}",
+                                    state.AgentId,
+                                    rcm.CompletedRunId
+                                );
+                                // A delayed answer may start without changing the lifecycle epoch: the
+                                // parked child is already Running. Compare actual run ownership instead,
+                                // and commit the fault/permit release atomically with admission.
+                                if (
+                                    state.CurrentRunGeneration == runGeneration
+                                    && (state.AdmittedRunId is null || state.AdmittedRunId == rcm.CompletedRunId)
+                                    && state.MarkRunFaulted(runGeneration)
+                                )
+                                {
+                                    state.SendToParentError = $"Monitor failed: {notificationFailure.Message}";
+                                    _ = state.TryCompleteWithException(notificationFailure);
+                                    gateGuard.ReleaseOnce(_concurrencyGate);
+                                    effects = new CompletionSideEffects(
+                                        state.LifecycleEpoch,
+                                        AgentCollaborationStatuses.Error,
+                                        DescendantQuestionText: null,
+                                        ParentRelayText: null
+                                    );
+                                }
+                                else
+                                {
+                                    // The old run still owes its relay, but cannot fault a successor.
+                                    effects = effects with
+                                    {
+                                        DescendantQuestionText = null,
+                                    };
+                                }
+                            }
+                            finally
+                            {
+                                _ = state.RunTransition.Release();
+                            }
+
+                            _ = await RunCompletionSideEffectsAsync(state, effects, ct);
+                            // Retain the subscription even for a current-owner notification failure:
+                            // a later answer can reactivate this warm loop and must still be observed.
+                        }
+                    }
+
                     lastTextContent = null;
                     textGenerationId = null;
                     sawModelOutput = false;
@@ -4411,14 +4592,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // "running", every other agent in the hierarchy still sees this child as live: a steer
                 // or a completion barrier addressed to it would wait on a run that can never answer.
                 // Reached only when MarkRunFaulted(runGeneration) accepted THIS generation as the
-                // terminal one, so a newer restart's Running publish is never clobbered.
-                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Error);
-
-                // Same causal push HandleRunCompletionAsync performs for a graceful terminal: a
-                // background child that never writes metadata again would otherwise leave its
-                // persisted state claiming "running" forever. Skipped when a newer restart already
-                // superseded this generation, so this can't race that restart's own Running publish.
-                await PersistTerminalStateAsync(state);
+                // terminal one, so a newer restart's Running publish is never clobbered. Routed through
+                // the same captured-then-performed shape as a graceful terminal so its store write and
+                // its status publish obey the same staleness rule.
+                _ = await RunCompletionSideEffectsAsync(
+                    state,
+                    new CompletionSideEffects(
+                        state.LifecycleEpoch,
+                        AgentCollaborationStatuses.Error,
+                        DescendantQuestionText: null,
+                        ParentRelayText: null
+                    ),
+                    CancellationToken.None
+                );
             }
 
             // Fault the completion latch: the run ended here without ever producing a
@@ -4438,8 +4624,163 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Handles a sub-agent run completion: resolves the synchronous completion signal
-    /// and, for background spawns/continuations, relays the result to the parent.
+    /// Installs the loop's run-admission callback for this gate epoch. Every run the loop starts —
+    /// the first one, a direct continuation, or a delayed tool result — passes through here before the
+    /// loop can call its provider, so a warm loop reacquires its concurrency permit and republishes its
+    /// Running status instead of silently resuming on a slot it already gave back.
+    /// </summary>
+    private void ConfigureRunAdmission(SubAgentState state, GateReleaseGuard gateGuard)
+    {
+        state.AdmittedRunId = null;
+        if (state.Agent is not MultiTurnAgentLoop loop)
+        {
+            return;
+        }
+
+        loop.AdmitRunAsync = async (runId, ct) =>
+        {
+            await state.RunTransition.WaitAsync(ct);
+            try
+            {
+                await gateGuard.AcquireIfReleasedAsync(_concurrencyGate, ct);
+                state.AdmittedRunId = runId;
+                if (state.Status != SubAgentStatus.Running)
+                {
+                    state.ResetCompletionIfFinished();
+                    state.ResetLifecycleCts();
+                    state.ReactivateCurrentEpoch();
+                }
+
+                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+            }
+            finally
+            {
+                _ = state.RunTransition.Release();
+            }
+        };
+    }
+
+    /// <summary>
+    /// Everything a settled run completion still owes the world OUTSIDE this manager — the child's
+    /// store, the collaboration directory, the parent's inbox — captured as immutable values at the
+    /// instant the transition committed.
+    /// </summary>
+    /// <remarks>
+    /// Capturing rather than performing is what lets the monitor drop the run-transition gate first.
+    /// Every field is a value, never a re-read of live state, so a slow effect can no longer pick up a
+    /// NEWER run's text, status, or relay preference and hand it back as if it belonged to the run that
+    /// produced it.
+    /// </remarks>
+    /// <param name="LifecycleEpoch">
+    /// The status transition these effects describe. Only <see cref="TerminalStatus"/> and the durable
+    /// push are gated on it still being current: a parent relay reports what a specific run produced, so
+    /// it stays owed even once a newer run has started.
+    /// </param>
+    /// <param name="TerminalStatus">
+    /// The collaboration status to publish, and the signal that a durable terminal push is owed. Null
+    /// for a non-terminal completion, which changes no status at all.
+    /// </param>
+    /// <param name="DescendantQuestionText">The pending-question notification to raise, or null.</param>
+    /// <param name="ParentRelayText">
+    /// The text to relay to the parent, or null when there is nothing to relay — either the sub-agent
+    /// does not relay on completion, or the relay was already claimed by an observer. The claim is
+    /// decided under the gate, so exactly-once per completing run is settled before this is handed back.
+    /// </param>
+    private sealed record CompletionSideEffects(
+        long LifecycleEpoch,
+        string? TerminalStatus,
+        string? DescendantQuestionText,
+        string? ParentRelayText
+    );
+
+    /// <summary>
+    /// Performs a settled completion's captured side effects, OUTSIDE the run-transition gate.
+    /// </summary>
+    /// <remarks>
+    /// Ordering is the monitor's, not a queue's: one monitor per child processes completions in
+    /// sequence, so awaiting this inline keeps the effects of successive completions in order without
+    /// retaining anything. The epoch re-reads are the price of running out here — a newer run can be
+    /// admitted while the store call is still in flight, and a status published after that would tell
+    /// the rest of the hierarchy a live delegate had finished.
+    /// </remarks>
+    private async Task<Exception?> RunCompletionSideEffectsAsync(
+        SubAgentState state,
+        CompletionSideEffects effects,
+        CancellationToken ct
+    )
+    {
+        if (effects.DescendantQuestionText is { } questionText)
+        {
+            // Surface a descendant's pending question to the root conversation immediately (#246): the
+            // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
+            // and this fires regardless of NotifyParentOnCompletion — a foreground (blocking) spawn's
+            // caller is still parked awaiting the child's Task, so this is the ONLY way the human learns
+            // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
+            // state's own agent id: a completion is handled once per level of nesting, so whichever
+            // level's direct child actually parked is the one attributed here, however deep it sits.
+            try
+            {
+                await _descendantQuestionSink(
+                    NotifyMessage.Create(
+                        NotifyKinds.DescendantQuestion,
+                        detail: questionText,
+                        sourceToolName: "Agent",
+                        sourceToolCallId: state.AgentId,
+                        label: state.TemplateName
+                    ),
+                    ct
+                );
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // Return only this delivery failure to the monitor for run-owned classification.
+                // Do not let it escape to the subscription-wide catch and fault a newer run.
+                return ex;
+            }
+        }
+
+        if (effects.TerminalStatus is { } terminalStatus)
+        {
+            // Push the terminal transition through the child's OWN store now, causally, rather than
+            // relying on the child's next metadata write — a background sub-agent that never receives
+            // another message never writes metadata again, and the exact terminal status/timestamp
+            // must still be persisted.
+            await PersistTerminalStateAsync(state, effects.LifecycleEpoch);
+
+            // Re-read, not carried across the await: the push above can be held by a slow store for as
+            // long as that store likes, and a follow-up run admitted in the meantime has already
+            // published Running. Publishing "completed" over it would leave every other agent in the
+            // hierarchy addressing a live delegate as finished. The directory entry stays live either
+            // way — a completed background sub-agent is still addressable, and a message restarts it.
+            await state.RunTransition.WaitAsync(ct);
+            try
+            {
+                if (state.IsCurrentLifecycleEpoch(effects.LifecycleEpoch))
+                {
+                    SyncCollaborationStatus(state.AgentId, terminalStatus);
+                }
+            }
+            finally
+            {
+                _ = state.RunTransition.Release();
+            }
+        }
+
+        if (effects.ParentRelayText is { } relayText)
+        {
+            // NOT epoch-gated. This reports what one specific run produced, and that debt survives the
+            // child moving on: suppressing it because a newer run started would silently drop a
+            // background sub-agent's only answer.
+            await SendToParentAsync(state, relayText);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Settles a sub-agent run completion under the caller's run-transition gate: resolves the
+    /// synchronous completion signal, flips the terminal status, and CAPTURES — without performing —
+    /// the ordered side effects the completion still owes.
     /// </summary>
     /// <param name="state">The sub-agent's state.</param>
     /// <param name="rcm">The run-completion message the monitor just observed.</param>
@@ -4460,23 +4801,23 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Whether the completing run is the one that ASKED the question. Distinguishes the two absorbed
     /// shapes, which have different justifications and therefore different bounds: see the branch body.
     /// </param>
-    /// <param name="ct">Cancellation token for this run's lifetime.</param>
-    private async Task HandleRunCompletionAsync(
+    /// <returns>
+    /// The side effects to perform once the gate is released, or null when this completion owes none.
+    /// </returns>
+    private async Task<CompletionSideEffects?> HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
         string? lastTextContent,
         bool awaitingQuestion,
         bool awaitingAnswerText,
-        bool latchedThisRun,
-        CancellationToken ct
+        bool latchedThisRun
     )
     {
-        // A run that still has queued messages is NOT terminal: another run will follow and reuse the
-        // same loop/provider, so neither flip the sub-agent terminal nor dispose its owned provider
-        // here — the final completion (HasPendingMessages == false) resolves and, if owned, disposes.
+        // A run with queued input has not finished the logical work. Keep its completion latch
+        // pending; the reusable loop and its provider remain alive across both completions.
         if (rcm.HasPendingMessages)
         {
-            return;
+            return null;
         }
 
         if (awaitingQuestion)
@@ -4499,30 +4840,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 + $"Result: (awaiting the human's answer to a pending question)\n"
                 + $"</sub-agent>";
 
-            // Surface a descendant's pending question to the root conversation immediately (#246): the
-            // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
-            // and this fires regardless of NotifyParentOnCompletion — a foreground (blocking) spawn's
-            // caller is still parked awaiting the child's Task, so this is the ONLY way the human learns
-            // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
-            // state's own agent id: HandleRunCompletionAsync runs once per level of nesting, so whichever
-            // level's direct child actually parked is the one attributed here, however deep it sits.
-            await _descendantQuestionSink(
-                NotifyMessage.Create(
-                    NotifyKinds.DescendantQuestion,
-                    detail: awaitingResultText,
-                    sourceToolName: "Agent",
-                    sourceToolCallId: state.AgentId,
-                    label: state.TemplateName
-                ),
-                ct
+            // The notification and the optional parent relay are handed back rather than performed:
+            // this branch changes no status, so it owes only outbound work, and that work must not
+            // hold the gate the child's answer-carrying run needs to be admitted through.
+            return new CompletionSideEffects(
+                state.LifecycleEpoch,
+                TerminalStatus: null,
+                DescendantQuestionText: awaitingResultText,
+                ParentRelayText: state.NotifyParentOnCompletion ? awaitingResultText : null
             );
-
-            if (state.NotifyParentOnCompletion)
-            {
-                await SendToParentAsync(state, awaitingResultText);
-            }
-
-            return;
         }
 
         if (awaitingAnswerText)
@@ -4563,7 +4889,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     + "its answered question; keeping it non-terminal so the real answer can settle it.",
                 state.AgentId
             );
-            return;
+            return null;
         }
 
         // This completion is the one that settles the caller, so the parked latch has done its job.
@@ -4572,57 +4898,25 @@ public sealed class SubAgentManager : IAsyncDisposable
         // continued in place can park again later and get the same protection.
         state.ClearParkedOnQuestion();
 
-        // Transition out of Running BEFORE disposing the owned provider, atomically against a
-        // concurrent SendMessageAsync (see SubAgentState.BeginContinuation). This blocks new inject
-        // admissions and waits for any in-flight admitted send to finish, so the disposal below can
-        // never overlap a send through the provider; a racing continuation then observes the finished
-        // status and takes the restart path (which recreates a fresh provider).
+        // Settle this run against continuation admission. Drain or cancel an outstanding send lease
+        // before publishing the idle outcome; a cancelled admission is redelivered by SendMessageAsync.
+        // Provider lifetime is independent of this run outcome.
         await state.BeginTerminalDisposalAsync(rcm.IsError);
 
-        // Push the terminal transition through the child's OWN store now, causally, rather than
-        // relying on the child's next metadata write — a background sub-agent that never receives
-        // another message never writes metadata again, and the exact terminal status/timestamp
-        // must still be persisted. See PersistTerminalStateAsync for why this is safe to layer on
-        // top of the child's existing (unchanged) post-run metadata save.
-        await PersistTerminalStateAsync(state);
+        // The identity of the transition just published, captured while it is unambiguously current.
+        // Everything the caller performs afterwards carries it, so a status that lands after a newer
+        // run was admitted can recognise itself as stale instead of overwriting that run.
+        var lifecycleEpoch = state.LifecycleEpoch;
 
-        // Publish the terminal status but keep the directory entry live: a completed background
-        // sub-agent is still addressable, and a collaboration message to it restarts it in place.
-        SyncCollaborationStatus(
-            state.AgentId,
-            rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed
-        );
+        // A completed run leaves its loop reusable: direct inputs and delayed tool results can
+        // start another run without passing through RestartRunAsync. The provider belongs to that
+        // loop, not to this completion. Shutdown/rebuild disposes it after stopping the loop.
+        state.EndTerminalDisposal();
 
-        // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
-        // once per gate-acquisition epoch — not here, because a single monitor may handle
-        // several completions when a background sub-agent is continued in place via SendMessage.
-        // An explicit/tier provider is scoped to a single completed run. Dispose it before any
-        // completion relay can block; a later continuation recreates its loop and provider through
-        // the same characteristics factory, while borrowed parent/template agents remain untouched.
-        // EndTerminalDisposal clears the terminating flag so a later restart's re-arm admits injects.
-        try
-        {
-            try
-            {
-                await state.DisposeOwnedProviderAgentAsync();
-            }
-            catch (Exception ex)
-            {
-                // Poison the run's provider: a continuation must rebuild a fresh one rather than reuse
-                // this partially-disposed instance (the restart path retries disposing it). Clearing the
-                // terminating flag below still lets a restart proceed — but against a fresh provider.
-                state.MarkOwnedProviderTerminalDisposeFailed();
-                _logger.LogWarning(ex, "Provider dispose failed at completion for sub-agent {AgentId}", state.AgentId);
-            }
-        }
-        finally
-        {
-            state.EndTerminalDisposal();
-        }
-
+        string resultText;
         if (rcm.IsError)
         {
-            var errorText =
+            resultText =
                 $"<sub-agent name=\"{state.TemplateName}\" "
                 + $"id=\"{state.AgentId}\">\n"
                 + $"[Error] Task: {state.Task}\n"
@@ -4634,14 +4928,6 @@ public sealed class SubAgentManager : IAsyncDisposable
             _ = state.TryCompleteWithException(
                 new SubAgentExecutionException(state.AgentId, state.TemplateName, rcm.ErrorMessage)
             );
-
-            // Claim-and-record, not a bare read: an observer arming concurrently must either win
-            // (we relay nothing, it delivers) or lose (we relay, its arm is rejected). See
-            // SubAgentState.TryClaimCompletionRelay.
-            if (state.TryClaimCompletionRelay())
-            {
-                await SendToParentAsync(state, errorText);
-            }
         }
         else
         {
@@ -4654,7 +4940,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // would trade this bug for a silent deadlock.
             var result = lastTextContent ?? "(no text response)";
 
-            var resultText =
+            resultText =
                 $"<sub-agent name=\"{state.TemplateName}\" "
                 + $"id=\"{state.AgentId}\">\n"
                 + $"[Completed] Task: {state.Task}\n"
@@ -4662,13 +4948,21 @@ public sealed class SubAgentManager : IAsyncDisposable
                 + $"</sub-agent>";
 
             _ = state.TryCompleteWithResult(result);
-
-            // Claim-and-record, not a bare read — see the error branch above.
-            if (state.TryClaimCompletionRelay())
-            {
-                await SendToParentAsync(state, resultText);
-            }
         }
+
+        // Claim-and-record, not a bare read: an observer arming concurrently must either win (we relay
+        // nothing, it delivers) or lose (we relay, its arm is rejected). See
+        // SubAgentState.TryClaimCompletionRelay. Claimed HERE, under the gate, rather than when the
+        // relay is finally performed: exactly-once for this completing run is decided at the same
+        // instant as the transition it belongs to, so deferring the send itself cannot widen the race.
+        var relayText = state.TryClaimCompletionRelay() ? resultText : null;
+
+        return new CompletionSideEffects(
+            lifecycleEpoch,
+            rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed,
+            DescendantQuestionText: null,
+            relayText
+        );
     }
 
     /// <summary>
@@ -4748,9 +5042,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// completely unaware of any such projection — no second registry, just one extra write through
     /// the same per-child store the manager already holds.
     /// </summary>
-    private async Task PersistTerminalStateAsync(SubAgentState state)
+    /// <param name="state">The sub-agent whose terminal transition is being pushed.</param>
+    /// <param name="lifecycleEpoch">
+    /// The status transition this push describes. Checked before the write is issued AND again inside
+    /// the store's own atomic update, because this now runs off the run-transition gate: a slow store
+    /// can hold the call open long enough for a newer run to be admitted and write its own metadata,
+    /// and a terminal stamp applied on top of that would describe a child that is running again.
+    /// </param>
+    private async Task PersistTerminalStateAsync(SubAgentState state, long lifecycleEpoch)
     {
-        if (state.Store is null)
+        if (state.Store is null || !state.IsCurrentLifecycleEpoch(lifecycleEpoch))
         {
             return;
         }
@@ -4761,12 +5062,18 @@ public sealed class SubAgentManager : IAsyncDisposable
             await state.Store.UpdateMetadataAsync(
                 threadId,
                 existing =>
-                    existing
-                    ?? new ThreadMetadata
-                    {
-                        ThreadId = threadId,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    }
+                    // Re-read INSIDE the atomic section, not carried in from the pre-check above: the
+                    // newer run's own write is serialized against this one by the store, so this is the
+                    // only place that can see it. Superseded means hand back exactly what that run
+                    // left, untouched.
+                    !state.IsCurrentLifecycleEpoch(lifecycleEpoch) && existing is not null
+                        ? existing
+                        : existing
+                            ?? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            }
             );
         }
         catch (Exception ex)

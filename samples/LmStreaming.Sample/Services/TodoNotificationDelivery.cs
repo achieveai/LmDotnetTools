@@ -12,14 +12,11 @@ namespace LmStreaming.Sample.Services;
 /// <remarks>
 ///     <para>
 ///         <b>A sub-agent target is reached through its manager, never straight at its loop (#690).</b>
-///         A child whose run has finished is still a live <see cref="IMultiTurnAgent" /> that accepts
-///         input — but its owned provider was disposed when that run completed. A direct
-///         <c>TrySendAsync</c> is therefore accepted, starts a run, and dies on its first provider call
-///         (<see cref="ObjectDisposedException" /> on the HTTP client — 78 such runs in the field from one
-///         persisted notification). <see cref="SubAgentManager.SendMessageAsync(string, IMessage, bool, CancellationToken)" />
-///         is the lifecycle path: it injects into a running child, RESTARTS a finished one with a fresh
-///         provider, and refuses one that is neither — the same door the collaboration messenger and the
-///         model's own SendMessage tool use.
+///         A child whose run finished normally retains its loop and owned provider for warm follow-ups.
+///         <see cref="SubAgentManager.SendMessageAsync(string, IMessage, bool, CancellationToken)" />
+///         coordinates lifecycle and admission: it injects into a running child, resumes a completed
+///         reusable child, and rebuilds only when the existing runtime is unusable (or refuses observably).
+///         This is the same door the collaboration messenger and the model's own SendMessage tool use.
 ///     </para>
 ///     <para>
 ///         The root conversation is different: its loop never disposes its provider at run end (the

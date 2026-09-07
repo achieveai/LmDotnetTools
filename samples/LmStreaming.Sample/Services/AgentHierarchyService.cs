@@ -273,7 +273,12 @@ public sealed class AgentHierarchyService(
     ///     to this same reader — so there is no second decision here that could disagree with the first.
     /// </remarks>
     /// <param name="threadId">The conversation the hierarchy belongs to.</param>
-    /// <param name="agentId">The target, by either identifier a row publishes (tab id or node id).</param>
+    /// <param name="agentId">
+    ///     The target, by any identifier a row publishes (tab id or node id) or — while a live
+    ///     collaboration directory is in hand — by the name the roster published for it. Identifiers win,
+    ///     and a name two agents claim resolves to nothing at all rather than to a guess. The retained
+    ///     path below has no directory to resolve against, so there it stays identifier-only.
+    /// </param>
     /// <param name="viewerAgentId">The reader, or null for the conversation root.</param>
     /// <param name="ct">Cancellation for the store reads.</param>
     public async Task<AgentTranscriptResult> ReadTranscriptAsync(
@@ -301,7 +306,18 @@ public sealed class AgentHierarchyService(
             return await ReadRetainedTranscriptAsync(rows, agentId, viewerAgentId, ct);
         }
 
-        var row = AgentHierarchyProjection.Find(rows, agentId);
+        // Every roster a reader is handed (GetAgents, CheckAgents, the listing) publishes a NAME for each
+        // row, and messaging resolves that name through the collaboration directory — but this lookup used
+        // to match identifiers only, so the identifier a reader was actually given came back as if the
+        // agent did not exist. The raw target is matched against the rows FIRST, so a tab id or node id
+        // still selects exactly the row it always did and no live name can retarget one; only a target no
+        // row claims is canonicalized, through the same Directory.Resolve that messaging uses, so one
+        // addressing answer covers both surfaces. Resolve refuses an ambiguous name outright rather than
+        // guessing, and an unresolved target falls through unchanged to the refusal below — which stays
+        // content-free, so widening addressing never widens what a refusal discloses.
+        var row =
+            AgentHierarchyProjection.Find(rows, agentId)
+            ?? AgentHierarchyProjection.Find(rows, collaboration.Directory.Resolve(agentId).Entry?.AgentId ?? agentId);
         if (row is null || !row.IsReadable)
         {
             return new AgentTranscriptResult
