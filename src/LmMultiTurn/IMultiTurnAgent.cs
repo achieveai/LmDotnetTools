@@ -88,6 +88,26 @@ public interface IMultiTurnAgent : IAsyncDisposable
     IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Subscribes with the requested message shape. Joined subscriptions receive canonical history
+    /// messages and lifecycle events; usage is delivered by the provider turn boundary, before run completion.
+    /// </summary>
+    IAsyncEnumerable<IMessage> SubscribeAsync(SubscribeOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options.JoinedOnly
+            ? throw new NotSupportedException("This agent does not support joined subscriptions.")
+            : SubscribeAsync(ct);
+    }
+
+    /// <summary>
+    /// Returns a thread-safe point-in-time copy of canonical conversation history, including
+    /// CompactionCheckpointMessage entries. All canonical messages of a completed run are present
+    /// before RunCompletedMessage is observable. Safe to call while consuming a subscription.
+    /// </summary>
+    IReadOnlyList<IMessage> GetHistorySnapshot() =>
+        throw new NotSupportedException("This agent does not expose conversation history.");
+
+    /// <summary>
     /// Start the background loop. Runs until cancellation or disposal.
     /// </summary>
     /// <param name="ct">Cancellation token</param>

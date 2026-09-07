@@ -526,7 +526,8 @@ internal sealed class DeferredEntry(
     string functionArgs,
     long deferredAtUnixMs,
     string? runId,
-    string? generationId
+    string? generationId,
+    int? resultMessageOrderIdx = null
 )
 {
     /// <summary>The deferred call.</summary>
@@ -546,6 +547,9 @@ internal sealed class DeferredEntry(
 
     /// <summary>The turn that requested it, when known.</summary>
     public string? GenerationId { get; } = generationId;
+
+    /// <summary>The original placeholder index used by default subscribers, before canonical normalization.</summary>
+    public int? ResultMessageOrderIdx { get; } = resultMessageOrderIdx;
 
     /// <summary>
     /// Whether the requesting run has ended waiting on this call. Once true the resolution can no

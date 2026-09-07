@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmMultiTurn subscriptions and history (R1/R2)**: Add `SubscribeOptions.Joined` for canonical messages and a thread-safe `GetHistorySnapshot()` including checkpoints. Preserve default streaming, replay and slow-consumer recovery; keep thinking blocks separate and history ready when run completion is observed. New interface capabilities have compatibility defaults.
+
 - **LmMultiTurn API compatibility (R4)**: `IMultiTurnAgent.TrySendAsync` now defaults to `NotSupportedException` for older implementations. Restore obsolete positional cancellation overloads for scoped and unscoped conversation listings, and document nullable tool-call IDs.
 
 - **LmCore / LmMultiTurn (R3)**: Add `OriginalBytes` to truncated tool results and messages. Preserve original aggregate UTF-8 text size through conversion, deferred resolution and history; unknown legacy counts remain null and totals saturate at `int.MaxValue`.

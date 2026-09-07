@@ -2306,7 +2306,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 toolCall.FunctionArgs ?? "{}",
                 deferredAtUnixMs,
                 toolCall.RunId ?? runId,
-                toolCall.GenerationId ?? generationId
+                toolCall.GenerationId ?? generationId,
+                result.MessageOrderIdx
             );
             _ = _delayed.TryReserve(deferredEntry);
 
@@ -3002,13 +3003,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // Publish the full message (including ContentBlocks) to subscribers so UIs can
             // render images. The history entry stays text-only.
-            var publishMessage =
-                contentBlocks != null && contentBlocks.Count > 0
-                    ? newMessage with
-                    {
-                        ContentBlocks = contentBlocks,
-                    }
-                    : newMessage;
+            var publishMessage = newMessage with
+            {
+                ContentBlocks = contentBlocks is { Count: > 0 } ? contentBlocks : newMessage.ContentBlocks,
+                MessageOrderIdx = pending.Entry.ResultMessageOrderIdx,
+            };
             await PublishToAllAsync(publishMessage, ct);
         }
         else
@@ -3331,7 +3330,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             "{}",
             orphan.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             orphan.RunId,
-            orphan.GenerationId
+            orphan.GenerationId,
+            orphan.MessageOrderIdx
         );
 
         // Pre-parked: whatever run requested this is not the one running now, so its result can
@@ -3537,7 +3537,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 sourceCall?.FunctionArgs ?? "{}",
                 tcr.DeferredAt ?? 0,
                 tcr.RunId ?? sourceCall?.RunId,
-                tcr.GenerationId ?? sourceCall?.GenerationId
+                tcr.GenerationId ?? sourceCall?.GenerationId,
+                tcr.MessageOrderIdx
             );
 
             // Restored entries are parked on arrival. The run that requested them belonged to a

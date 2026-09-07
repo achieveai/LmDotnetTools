@@ -4,7 +4,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// A REAL agent with a publish hook, for tests that need something to subscribe to.
 /// </summary>
 /// <remarks>
-/// It inherits the production fan-out, so <see cref="MultiTurnAgentBase.SubscribeAsync"/>, the bounded
+/// It inherits the production fan-out, so <see cref="MultiTurnAgentBase.SubscribeAsync(CancellationToken)"/>, the bounded
 /// per-subscriber channel and the drop-the-slow-subscriber path are all the shipping implementations. A
 /// hand-written fake that ended its enumeration on command would prove the fake works, not that a
 /// subscriber survives the real drop.

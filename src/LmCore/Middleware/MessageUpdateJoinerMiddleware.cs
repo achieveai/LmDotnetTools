@@ -79,6 +79,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         IMessageBuilder? activeBuilder = null;
         Type? activeBuilderType = null;
         Type? lastMessageType = null;
+        ReasoningMessage? lastFinalSummary = null;
 
         // Track the number of completed tool calls for ToolCallIdx assignment
         var completedToolCallCount = 0;
@@ -88,6 +89,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // results (which arrive as standalone messages) are dropped too, so neither half is persisted
         // or replayed (the "empty web_search loop").
         var skippedServerToolCallIds = new HashSet<string>(StringComparer.Ordinal);
+        var emittedToolCallIds = new HashSet<string>(StringComparer.Ordinal);
 
         // Use the usage accumulator to track usage data
         var usageAccumulator = new UsageAccumulator();
@@ -101,14 +103,35 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 continue; // Don't yield usage message yet
             }
 
+            if (message is not ReasoningMessage)
+            {
+                lastFinalSummary = null;
+            }
+
+            var finalizesSummary = false;
+
             // Check if the message has usage in metadata (legacy support)
             if (message.Metadata != null && message.Metadata.ContainsKey("usage"))
             {
                 _ = usageAccumulator.AddUsageFromMessageMetadata(message);
             }
 
-            // Check if we're switching message types and need to complete current builder
-            if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
+            // A same-type chunk can start a new block, generation or reasoning visibility.
+            var changesBlock = (message, activeBuilder) switch
+            {
+                (TextUpdateMessage update, TextMessageBuilder builder) => update.GenerationId != builder.GenerationId
+                    || update.MessageOrderIdx != builder.MessageOrderIdx
+                    || update.IsThinking != builder.IsThinking,
+                (ReasoningUpdateMessage update, ReasoningMessageBuilder builder) => update.GenerationId
+                    != builder.GenerationId
+                    || update.MessageOrderIdx != builder.MessageOrderIdx
+                    || (update.Visibility ?? ReasoningVisibility.Plain) != builder.Visibility,
+                _ => false,
+            };
+            if (
+                activeBuilder != null
+                && (changesBlock || (lastMessageType != null && lastMessageType != message.GetType()))
+            )
             {
                 // When the provider follows a streamed text-delta sequence with its OWN finalized
                 // TextMessage, that finalized message already IS the joined result. Emitting the
@@ -117,19 +140,32 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 // turn's prompt). Discard the synthesized copy and let the incoming finalized message
                 // be the single representation.
                 //
-                // NOTE: This applies to text only. Reasoning is intentionally excluded — the OpenAI
-                // Responses reasoning item carries its content differently from the streamed reasoning
-                // deltas, so suppressing the built reasoning here stops thinking blocks from rendering.
+                // Only an identical visible summary can finalize reasoning deltas. Other reasoning
+                // items can carry different content or encrypted signatures and must be retained.
                 // Also require a matching GenerationId: a finalizing TextMessage may only supersede
                 // the builder it actually finalizes. Without this, an interleaved generation
                 // (gen1: TextUpdate…, gen2: TextMessage) could silently drop gen1's accumulated text.
-                var incomingFinalizesActiveBuilder =
-                    message is TextMessage
-                    && activeBuilder is TextMessageBuilder textBuilder
-                    && textBuilder.GenerationId == message.GenerationId;
+                var incomingFinalizesActiveBuilder = (message, activeBuilder) switch
+                {
+                    (TextMessage final, TextMessageBuilder builder) => builder.GenerationId == final.GenerationId
+                        && builder.MessageOrderIdx == final.MessageOrderIdx
+                        && builder.IsThinking == final.IsThinking,
+                    (ToolCallMessage final, ToolCallMessageBuilder builder) => !string.IsNullOrEmpty(final.ToolCallId)
+                        && builder.CurrentToolCallId == final.ToolCallId
+                        && builder.GenerationId == final.GenerationId,
+                    (
+                        ReasoningMessage { Visibility: ReasoningVisibility.Summary } final,
+                        ReasoningMessageBuilder builder
+                    ) => !string.IsNullOrEmpty(final.GenerationId)
+                        && builder.GenerationId == final.GenerationId
+                        && builder.Visibility == final.Visibility
+                        && builder.Build().Reasoning == final.Reasoning,
+                    _ => false,
+                };
 
                 if (incomingFinalizesActiveBuilder)
                 {
+                    finalizesSummary = message is ReasoningMessage;
                     if (logger.IsEnabled(LogLevel.Debug))
                     {
                         logger.LogDebug(
@@ -151,7 +187,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                     }
 
                     // Complete the previous builder before processing the new message
-                    var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
+                    var builtMessage = BuildJoinedOrSkip(
+                        activeBuilder,
+                        skippedServerToolCallIds,
+                        emittedToolCallIds,
+                        logger
+                    );
                     activeBuilder = null;
                     activeBuilderType = null;
                     if (builtMessage != null)
@@ -185,7 +226,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 {
                     // Complete the previous tool call before starting the new one
                     completedToolCallCount++;
-                    var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
+                    var builtMessage = BuildJoinedOrSkip(
+                        activeBuilder,
+                        skippedServerToolCallIds,
+                        emittedToolCallIds,
+                        logger
+                    );
                     activeBuilder = null;
                     activeBuilderType = null;
                     if (builtMessage != null)
@@ -219,6 +265,32 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 
             if (!isBeingAccumulated)
             {
+                // Responses can finalize the same summary twice (summary_text.done, output_item.done).
+                // New deltas reset this guard; encrypted companion messages remain intact.
+                if (processedMessage is ReasoningMessage { Visibility: ReasoningVisibility.Summary } summary)
+                {
+                    if (
+                        !finalizesSummary
+                        && !string.IsNullOrEmpty(summary.GenerationId)
+                        && lastFinalSummary?.GenerationId == summary.GenerationId
+                        && lastFinalSummary.Reasoning == summary.Reasoning
+                    )
+                    {
+                        continue;
+                    }
+
+                    lastFinalSummary = finalizesSummary ? summary : null;
+                }
+
+                if (
+                    processedMessage is ToolCallMessage completedCall
+                    && !string.IsNullOrEmpty(completedCall.ToolCallId)
+                    && !emittedToolCallIds.Add(completedCall.ToolCallId)
+                )
+                {
+                    continue;
+                }
+
                 // Drop the empty server-tool RESULT whose query-less call the joiner just skipped.
                 // Without its matching call it is an orphan tool_result the provider rejects on replay,
                 // and keeping it would defeat the point of not recording the empty search at all.
@@ -239,7 +311,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Process final built message at the end of the stream
         if (activeBuilder != null)
         {
-            var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
+            var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, emittedToolCallIds, logger);
             if (builtMessage != null)
             {
                 yield return builtMessage;
@@ -302,6 +374,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private static IMessage? BuildJoinedOrSkip(
         IMessageBuilder builder,
         HashSet<string> skippedServerToolCallIds,
+        HashSet<string> emittedToolCallIds,
         ILogger logger
     )
     {
@@ -325,7 +398,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             return null;
         }
 
-        return built;
+        return
+            built is ToolCallMessage completedCall
+            && !string.IsNullOrEmpty(completedCall.ToolCallId)
+            && !emittedToolCallIds.Add(completedCall.ToolCallId)
+            ? null
+            : built;
     }
 
     /// <summary>
@@ -443,6 +521,9 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 Role = textUpdateMessage.Role,
                 GenerationId = textUpdateMessage.GenerationId,
                 MessageOrderIdx = textUpdateMessage.MessageOrderIdx,
+                ThreadId = textUpdateMessage.ThreadId,
+                RunId = textUpdateMessage.RunId,
+                ParentRunId = textUpdateMessage.ParentRunId,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -482,8 +563,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = reasoningUpdate.FromAgent,
                 Role = reasoningUpdate.Role,
                 GenerationId = reasoningUpdate.GenerationId,
-                Visibility = ReasoningVisibility.Plain, // Default to Plain for updates
+                Visibility = reasoningUpdate.Visibility ?? ReasoningVisibility.Plain,
                 MessageOrderIdx = reasoningUpdate.MessageOrderIdx,
+                ThreadId = reasoningUpdate.ThreadId,
+                RunId = reasoningUpdate.RunId,
+                ParentRunId = reasoningUpdate.ParentRunId,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;

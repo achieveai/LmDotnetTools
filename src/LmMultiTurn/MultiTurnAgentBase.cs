@@ -56,12 +56,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // (e.g. parallel tool-call results). Relative ordering of concurrently-published messages is not
     // guaranteed (the channel writes happen outside the lock), exactly as before this change.
     private readonly object _replayLock = new();
-    private readonly List<IMessage> _replayBuffer = [];
-    private bool _replayRunActive;
-    private bool _replayBufferTruncated;
-    private long _replayBufferBytes;
-    private string? _replayRunId;
-    private string? _replayGenerationId;
+    private readonly ReplayState _defaultReplay = new();
+    private readonly ReplayState _joinedReplay = new();
+
+    // Each shape has its own bounded replay, so raw and canonical copies never mix.
+    private sealed class ReplayState
+    {
+        public List<IMessage> Buffer { get; } = [];
+        public bool RunActive { get; set; }
+        public bool Truncated { get; set; }
+        public long Bytes { get; set; }
+        public string? RunId { get; set; }
+        public string? GenerationId { get; set; }
+    }
 
     // Replay is bounded by BOTH a message count and an estimated byte budget: a long tool/reasoning
     // turn can stay under the count cap while still retaining large per-message payloads (text, tool
@@ -452,7 +459,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         lock (_historyLock)
         {
+            message = NormalizeCanonicalOrder(message);
             ConversationHistory.Add(message);
+            PublishJoinedHistory(message);
         }
 
         // Capture the primary loop's own usage into the conversation-wide ledger (#196). Descendant
@@ -754,14 +763,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
-    /// Gets a snapshot of the conversation history in a thread-safe manner.
+    /// Gets a thread-safe point-in-time copy of canonical history, including compaction checkpoints.
+    /// Canonical messages are appended before a subscriber can observe run completion.
     /// </summary>
     /// <returns>A read-only list containing the current conversation history</returns>
-    protected IReadOnlyList<IMessage> GetHistorySnapshot()
+    public IReadOnlyList<IMessage> GetHistorySnapshot()
     {
         lock (_historyLock)
         {
-            return [.. ConversationHistory];
+            return [.. ConversationHistory.Where(ReplayMessagePolicy.IsCanonicalOrControl)];
         }
     }
 
@@ -776,7 +786,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // off (rolled back, killed, or never configured) the raw history goes out without it. The OpenAI
         // converter rejects unknown message types outright, so leaving the row in would turn a rollback
         // into a failed request on every thread that ever compacted (#686 AC 8).
-        var history = GetHistorySnapshot().Where(m => m is not CompactionCheckpointMessage);
+        IReadOnlyList<IMessage> history;
+        lock (_historyLock)
+        {
+            // Preserve SDK prompt construction: the public snapshot alone filters SDK fragments.
+            history = [.. ConversationHistory.Where(m => m is not CompactionCheckpointMessage)];
+        }
 
         if (!string.IsNullOrEmpty(SystemPrompt))
         {
@@ -792,9 +807,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     protected void RestoreHistory(IReadOnlyList<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         lock (_historyLock)
         {
-            ConversationHistory.AddRange(messages);
+            foreach (var message in messages)
+            {
+                ConversationHistory.Add(NormalizeCanonicalOrder(message));
+            }
         }
     }
 
@@ -838,7 +857,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         lock (_historyLock)
         {
+            message = NormalizeCanonicalOrder(message);
             ConversationHistory.Add(message);
+            PublishJoinedHistory(message);
         }
     }
 
@@ -879,6 +900,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             var old = (ToolCallResultMessage)ConversationHistory[index];
             var updated = updater(old);
             ConversationHistory[index] = updated;
+            if (!ReferenceEquals(old, updated))
+            {
+                PublishJoinedHistory(updated);
+            }
             return (old, updated);
         }
     }
@@ -1647,13 +1672,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <see cref="PublishToSubscriber"/>), plus a reserved terminal recovery
     /// control. <see cref="RecoveryControl"/> is completed ONLY when <see cref="PublishToSubscriber"/>
     /// drops this subscriber for being too slow - never on an ordinary unsubscribe (this class's own
-    /// <see cref="SubscribeAsync"/> cleanup) or on agent disposal (<see cref="DisposeAsync"/>) - so a
+    /// <see cref="SubscribeAsync(CancellationToken)"/> cleanup) or on agent disposal (<see cref="DisposeAsync"/>) - so a
     /// terminal <see cref="StreamRecoveryMessage"/> stays observable even though the bounded
     /// <see cref="Channel"/> it was dropped from is, by definition, full.
     /// </summary>
     private sealed class Subscriber
     {
         public required Channel<IMessage> Channel { get; init; }
+
+        public bool JoinedOnly { get; init; }
 
         /// <summary>
         /// Guards the write-then-record step in <see cref="PublishToSubscriber"/>. Two publishers
@@ -1693,8 +1720,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <inheritdoc />
-    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
+    public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default) =>
+        SubscribeAsync(SubscribeOptions.Default, ct);
+
+    /// <inheritdoc />
+    public async IAsyncEnumerable<IMessage> SubscribeAsync(
+        SubscribeOptions options,
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(options);
         var subscriberId = Guid.NewGuid().ToString("N");
         var channel = Channel.CreateBounded<IMessage>(
             new BoundedChannelOptions(_outputChannelCapacity)
@@ -1708,7 +1743,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // Atomically register this subscriber AND snapshot the in-flight run's buffered messages,
         // so a message published concurrently is delivered EITHER via this replay snapshot OR via
         // the live channel below — never both, never neither. See `_replayLock` remarks.
-        var subscriber = new Subscriber { Channel = channel };
+        var subscriber = new Subscriber { Channel = channel, JoinedOnly = options.JoinedOnly };
+        var replayState = options.JoinedOnly ? _joinedReplay : _defaultReplay;
         IReadOnlyList<IMessage> replay;
         StreamRecoveryMessage? truncationAdvisory = null;
         lock (_replayLock)
@@ -1718,7 +1754,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             // channel nobody will complete.
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (_replayRunActive && _replayBufferTruncated)
+            if (replayState.RunActive && replayState.Truncated)
             {
                 // The buffer no longer covers the whole run, and a client cannot tell a partial
                 // replay from a complete one. Withhold it entirely and advise THIS subscription to
@@ -1731,14 +1767,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 replay = [];
                 truncationAdvisory = new StreamRecoveryMessage(
                     ThreadId,
-                    _replayRunId,
-                    _replayGenerationId,
+                    replayState.RunId,
+                    replayState.GenerationId,
                     StreamRecoveryReason.ReplayTruncated
                 );
             }
             else
             {
-                replay = _replayRunActive && _replayBuffer.Count > 0 ? [.. _replayBuffer] : [];
+                replay = replayState.RunActive && replayState.Buffer.Count > 0 ? [.. replayState.Buffer] : [];
             }
 
             // A replayed message is delivered as surely as a live one — the loop below yields the whole
@@ -1831,8 +1867,119 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <param name="ct">Cancellation token</param>
     protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
+        _ = PublishToModeAsync(message, joinedOnly: false, ct);
+        // History content is published to joined subscribers only by its append/replacement.
+        // Lifecycle and transient controls have no history entry and pass through once.
+        if (
+            message is ITransientMessage
+            || (!IsHistoryContent(message) && ReplayMessagePolicy.IsCanonicalOrControl(message))
+        )
+        {
+            _ = PublishToModeAsync(message, joinedOnly: true, ct);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    // Normalize only the stored copy. Tool execution continues to use the original call index,
+    // which is also the source of the default subscriber's result index. Looking backward normally
+    // finds this generation's immediately preceding row and also works after history restoration.
+    private IMessage NormalizeCanonicalOrder(IMessage message)
+    {
+        if (
+            !ReplayMessagePolicy.IsCanonicalOrControl(message)
+            || message.GenerationId is not { } generation
+            || message.MessageOrderIdx is not { } index
+        )
+        {
+            return message;
+        }
+
+        var previous = ConversationHistory.FindLast(m =>
+            m.GenerationId == generation && m.MessageOrderIdx.HasValue && ReplayMessagePolicy.IsCanonicalOrControl(m)
+        );
+        if (previous?.MessageOrderIdx is not { } last || index > last || last == int.MaxValue)
+        {
+            return message;
+        }
+
+        var next = last + 1;
+        return message switch
+        {
+            TextMessage m => m with { MessageOrderIdx = next },
+            ReasoningMessage m => m with { MessageOrderIdx = next },
+            TextWithCitationsMessage m => m with { MessageOrderIdx = next },
+            ToolCallMessage m => m with { MessageOrderIdx = next },
+            ToolCallResultMessage m => m with { MessageOrderIdx = next },
+            ToolsCallMessage m => m with { MessageOrderIdx = next },
+            ToolsCallResultMessage m => m with { MessageOrderIdx = next },
+            UsageMessage m => m with { MessageOrderIdx = next },
+            _ => message,
+        };
+    }
+
+    /// <summary>Publishes canonical content while the history lock still establishes append order.</summary>
+    private void PublishJoinedHistory(IMessage message)
+    {
+        if (
+            !ReplayMessagePolicy.IsCanonicalOrControl(message)
+            || message is ITransientMessage
+            || (
+                message.Role is Role.User or Role.System
+                && message is not ToolCallResultMessage and not ToolsCallResultMessage and not NotifyMessage
+            )
+        )
+        {
+            return;
+        }
+
+        if (message is ReasoningMessage reasoning)
+        {
+            if (reasoning.Visibility == ReasoningVisibility.Encrypted || string.IsNullOrEmpty(reasoning.Reasoning))
+            {
+                return;
+            }
+
+            message = new TextMessage
+            {
+                Text = reasoning.Reasoning,
+                IsThinking = true,
+                Role = reasoning.Role,
+                FromAgent = reasoning.FromAgent,
+                GenerationId = reasoning.GenerationId,
+                MessageOrderIdx = reasoning.MessageOrderIdx,
+                ThreadId = reasoning.ThreadId,
+                RunId = reasoning.RunId,
+                ParentRunId = reasoning.ParentRunId,
+                Metadata = reasoning.Metadata,
+            };
+        }
+
+        _ = PublishToModeAsync(message, joinedOnly: true, CancellationToken.None);
+    }
+
+    private static bool IsHistoryContent(IMessage message) =>
+        message
+            is TextMessage
+                or TextWithCitationsMessage
+                or ReasoningMessage
+                or ToolCallMessage
+                or ToolsCallMessage
+                or ToolCallResultMessage
+                or ToolsCallResultMessage
+                or ToolsCallAggregateMessage
+                or UsageMessage
+                or ImageMessage
+                or CompositeMessage
+                or AgentMessage
+                or NotifyMessage
+                or CompactionCheckpointMessage;
+
+    private ValueTask PublishToModeAsync(IMessage message, bool joinedOnly, CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(message);
         _ = ct;
+        var replayState = joinedOnly ? _joinedReplay : _defaultReplay;
         KeyValuePair<string, Subscriber>[] targets;
         lock (_replayLock)
         {
@@ -1852,27 +1999,30 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 if (message is RunAssignmentMessage ram)
                 {
                     var incomingRunId = ram.Assignment?.RunId;
-                    if (!_replayRunActive || !string.Equals(incomingRunId, _replayRunId, StringComparison.Ordinal))
+                    if (
+                        !replayState.RunActive
+                        || !string.Equals(incomingRunId, replayState.RunId, StringComparison.Ordinal)
+                    )
                     {
-                        _replayBuffer.Clear();
-                        _replayBufferBytes = 0;
-                        _replayRunActive = true;
-                        _replayBufferTruncated = false;
-                        _replayRunId = incomingRunId;
-                        _replayGenerationId = ram.Assignment?.GenerationId;
+                        replayState.Buffer.Clear();
+                        replayState.Bytes = 0;
+                        replayState.RunActive = true;
+                        replayState.Truncated = false;
+                        replayState.RunId = incomingRunId;
+                        replayState.GenerationId = ram.Assignment?.GenerationId;
                     }
                 }
 
-                if (_replayRunActive && ReplayMessagePolicy.IsCanonicalOrControl(message))
+                if (replayState.RunActive && ReplayMessagePolicy.IsCanonicalOrControl(message))
                 {
-                    if (_replayBuffer.Count < _maxReplayBufferSize && _replayBufferBytes < _maxReplayBufferBytes)
+                    if (replayState.Buffer.Count < _maxReplayBufferSize && replayState.Bytes < _maxReplayBufferBytes)
                     {
-                        _replayBuffer.Add(message);
-                        _replayBufferBytes += EstimateMessageBytes(message);
+                        replayState.Buffer.Add(message);
+                        replayState.Bytes += EstimateMessageBytes(message);
                     }
-                    else if (!_replayBufferTruncated)
+                    else if (!replayState.Truncated)
                     {
-                        _replayBufferTruncated = true;
+                        replayState.Truncated = true;
                         Logger.LogWarning(
                             "In-flight replay buffer hit its cap ({CountCap} messages / {ByteCap} bytes); the "
                                 + "buffered prefix no longer covers this run, so it is withheld from a client "
@@ -1886,11 +2036,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
                 if (message is RunCompletedMessage)
                 {
-                    _replayRunActive = false;
+                    replayState.RunActive = false;
                     // Free the buffered run now that it can no longer be replayed (replay is gated on
-                    // _replayRunActive). A subscriber joining after completion uses persisted history.
-                    _replayBuffer.Clear();
-                    _replayBufferBytes = 0;
+                    // replayState.RunActive). A subscriber joining after completion uses persisted history.
+                    replayState.Buffer.Clear();
+                    replayState.Bytes = 0;
                 }
             }
 
@@ -1909,7 +2059,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         foreach (var (subscriberId, subscriber) in targets)
         {
-            PublishToSubscriber(subscriberId, subscriber, message);
+            if (subscriber.JoinedOnly == joinedOnly)
+            {
+                PublishToSubscriber(subscriberId, subscriber, message);
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -1922,7 +2075,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// write there would put that consumer on the live run's hot path and let it backpressure the
     /// active run and every other subscriber. So we write non-blocking and, when
     /// the channel is full, DROP the subscriber: remove it from the fan-out and complete its channel
-    /// so its <see cref="SubscribeAsync"/> enumerator ends. The client can reconnect; resume replays
+    /// so its <see cref="SubscribeAsync(CancellationToken)"/> enumerator ends. The client can reconnect; resume replays
     /// the in-flight run from the buffer. A reconnecting replay consumer can therefore never block
     /// <see cref="PublishToAllAsync"/>.
     /// </summary>
