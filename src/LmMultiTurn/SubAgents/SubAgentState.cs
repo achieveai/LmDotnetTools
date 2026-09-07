@@ -307,6 +307,13 @@ internal class SubAgentState
     private long _runGeneration;
     private long _terminalGeneration = -1;
 
+    // Bumped by every published status transition. A completion's ORDERED SIDE EFFECTS (the durable
+    // metadata push, the directory status publish) run off RunTransition so a warm loop's next run can
+    // be admitted while they are still in flight, which means they can be overtaken. The epoch captured
+    // when the transition committed is how a late effect recognises that it is describing a run the
+    // child has already moved past, and declines to publish over it.
+    private long _lifecycleEpoch;
+
     private static TaskCompletionSource<bool> NewLifecycleSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -596,6 +603,36 @@ internal class SubAgentState
             _terminalGeneration = _runGeneration;
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
             _terminalAtUtc = DateTimeOffset.UtcNow;
+            _lifecycleEpoch++;
+        }
+    }
+
+    /// <summary>
+    /// The current lifecycle epoch: the identity of the most recently published status transition.
+    /// Captured by a completion the instant its transition commits, so the ordered side effects it
+    /// hands back can tell whether they are still describing the child's current state.
+    /// </summary>
+    internal long LifecycleEpoch
+    {
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _lifecycleEpoch;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True while <paramref name="epoch"/> is still the child's latest published status transition —
+    /// that is, while a side effect captured at that epoch may still publish. False once a newer run
+    /// has been admitted, restarted, or faulted in the meantime.
+    /// </summary>
+    internal bool IsCurrentLifecycleEpoch(long epoch)
+    {
+        lock (_lifecycleLock)
+        {
+            return _lifecycleEpoch == epoch;
         }
     }
 
@@ -648,6 +685,7 @@ internal class SubAgentState
             _terminalGeneration = -1;
             _terminalAtUtc = null;
             _status = SubAgentStatus.Running;
+            _lifecycleEpoch++;
         }
     }
 
@@ -693,6 +731,7 @@ internal class SubAgentState
 
             _status = SubAgentStatus.Running;
             _terminalAtUtc = null;
+            _lifecycleEpoch++;
             return true;
         }
     }
@@ -718,6 +757,7 @@ internal class SubAgentState
             _terminalGeneration = generation;
             _status = SubAgentStatus.Error;
             _terminalAtUtc = DateTimeOffset.UtcNow;
+            _lifecycleEpoch++;
             return true;
         }
     }

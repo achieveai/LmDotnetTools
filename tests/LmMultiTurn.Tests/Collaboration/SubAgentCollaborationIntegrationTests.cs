@@ -455,7 +455,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         // Foreground (no run_in_background), so this call itself awaits the queue rather than
         // returning a receipt immediately — exactly the caller shape the leaked-admission bug needs.
-        // Everything up to that await, including AdmitToCollaboration, runs synchronously on this
+        // Everything up to that await, including AdmitAgent, runs synchronously on this
         // call, so both assertions below observe it without any polling.
         using var cts = new CancellationTokenSource();
         var queuedSpawn = manager.SpawnAsync(
