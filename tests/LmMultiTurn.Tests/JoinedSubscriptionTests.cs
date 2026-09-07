@@ -20,6 +20,8 @@ public class JoinedSubscriptionTests
     {
         await using var legacy = new LegacyAgent();
         IMultiTurnAgent agent = legacy;
+        agent.SubscribeAsync(default).Should().BeSameAs(legacy.Output);
+        legacy.SubscriptionToken.Should().Be(CancellationToken.None);
         using var cts = new CancellationTokenSource();
         var stream = agent.SubscribeAsync(SubscribeOptions.Default, cts.Token);
         stream.Should().BeSameAs(legacy.Output);
@@ -466,9 +468,25 @@ public class JoinedSubscriptionTests
     {
         await using var agent = new HistoryAgent();
         agent.Append(new TextMessage { Text = "first", Role = Role.Assistant });
+        var checkpoint = new CompactionCheckpointMessage
+        {
+            CheckpointId = "checkpoint",
+            Boundary = new CheckpointBoundary { Seq = 1, MessageId = "first" },
+            Trigger = CompactionTrigger.Manual,
+            Manifest = new ContextManifest(),
+            Narrative = "Earlier context",
+        };
+        agent.Append(checkpoint);
         var snapshot = agent.GetHistorySnapshot();
         agent.Append(new TextMessage { Text = "second", Role = Role.Assistant });
-        snapshot.Should().ContainSingle();
+        snapshot.Should().HaveCount(2);
+        snapshot[0].Should().BeOfType<TextMessage>().Which.Text.Should().Be("first");
+        snapshot[1].Should().BeSameAs(checkpoint);
+        agent
+            .GetHistorySnapshot()
+            .Select(m => m.GetType())
+            .Should()
+            .Equal(typeof(TextMessage), typeof(CompactionCheckpointMessage), typeof(TextMessage));
         using var cts = new CancellationTokenSource();
         await using var subscriber = agent.SubscribeAsync(SubscribeOptions.Joined, cts.Token).GetAsyncEnumerator();
         var pending = subscriber.MoveNextAsync().AsTask();
@@ -485,12 +503,231 @@ public class JoinedSubscriptionTests
         agent.GetHistorySnapshot().Should().ContainSingle().Which.Should().BeOfType<TextMessage>();
     }
 
+    [Fact]
+    public async Task Concrete_agent_accepts_default_literal_and_explicit_joined_options()
+    {
+        await using var agent = new HistoryAgent();
+        agent.SubscribeAsync(default).Should().NotBeNull();
+        agent.SubscribeAsync(SubscribeOptions.Joined, default).Should().NotBeNull();
+        IMultiTurnAgent throughInterface = agent;
+        throughInterface.SubscribeAsync(default).Should().NotBeNull();
+        throughInterface.SubscribeAsync(SubscribeOptions.Joined, default).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Committed_deferred_replacement_precedes_joined_completion()
+    {
+        await using var agent = new HistoryAgent();
+        agent.Append(new ToolCallResultMessage { ToolCallId = "pending", Result = "pending" });
+        using var written = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var completed = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var raw = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator();
+        var rawCompletion = raw.MoveNextAsync().AsTask();
+        var joinedDelivery = DrainAsync(agent.SubscribeAsync(SubscribeOptions.Joined, cts.Token), () => { }, cts.Token);
+        var replacement = Task.Run(() =>
+            agent.Replace(
+                new PausingToolResult(() =>
+                {
+                    // This getter runs during joined publication, after the replacement is committed.
+                    agent.GetHistorySnapshot().OfType<ToolCallResultMessage>().Single().Result.Should().Be("resolved");
+                    written.Set();
+                    release.Wait(cts.Token);
+                })
+                {
+                    ToolCallId = "pending",
+                    Result = "resolved",
+                }
+            )
+        );
+        Exception? completionError = null;
+        var completionThread = new Thread(() =>
+        {
+            try
+            {
+                agent.CompleteAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception error)
+            {
+                completionError = error;
+            }
+            finally
+            {
+                completed.Set();
+            }
+        })
+        {
+            IsBackground = true,
+        };
+
+        try
+        {
+            written.Wait(cts.Token);
+            completionThread.Start();
+            (await rawCompletion).Should().BeTrue();
+            raw.Current.Should().BeOfType<RunCompletedMessage>();
+            // Wait for completion to either return (the bug) or block on the history boundary.
+            // No sleep-based race: raw delivery proves it has reached terminal publication.
+            SpinWait
+                .SpinUntil(
+                    () => completed.IsSet || (completionThread.ThreadState & ThreadState.WaitSleepJoin) != 0,
+                    TimeSpan.FromSeconds(5)
+                )
+                .Should()
+                .BeTrue();
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        await replacement;
+        completed.Wait(cts.Token);
+        completionError.Should().BeNull();
+        var joined = await joinedDelivery;
+        joined.OfType<ToolCallResultMessage>().Select(m => m.Result).Should().Equal("resolved");
+        joined.OfType<RunCompletedMessage>().Should().ContainSingle();
+        joined.Last().Should().BeOfType<RunCompletedMessage>();
+    }
+
+    [Fact]
+    public async Task Restore_history_reads_generation_ids_in_linear_work()
+    {
+        await using var agent = new HistoryAgent();
+        var reads = 0;
+        const int count = 2000;
+        var messages = Enumerable
+            .Range(0, count)
+            .Select(i =>
+                (IMessage)
+                    new CountingTextMessage(() => reads++)
+                    {
+                        Text = "restored",
+                        GenerationId = $"generation-{i}",
+                        MessageOrderIdx = 0,
+                    }
+            )
+            .ToArray();
+
+        agent.Restore(messages);
+
+        reads.Should().BeLessThan(count * 10, "restoring distinct generations must not scan earlier rows repeatedly");
+        agent.GetHistorySnapshot().Should().HaveCount(count);
+    }
+
+    [Fact]
+    public async Task Restore_history_preserves_per_generation_order_across_batches()
+    {
+        await using var agent = new HistoryAgent();
+        agent.Append(
+            new TextMessage
+            {
+                Text = "existing",
+                GenerationId = "g",
+                MessageOrderIdx = 4,
+            }
+        );
+        agent.Restore([
+            new TextMessage
+            {
+                Text = "other",
+                GenerationId = "h",
+                MessageOrderIdx = 0,
+            },
+            new TextMessage
+            {
+                Text = "first",
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            new TextUpdateMessage
+            {
+                Text = "delta",
+                GenerationId = "g",
+                MessageOrderIdx = 99,
+            },
+        ]);
+        agent.Restore([
+            new TextMessage
+            {
+                Text = "second",
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            new TextMessage { Text = "unordered", GenerationId = "g" },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call",
+                Result = "done",
+                GenerationId = "g",
+                MessageOrderIdx = 1,
+            },
+            new TextMessage { Text = "no generation", MessageOrderIdx = 2 },
+            new TextMessage
+            {
+                Text = "max",
+                GenerationId = "m",
+                MessageOrderIdx = int.MaxValue,
+            },
+            new TextMessage
+            {
+                Text = "after max",
+                GenerationId = "m",
+                MessageOrderIdx = 0,
+            },
+            new TextMessage
+            {
+                Text = "next",
+                GenerationId = "m",
+                MessageOrderIdx = 0,
+            },
+        ]);
+
+        agent
+            .GetHistorySnapshot()
+            .Select(m => m.MessageOrderIdx)
+            .Should()
+            .Equal(4, 0, 5, 6, null, 7, 2, int.MaxValue, 0, 1);
+    }
+
+    private sealed record PausingToolResult(Action BeforeDelivery) : ToolCallResultMessage, IMessage
+    {
+        Role IMessage.Role
+        {
+            get
+            {
+                BeforeDelivery();
+                return Role;
+            }
+        }
+    }
+
+    private sealed record CountingTextMessage(Action OnGenerationRead) : TextMessage, IMessage
+    {
+        string? IMessage.GenerationId
+        {
+            get
+            {
+                OnGenerationRead();
+                return GenerationId;
+            }
+        }
+    }
+
     private sealed class HistoryAgent(int capacity = 100, int replayCapacity = 100)
         : MultiTurnAgentBase("history-test", outputChannelCapacity: capacity, maxReplayBufferSize: replayCapacity)
     {
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
         public void Append(IMessage message) => AddToHistory(message);
+
+        public void Restore(IReadOnlyList<IMessage> messages) => RestoreHistory(messages);
+
+        public void Replace(ToolCallResultMessage message) =>
+            UpdateToolResultByCallId(message.ToolCallId!, _ => message);
+
+        public Task CompleteAsync() => CompleteRunAsync("run", "gen");
 
         public ValueTask PublishAsync(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
     }

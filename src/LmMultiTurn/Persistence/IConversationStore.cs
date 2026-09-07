@@ -146,29 +146,6 @@ public interface IConversationStore
 
     // === Listing ===
 
-    /// <summary>Lists threads using the legacy positional cancellation signature.</summary>
-    /// <param name="limit">Maximum number of threads to return.</param>
-    /// <param name="offset">Number of threads to skip.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Thread metadata in the default listing order.</returns>
-    [Obsolete("Use ListThreadsAsync(limit, offset, options: null, ct: cancellationToken) instead.")]
-    Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit, int offset, CancellationToken cancellationToken) =>
-        ListThreadsAsync(limit, offset, options: null, ct: cancellationToken);
-
-    /// <summary>Lists readable threads using the legacy positional cancellation signature.</summary>
-    /// <param name="scope">The principal's tenant, identity, role and resolved grants.</param>
-    /// <param name="limit">Maximum number of threads to return.</param>
-    /// <param name="offset">Number of threads to skip.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Readable thread metadata in the default listing order.</returns>
-    [Obsolete("Use ListThreadsAsync(scope, limit, offset, options: null, ct: cancellationToken) instead.")]
-    Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
-        ConversationListScope scope,
-        int limit,
-        int offset,
-        CancellationToken cancellationToken
-    ) => ListThreadsAsync(scope, limit, offset, options: null, ct: cancellationToken);
-
     /// <summary>
     /// Lists all threads with their metadata, ordered by last updated descending.
     /// </summary>

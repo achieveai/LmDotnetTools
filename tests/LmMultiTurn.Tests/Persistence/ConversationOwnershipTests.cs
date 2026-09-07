@@ -120,6 +120,40 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["first"] };
         (await store.ListThreadsAsync(1, 1, options, token)).Select(m => m.ThreadId).Should().Equal("second");
         (await store.ListThreadsAsync(scope, 1, 0, options, token)).Select(m => m.ThreadId).Should().Equal("second");
+
+        // Untyped default belongs to the current options instance API. Typed cancellation
+        // above uses the legacy extension only when no instance overload is applicable.
+        (await store.ListThreadsAsync(1, 1, default))
+            .Select(m => m.ThreadId)
+            .Should()
+            .Equal("first");
+        (await store.ListThreadsAsync(scope, 1, 1, default)).Select(m => m.ThreadId).Should().Equal("second");
+        var concreteMatrix = store switch
+        {
+            InMemoryConversationStore memory => (
+                await memory.ListThreadsAsync(1, 1, default),
+                await memory.ListThreadsAsync(scope, 1, 1, default),
+                await memory.ListThreadsAsync(1, 1, options),
+                await memory.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            FileConversationStore file => (
+                await file.ListThreadsAsync(1, 1, default),
+                await file.ListThreadsAsync(scope, 1, 1, default),
+                await file.ListThreadsAsync(1, 1, options),
+                await file.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            SqliteConversationStore sqlite => (
+                await sqlite.ListThreadsAsync(1, 1, default),
+                await sqlite.ListThreadsAsync(scope, 1, 1, default),
+                await sqlite.ListThreadsAsync(1, 1, options),
+                await sqlite.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            _ => throw new InvalidOperationException(),
+        };
+        concreteMatrix.Item1.Select(m => m.ThreadId).Should().Equal("first");
+        concreteMatrix.Item2.Select(m => m.ThreadId).Should().Equal("second");
+        concreteMatrix.Item3.Select(m => m.ThreadId).Should().Equal("second");
+        concreteMatrix.Item4.Select(m => m.ThreadId).Should().Equal("second");
     }
 
     [Fact]

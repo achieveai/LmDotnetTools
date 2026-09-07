@@ -810,9 +810,39 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(messages);
         lock (_historyLock)
         {
+            // Seed once, then carry each generation's last stored order through the batch.
+            // Repeated backward searches turn distinct-generation restores into quadratic work.
+            var lastOrders = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var existing in ConversationHistory)
+            {
+                if (
+                    ReplayMessagePolicy.IsCanonicalOrControl(existing)
+                    && existing.GenerationId is { } generation
+                    && existing.MessageOrderIdx is { } index
+                )
+                {
+                    lastOrders[generation] = index;
+                }
+            }
+
             foreach (var message in messages)
             {
-                ConversationHistory.Add(NormalizeCanonicalOrder(message));
+                var normalized = message;
+                if (
+                    ReplayMessagePolicy.IsCanonicalOrControl(message)
+                    && message.GenerationId is { } generation
+                    && message.MessageOrderIdx is { } index
+                )
+                {
+                    normalized = NormalizeCanonicalOrder(
+                        message,
+                        index,
+                        lastOrders.TryGetValue(generation, out var last) ? last : null
+                    );
+                    // Use the actual stored order: unrecognized canonical types are not cloned.
+                    lastOrders[generation] = normalized.MessageOrderIdx!.Value;
+                }
+                ConversationHistory.Add(normalized);
             }
         }
     }
@@ -1875,7 +1905,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             || (!IsHistoryContent(message) && ReplayMessagePolicy.IsCanonicalOrControl(message))
         )
         {
-            _ = PublishToModeAsync(message, joinedOnly: true, ct);
+            if (message is RunCompletedMessage)
+            {
+                // A committed append/replacement must finish joined delivery before completion.
+                // Keep the same history -> replay lock order as canonical publication.
+                lock (_historyLock)
+                {
+                    _ = PublishToModeAsync(message, joinedOnly: true, ct);
+                }
+            }
+            else
+            {
+                _ = PublishToModeAsync(message, joinedOnly: true, ct);
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -1898,7 +1940,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         var previous = ConversationHistory.FindLast(m =>
             m.GenerationId == generation && m.MessageOrderIdx.HasValue && ReplayMessagePolicy.IsCanonicalOrControl(m)
         );
-        if (previous?.MessageOrderIdx is not { } last || index > last || last == int.MaxValue)
+        return NormalizeCanonicalOrder(message, index, previous?.MessageOrderIdx);
+    }
+
+    private static IMessage NormalizeCanonicalOrder(IMessage message, int index, int? previousOrder)
+    {
+        if (previousOrder is not { } last || index > last || last == int.MaxValue)
         {
             return message;
         }

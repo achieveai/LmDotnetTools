@@ -620,18 +620,27 @@ public class MessageUpdateJoinerMiddlewareTests
                 Text = "think",
                 IsThinking = true,
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 0,
             },
             new TextUpdateMessage
             {
                 Text = "answer",
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 1,
             },
             new TextMessage
             {
                 Text = "separate",
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 2,
             },
         ]);
@@ -641,6 +650,11 @@ public class MessageUpdateJoinerMiddlewareTests
             .Select(m => (m.Text, m.IsThinking, m.MessageOrderIdx))
             .Should()
             .Equal(("think", true, 0), ("answer", false, 1), ("separate", false, 2));
+        results
+            .OfType<TextMessage>()
+            .Select(m => (m.ThreadId, m.RunId, m.ParentRunId))
+            .Should()
+            .OnlyContain(ids => ids.ThreadId == "thread" && ids.RunId == "run" && ids.ParentRunId == "parent");
     }
 
     [Fact]
@@ -651,6 +665,9 @@ public class MessageUpdateJoinerMiddlewareTests
             {
                 Reasoning = "plain",
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 0,
             },
             new ReasoningUpdateMessage
@@ -658,12 +675,18 @@ public class MessageUpdateJoinerMiddlewareTests
                 Reasoning = "signature",
                 Visibility = ReasoningVisibility.Encrypted,
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 0,
             },
             new ReasoningUpdateMessage
             {
                 Reasoning = "next",
                 GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
                 MessageOrderIdx = 1,
             },
         ]);
@@ -677,6 +700,11 @@ public class MessageUpdateJoinerMiddlewareTests
                 ("signature", ReasoningVisibility.Encrypted),
                 ("next", ReasoningVisibility.Plain)
             );
+        results
+            .OfType<ReasoningMessage>()
+            .Select(m => (m.ThreadId, m.RunId, m.ParentRunId))
+            .Should()
+            .OnlyContain(ids => ids.ThreadId == "thread" && ids.RunId == "run" && ids.ParentRunId == "parent");
     }
 
     [Fact]
