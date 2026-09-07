@@ -2781,7 +2781,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // Canonical form first. The bounded text is what history stores and replays, so it — not
         // the raw delivery — drives the fingerprint, the identical-redelivery check and the
         // conflict decision. A byte-equal redelivery bounds to the same text and stays idempotent.
-        var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks);
+        var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks, out var originalBytes);
         var fingerprint = ComputeResolutionFingerprint(result, isError);
 
         if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out var inFlightFingerprint))
@@ -2806,10 +2806,27 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 );
             }
 
-            return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, truncated, ct);
+            return await ResolveUnclaimedAsync(
+                toolCallId,
+                result,
+                isError,
+                contentBlocks,
+                truncated,
+                originalBytes,
+                ct
+            );
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
+        return await ResolveClaimedAsync(
+            pending!,
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            truncated,
+            originalBytes,
+            ct
+        );
     }
 
     /// <summary>
@@ -2819,10 +2836,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private bool TryBoundResolution(
         string toolCallId,
         ref string result,
-        ref IList<ToolResultContentBlock>? contentBlocks
+        ref IList<ToolResultContentBlock>? contentBlocks,
+        out int? originalBytes
     )
     {
-        if (!ToolResultLimits.TryApply(new ToolCallResult(toolCallId, result, contentBlocks), out var bounded))
+        var truncated = ToolResultLimits.TryApply(
+            new ToolCallResult(toolCallId, result, contentBlocks),
+            out var bounded
+        );
+        originalBytes = bounded.OriginalBytes;
+        if (!truncated)
         {
             return false;
         }
@@ -2855,6 +2878,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
+        int? originalBytes,
         CancellationToken ct
     )
     {
@@ -2946,7 +2970,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     if (existing.IsDeferred)
                     {
-                        return ApplyResolution(existing, result, isError, truncated);
+                        return ApplyResolution(existing, result, isError, truncated, originalBytes);
                     }
 
                     if (existing.Result == result && existing.IsError == isError)
@@ -3245,6 +3269,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
+        int? originalBytes,
         CancellationToken ct
     )
     {
@@ -3320,14 +3345,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             return (ResolveToolCallOutcome.Duplicate, null);
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
+        return await ResolveClaimedAsync(
+            pending!,
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            truncated,
+            originalBytes,
+            ct
+        );
     }
 
     private static ToolCallResultMessage ApplyResolution(
         ToolCallResultMessage existing,
         string result,
         bool isError,
-        bool truncated
+        bool truncated,
+        int? originalBytes
     )
     {
         return existing with
@@ -3339,6 +3374,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             IsDeferred = false,
             ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             IsTruncated = truncated,
+            OriginalBytes = originalBytes,
         };
     }
 

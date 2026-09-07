@@ -524,7 +524,7 @@ public class MessageTransformationMiddlewareTests
             {
                 ToolCallResults =
                 [
-                    new ToolCallResult("call_1", "cut") { IsTruncated = true },
+                    new ToolCallResult("call_1", "cut") { IsTruncated = true, OriginalBytes = 1_000 },
                     new ToolCallResult("call_2", "whole"),
                 ],
                 GenerationId = "gen1",
@@ -537,7 +537,9 @@ public class MessageTransformationMiddlewareTests
         var cut = Assert.IsType<ToolCallResultMessage>(messages[0]);
         var whole = Assert.IsType<ToolCallResultMessage>(messages[1]);
         Assert.True(cut.IsTruncated);
+        Assert.Equal(1_000, cut.OriginalBytes);
         Assert.False(whole.IsTruncated);
+        Assert.Null(whole.OriginalBytes);
     }
     #endregion
     #region ToolCallUpdate Identity Tests
@@ -1151,6 +1153,7 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 Result = "cut",
                 IsTruncated = true,
+                OriginalBytes = 1_000,
                 GenerationId = "gen1",
                 MessageOrderIdx = 0,
             },
@@ -1169,7 +1172,9 @@ public class MessageTransformationMiddlewareTests
 
         var aggregated = Assert.IsType<ToolsCallResultMessage>(Assert.Single(agent.ReceivedMessages));
         Assert.True(aggregated.ToolCallResults[0].IsTruncated);
+        Assert.Equal(1_000, aggregated.ToolCallResults[0].OriginalBytes);
         Assert.False(aggregated.ToolCallResults[1].IsTruncated);
+        Assert.Null(aggregated.ToolCallResults[1].OriginalBytes);
     }
 
     [Fact]

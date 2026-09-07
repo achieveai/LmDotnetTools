@@ -396,6 +396,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                         ErrorCode = result.ErrorCode,
                         ExecutionTarget = result.ExecutionTarget,
                         IsTruncated = result.IsTruncated,
+                        OriginalBytes = result.OriginalBytes,
                         Role = m.Role,
                         FromAgent = m.FromAgent,
                         GenerationId = m.GenerationId,
@@ -690,6 +691,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                     ExecutionTarget = tcrm.ExecutionTarget,
                     ContentBlocks = tcrm.ContentBlocks,
                     IsTruncated = tcrm.IsTruncated,
+                    OriginalBytes = tcrm.OriginalBytes,
                 })
                 .ToImmutableList();
 

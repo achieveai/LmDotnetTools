@@ -159,6 +159,16 @@ public readonly record struct ToolCallResult
     [JsonPropertyName("is_truncated")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool IsTruncated { get; init; }
+
+    /// <summary>
+    /// Original UTF-8 byte count of Result and all text content blocks before truncation,
+    /// excluding binary blocks. Totals above <see cref="int.MaxValue"/> are saturated to that
+    /// value. Null for untruncated results or older results without a recorded count.
+    /// Preserved when an already-truncated result is bounded again.
+    /// </summary>
+    [JsonPropertyName("original_bytes")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? OriginalBytes { get; init; }
 }
 
 /// <summary>
@@ -263,6 +273,15 @@ public record ToolCallResultMessage : IMessage
     public bool IsTruncated { get; init; }
 
     /// <summary>
+    /// Original UTF-8 byte count of all textual result fields, saturated at
+    /// <see cref="int.MaxValue"/>. Mirrors <see cref="ToolCallResult.OriginalBytes"/>;
+    /// null for untruncated results or older results without a recorded count.
+    /// </summary>
+    [JsonPropertyName("original_bytes")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? OriginalBytes { get; init; }
+
+    /// <summary>
     /// Converts this message to a ToolCallResult struct.
     /// </summary>
     public ToolCallResult ToToolCallResult()
@@ -277,6 +296,7 @@ public record ToolCallResultMessage : IMessage
             DeferredAt = DeferredAt,
             ResolvedAt = ResolvedAt,
             IsTruncated = IsTruncated,
+            OriginalBytes = OriginalBytes,
         };
     }
 
@@ -309,6 +329,7 @@ public record ToolCallResultMessage : IMessage
             DeferredAt = result.DeferredAt,
             ResolvedAt = result.ResolvedAt,
             IsTruncated = result.IsTruncated,
+            OriginalBytes = result.OriginalBytes,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,

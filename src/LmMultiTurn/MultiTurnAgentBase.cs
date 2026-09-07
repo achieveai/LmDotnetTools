@@ -505,6 +505,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     Result = boundedSingle.Result,
                     ContentBlocks = boundedSingle.ContentBlocks,
                     IsTruncated = true,
+                    OriginalBytes = boundedSingle.OriginalBytes,
                 };
 
             case ToolsCallResultMessage plural:
