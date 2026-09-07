@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **AnthropicProvider tests (R6)**: Verify the complete next-turn JSON request preserves signed thinking, tool use and its matching tool result during replay.
+
 ### Added
 
 - **CodeReviewDaemon.Sample**: host-side git is now BOUNDED and AUDIBLE, and the temp packs a killed git abandons are swept. `HostGitCommandRunner` grows an idle-output watchdog (default 5 min), an absolute duration ceiling (default 60 min), `--progress` injection, a process-tree kill and a bounded post-exit drain; the new `Workspace/Sandbox/OrphanedPackSweeper.cs` removes what a kill left behind. Both defects were real: a 969,911-object fetch into a 2.3 GB store ran with no deadline of any kind and emitted not one line while it worked, so the daemon was twice diagnosed as hung while it was making progress — and a fetch killed mid-`index-pack` leaked its `tmp_pack_*` permanently, because `gc` only prunes stale temp files past `gc.pruneExpire`, which defaults to two weeks. Measured: 35 orphans totalling 245.35 GB in one submodule's pack directory, enough to grow the disk image until the filesystem remounted read-only. Four contract points:
