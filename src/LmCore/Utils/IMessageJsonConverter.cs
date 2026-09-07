@@ -543,6 +543,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             Result = GetJsonStringProperty(element, "{}", "result"),
             IsError = GetBoolProperty(element, false, "is_error", "isError"),
             ErrorCode = GetStringProperty(element, "error_code", "errorCode"),
+            IsTruncated = GetBoolProperty(element, false, "is_truncated", "isTruncated"),
+            OriginalBytes = GetIntProperty(element, "original_bytes", "originalBytes"),
             ExecutionTarget = ExecutionTarget.ProviderServer,
             Role = ParseRoleProperty(element, Role.Assistant),
             FromAgent = GetStringProperty(element, "from_agent", "fromAgent"),

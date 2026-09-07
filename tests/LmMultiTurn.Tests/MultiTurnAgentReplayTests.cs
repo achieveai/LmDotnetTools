@@ -16,7 +16,7 @@ namespace LmMultiTurn.Tests;
 /// <summary>
 /// Streaming resume: a client that reconnects mid-run (after switching conversations or
 /// refreshing) must be able to resume the in-flight stream. The backend run keeps running after
-/// the client disconnects (pooled agent), but <see cref="MultiTurnAgentBase.SubscribeAsync"/>
+/// the client disconnects (pooled agent), but <see cref="MultiTurnAgentBase.SubscribeAsync(CancellationToken)"/>
 /// historically created a fresh subscriber with NO replay — so a reconnecting client received
 /// only messages published after it re-subscribed and the visible stream "froze". These tests
 /// pin the replay contract: a subscriber joining mid-run gets the in-flight run's already-published

@@ -125,8 +125,39 @@ public sealed record ToolResultLimits
             }
         }
 
-        bounded = truncated ? result with { Result = text!, ContentBlocks = blocks, IsTruncated = true } : result;
+        bounded = truncated
+            ? result with
+            {
+                Result = text!,
+                ContentBlocks = blocks,
+                IsTruncated = true,
+                OriginalBytes = result.IsTruncated ? result.OriginalBytes : CountOriginalTextBytes(result),
+            }
+            : result;
         return truncated;
+    }
+
+    // Count only after truncation is needed, keeping ordinary results on the existing fast path.
+    // Result and text blocks are separate fields even when their contents happen to match.
+    private static int CountOriginalTextBytes(ToolCallResult result)
+    {
+        long total = result.Result == null ? 0 : Encoding.UTF8.GetByteCount(result.Result);
+        if (result.ContentBlocks != null)
+        {
+            foreach (var block in result.ContentBlocks)
+            {
+                if (block is TextToolResultBlock text)
+                {
+                    total += Encoding.UTF8.GetByteCount(text.Text);
+                    if (total >= int.MaxValue)
+                    {
+                        return int.MaxValue;
+                    }
+                }
+            }
+        }
+
+        return (int)total;
     }
 
     /// <summary>

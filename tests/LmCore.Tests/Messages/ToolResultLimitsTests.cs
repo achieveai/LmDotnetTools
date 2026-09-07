@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
@@ -152,6 +153,7 @@ public sealed class ToolResultLimitsTests
         var bounded = limits.Apply(oversized);
 
         bounded.IsTruncated.Should().BeTrue();
+        bounded.OriginalBytes.Should().Be(1_000);
         bounded.ToolCallId.Should().Be("call-1");
         bounded.ToolName.Should().Be("dump");
         Encoding.UTF8.GetByteCount(bounded.Result).Should().BeLessThanOrEqualTo(256);
@@ -167,6 +169,7 @@ public sealed class ToolResultLimitsTests
 
         bounded.Should().Be(small);
         bounded.IsTruncated.Should().BeFalse();
+        bounded.OriginalBytes.Should().BeNull();
     }
 
     [Fact]
@@ -180,6 +183,7 @@ public sealed class ToolResultLimitsTests
         // for results the executor already bounded.
         limits.TryApply(alreadyBounded, out var second).Should().BeFalse();
         second.Should().Be(alreadyBounded);
+        second.OriginalBytes.Should().Be(1_000);
         limits.TryApply(new ToolCallResult("call-6", MakeAscii(1_000)), out var cut).Should().BeTrue();
         cut.IsTruncated.Should().BeTrue();
     }
@@ -201,6 +205,7 @@ public sealed class ToolResultLimitsTests
 
         bounded.IsTruncated.Should().BeTrue();
         bounded.Result.Should().Be("short");
+        bounded.OriginalBytes.Should().Be(1_005);
         var text = bounded.ContentBlocks![0].Should().BeOfType<TextToolResultBlock>().Subject;
         Encoding.UTF8.GetByteCount(text.Text).Should().BeLessThanOrEqualTo(256);
         text.Text.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
@@ -223,6 +228,108 @@ public sealed class ToolResultLimitsTests
 
         var message = ToolCallResultMessage.FromToolCallResult(bounded);
         message.IsTruncated.Should().BeTrue();
+        message.OriginalBytes.Should().Be(1_000);
         message.ToToolCallResult().IsTruncated.Should().BeTrue();
+        message.ToToolCallResult().OriginalBytes.Should().Be(1_000);
+    }
+
+    [Fact]
+    public void OriginalBytes_counts_all_original_utf8_text_fields()
+    {
+        var original = new ToolCallResult(
+            "utf8",
+            new string('☃', 200),
+            [
+                new TextToolResultBlock { Text = "😀" },
+                new TextToolResultBlock { Text = new string('é', 200) },
+                new ImageToolResultBlock { Data = "AAAA", MimeType = "image/png" },
+            ]
+        );
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 256 }.Apply(original);
+
+        bounded.OriginalBytes.Should().Be(1_004);
+    }
+
+    [Fact]
+    public void A_stricter_second_bound_preserves_the_original_count()
+    {
+        var first = new ToolResultLimits { MaxResultBytes = 512 }.Apply(
+            new ToolCallResult("repeat", new string('☃', 1_000))
+        );
+
+        var second = new ToolResultLimits { MaxResultBytes = 256 }.Apply(first);
+
+        second.OriginalBytes.Should().Be(3_000);
+        Encoding.UTF8.GetByteCount(second.Result).Should().BeLessThanOrEqualTo(256);
+    }
+
+    [Fact]
+    public void A_stricter_bound_keeps_an_unknown_legacy_original_count_null()
+    {
+        var legacy = new ToolCallResult("legacy", new string('a', 512)) { IsTruncated = true };
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 256 }.Apply(legacy);
+
+        bounded.OriginalBytes.Should().BeNull("the original size was not recorded before the earlier truncation");
+        bounded.IsTruncated.Should().BeTrue();
+        Encoding.UTF8.GetByteCount(bounded.Result).Should().BeLessThanOrEqualTo(256);
+    }
+
+    [Fact]
+    public void OriginalBytes_saturates_when_text_fields_total_more_than_int_max()
+    {
+        // Reuse one block to exercise a >2 GiB logical payload without allocating it.
+        var block = new TextToolResultBlock { Text = new string('a', 1024 * 1024) };
+        var original = new ToolCallResult(
+            "large-total",
+            "x",
+            [.. Enumerable.Repeat<ToolResultContentBlock>(block, 2048)]
+        );
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 256 }.Apply(original);
+
+        bounded.OriginalBytes.Should().Be(int.MaxValue);
+    }
+
+    [Fact]
+    public void OriginalBytes_round_trips_in_result_and_message_json()
+    {
+        var bounded = new ToolResultLimits { MaxResultBytes = 256 }.Apply(
+            new ToolCallResult("json", new string('é', 200))
+        );
+
+        var resultJson = JsonSerializer.Serialize(bounded);
+        resultJson.Should().Contain("\"original_bytes\":400");
+        JsonSerializer.Deserialize<ToolCallResult>(resultJson).OriginalBytes.Should().Be(400);
+        var messageJson = JsonSerializer.Serialize(ToolCallResultMessage.FromToolCallResult(bounded));
+        JsonSerializer.Deserialize<ToolCallResultMessage>(messageJson)!.OriginalBytes.Should().Be(400);
+        JsonSerializer.Serialize(new ToolCallResult("small", "ok")).Should().NotContain("original_bytes");
+    }
+
+    [Fact]
+    public void Legacy_server_result_truncation_metadata_survives_conversion_and_json_round_trip()
+    {
+        const string Json = """
+            {"$type":"server_tool_result","tool_use_id":"server-1","result":"cut",
+             "is_truncated":true,"original_bytes":1000}
+            """;
+        var options = new JsonSerializerOptions { Converters = { new IMessageJsonConverter() } };
+
+        var message = JsonSerializer
+            .Deserialize<IMessage>(Json, options)
+            .Should()
+            .BeOfType<ToolCallResultMessage>()
+            .Subject;
+
+        message.IsTruncated.Should().BeTrue();
+        message.OriginalBytes.Should().Be(1_000);
+        var roundTrip = JsonSerializer
+            .Deserialize<IMessage>(JsonSerializer.Serialize<IMessage>(message, options), options)
+            .Should()
+            .BeOfType<ToolCallResultMessage>()
+            .Subject;
+        roundTrip.IsTruncated.Should().BeTrue();
+        roundTrip.OriginalBytes.Should().Be(1_000);
     }
 }

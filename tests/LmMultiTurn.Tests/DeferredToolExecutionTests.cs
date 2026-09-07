@@ -1082,7 +1082,7 @@ public class DeferredToolExecutionTests
     /// returning only once the subscription is registered.
     /// </summary>
     /// <remarks>
-    /// <see cref="MultiTurnAgentBase.SubscribeAsync"/> registers the subscriber inside the iterator
+    /// <see cref="MultiTurnAgentBase.SubscribeAsync(CancellationToken)"/> registers the subscriber inside the iterator
     /// body, and that body does not run until the first <c>MoveNextAsync</c>. Kicking that first
     /// move here, on the calling thread, means registration has happened by the time this method
     /// returns, so the caller can start a run without racing it. Leaving registration to a

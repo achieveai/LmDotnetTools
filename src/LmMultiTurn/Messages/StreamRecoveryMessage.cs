@@ -33,7 +33,7 @@ public enum StreamRecoveryReason
     /// this LEADS the stream and the live tail follows on the same subscription. A consumer that
     /// tore the stream down here would have to reconnect, land on the same still-truncated buffer,
     /// and be advised again for the rest of the run. See
-    /// <see cref="MultiTurnAgentBase.SubscribeAsync"/>.
+    /// <see cref="MultiTurnAgentBase.SubscribeAsync(CancellationToken)"/>.
     /// </summary>
     [JsonPropertyName("replay_truncated")]
     ReplayTruncated,

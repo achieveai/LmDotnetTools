@@ -133,6 +133,29 @@ public class ThinkingWithToolCallSerializationTests
         Assert.Equal("tool_result", toolResultMsg.Content[0].Type);
         Assert.Equal("toolu_01ABC", toolResultMsg.Content[0].ToolUseId);
         Assert.Equal("Hematosis is the process of gas exchange.", toolResultMsg.Content[0].Content);
+
+        // This is the complete wire request for the next turn, not just the intermediate model.
+        // A merge/serializer refactor must preserve the signed block and its paired tool result.
+        var json = JsonSerializer.Serialize(request, AnthropicJsonSerializerOptionsFactory.CreateUniversal());
+        using var document = JsonDocument.Parse(json);
+        var wireMessages = document.RootElement.GetProperty("messages");
+        Assert.Equal(3, wireMessages.GetArrayLength());
+        Assert.Equal("assistant", wireMessages[1].GetProperty("role").GetString());
+        var assistantContent = wireMessages[1].GetProperty("content");
+        Assert.Equal(2, assistantContent.GetArrayLength());
+        Assert.Equal("thinking", assistantContent[0].GetProperty("type").GetString());
+        Assert.Equal(
+            "The user is asking about hematosis. Let me search the medical books.",
+            assistantContent[0].GetProperty("thinking").GetString()
+        );
+        Assert.Equal("encrypted-signature-blob-here", assistantContent[0].GetProperty("signature").GetString());
+        Assert.Equal("tool_use", assistantContent[1].GetProperty("type").GetString());
+        Assert.Equal("toolu_01ABC", assistantContent[1].GetProperty("id").GetString());
+        Assert.Equal("user", wireMessages[2].GetProperty("role").GetString());
+        var resultContent = wireMessages[2].GetProperty("content");
+        Assert.Single(resultContent.EnumerateArray());
+        Assert.Equal("tool_result", resultContent[0].GetProperty("type").GetString());
+        Assert.Equal("toolu_01ABC", resultContent[0].GetProperty("tool_use_id").GetString());
     }
 
     /// <summary>

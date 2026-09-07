@@ -61,12 +61,13 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// <param name="parentRunId">Parent run ID to fork from. If null, continues from latest run</param>
     /// <param name="ct">Cancellation token</param>
     /// <returns>The receipt if accepted and enqueued, or null if the input queue is full.</returns>
+    /// <exception cref="NotSupportedException">The implementation does not support non-blocking input.</exception>
     ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
         CancellationToken ct = default
-    );
+    ) => throw new NotSupportedException($"{GetType().Name} does not support non-blocking input.");
 
     /// <summary>
     /// Execute a single run synchronously (foreground-style).
@@ -85,6 +86,26 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// <param name="ct">Cancellation token</param>
     /// <returns>AsyncEnumerable of messages produced by the agent</returns>
     IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Subscribes with the requested message shape. Joined subscriptions receive canonical history
+    /// messages and lifecycle events; usage is delivered by the provider turn boundary, before run completion.
+    /// </summary>
+    IAsyncEnumerable<IMessage> SubscribeAsync(SubscribeOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options.JoinedOnly
+            ? throw new NotSupportedException("This agent does not support joined subscriptions.")
+            : SubscribeAsync(ct);
+    }
+
+    /// <summary>
+    /// Returns a thread-safe point-in-time copy of canonical conversation history, including
+    /// CompactionCheckpointMessage entries. All canonical messages of a completed run are present
+    /// before RunCompletedMessage is observable. Safe to call while consuming a subscription.
+    /// </summary>
+    IReadOnlyList<IMessage> GetHistorySnapshot() =>
+        throw new NotSupportedException("This agent does not expose conversation history.");
 
     /// <summary>
     /// Start the background loop. Runs until cancellation or disposal.

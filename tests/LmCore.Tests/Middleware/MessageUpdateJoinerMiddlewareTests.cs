@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Serilog;
 
@@ -608,6 +609,125 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal("srvtoolu_2", call.ToolCallId);
         _ = Assert.Single(results.OfType<ToolCallResultMessage>());
         Assert.Contains(results, m => m is TextMessage t && t.Text == "Based on the search...");
+    }
+
+    [Fact]
+    public async Task Joiner_preserves_text_block_identity_and_thinking_boundaries()
+    {
+        var results = await RunThroughJoinerAsync([
+            new TextUpdateMessage
+            {
+                Text = "think",
+                IsThinking = true,
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 0,
+            },
+            new TextUpdateMessage
+            {
+                Text = "answer",
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 1,
+            },
+            new TextMessage
+            {
+                Text = "separate",
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 2,
+            },
+        ]);
+
+        results
+            .OfType<TextMessage>()
+            .Select(m => (m.Text, m.IsThinking, m.MessageOrderIdx))
+            .Should()
+            .Equal(("think", true, 0), ("answer", false, 1), ("separate", false, 2));
+        results
+            .OfType<TextMessage>()
+            .Select(m => (m.ThreadId, m.RunId, m.ParentRunId))
+            .Should()
+            .OnlyContain(ids => ids.ThreadId == "thread" && ids.RunId == "run" && ids.ParentRunId == "parent");
+    }
+
+    [Fact]
+    public async Task Joiner_preserves_reasoning_visibility_and_block_identity()
+    {
+        var results = await RunThroughJoinerAsync([
+            new ReasoningUpdateMessage
+            {
+                Reasoning = "plain",
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 0,
+            },
+            new ReasoningUpdateMessage
+            {
+                Reasoning = "signature",
+                Visibility = ReasoningVisibility.Encrypted,
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 0,
+            },
+            new ReasoningUpdateMessage
+            {
+                Reasoning = "next",
+                GenerationId = "g",
+                ThreadId = "thread",
+                RunId = "run",
+                ParentRunId = "parent",
+                MessageOrderIdx = 1,
+            },
+        ]);
+
+        results
+            .OfType<ReasoningMessage>()
+            .Select(m => (m.Reasoning, m.Visibility))
+            .Should()
+            .Equal(
+                ("plain", ReasoningVisibility.Plain),
+                ("signature", ReasoningVisibility.Encrypted),
+                ("next", ReasoningVisibility.Plain)
+            );
+        results
+            .OfType<ReasoningMessage>()
+            .Select(m => (m.ThreadId, m.RunId, m.ParentRunId))
+            .Should()
+            .OnlyContain(ids => ids.ThreadId == "thread" && ids.RunId == "run" && ids.ParentRunId == "parent");
+    }
+
+    [Fact]
+    public async Task Joiner_finalized_tool_supersedes_its_deltas_once()
+    {
+        var results = await RunThroughJoinerAsync([
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "call-1",
+                FunctionName = "lookup",
+                FunctionArgs = "{",
+                GenerationId = "g",
+            },
+            new ToolCallMessage
+            {
+                ToolCallId = "call-1",
+                FunctionName = "lookup",
+                FunctionArgs = "{}",
+                GenerationId = "g",
+            },
+        ]);
+
+        results.OfType<ToolCallMessage>().Should().ContainSingle().Which.FunctionArgs.Should().Be("{}");
     }
 
     #region Helper Methods

@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -2193,7 +2193,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <para>
     /// A restart disposes the previous loop BEFORE swapping the replacement in, so for that window the
     /// registry still hands out the old instance and
-    /// <see cref="MultiTurnAgentBase.SubscribeAsync"/>'s admission gate answers a subscribe with
+    /// <see cref="MultiTurnAgentBase.SubscribeAsync(CancellationToken)"/>'s admission gate answers a subscribe with
     /// <see cref="ObjectDisposedException"/> — surfacing at the first <c>MoveNextAsync</c>, since the
     /// iterator is lazy. Letting that escape would reach the client as a hard stream failure (the
     /// WebSocket layer turns any non-cancellation fault into <c>subagent_stream_failed</c> plus an

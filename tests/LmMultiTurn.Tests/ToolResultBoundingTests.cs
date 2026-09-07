@@ -168,12 +168,15 @@ public class ToolResultBoundingTests
             .ContainSingle()
             .Subject;
         AssertBounded(resolved, "published");
+        resolved.OriginalBytes.Should().Be(Encoding.UTF8.GetByteCount(oversized));
 
         var persisted = await WaitForPersistedToolResultAsync(store, "tc_deferred", cts.Token, m => !m.IsDeferred);
         AssertBounded(persisted, "persisted");
+        persisted.OriginalBytes.Should().Be(resolved.OriginalBytes);
 
         requests.Count.Should().Be(2);
         FindResultText(requests[1], "tc_deferred").Should().Be(resolved.Result);
+        FindOriginalBytes(requests[1], "tc_deferred").Should().Be(resolved.OriginalBytes);
 
         // A byte-equal redelivery of the same oversized payload bounds to the same canonical text,
         // so it is a duplicate — no conflict, no exception, no third run.
@@ -250,6 +253,7 @@ public class ToolResultBoundingTests
         var persisted = await WaitForPersistedToolResultAsync(store, "srvtoolu_1", cts.Token);
         AssertBounded(persisted, "persisted");
         persisted.ExecutionTarget.Should().Be(ExecutionTarget.ProviderServer);
+        persisted.OriginalBytes.Should().Be(Encoding.UTF8.GetByteCount(oversized));
 
         await foreach (
             var _ in loop.ExecuteRunAsync(
@@ -260,11 +264,15 @@ public class ToolResultBoundingTests
 
         requests.Count.Should().Be(2);
         FindResultText(requests[1], "srvtoolu_1").Should().Be(persisted.Result);
+        FindOriginalBytes(requests[1], "srvtoolu_1").Should().Be(persisted.OriginalBytes);
     }
 
     private static void AssertBounded(ToolCallResultMessage message, string where)
     {
         message.IsTruncated.Should().BeTrue($"the {where} copy must be flagged");
+        message
+            .OriginalBytes.Should()
+            .BeGreaterThanOrEqualTo(20_000, $"the {where} copy must retain the original count");
         Encoding.UTF8.GetByteCount(message.Result).Should().BeLessThanOrEqualTo(Cap, $"the {where} copy is capped");
         message.Result.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
         message.Result.Should().EndWith(" bytes]");
@@ -287,6 +295,18 @@ public class ToolResultBoundingTests
             .SelectMany(m => m.ToolCallResults)
             .FirstOrDefault(r => r.ToolCallId == toolCallId)
             .Result;
+    }
+
+    private static int? FindOriginalBytes(IReadOnlyList<IMessage> request, string toolCallId)
+    {
+        var singular = request.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ToolCallId == toolCallId);
+        return singular != null
+            ? singular.OriginalBytes
+            : request
+                .OfType<ToolsCallResultMessage>()
+                .SelectMany(m => m.ToolCallResults)
+                .FirstOrDefault(r => r.ToolCallId == toolCallId)
+                .OriginalBytes;
     }
 
     /// <summary>Persistence is fire-and-forget, so poll the store for the row.</summary>
