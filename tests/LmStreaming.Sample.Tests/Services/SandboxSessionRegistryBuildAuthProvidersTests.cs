@@ -481,6 +481,31 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
     }
 
     [Fact]
+    public async Task Invalid_egress_configuration_error_never_echoes_the_configured_value()
+    {
+        // F-002. The ArgumentException message is what reaches startup logs, so it must name the rule
+        // and field but never the offending value.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:leaky:Hosts"] = "api.example.com",
+                ["Network:Rules:leaky:Ports"] = "9x-CANARY",
+                ["Network:Rules:leaky:Methods"] = "GET",
+            }
+        );
+        await using var registry = CreateRegistry(new AuthOptions(), options: options);
+
+        var build = () => registry.BuildAuthProvidersForTest();
+        build
+            .Should()
+            .Throw<ArgumentException>()
+            .Which.Message.Should()
+            .Contain("leaky")
+            .And.Contain("Ports")
+            .And.NotContain("9x-CANARY");
+    }
+
+    [Fact]
     public async Task Sample_config_emits_only_approved_documentation_hosts()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

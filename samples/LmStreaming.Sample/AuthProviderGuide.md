@@ -507,7 +507,9 @@ change**. Two `SandboxGateway` blocks drive it:
 
 ### Rules
 
-- **Keyed by rule id.** The key *is* the gateway rule id.
+- **Keyed by rule id.** The key *is* the gateway rule id. Rule and provider keys must be 1–64
+  characters of letters, digits, `.`, `_` or `-`, starting alphanumeric — a provider key also becomes
+  the last path segment of this app's webhook URL, so anything else is rejected at startup.
 - **Evaluation.** Rules are evaluated **ascending by `Priority`**, **first match wins**, and the
   default action is **deny**. Dimensions are **AND**ed, entries within one dimension are **OR**ed,
   and an **empty dimension matches anything**.

@@ -231,6 +231,32 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
         decision.Decision.Should().Be("deny");
     }
 
+    [Theory]
+    [InlineData("/admin/secrets")]
+    [InlineData("/Admin/secrets")]
+    public async Task Denies_every_case_spelling_of_a_case_distinct_deny_path_list(string path)
+    {
+        // F-001. Path matching is ordinal, so "/Admin/*" and "/admin/*" are two patterns. If the
+        // compiler deduped them case-insensitively, one spelling would fall through the deny at 100
+        // to the authenticated catch-all allow at 200 and receive the injected headers.
+        var config = BaseConfig();
+        config["Network:Rules:partner-api:Paths"] = "*";
+        config["Network:Rules:block-admin:Hosts"] = "api.example.com";
+        config["Network:Rules:block-admin:Ports"] = "443";
+        config["Network:Rules:block-admin:Methods"] = "*";
+        config["Network:Rules:block-admin:Paths"] = "/Admin/*,/admin/*";
+        config["Network:Rules:block-admin:Action"] = "deny";
+        config["Network:Rules:block-admin:Priority"] = "100";
+        var controller = CreateController(config);
+
+        var decision = Decision(
+            await controller.Evaluate("cfg-partner-headers", NewRequest(path: path), CancellationToken.None)
+        );
+
+        decision.Decision.Should().Be("deny");
+        decision.Headers.Should().BeNull();
+    }
+
     [Fact]
     public async Task Denies_when_the_host_has_no_gateway_options_at_all()
     {

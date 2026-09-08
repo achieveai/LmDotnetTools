@@ -684,6 +684,191 @@ public class SandboxEgressPolicyCompilerTests
     }
 
     [Fact]
+    public void Case_distinct_path_patterns_are_all_kept_because_path_matching_is_ordinal()
+    {
+        // F-001. Paths match case-sensitively, so "/Admin/*" and "/admin/*" are DIFFERENT patterns. A
+        // case-insensitive dedupe would keep only the first and silently open the other spelling to
+        // the broad allow behind it.
+        var options = Bind(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:block-admin:Hosts"] = "api.example.com",
+                ["Network:Rules:block-admin:Ports"] = "443",
+                ["Network:Rules:block-admin:Methods"] = "GET",
+                ["Network:Rules:block-admin:Paths"] = "/Admin/*,/admin/*",
+                ["Network:Rules:block-admin:Action"] = "deny",
+                ["Network:Rules:block-admin:Priority"] = "100",
+                ["Network:Rules:everything:Hosts"] = "api.example.com",
+                ["Network:Rules:everything:Ports"] = "443",
+                ["Network:Rules:everything:Methods"] = "GET",
+                ["Network:Rules:everything:Paths"] = "*",
+                ["Network:Rules:everything:Priority"] = "200",
+            }
+        );
+
+        SandboxEgressPolicyCompiler.Validate(options).Should().BeEmpty();
+
+        var deny = SandboxEgressPolicyCompiler.CompileRules(options).Should().HaveCount(2).And.Subject.First();
+        deny.Id.Should().Be("block-admin");
+        deny.Paths.Should().Equal("/Admin/*", "/admin/*");
+
+        foreach (var path in new[] { "/admin/secrets", "/Admin/secrets" })
+        {
+            var matched = SandboxEgressPolicyCompiler.FirstMatchingRule(options, "api.example.com", 443, "GET", path);
+            matched.Should().NotBeNull();
+            matched!.Id.Should().Be("block-admin", "{0} must hit the deny, not fall through to the allow", path);
+        }
+    }
+
+    /// <summary>
+    /// F-002. Validation messages land in startup logs, so they must name the section, key and field
+    /// with a fixed reason — never the configured value. Each case plants a canary in the offending
+    /// value and proves it is absent from every message while the key and field are still named.
+    /// </summary>
+    public static TheoryData<string, string, Dictionary<string, string?>> ValueEchoingConfigurations()
+    {
+        static Dictionary<string, string?> Rule(params (string Key, string Value)[] overrides)
+        {
+            var values = new Dictionary<string, string?>
+            {
+                ["Network:Rules:leaky-rule:Hosts"] = "api.example.com",
+                ["Network:Rules:leaky-rule:Ports"] = "443",
+                ["Network:Rules:leaky-rule:Methods"] = "GET",
+            };
+            foreach (var (key, value) in overrides)
+            {
+                values[$"Network:Rules:leaky-rule:{key}"] = value;
+            }
+
+            return values;
+        }
+
+        var outsideScope = HeadersProviderConfig();
+        outsideScope["Network:Rules:leaky-rule:Hosts"] = "leak-CANARY.example.com";
+        outsideScope["Network:Rules:leaky-rule:Ports"] = "443";
+        outsideScope["Network:Rules:leaky-rule:Methods"] = "GET";
+        outsideScope["Network:Rules:leaky-rule:AuthProvider"] = "partner-headers";
+
+        var shadowing = new Dictionary<string, string?>
+        {
+            ["Network:Rules:leaky-rule:Hosts"] = "*.shadow-CANARY.example.com",
+            ["Network:Rules:leaky-rule:Ports"] = "443",
+            ["Network:Rules:leaky-rule:Methods"] = "GET",
+            ["Network:Rules:leaky-rule:Priority"] = "100",
+            ["Network:Rules:blocked:Hosts"] = "*.shadow-CANARY.example.com",
+            ["Network:Rules:blocked:Ports"] = "443",
+            ["Network:Rules:blocked:Methods"] = "*",
+            ["Network:Rules:blocked:Action"] = "deny",
+            ["Network:Rules:blocked:Priority"] = "100",
+        };
+
+        return new TheoryData<string, string, Dictionary<string, string?>>
+        {
+            { "9x-CANARY", "Ports", Rule(("Ports", "443,9x-CANARY")) },
+            { "BREW-CANARY", "Methods", Rule(("Methods", "GET,BREW-CANARY")) },
+            // An interior wildcard is the rejected shape; "/p?tok=..." is a legal exact path and never errors.
+            { "tok=CANARY", "Paths", Rule(("Paths", "/p/*/tok=CANARY")) },
+            { "nope-CANARY", "AuthProvider", Rule(("AuthProvider", "nope-CANARY")) },
+            { "leak-CANARY", "Hosts", outsideScope },
+            { "shadow-CANARY", "Hosts", shadowing },
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(ValueEchoingConfigurations))]
+    public void Validation_messages_name_the_field_but_never_echo_the_configured_value(
+        string canary,
+        string field,
+        Dictionary<string, string?> values
+    )
+    {
+        var errors = SandboxEgressPolicyCompiler.Validate(Bind(values));
+
+        errors.Should().NotBeEmpty();
+        var joined = string.Join(" | ", errors);
+        joined.Should().Contain("leaky-rule").And.Contain(field);
+        joined.Should().NotContain(canary, "a startup-log message must never echo a configured value");
+    }
+
+    /// <summary>
+    /// F-003. A configured key is emitted as a wire id and, for a headers provider, as the LAST path
+    /// segment of this app's webhook URL. <c>WebhookVerificationMiddleware.IsWebhookRoute</c> accepts
+    /// exactly one non-empty segment, so a key with a separator, query, fragment, whitespace or
+    /// percent-escape would compile clean and then never be routable. The grammar is documented in
+    /// AuthProviderGuide.md.
+    /// </summary>
+    [Theory]
+    [InlineData("a/b")]
+    [InlineData("a?b")]
+    [InlineData("a#b")]
+    [InlineData("a b")]
+    [InlineData("a%2Fb")]
+    [InlineData("")]
+    [InlineData("-leading-dash")]
+    [InlineData(".leading-dot")]
+    public void Provider_and_rule_keys_outside_the_id_grammar_fail_closed(string key)
+    {
+        var provider = new SandboxGatewayOptions
+        {
+            AuthProviders =
+            {
+                [key] = new SandboxEgressAuthProviderOptions
+                {
+                    Type = "headers",
+                    Hosts = "api.example.com",
+                    Headers = { ["X-Api-Key"] = new SandboxEgressHeaderOptions { Value = "v" } },
+                },
+            },
+        };
+        var rule = new SandboxGatewayOptions
+        {
+            Network =
+            {
+                Rules =
+                {
+                    [key] = new SandboxNetworkRuleOptions
+                    {
+                        Hosts = "api.example.com",
+                        Ports = "443",
+                        Methods = "GET",
+                    },
+                },
+            },
+        };
+
+        string.Join(" | ", SandboxEgressPolicyCompiler.Validate(provider))
+            .Should()
+            .Contain("SandboxGateway:AuthProviders:")
+            .And.Contain("id must be");
+        string.Join(" | ", SandboxEgressPolicyCompiler.Validate(rule))
+            .Should()
+            .Contain("SandboxGateway:Network:Rules:")
+            .And.Contain("id must be");
+    }
+
+    [Theory]
+    [InlineData("partner-headers")]
+    [InlineData("Partner_Headers.v2")]
+    [InlineData("a")]
+    public void Keys_inside_the_id_grammar_compile_to_a_single_route_segment(string key)
+    {
+        var options = Bind(HeadersProviderConfig(key));
+
+        SandboxEgressPolicyCompiler.Validate(options).Should().BeEmpty();
+        var provider = SandboxEgressPolicyCompiler
+            .CompileProviders(options, "http://localhost:5000", "sess")
+            .Should()
+            .ContainSingle()
+            .Subject;
+
+        const string RoutePrefix = "http://localhost:5000/api/auth/webhook/";
+        provider.Endpoint.Should().StartWith(RoutePrefix);
+        var segment = provider.Endpoint[RoutePrefix.Length..];
+        segment.Should().Be("cfg-" + key);
+        segment.Should().NotContainAny("/", "?", "#", " ", "%");
+    }
+
+    [Fact]
     public void Errors_are_aggregated_not_thrown_one_at_a_time()
     {
         var options = Bind(

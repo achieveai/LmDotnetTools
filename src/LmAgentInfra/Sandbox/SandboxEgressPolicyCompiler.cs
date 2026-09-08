@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.Sandbox;
 
@@ -40,7 +41,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// </list>
 /// </para>
 /// </remarks>
-internal static class SandboxEgressPolicyCompiler
+internal static partial class SandboxEgressPolicyCompiler
 {
     /// <summary>Wire-id prefix for every CONFIGURED provider, so one can never collide with a managed id.</summary>
     public const string ConfiguredProviderIdPrefix = "cfg-";
@@ -76,10 +77,27 @@ internal static class SandboxEgressPolicyCompiler
     private const string ProviderSection = "SandboxGateway:AuthProviders";
 
     /// <summary>
-    /// Splits a comma-delimited configuration scalar: entries are trimmed, empties dropped, and
-    /// duplicates removed case-insensitively (the first spelling wins).
+    /// The grammar every configured rule and provider key must satisfy: 1–64 characters of letters,
+    /// digits, <c>.</c>, <c>_</c> or <c>-</c>, starting alphanumeric. A key is emitted verbatim as a
+    /// wire id and, for a <c>headers</c> provider, as the LAST path segment of this app's auth-webhook
+    /// URL — which <c>WebhookVerificationMiddleware.IsWebhookRoute</c> accepts only as exactly one
+    /// non-empty segment. Separators, query/fragment characters, whitespace and percent-escapes would
+    /// therefore validate clean and then never be routable.
     /// </summary>
-    public static IReadOnlyList<string> ParseList(string? value)
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", RegexOptions.CultureInvariant)]
+    private static partial Regex IdGrammar();
+
+    private const string IdGrammarReason =
+        "id must be 1-64 chars of letters, digits, '.', '_' or '-' and start alphanumeric.";
+
+    /// <summary>
+    /// Splits a comma-delimited configuration scalar: entries are trimmed, empties dropped, and
+    /// duplicates removed under <paramref name="comparer"/> (the first spelling wins). The default is
+    /// case-insensitive, which is right for hosts, methods, ports and scopes; PATHS must be deduped
+    /// with <see cref="StringComparer.Ordinal"/> because path matching is case-sensitive, so
+    /// <c>/Admin/*</c> and <c>/admin/*</c> are two distinct patterns.
+    /// </summary>
+    public static IReadOnlyList<string> ParseList(string? value, StringComparer? comparer = null)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -87,7 +105,7 @@ internal static class SandboxEgressPolicyCompiler
         }
 
         var result = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(comparer ?? StringComparer.OrdinalIgnoreCase);
         foreach (var raw in value.Split(','))
         {
             var entry = raw.Trim();
@@ -137,6 +155,14 @@ internal static class SandboxEgressPolicyCompiler
         if (ReservedProviderKeys.Contains(key))
         {
             errors.Add($"{ProviderSection}:{key} — this id is a managed provider identity and cannot be configured.");
+            return;
+        }
+
+        // Checked before the tombstone test: the key is the wire id and the webhook route segment,
+        // and a tombstone that cannot name anything routable is a mistake worth surfacing.
+        if (!IdGrammar().IsMatch(key))
+        {
+            errors.Add($"{ProviderSection}:{key} — {IdGrammarReason}");
             return;
         }
 
@@ -259,6 +285,14 @@ internal static class SandboxEgressPolicyCompiler
             return;
         }
 
+        // Rule keys are emitted verbatim as wire ids and echoed back by the gateway as rule_id, so
+        // they share the provider-key grammar.
+        if (!IdGrammar().IsMatch(key))
+        {
+            errors.Add($"{RuleSection}:{key} — {IdGrammarReason}");
+            return;
+        }
+
         // A tombstone only names a rule to remove; it carries no policy to validate.
         if (!rule.Enabled)
         {
@@ -294,12 +328,14 @@ internal static class SandboxEgressPolicyCompiler
             errors.Add($"{RuleSection}:{key}:Ports — at least one port is required.");
         }
 
+        // Every message below names the entry by its 1-based POSITION in the parsed list, never by its
+        // value: these strings land in startup logs (see the class remarks).
         var ports = new List<int>();
-        foreach (var token in portTokens)
+        for (var i = 0; i < portTokens.Count; i++)
         {
-            if (!int.TryParse(token, out var port) || port is < 1 or > 65535)
+            if (!int.TryParse(portTokens[i], out var port) || port is < 1 or > 65535)
             {
-                errors.Add($"{RuleSection}:{key}:Ports — '{token}' is not a port in 1..65535.");
+                errors.Add($"{RuleSection}:{key}:Ports — entry #{i + 1} is not a port in 1..65535.");
             }
             else
             {
@@ -313,20 +349,21 @@ internal static class SandboxEgressPolicyCompiler
             errors.Add($"{RuleSection}:{key}:Methods — at least one method is required (use '*' for any).");
         }
 
-        foreach (var method in methods)
+        for (var i = 0; i < methods.Count; i++)
         {
-            if (!AllowedMethods.Contains(method))
+            if (!AllowedMethods.Contains(methods[i]))
             {
-                errors.Add($"{RuleSection}:{key}:Methods — '{method}' is not an HTTP method this policy accepts.");
+                errors.Add($"{RuleSection}:{key}:Methods — entry #{i + 1} is not an HTTP method this policy accepts.");
             }
         }
 
-        foreach (var path in ParseList(rule.Paths))
+        var paths = ParseList(rule.Paths, StringComparer.Ordinal);
+        for (var i = 0; i < paths.Count; i++)
         {
-            if (!IsValidPathPattern(path))
+            if (!IsValidPathPattern(paths[i]))
             {
                 errors.Add(
-                    $"{RuleSection}:{key}:Paths — '{path}' is not a supported pattern (use '*', an exact '/path', or a trailing '/prefix/*')."
+                    $"{RuleSection}:{key}:Paths — entry #{i + 1} is not a supported pattern (use '*', an exact '/path', or a trailing '/prefix/*')."
                 );
             }
         }
@@ -339,9 +376,7 @@ internal static class SandboxEgressPolicyCompiler
         var providerKey = rule.AuthProvider.Trim();
         if (!providers.TryGetValue(providerKey, out var provider) || !provider.Enabled)
         {
-            errors.Add(
-                $"{RuleSection}:{key}:AuthProvider — '{providerKey}' is not a configured, enabled auth provider."
-            );
+            errors.Add($"{RuleSection}:{key}:AuthProvider — does not name a configured, enabled auth provider.");
             return;
         }
 
@@ -354,12 +389,12 @@ internal static class SandboxEgressPolicyCompiler
         }
 
         var providerHosts = ParseList(provider.Hosts);
-        foreach (var host in hosts)
+        for (var i = 0; i < hosts.Count; i++)
         {
-            if (!IsWithinScope(providerHosts, host))
+            if (!IsWithinScope(providerHosts, hosts[i]))
             {
                 errors.Add(
-                    $"{RuleSection}:{key}:Hosts — '{host}' is outside the host scope of auth provider '{providerKey}'."
+                    $"{RuleSection}:{key}:Hosts — entry #{i + 1} is outside the host scope of the rule's auth provider."
                 );
             }
         }
@@ -406,14 +441,14 @@ internal static class SandboxEgressPolicyCompiler
                 .Where(IsWildcard)
                 .Select(BareHost)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var candidates = ruleHosts.Where(h => IsWildcard(h) || gateApexes.Contains(h)).ToArray();
-            if (candidates.Length == 0)
+            for (var i = 0; i < ruleHosts.Count; i++)
             {
-                continue;
-            }
+                var host = ruleHosts[i];
+                if (!IsWildcard(host) && !gateApexes.Contains(host))
+                {
+                    continue;
+                }
 
-            foreach (var host in candidates)
-            {
                 foreach (var (gateKey, gate) in gates)
                 {
                     if (gateKey == key || rule.Priority > gate.Priority)
@@ -423,8 +458,9 @@ internal static class SandboxEgressPolicyCompiler
 
                     if (ParseList(gate.Hosts).Any(gateHost => HostsOverlap(host, gateHost)))
                     {
+                        // Names the entry by position, not value; the two rule keys are identifiers.
                         errors.Add(
-                            $"{RuleSection}:{key}:Hosts — '{host}' overlaps rule '{gateKey}' at priority "
+                            $"{RuleSection}:{key}:Hosts — entry #{i + 1} overlaps rule '{gateKey}' at priority "
                                 + $"{rule.Priority} <= {gate.Priority}, which would shadow that gate."
                         );
                     }
@@ -529,7 +565,8 @@ internal static class SandboxEgressPolicyCompiler
                     // where a programmatic consumer may have skipped Validate. See ParsePorts.
                     ports: [.. ParsePorts(r.Value.Ports)],
                     methods: ParseList(r.Value.Methods),
-                    paths: ParseList(r.Value.Paths),
+                    // Ordinal: MatchesPath is case-sensitive, so /Admin/* and /admin/* are both kept.
+                    paths: ParseList(r.Value.Paths, StringComparer.Ordinal),
                     // The provider's OWN key, not the rule's spelling of it — see ResolveProviderKey.
                     // FAIL CLOSED when it does not resolve: dropping the reference would turn an
                     // authenticated rule into an ANONYMOUS allow. Validate rejects a dangling reference,
