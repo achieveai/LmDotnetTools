@@ -171,6 +171,55 @@ public class AgentCollaborationDirectoryTests
         directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
     }
 
+    [Theory]
+    [InlineData("conversation")]
+    [InlineData("primary")]
+    public void Resolve_PrimaryAlias_PreservesTheRootsNameAndIdentity(string name)
+    {
+        var directory = CreateDirectory();
+        var root = AgentCollaborationContext.ForRoot(CollaborationId, "agent-root");
+        directory.TryRegister(root, name, "running").Succeeded.Should().BeTrue();
+
+        directory.Resolve("primary").Entry.Should().NotBeNull();
+        directory.Resolve("primary").Entry!.AgentId.Should().Be("agent-root");
+        directory.Resolve("primary").Entry!.Name.Should().Be(name);
+        directory.Resolve(name).Entry!.AgentId.Should().Be("agent-root");
+        directory.Resolve("lead").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+
+        directory.TryMarkRetained("agent-root").Should().BeTrue();
+        directory.Resolve("primary").Entry!.IsLive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Resolve_PrimaryAliasCollision_RemainsAmbiguousAfterTheChildLeaves()
+    {
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        directory
+            .TryRegister(root.CreateChild("child", AgentKind.SubAgent, "r", "d"), "primary", "running")
+            .Succeeded.Should()
+            .BeTrue();
+
+        directory.Resolve("primary").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        directory.TryMarkRetained("child").Should().BeTrue();
+        directory.Resolve("primary").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        directory.Resolve("agent-root").Entry!.Name.Should().Be("root");
+    }
+
+    [Fact]
+    public void Resolve_PrimaryAlias_DoesNotShadowACanonicalId()
+    {
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        directory
+            .TryRegister(root.CreateChild("primary", AgentKind.SubAgent, "r", "d"), "worker", "running")
+            .Succeeded.Should()
+            .BeTrue();
+
+        directory.Resolve("primary").Entry!.Name.Should().Be("worker");
+        directory.Resolve("agent-root").Entry!.Name.Should().Be("root");
+    }
+
     [Fact]
     public void Resolve_ReportsNotFound_ForAnUnknownTarget()
     {

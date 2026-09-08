@@ -53,6 +53,311 @@ public class SubAgentManagerTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletedLoop_DirectFollowUp_KeepsProviderAndHistoryAlive(bool firstRunFails)
+    {
+        var disposed = false;
+        var calls = 0;
+        var followUpHistory = new List<IMessage>();
+        var followUpEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFollowUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _subAgentMock.As<IDisposable>().Setup(p => p.Dispose()).Callback(() => disposed = true);
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (messages, _, ct) =>
+                {
+                    ObjectDisposedException.ThrowIf(disposed, typeof(HttpClient));
+                    if (Interlocked.Increment(ref calls) == 1)
+                    {
+                        if (firstRunFails)
+                        {
+                            throw new InvalidOperationException("initial request failed");
+                        }
+
+                        return ToAsyncEnumerable([new TextMessage { Text = "first reply", Role = Role.Assistant }]);
+                    }
+
+                    followUpHistory.AddRange(messages);
+                    followUpEntered.TrySetResult();
+                    await releaseFollowUp.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([new TextMessage { Text = "follow-up reply", Role = Role.Assistant }]);
+                }
+            );
+
+        var options = new SubAgentOptions
+        {
+            MaxConcurrentSubAgents = 1,
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["test-agent"] = new()
+                {
+                    SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => _subAgentMock.Object,
+                    CharacteristicsAgentFactory = _ => new SubAgentProviderAgent(
+                        _subAgentMock.Object,
+                        System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
+                    )
+                    {
+                        OwnsAgent = true,
+                    },
+                },
+            },
+        };
+        _manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+        SubAgentState? child = null;
+        _manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            child = state;
+            return Task.CompletedTask;
+        };
+        var initial = _manager.SpawnAsync("test-agent", "remember original task");
+        if (firstRunFails)
+        {
+            await Assert.ThrowsAsync<SubAgentExecutionException>(() => initial);
+        }
+        else
+        {
+            (await initial.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("first reply");
+        }
+
+        child.Should().NotBeNull();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var output = child!.Agent.SubscribeAsync(timeout.Token).GetAsyncEnumerator(timeout.Token);
+        var next = output.MoveNextAsync().AsTask();
+        await child.Agent.SendAsync([new TextMessage { Text = "follow-up task", Role = Role.User }], ct: timeout.Token);
+        try
+        {
+            await followUpEntered.Task.WaitAsync(timeout.Token);
+            child
+                .Status.Should()
+                .Be(SubAgentStatus.Running, "a direct follow-up reactivates the idle agent before model execution");
+            child
+                .CurrentRunGeneration.Should()
+                .Be(0, "direct runs share the live monitor epoch, so its fault guard must remain valid");
+        }
+        finally
+        {
+            releaseFollowUp.TrySetResult();
+        }
+
+        RunCompletedMessage? completion = null;
+        var replies = new List<string>();
+        while (await next)
+        {
+            if (output.Current is TextMessage { Role: Role.Assistant } text)
+            {
+                replies.Add(text.Text);
+            }
+
+            if (output.Current is RunCompletedMessage completed)
+            {
+                completion = completed;
+                break;
+            }
+
+            next = output.MoveNextAsync().AsTask();
+        }
+
+        completion.Should().NotBeNull();
+        completion!.IsError.Should().BeFalse(completion.ErrorMessage);
+        replies.Should().Contain("follow-up reply");
+        followUpHistory.OfType<TextMessage>().Should().Contain(m => m.Text == "remember original task");
+        followUpHistory.OfType<TextMessage>().Should().Contain(m => m.Text == "follow-up task");
+        if (!firstRunFails)
+        {
+            followUpHistory.OfType<TextMessage>().Should().Contain(m => m.Text == "first reply");
+        }
+
+        disposed.Should().BeFalse("run completion leaves the reusable loop's provider alive");
+        await _manager.DisposeAsync();
+        disposed.Should().BeTrue("runtime shutdown releases its owned provider");
+    }
+
+    [Fact]
+    public async Task CompletionBoundary_AlreadyExecutingFollowUp_DoesNotSettlePreviousResult()
+    {
+        var followUpEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFollowUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (_, _, ct) =>
+                {
+                    if (Interlocked.Increment(ref calls) == 1)
+                    {
+                        return ToAsyncEnumerable([new TextMessage { Text = "old result", Role = Role.Assistant }]);
+                    }
+
+                    followUpEntered.TrySetResult();
+                    await releaseFollowUp.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([new TextMessage { Text = "new result", Role = Role.Assistant }]);
+                }
+            );
+        _manager = CreateManager(maxConcurrent: 1);
+        var classified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hookCalls = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = async (state, _) =>
+        {
+            if (Interlocked.Increment(ref hookCalls) != 1)
+            {
+                return;
+            }
+
+            await state.Agent.SendAsync([new TextMessage { Text = "late follow-up", Role = Role.User }]);
+            await followUpEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            classified.TrySetResult();
+        };
+        var result = _manager.SpawnAsync("test-agent", "original");
+        try
+        {
+            await classified.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            releaseFollowUp.TrySetResult();
+        }
+
+        (await result.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("new result");
+        calls.Should().Be(2);
+        hookCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task NonQuestionDeferral_KeepsForegroundCallerPendingUntilResolved()
+    {
+        var calls = 0;
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                    Task.FromResult(
+                        ToAsyncEnumerable(
+                            Interlocked.Increment(ref calls) == 1
+                                ?
+                                [
+                                    new ToolCallMessage
+                                    {
+                                        FunctionName = "deferred_work",
+                                        FunctionArgs = "{}",
+                                        ToolCallId = "deferred-1",
+                                        Role = Role.Assistant,
+                                    },
+                                ]
+                                : [new TextMessage { Text = "resolved answer", Role = Role.Assistant }]
+                        )
+                    )
+            );
+        var options = CreateOptions(maxConcurrent: 1);
+        _manager = new SubAgentManager(
+            _parentMock.Object,
+            [
+                new FunctionContract
+                {
+                    Name = "deferred_work",
+                    Description = "Deferred work",
+                    Parameters = [],
+                },
+            ],
+            new Dictionary<string, ToolHandler>
+            {
+                ["deferred_work"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
+            },
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+        SubAgentState? child = null;
+        var classified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            child = state;
+            classified.TrySetResult();
+            return Task.CompletedTask;
+        };
+        var result = _manager.SpawnAsync("test-agent", "defer work");
+        await classified.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await child!.RunTransition.WaitAsync();
+        try
+        {
+            child.Status.Should().Be(SubAgentStatus.Running);
+            result.IsCompleted.Should().BeFalse("non-question deferred work has not produced its answer");
+        }
+        finally
+        {
+            child.RunTransition.Release();
+        }
+
+        await ((MultiTurnAgentLoop)child.Agent).ResolveToolCallAsync("deferred-1", "ready");
+        (await result.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be("resolved answer");
+        calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CompletedAgent_ManagerFollowUps_DoNotAppendRecoveredHistoryAgain()
+    {
+        var store = new InMemoryConversationStore();
+        var histories = new List<List<IMessage>>();
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (messages, _, _) =>
+                {
+                    histories.Add([.. messages]);
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "answer", Role = Role.Assistant }])
+                    );
+                }
+            );
+        var options = CreateOptions() with { DefaultConversationStoreFactory = _ => store };
+        _manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+        await _manager.SpawnAsync("test-agent", "original task", name: "reusable");
+        await _manager.SendMessageAsync("reusable", "first follow-up");
+        await _manager.SendMessageAsync("reusable", "second follow-up");
+        histories.Should().HaveCount(3);
+        histories[2].OfType<TextMessage>().Should().ContainSingle(m => m.Text == "original task");
+        histories[2].OfType<TextMessage>().Should().ContainSingle(m => m.Text == "first follow-up");
+        histories[2].OfType<TextMessage>().Should().ContainSingle(m => m.Text == "second follow-up");
+    }
+
     [Fact]
     public async Task SpawnAsync_Synchronous_ReturnsFinalTextWithoutParentRelay()
     {
@@ -2424,6 +2729,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         SetupSubAgentResponse([new TextMessage { Text = "done", Role = Role.Assistant }]);
 
         var store = new RecoveryFaultingConversationStore();
+        SubAgentState? completedState = null;
         var options = new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
@@ -2447,13 +2753,18 @@ public class SubAgentManagerTests : IAsyncLifetime
             source: new MutableSubAgentTemplateSource(options.Templates)
         );
 
+        _manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            completedState = state;
+            return Task.CompletedTask;
+        };
         var spawnJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
         _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
 
-        // Fail a restart at history recovery — the first step that runs AFTER the epoch CTS was disposed
-        // and BEFORE the replacement run is armed, and the realistic way a real restart fails there.
+        // Force a genuine loop replacement; a healthy reused loop must not reload its history.
+        completedState!.MarkAgentLoopDisposed();
         store.FailRecovery = true;
         var failing = () => _manager.SendMessageAsync(agentId, "second task", runInBackground: true);
         (await failing.Should().ThrowAsync<InvalidOperationException>())

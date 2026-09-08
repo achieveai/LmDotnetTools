@@ -386,7 +386,7 @@ public sealed class CharacteristicsAgentFactoryTests
         );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
-        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
         await manager.DisposeAsync();
         await manager.DisposeAsync();
 
@@ -394,7 +394,7 @@ public sealed class CharacteristicsAgentFactoryTests
     }
 
     [Fact]
-    public async Task Spawn_ContinuationRecreatesAndDisposesOwnedProviderPerCompletedRun()
+    public async Task Spawn_ContinuationReusesOwnedProviderUntilManagerDisposal()
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var firstOwnedAgent = CreateRespondingDisposableAgent();
@@ -422,15 +422,18 @@ public sealed class CharacteristicsAgentFactoryTests
         );
 
         _ = await manager.SpawnAsync("test-agent", "first task", name: "owned");
-        _ = await manager.SendMessageAsync("owned", "continued task");
+        var reply = await manager.SendMessageAsync("owned", "continued task");
 
+        reply.Should().Be("done");
+        firstOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
+        secondOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
+        createdAgents.Should().ContainSingle("the reusable loop keeps its original provider");
+        await manager.DisposeAsync();
         firstOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
-        secondOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
-        createdAgents.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Spawn_CompletionDisposesOwnedProviderBeforeBackgroundRelayCompletes()
+    public async Task Spawn_CompletionKeepsOwnedProviderAliveDuringBackgroundRelay()
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var ownedAgent = CreateRespondingDisposableAgent();
@@ -474,12 +477,14 @@ public sealed class CharacteristicsAgentFactoryTests
 
         try
         {
-            ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+            ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
         }
         finally
         {
             completeRelay.TrySetResult(new SendReceipt("receipt", null, DateTimeOffset.UtcNow));
         }
+        await manager.DisposeAsync();
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
     }
 
     [Fact]
@@ -571,7 +576,7 @@ public sealed class CharacteristicsAgentFactoryTests
         );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
-        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Once);
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Never);
         await manager.DisposeAsync();
         await manager.DisposeAsync();
 
@@ -579,21 +584,14 @@ public sealed class CharacteristicsAgentFactoryTests
     }
 
     [Fact]
-    public async Task Spawn_RetriesOwnedProviderDisposalAfterFirstAttemptThrows()
+    public async Task Spawn_ManagerTeardownAttemptsOwnedProviderDisposalWhenItThrows()
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
-        var disposeCalls = 0;
         var ownedAgent = CreateRespondingDisposableAgent();
         ownedAgent
             .As<IAsyncDisposable>()
             .Setup(agent => agent.DisposeAsync())
-            .Returns(() =>
-            {
-                disposeCalls++;
-                return disposeCalls == 1
-                    ? throw new InvalidOperationException("owned provider dispose boom")
-                    : ValueTask.CompletedTask;
-            });
+            .Throws(new InvalidOperationException("owned provider dispose boom"));
         var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
@@ -615,31 +613,24 @@ public sealed class CharacteristicsAgentFactoryTests
             new MutableSubAgentTemplateSource(options.Templates)
         );
 
-        // The completion-time disposal throws, but must not permanently latch the guard: a later
-        // cleanup (manager dispose) retries and succeeds, so the provider is not leaked.
+        // Completion retains the provider; manager teardown makes the first disposal attempt.
+        // A failing provider is attempted without rethrowing its exception from manager disposal.
         _ = await manager.SpawnAsync("test-agent", "test task");
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
         await manager.DisposeAsync();
 
-        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Exactly(2));
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
     }
 
     [Fact]
-    public async Task Spawn_RetriesOwnedSynchronousProviderDisposalAfterFirstAttemptThrows()
+    public async Task Spawn_ManagerTeardownAttemptsOwnedSynchronousProviderDisposalWhenItThrows()
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
-        var disposeCalls = 0;
         var ownedAgent = CreateRespondingSyncDisposableAgent();
         ownedAgent
             .As<IDisposable>()
             .Setup(agent => agent.Dispose())
-            .Callback(() =>
-            {
-                disposeCalls++;
-                if (disposeCalls == 1)
-                {
-                    throw new InvalidOperationException("owned provider sync dispose boom");
-                }
-            });
+            .Throws(new InvalidOperationException("owned provider sync dispose boom"));
         var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
@@ -661,13 +652,13 @@ public sealed class CharacteristicsAgentFactoryTests
             new MutableSubAgentTemplateSource(options.Templates)
         );
 
-        // The completion-time SYNCHRONOUS (IDisposable) disposal throws, but must not permanently latch
-        // the guard: a later cleanup (manager dispose) retries the IDisposable branch and succeeds, so
-        // the provider is not leaked.
+        // Completion retains the provider; manager teardown makes the first disposal attempt.
+        // The synchronous branch is also attempted without rethrowing from manager disposal.
         _ = await manager.SpawnAsync("test-agent", "test task");
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Never);
         await manager.DisposeAsync();
 
-        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Exactly(2));
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Once);
     }
 
     [Fact]

@@ -231,6 +231,161 @@ public sealed class AgentTranscriptAccessTests
         JsonSerializer.Serialize(messages).Should().NotContain("deliberation");
     }
 
+    [Fact]
+    public async Task ReadTranscript_ResolvesTheNameTheRosterPublishes()
+    {
+        // The addressing gap this closes: GetAgents/CheckAgents hand a reader a NAME for every row, and
+        // messaging resolves that name through the collaboration directory — but the transcript read
+        // matched identifiers only, so the identifier a reader was actually given came back as if the
+        // agent did not exist. Route and tool are asserted together because they are one decision, and
+        // the id form is asserted alongside the name because widening addressing must not move it.
+        await using var loop = CreateLoop(CreateRootCollaboration());
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var alphaId = await SpawnAsync(loop, "alpha");
+        var registry = new WorkflowRunRegistry();
+        var store = new InMemoryConversationStore();
+        await store.AppendMessagesAsync(
+            SubAgentThreadIds.For(RootThread, alphaId),
+            [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]
+        );
+
+        var rosterProvider = new SubAgentToolProvider(loop.SubAgentManager!, new MutableSubAgentTemplateSource());
+        var getAgents = rosterProvider
+            .GetFunctions()
+            .Single(f => f.Contract.Name == SubAgentToolProvider.GetAgentsToolName);
+        var roster = Assert.IsType<ToolHandlerResult.Resolved>(
+            await getAgents.Handler("{}", new ToolCallContext(), CancellationToken.None)
+        );
+        using var rosterDoc = JsonDocument.Parse(roster.Payload.Text!);
+        var row = rosterDoc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("agent_id").GetString() == alphaId);
+        row.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeTrue();
+        var rosterName = row.GetProperty("name").GetString()!;
+        rosterName.Should().NotBe(alphaId);
+
+        var byName = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, rosterName)
+        );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(byName.Value)
+            .Select(m => m.Id)
+            .Should()
+            .Equal(["m1"], "the roster publishes a name, so the name has to reach the agent it names");
+
+        var byId = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, alphaId)
+        );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(byId.Value)
+            .Select(m => m.Id)
+            .Should()
+            .Equal(["m1"], "the identifier form answers exactly as it always did");
+
+        var toolResult = await InvokeToolAsync(
+            pool,
+            registry,
+            store,
+            RootThread,
+            JsonSerializer.Serialize(new { agent_id = rosterName })
+        );
+        toolResult.Payload.IsError.Should().BeFalse(toolResult.Payload.Text);
+        toolResult.Payload.Text.Should().Contain("the finding");
+    }
+
+    [Fact]
+    public async Task ReadTranscript_ByName_StillRefusesASibling()
+    {
+        // Resolving a name must not become a second, softer door into the hierarchy: the sibling read the
+        // policy exists to stop is refused whether it is addressed by id or by the name the roster shows,
+        // and the refusal stays as content-free as it is for an id.
+        await using var loop = CreateLoop(CreateRootCollaboration());
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var alphaId = await SpawnAsync(loop, "alpha");
+        _ = await SpawnAsync(loop, "beta");
+        var registry = new WorkflowRunRegistry();
+        var store = new InMemoryConversationStore();
+
+        var routeResult = await CreateController(pool, registry, store)
+            .GetAgentTranscript(RootThread, "beta", viewer: alphaId);
+        AssertDenied(routeResult, TranscriptAccessReasons.NotAnAncestor);
+
+        var toolResult = await InvokeToolAsync(
+            pool,
+            registry,
+            store,
+            alphaId,
+            JsonSerializer.Serialize(new { agent_id = "beta" })
+        );
+        toolResult.Payload.IsError.Should().BeTrue();
+        toolResult.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor);
+        toolResult.Payload.Text.Should().NotContain("beta", "a refusal must not repeat what was asked for");
+    }
+
+    [Fact]
+    public async Task ReadTranscript_ByAnAmbiguousName_RefusesRatherThanPickingOne()
+    {
+        // Two agents claiming one name is permanent ambiguity in the directory, never "the most recent
+        // one". A read that guessed would hand a reader a transcript it never asked for, so the name is
+        // refused as an unknown target — while BOTH agents stay readable by their identifiers, which is
+        // what makes this an ambiguity result rather than name resolution simply not working.
+        await using var loop = CreateLoop(CreateRootCollaboration());
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var firstTwinId = await SpawnAsync(loop, "twin");
+        var secondTwinId = await SpawnAsync(loop, "twin");
+        firstTwinId.Should().NotBe(secondTwinId);
+
+        var registry = new WorkflowRunRegistry();
+        var store = new InMemoryConversationStore();
+        await store.AppendMessagesAsync(
+            SubAgentThreadIds.For(RootThread, firstTwinId),
+            [Persisted("m1", new TextMessage { Text = "the first finding", Role = Role.Assistant })]
+        );
+        await store.AppendMessagesAsync(
+            SubAgentThreadIds.For(RootThread, secondTwinId),
+            [Persisted("m2", new TextMessage { Text = "the second finding", Role = Role.Assistant })]
+        );
+
+        AssertDenied(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, "twin"),
+            TranscriptAccessReasons.UnknownTarget
+        );
+
+        var toolResult = await InvokeToolAsync(
+            pool,
+            registry,
+            store,
+            RootThread,
+            JsonSerializer.Serialize(new { agent_id = "twin" })
+        );
+        toolResult.Payload.IsError.Should().BeTrue();
+        toolResult.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.UnknownTarget);
+
+        var first = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, firstTwinId)
+        );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(first.Value)
+            .Select(m => m.Id)
+            .Should()
+            .Equal("m1");
+        var second = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, secondTwinId)
+        );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(second.Value)
+            .Select(m => m.Id)
+            .Should()
+            .Equal("m2");
+    }
+
     [Theory]
     // The pairs that matter: reading yourself, reading down, and the sibling read the policy exists to
     // stop. Whatever the answer is, the route and the tool must give the SAME one — a client that shows

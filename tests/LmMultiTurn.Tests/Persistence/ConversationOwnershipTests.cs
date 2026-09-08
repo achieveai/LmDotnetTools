@@ -69,6 +69,119 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     /// <summary>The three store flavours, by name, so a failure says which one drifted.</summary>
     public static TheoryData<string> StoreKinds => ["sqlite", "file", "memory"];
 
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task LegacyListingOverloads_PreservePaginationAndScope(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "other", TenantB, UserB, lastUpdated: 4_000);
+        await WriteAsync(store, "first", TenantA, UserA, lastUpdated: 3_000);
+        await WriteAsync(store, "second", TenantA, UserA, lastUpdated: 2_000);
+        await WriteAsync(store, "third", TenantA, UserA, lastUpdated: 1_000);
+        var scope = Scope(TenantA, UserA);
+        var token = CancellationToken.None;
+        IConversationStore decorator = new Compaction.Corpus.ThreadScopedStore(
+            store,
+            "first",
+            new Compaction.Corpus.StoreCallLog()
+        );
+
+#pragma warning disable CS0618 // Deliberately compile and exercise the legacy positional API.
+        (await store.ListThreadsAsync(1, 1, token)).Select(m => m.ThreadId).Should().Equal("first");
+        (await store.ListThreadsAsync(scope, 1, 1, token)).Select(m => m.ThreadId).Should().Equal("second");
+        (await decorator.ListThreadsAsync(1, 1, token)).Select(m => m.ThreadId).Should().Equal("first");
+        (await decorator.ListThreadsAsync(scope, 1, 1, token)).Select(m => m.ThreadId).Should().Equal("second");
+        var concretePage = store switch
+        {
+            InMemoryConversationStore memory => await memory.ListThreadsAsync(1, 1, token),
+            FileConversationStore file => await file.ListThreadsAsync(1, 1, token),
+            SqliteConversationStore sqlite => await sqlite.ListThreadsAsync(1, 1, token),
+            _ => throw new InvalidOperationException(),
+        };
+        var concreteScopedPage = store switch
+        {
+            InMemoryConversationStore memory => await memory.ListThreadsAsync(scope, 1, 1, token),
+            FileConversationStore file => await file.ListThreadsAsync(scope, 1, 1, token),
+            SqliteConversationStore sqlite => await sqlite.ListThreadsAsync(scope, 1, 1, token),
+            _ => throw new InvalidOperationException(),
+        };
+#pragma warning restore CS0618
+
+        concretePage.Select(m => m.ThreadId).Should().Equal("first");
+        concreteScopedPage.Select(m => m.ThreadId).Should().Equal("second");
+
+        // Named ct and default/optional calls must keep compiling without obsolete diagnostics.
+        (await store.ListThreadsAsync())
+            .Should()
+            .HaveCount(4);
+        (await store.ListThreadsAsync(limit: 1)).Should().ContainSingle();
+        (await store.ListThreadsAsync(1, 1, ct: token)).Select(m => m.ThreadId).Should().Equal("first");
+        (await store.ListThreadsAsync(scope, 1, 1, ct: token)).Select(m => m.ThreadId).Should().Equal("second");
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["first"] };
+        (await store.ListThreadsAsync(1, 1, options, token)).Select(m => m.ThreadId).Should().Equal("second");
+        (await store.ListThreadsAsync(scope, 1, 0, options, token)).Select(m => m.ThreadId).Should().Equal("second");
+
+        // Untyped default belongs to the current options instance API. Typed cancellation
+        // above uses the legacy extension only when no instance overload is applicable.
+        (await store.ListThreadsAsync(1, 1, default))
+            .Select(m => m.ThreadId)
+            .Should()
+            .Equal("first");
+        (await store.ListThreadsAsync(scope, 1, 1, default)).Select(m => m.ThreadId).Should().Equal("second");
+        var concreteMatrix = store switch
+        {
+            InMemoryConversationStore memory => (
+                await memory.ListThreadsAsync(1, 1, default),
+                await memory.ListThreadsAsync(scope, 1, 1, default),
+                await memory.ListThreadsAsync(1, 1, options),
+                await memory.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            FileConversationStore file => (
+                await file.ListThreadsAsync(1, 1, default),
+                await file.ListThreadsAsync(scope, 1, 1, default),
+                await file.ListThreadsAsync(1, 1, options),
+                await file.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            SqliteConversationStore sqlite => (
+                await sqlite.ListThreadsAsync(1, 1, default),
+                await sqlite.ListThreadsAsync(scope, 1, 1, default),
+                await sqlite.ListThreadsAsync(1, 1, options),
+                await sqlite.ListThreadsAsync(scope, 1, 0, options)
+            ),
+            _ => throw new InvalidOperationException(),
+        };
+        concreteMatrix.Item1.Select(m => m.ThreadId).Should().Equal("first");
+        concreteMatrix.Item2.Select(m => m.ThreadId).Should().Equal("second");
+        concreteMatrix.Item3.Select(m => m.ThreadId).Should().Equal("second");
+        concreteMatrix.Item4.Select(m => m.ThreadId).Should().Equal("second");
+    }
+
+    [Fact]
+    public async Task LegacyListingOverloads_ForwardCancellation()
+    {
+        var file = (FileConversationStore)CreateStore("file");
+        IConversationStore decorator = new Compaction.Corpus.ThreadScopedStore(
+            file,
+            "thread",
+            new Compaction.Corpus.StoreCallLog()
+        );
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var scope = Scope(TenantA, UserA);
+
+#pragma warning disable CS0618 // Deliberately exercise cancellation through both forwarding paths.
+        Func<Task> concrete = () => file.ListThreadsAsync(1, 0, cancellation.Token);
+        Func<Task> concreteScoped = () => file.ListThreadsAsync(scope, 1, 0, cancellation.Token);
+        Func<Task> throughInterface = () => decorator.ListThreadsAsync(1, 0, cancellation.Token);
+        Func<Task> throughScopedInterface = () => decorator.ListThreadsAsync(scope, 1, 0, cancellation.Token);
+#pragma warning restore CS0618
+
+        await concrete.Should().ThrowAsync<OperationCanceledException>();
+        await concreteScoped.Should().ThrowAsync<OperationCanceledException>();
+        await throughInterface.Should().ThrowAsync<OperationCanceledException>();
+        await throughScopedInterface.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private IConversationStore CreateStore(string kind)
     {
         switch (kind)

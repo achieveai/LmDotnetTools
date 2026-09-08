@@ -61,9 +61,17 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     [Fact]
     public async Task SubscribeAcrossRestarts_SpansOwnedProviderRestart_YieldsSecondRunMessages()
     {
-        // A finished owned-provider child, when relayed a follow-up, is restarted with a FRESH loop
-        // instance (the old one is disposed). An observer bound to the old instance must not end when
-        // that instance's stream closes on dispose — it must follow the swap and stream the SECOND run.
+        // A sub-agent whose LOOP was torn down is rebuilt with a FRESH instance on the next
+        // continuation; the old one is disposed between SignalRestartStarting and the swap. An observer
+        // bound to the old instance must not end when that instance's stream closes on that dispose — it
+        // must follow the swap and stream the SECOND run.
+        //
+        // Reaching the rebuild takes an explicit arrangement now: provider/loop ownership is
+        // loop-lifetime, so a plain terminal completion disposes nothing and a follow-up REUSES the live
+        // loop (no swap to observe). BeforeClassifyingRunCompletionForTest hands the test the real
+        // SubAgentState, and marking the loop disposed on it sets exactly the rebuild condition
+        // RestartRunAsync reads — deterministically, without faking any disposal. The dispose the
+        // observer actually reacts to is the genuine one the rebuild performs.
         const string firstText = "first-run-answer";
         const string secondText = "second-run-answer";
 
@@ -72,13 +80,20 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
+        var stateCaptured = new TaskCompletionSource<SubAgentState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            stateCaptured.TrySetResult(state);
+            return Task.CompletedTask;
+        };
+
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
             var idx = Interlocked.Increment(ref agentCallCount);
             var agent = new ObservableFakeAgent
             {
                 ThreadId = $"subagent-{agentId}",
-                // Run 1 emits its text + a terminal completion; run 2 (the restart) emits a DISTINCT
+                // Run 1 emits its text + a terminal completion; run 2 (the rebuild) emits a DISTINCT
                 // text + completion. Each instance blocks its subscriptions open after its messages
                 // until the instance is disposed (mirrors MultiTurnAgentBase completing subscriber
                 // channels on DisposeAsync).
@@ -103,7 +118,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             return agent;
         };
 
-        // Owned provider so completion disposes it, forcing the follow-up to take the restart path.
+        // Owned provider: no longer disposed at completion; the rebuild below releases it when it
+        // replaces the pipeline.
         manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
 
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
@@ -157,12 +173,19 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // genuinely observed mid-subscription (not a post-hoc re-resolve).
         await sawFirst.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // Act: relay a follow-up to the finished child -> owned-provider restart -> fresh instance.
+        // Arrange the rebuild condition on the REAL state the monitor classified this run against. No
+        // disposal is faked: the loop and its provider are still live, exactly as they are after any
+        // ordinary completion — only the flag RestartRunAsync reads is set.
+        var capturedState = await stateCaptured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        capturedState.MarkAgentLoopDisposed();
+        observerTask.IsCompleted.Should().BeFalse("the arrangement must not have ended the observer's stream");
+
+        // Act: relay a follow-up to the disposed-loop child -> rebuild -> fresh instance + swap.
         _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
         lock (createdAgents)
         {
-            createdAgents.Should().HaveCount(2, "the restart must have created a replacement instance");
+            createdAgents.Should().HaveCount(2, "the rebuild must have created a replacement instance");
         }
 
         // The observer, without ending between runs, must yield the SECOND run's text (it spanned the
@@ -530,7 +553,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
                             new TextMessage { Text = secondText, Role = Role.Assistant },
                             new RunCompletedMessage { CompletedRunId = "run-2" },
                         ],
-                // Only the first instance's dispose is gated (it is the one the restart disposes).
+                // Only the first instance's dispose is gated (it is the one the rebuild disposes).
                 DisposeGate = idx == 1 ? disposeGate : null,
             };
             lock (createdAgents)
@@ -542,6 +565,15 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         };
 
         manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        // Hands the test the REAL SubAgentState this run is classified against, so the rebuild condition
+        // can be set on it directly instead of being manufactured by a fake teardown.
+        var stateCaptured = new TaskCompletionSource<SubAgentState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            stateCaptured.TrySetResult(state);
+            return Task.CompletedTask;
+        };
 
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
@@ -583,8 +615,15 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         await sawFirst.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // Act: relay a follow-up -> owned-provider restart. SendMessageAsync awaits RestartRunAsync, which
-        // BLOCKS on the gated dispose, so run it off the test thread and drive the gate here.
+        // Arrange the rebuild condition on the REAL state the monitor classified this run against, with
+        // no faked disposal: the loop and its provider stay live until the rebuild genuinely disposes
+        // them inside the gate below.
+        var capturedState = await stateCaptured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        capturedState.MarkAgentLoopDisposed();
+        observerTask.IsCompleted.Should().BeFalse("the arrangement must not have ended the observer's stream");
+
+        // Act: relay a follow-up -> rebuild. SendMessageAsync awaits RestartRunAsync, which BLOCKS on the
+        // gated dispose, so run it off the test thread and drive the gate here.
         var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
 
         ObservableFakeAgent firstAgent;
@@ -684,6 +723,15 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
 
+        // Hands the test the REAL SubAgentState this run is classified against, so the rebuild condition
+        // can be set on it directly instead of being manufactured by a fake teardown.
+        var stateCaptured = new TaskCompletionSource<SubAgentState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            stateCaptured.TrySetResult(state);
+            return Task.CompletedTask;
+        };
+
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
@@ -698,7 +746,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             TimeSpan.FromSeconds(10)
         );
 
-        // Drive the restart off the test thread: it blocks inside the gated dispose.
+        // Arrange the rebuild condition on the REAL state the monitor classified this run against (a
+        // plain completion no longer disposes anything, so a follow-up would otherwise reuse the live
+        // loop and never open the disposed-instance window this test exists to cover). Nothing is faked:
+        // the instance the observer attaches to below is disposed by the rebuild itself.
+        var capturedState = await stateCaptured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        capturedState.MarkAgentLoopDisposed();
+
+        // Drive the rebuild off the test thread: it blocks inside the gated dispose.
         var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
 
         ObservableFakeAgent firstAgent;

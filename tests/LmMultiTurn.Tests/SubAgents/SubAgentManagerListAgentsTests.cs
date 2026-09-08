@@ -157,13 +157,26 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     [Fact]
     public async Task TryGetAgent_AfterRestart_ReturnsCurrentInstance()
     {
-        // A finished owned-provider sub-agent, when sent a new message, is restarted with a fresh
-        // agent instance. TryGetAgent must return the CURRENT (post-restart) instance, not the stale
+        // A sub-agent whose LOOP has been marked disposed is rebuilt with a fresh agent instance on the
+        // next continuation. TryGetAgent must return the CURRENT (post-rebuild) instance, not the stale
         // one captured at spawn time.
+        //
+        // The explicit mark is required, not incidental: provider/loop ownership is loop-lifetime, so a
+        // plain terminal completion disposes nothing and a follow-up REUSES the same instance — there
+        // would be no replacement to resolve. BeforeClassifyingRunCompletionForTest hands the test the
+        // real SubAgentState, so the exact condition RestartRunAsync reads is set directly rather than
+        // manufactured by a fake teardown.
         var createdAgents = new List<FakeMultiTurnAgent>();
         var agentCallCount = 0;
 
         var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
+
+        var stateCaptured = new TaskCompletionSource<SubAgentState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            stateCaptured.TrySetResult(state);
+            return Task.CompletedTask;
+        };
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -184,7 +197,8 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             return agent;
         };
 
-        // Owned provider so completion disposes it, forcing the restart to rebuild a fresh agent.
+        // Owned provider: no longer disposed at completion; the rebuild below releases it when it
+        // replaces the pipeline.
         manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
 
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
@@ -217,20 +231,32 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             .Should()
             .BeTrue("before the restart the resolved instance is the original spawn instance");
 
-        // Act: send to the finished agent -> restart with a fresh instance.
+        // Arrange the rebuild condition on the REAL state the monitor classified this run against. No
+        // disposal is faked — the loop and provider stay live until the rebuild genuinely replaces them.
+        var capturedState = await stateCaptured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        capturedState.MarkAgentLoopDisposed();
+
+        manager.TryGetAgent(agentId, out var stillOriginal).Should().BeTrue();
+        ReferenceEquals(stillOriginal, first).Should().BeTrue("marking alone must not swap the instance");
+        lock (createdAgents)
+        {
+            createdAgents.Should().HaveCount(1, "no replacement exists until a continuation actually rebuilds");
+        }
+
+        // Act: send to the disposed-loop agent -> rebuild with a fresh instance.
         _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
         FakeMultiTurnAgent second;
         lock (createdAgents)
         {
-            createdAgents.Should().HaveCount(2, "the restart must have created a replacement instance");
+            createdAgents.Should().HaveCount(2, "the rebuild must have created a replacement instance");
             second = createdAgents[1];
         }
 
         manager.TryGetAgent(agentId, out var afterRestart).Should().BeTrue();
         ReferenceEquals(afterRestart, second)
             .Should()
-            .BeTrue("TryGetAgent must return the current post-restart instance");
+            .BeTrue("TryGetAgent must return the current post-rebuild instance");
         ReferenceEquals(afterRestart, first)
             .Should()
             .BeFalse("TryGetAgent must not return the stale pre-restart instance");

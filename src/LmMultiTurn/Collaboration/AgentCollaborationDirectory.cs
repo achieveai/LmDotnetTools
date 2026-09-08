@@ -177,6 +177,9 @@ public readonly record struct AgentResolution(AgentDirectoryEntry? Entry, string
 /// </remarks>
 public sealed class AgentCollaborationDirectory
 {
+    /// <summary>The top-level conversation's alias, subject to the same collision rules as any name.</summary>
+    public const string PrimaryAlias = "primary";
+
     private readonly ConcurrentDictionary<string, Registration> _byAgentId = new(StringComparer.Ordinal);
 
     // Name is not an identity. A name maps to one agent or, once two agents have claimed it, to
@@ -337,6 +340,11 @@ public sealed class AgentCollaborationDirectory
         }
 
         BindName(name, entry.AgentId);
+        if (context.Kind == AgentKind.Root && context.ParentAgentId is null)
+        {
+            BindName(PrimaryAlias, entry.AgentId);
+        }
+
         RaiseDirectoryChanged();
         return new AgentRegistrationResult(entry);
     }

@@ -212,6 +212,7 @@ public class ToolCallExecutorTests
         var bounded = Assert.Single(result.ToolCallResults);
         Assert.True(bounded.IsTruncated);
         Assert.Equal("call_big", bounded.ToolCallId);
+        Assert.Equal(ReproducedOversizedLength, bounded.OriginalBytes);
         Assert.True(
             System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= ToolResultLimits.Default.MaxResultBytes,
             $"bounded result is {bounded.Result.Length} chars"
@@ -233,6 +234,7 @@ public class ToolCallExecutorTests
 
         var untouched = Assert.Single(result.ToolCallResults);
         Assert.False(untouched.IsTruncated);
+        Assert.Null(untouched.OriginalBytes);
         Assert.Equal("Sunny, 72F", untouched.Result);
         Assert.DoesNotContain(ToolResultLimits.TruncationMarkerPrefix, untouched.Result, StringComparison.Ordinal);
     }
@@ -271,6 +273,8 @@ public class ToolCallExecutorTests
         Assert.EndsWith(" of 10,000 bytes]", bounded.Result, StringComparison.Ordinal);
         Assert.NotNull(seenByCallback);
         Assert.Equal(bounded.Result, seenByCallback.Value.Result);
+        Assert.Equal(10_000, bounded.OriginalBytes);
+        Assert.Equal(bounded.OriginalBytes, seenByCallback.Value.OriginalBytes);
     }
 
     [Fact]
@@ -287,6 +291,7 @@ public class ToolCallExecutorTests
         var bounded = Assert.Single(result.ToolCallResults);
         Assert.True(bounded.IsError);
         Assert.True(bounded.IsTruncated);
+        Assert.True(bounded.OriginalBytes >= 10_000);
         Assert.True(System.Text.Encoding.UTF8.GetByteCount(bounded.Result) <= 256);
         Assert.Contains(ToolResultLimits.TruncationMarkerPrefix, bounded.Result, StringComparison.Ordinal);
     }

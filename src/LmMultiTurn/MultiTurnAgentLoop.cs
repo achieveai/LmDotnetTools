@@ -64,6 +64,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private bool _generationOrdinalSeeded;
     private ContextObservation? _latestContextObservation;
 
+    // The owning manager admits every run, including direct input and delayed continuations,
+    // before it can call the provider. Root loops have no manager admission callback.
+    internal Func<string, CancellationToken, Task>? AdmitRunAsync { get; set; }
+
     /// <summary>
     /// Names of the tools that declare at least one required parameter, snapshot at construction from
     /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
@@ -141,6 +145,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
     // no CompactionSetup, in which case nothing on the request path changes.
     private readonly CompactionRuntime? _compaction;
+
+    internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
     // The sentinel carries nothing — it exists only to break RunLoopAsync out of its wait so it can
@@ -846,6 +852,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
                 var assignment = await StartRunAsync(realInputs, batchParent, ct, wasForked: isExplicitFork);
+                if (AdmitRunAsync is { } admitRun)
+                {
+                    await admitRun(assignment.RunId, ct);
+                }
+
                 await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
                 using var spawnSuppression = new RunSpawnSuppression(this);
@@ -1047,6 +1058,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ct: ct
             );
             return;
+        }
+
+        if (AdmitRunAsync is { } admitRun)
+        {
+            await admitRun(assignment.RunId, ct);
         }
 
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
@@ -2306,7 +2322,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 toolCall.FunctionArgs ?? "{}",
                 deferredAtUnixMs,
                 toolCall.RunId ?? runId,
-                toolCall.GenerationId ?? generationId
+                toolCall.GenerationId ?? generationId,
+                result.MessageOrderIdx
             );
             _ = _delayed.TryReserve(deferredEntry);
 
@@ -2781,7 +2798,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // Canonical form first. The bounded text is what history stores and replays, so it — not
         // the raw delivery — drives the fingerprint, the identical-redelivery check and the
         // conflict decision. A byte-equal redelivery bounds to the same text and stays idempotent.
-        var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks);
+        var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks, out var originalBytes);
         var fingerprint = ComputeResolutionFingerprint(result, isError);
 
         if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out var inFlightFingerprint))
@@ -2806,10 +2823,27 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 );
             }
 
-            return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, truncated, ct);
+            return await ResolveUnclaimedAsync(
+                toolCallId,
+                result,
+                isError,
+                contentBlocks,
+                truncated,
+                originalBytes,
+                ct
+            );
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
+        return await ResolveClaimedAsync(
+            pending!,
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            truncated,
+            originalBytes,
+            ct
+        );
     }
 
     /// <summary>
@@ -2819,10 +2853,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private bool TryBoundResolution(
         string toolCallId,
         ref string result,
-        ref IList<ToolResultContentBlock>? contentBlocks
+        ref IList<ToolResultContentBlock>? contentBlocks,
+        out int? originalBytes
     )
     {
-        if (!ToolResultLimits.TryApply(new ToolCallResult(toolCallId, result, contentBlocks), out var bounded))
+        var truncated = ToolResultLimits.TryApply(
+            new ToolCallResult(toolCallId, result, contentBlocks),
+            out var bounded
+        );
+        originalBytes = bounded.OriginalBytes;
+        if (!truncated)
         {
             return false;
         }
@@ -2855,6 +2895,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
+        int? originalBytes,
         CancellationToken ct
     )
     {
@@ -2946,7 +2987,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     if (existing.IsDeferred)
                     {
-                        return ApplyResolution(existing, result, isError, truncated);
+                        return ApplyResolution(existing, result, isError, truncated, originalBytes);
                     }
 
                     if (existing.Result == result && existing.IsError == isError)
@@ -2978,13 +3019,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // Publish the full message (including ContentBlocks) to subscribers so UIs can
             // render images. The history entry stays text-only.
-            var publishMessage =
-                contentBlocks != null && contentBlocks.Count > 0
-                    ? newMessage with
-                    {
-                        ContentBlocks = contentBlocks,
-                    }
-                    : newMessage;
+            var publishMessage = newMessage with
+            {
+                ContentBlocks = contentBlocks is { Count: > 0 } ? contentBlocks : newMessage.ContentBlocks,
+                MessageOrderIdx = pending.Entry.ResultMessageOrderIdx,
+            };
             await PublishToAllAsync(publishMessage, ct);
         }
         else
@@ -3245,6 +3284,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
+        int? originalBytes,
         CancellationToken ct
     )
     {
@@ -3306,7 +3346,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             "{}",
             orphan.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             orphan.RunId,
-            orphan.GenerationId
+            orphan.GenerationId,
+            orphan.MessageOrderIdx
         );
 
         // Pre-parked: whatever run requested this is not the one running now, so its result can
@@ -3320,14 +3361,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             return (ResolveToolCallOutcome.Duplicate, null);
         }
 
-        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, truncated, ct);
+        return await ResolveClaimedAsync(
+            pending!,
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            truncated,
+            originalBytes,
+            ct
+        );
     }
 
     private static ToolCallResultMessage ApplyResolution(
         ToolCallResultMessage existing,
         string result,
         bool isError,
-        bool truncated
+        bool truncated,
+        int? originalBytes
     )
     {
         return existing with
@@ -3339,6 +3390,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             IsDeferred = false,
             ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             IsTruncated = truncated,
+            OriginalBytes = originalBytes,
         };
     }
 
@@ -3501,7 +3553,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 sourceCall?.FunctionArgs ?? "{}",
                 tcr.DeferredAt ?? 0,
                 tcr.RunId ?? sourceCall?.RunId,
-                tcr.GenerationId ?? sourceCall?.GenerationId
+                tcr.GenerationId ?? sourceCall?.GenerationId,
+                tcr.MessageOrderIdx
             );
 
             // Restored entries are parked on arrival. The run that requested them belonged to a
