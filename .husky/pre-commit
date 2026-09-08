@@ -6,4 +6,21 @@
 # the hook, the editor and CI all format identically. The full warning gate
 # (TreatWarningsAsErrors) runs at build time and in CI; pre-commit stays fast by checking only
 # the staged .cs files, while CI checks the whole tree.
-exec dotnet husky run --name format-verify
+dotnet husky run --name format-verify || exit 1
+
+# Then walk the reviewed test priorities over the staged paths: P0, then P1, then P2, stopping
+# at the first failing tier. This is a fast local signal, NOT a gate reduction -- CI still runs
+# the whole solution unfiltered. Set SKIP_PRIORITY_TESTS=1 to bypass it for work in progress.
+if [ -n "$SKIP_PRIORITY_TESTS" ]; then
+  echo "pre-commit: priority tests skipped (SKIP_PRIORITY_TESTS set). Full CI still runs them."
+  exit 0
+fi
+
+# The priority runner uses --no-build on purpose, so build first or the tiers would exercise
+# the previous commit's binaries and report a green run for code that was never compiled.
+dotnet build LmDotnetTools.sln --nologo || exit 1
+
+# Restricted to .NET surfaces: the client Vitest suite needs samples/LmStreaming.Sample/ClientApp
+# node_modules, which this repository does not provision, so including it here would fail every
+# commit that reaches the Sample. The client keeps its own unchanged CI gate.
+exec pwsh -NoProfile -Command '$staged = @(git diff --cached --name-only --diff-filter=ACMR | Where-Object { $_ }); if ($staged.Count -eq 0) { exit 0 }; & ./scripts/run-priority-tests.ps1 -Escalate P0,P1,P2 -Kind dotnet-project -ChangedPath $staged -Execute -ApproveSelectedProjects'

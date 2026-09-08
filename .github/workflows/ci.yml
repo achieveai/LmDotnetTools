@@ -21,6 +21,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-tooling:
+    name: Test inventory and priority tooling
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Separate processes isolate fixture mocks; this job does not replace the full test gate.
+      - name: Test static inventory
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/Get-TestInventory.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test impact selection
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/select-impacted-tests.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test full-gate telemetry contract
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/ci-test-telemetry.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test priority policy and runner
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/run-priority-tests.Tests.ps1
+          exit $LASTEXITCODE
+
   build-test:
     name: Build and test
     runs-on: windows-latest

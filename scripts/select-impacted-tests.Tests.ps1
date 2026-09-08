@@ -101,10 +101,19 @@ try {
     Set-TestFile -Root $leafRoot -RelativePath "src/Leaf/Leaf.cs" -Content "class Leaf {}"
 
     $leaf = Invoke-Selector -Root $leafRoot -ChangedPath "src/Leaf/Leaf.cs"
+    $dotSegmentLeaf = Invoke-Selector -Root $leafRoot -ChangedPath "src/Other/../Leaf/Leaf.cs"
+    Assert-True (
+        ($dotSegmentLeaf | ConvertTo-Json -Depth 10 -Compress) -ceq
+        ($leaf | ConvertTo-Json -Depth 10 -Compress)
+    ) "Equivalent dot-segment and canonical changed paths must produce the same decision."
+    $escapedRoot = Invoke-Selector -Root $leafRoot -ChangedPath "../outside.cs"
+    Assert-True ($escapedRoot.mode -eq "full" -and $escapedRoot.reason -eq "invalid-changed-path") "A changed path escaping the repository root must fail closed."
     Assert-True ($leaf.mode -eq "selected") "A changed leaf project did not produce selected mode."
     Assert-True ($leaf.reason -eq "project-closure") "A changed leaf project did not report project-closure."
     Assert-True (@($leaf.selectedProjects).Count -eq 1) "A changed leaf project did not select exactly one test project."
     Assert-True ($leaf.selectedProjects[0] -eq "tests/Leaf.Tests/Leaf.Tests.csproj") "A changed leaf project selected the wrong test project."
+    Assert-True ($leaf.affectedProjects -is [array]) "Affected projects must remain a JSON array when one project is affected."
+    Assert-True (@($leaf.affectedProjects | Where-Object { [string]::IsNullOrEmpty($_) }).Count -eq 0) "A changed file with no direct linked-item consumer must not add an empty affected project."
     Assert-True ($leaf.graph.projectCount -eq 2 -and $leaf.graph.referenceCount -eq 1 -and $leaf.graph.testProjectCount -eq 1) "Leaf graph facts are incorrect."
 
     $sdkTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "static-selector-sdk-test-$([guid]::NewGuid().ToString('N'))"

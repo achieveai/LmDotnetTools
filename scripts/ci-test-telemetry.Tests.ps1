@@ -128,6 +128,9 @@ function Invoke-TelemetryScenario {
     }
     elseif ($UseChangedPathFile) {
         New-Item -ItemType File -Path $changedPathFile | Out-Null
+        $staleShadowPath = Join-Path $testRoot ".logs\test-impact-shadow.json"
+        New-Item -ItemType Directory -Path (Split-Path $staleShadowPath -Parent) -Force | Out-Null
+        Set-Content -Path $staleShadowPath -Value '{"mode":"selected","reason":"stale"}' -Encoding utf8
     }
 
     $startingLocation = Get-Location

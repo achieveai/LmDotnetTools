@@ -38,6 +38,15 @@ if (-not [string]::IsNullOrWhiteSpace($ChangedPathFile)) {
 }
 
 $shadowSelectionPath = Join-Path $repoRoot ".logs\test-impact-shadow.json"
+try {
+    Remove-Item $shadowSelectionPath -Force -ErrorAction Stop
+}
+catch [System.Management.Automation.ItemNotFoundException] {
+    # A run without prior shadow telemetry has nothing to remove.
+}
+catch {
+    Write-Warning "Could not reset test-impact shadow telemetry; the current full test gate remains authoritative: $($_.Exception.Message)"
+}
 if ($ChangedPath.Count -gt 0) {
     try {
         $solutionProjects = @(dotnet sln $solution list | Where-Object { $_ -match '\.csproj$' })

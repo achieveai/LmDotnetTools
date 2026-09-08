@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$ChangedPath,
 
-    [string[]]$SolutionProject = @()
+    [string[]]$SolutionProject = @(),
+
+    [string[]]$KnownTestProject = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,8 +42,9 @@ function New-Decision {
     return [ordered]@{
         mode = $Mode
         reason = $Reason
-        changedPaths = @($normalizedChangedPaths)
-        selectedProjects = @($SelectedProjects)
+        changedPaths = [object[]]@($normalizedChangedPaths)
+        selectedProjects = [object[]]@($SelectedProjects)
+        affectedProjects = [object[]]@(if ($null -ne $visited) { $visited | Sort-Object })
         graph = [ordered]@{
             projectCount = $projects.Count
             referenceCount = $referenceCount
@@ -52,7 +55,46 @@ function New-Decision {
 }
 
 $root = (Resolve-Path $RepositoryRoot).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-$normalizedChangedPaths = @($ChangedPath | ForEach-Object { ConvertTo-RepositoryPath $_ } | Sort-Object -Unique)
+$rootPrefix = "$root$([System.IO.Path]::DirectorySeparatorChar)"
+$normalizedChangedPaths = [System.Collections.Generic.List[string]]::new()
+$invalidChangedPath = $false
+foreach ($changedPathValue in $ChangedPath) {
+    try {
+        if ([string]::IsNullOrWhiteSpace($changedPathValue) -or [System.IO.Path]::IsPathRooted($changedPathValue)) {
+            $invalidChangedPath = $true
+            break
+        }
+        $changedFullPath = [System.IO.Path]::GetFullPath($changedPathValue, $root)
+        if (-not $changedFullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $invalidChangedPath = $true
+            break
+        }
+        $normalizedChangedPaths.Add(
+            (ConvertTo-RepositoryPath ([System.IO.Path]::GetRelativePath($root, $changedFullPath)))
+        )
+    }
+    catch {
+        $invalidChangedPath = $true
+        break
+    }
+}
+$normalizedChangedPaths = @($normalizedChangedPaths | Sort-Object -Unique)
+if ($invalidChangedPath) {
+    [ordered]@{
+        mode = "full"
+        reason = "invalid-changed-path"
+        changedPaths = [object[]]@($normalizedChangedPaths)
+        selectedProjects = [object[]]@()
+        affectedProjects = [object[]]@()
+        graph = [ordered]@{
+            projectCount = 0
+            referenceCount = 0
+            testProjectCount = 0
+            unresolvedReferences = @()
+        }
+    } | ConvertTo-Json -Depth 6 -Compress
+    return
+}
 $normalizedSolutionProjects = @($SolutionProject | ForEach-Object { ConvertTo-RepositoryPath $_ })
 $projectPaths = if ($normalizedSolutionProjects.Count -gt 0) {
     @($normalizedSolutionProjects)
@@ -87,6 +129,7 @@ foreach ($relativePath in $projectPaths) {
 
     $isTestProject = (@($projectXml.Project.PropertyGroup.IsTestProject) -contains "true") -or
         (@($projectXml.Project.ItemGroup.PackageReference) | Where-Object { [string]$_.Include -eq "Microsoft.NET.Test.Sdk" }).Count -gt 0
+    $isTestProject = $isTestProject -or ($KnownTestProject -contains $relativePath)
     if ($isTestProject -and $normalizedSolutionProjects.Count -gt 0) {
         $isTestProject = $normalizedSolutionProjects -contains $relativePath
     }
@@ -184,8 +227,10 @@ foreach ($changed in $normalizedChangedPaths) {
     }
 
     [void]$ownerPaths.Add($owners[0].Path)
-    foreach ($consumer in @($itemConsumers[$changed])) {
-        [void]$ownerPaths.Add($consumer)
+    if ($itemConsumers.ContainsKey($changed)) {
+        foreach ($consumer in $itemConsumers[$changed]) {
+            [void]$ownerPaths.Add($consumer)
+        }
     }
 }
 
@@ -201,8 +246,10 @@ while ($pending.Count -gt 0) {
         continue
     }
 
-    foreach ($dependent in @($reverseReferences[$projectPath])) {
-        $pending.Enqueue($dependent)
+    if ($reverseReferences.ContainsKey($projectPath)) {
+        foreach ($dependent in $reverseReferences[$projectPath]) {
+            $pending.Enqueue($dependent)
+        }
     }
 }
 
