@@ -228,6 +228,22 @@ public sealed class SandboxGatewayOptions
     public string EgressProxyListen { get; set; } = "127.0.0.1:8090";
 
     /// <summary>
+    /// Configured egress network rules (<c>SandboxGateway:Network:Rules</c>). Empty by default;
+    /// applications opt in through configuration. Applied at sandbox creation, not to existing
+    /// sessions. A rule named after a MANAGED rule (<c>github</c>, <c>github-egress</c>, <c>ado</c>,
+    /// <c>m365</c>) replaces it; marking that entry <c>Enabled: false</c> removes it.
+    /// </summary>
+    public SandboxNetworkOptions Network { get; set; } = new();
+
+    /// <summary>
+    /// Configured egress auth providers (<c>SandboxGateway:AuthProviders</c>), keyed by id. Emitted on
+    /// the wire under the <c>cfg-</c> prefix so a configured identity can never collide with a managed
+    /// one. Empty by default.
+    /// </summary>
+    public Dictionary<string, SandboxEgressAuthProviderOptions> AuthProviders { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Host path to the MITM CA certificate the egress proxy presents (becomes the proxy's
     /// <c>CA_CERT_PATH</c> and the gateway's <c>CA_CERT_HOST_PATH</c>, which it exports to sandboxes as
     /// <c>CURL_CA_BUNDLE</c>/<c>SSL_CERT_FILE</c>).

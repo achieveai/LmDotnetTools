@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.Configuration;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -173,6 +174,361 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         registry.GetAuthProviderIdsForTest().Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Configured_public_docs_rule_does_not_require_or_inject_oauth(bool configureGithub)
+    {
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:public-docs:Hosts"] = "docs.stripe.com,*.apple.com",
+                ["Network:Rules:public-docs:Ports"] = "443",
+                ["Network:Rules:public-docs:Methods"] = "GET",
+                ["Network:Rules:public-docs:Paths"] = "*",
+            }
+        );
+        var auth = new AuthOptions();
+        if (configureGithub)
+        {
+            auth.Github.ClientId = "test-client";
+        }
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+        var rule = network.Should().ContainSingle(r => r.Id == "public-docs").Subject;
+        rule.Action.Should().Be("allow");
+        rule.Hosts.Should().BeEquivalentTo("docs.stripe.com", "*.apple.com");
+        rule.Methods.Should().Equal("GET");
+        rule.Ports.Should().Equal(443);
+        rule.AuthProvider.Should().BeNull();
+        rule.RequiredScopes.Should().BeEmpty();
+        if (configureGithub)
+        {
+            providers.Should().ContainSingle().Which.Id.Should().Be("github-auth");
+            network.Should().ContainSingle(r => r.Id == "github").Which.AuthProvider.Should().Be("github-auth");
+        }
+        else
+        {
+            providers.Should().BeNull();
+            network.Should().ContainSingle();
+        }
+    }
+
+    [Fact]
+    public async Task Unconfigured_shared_options_emit_no_network_rules()
+    {
+        await using var registry = CreateRegistry(new AuthOptions());
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+        providers.Should().BeNull();
+        network.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Config_rule_named_after_a_managed_rule_replaces_it()
+    {
+        // github-egress is a managed network-only rule; naming it in configuration REPLACES it whole,
+        // so an operator can retarget the Actions redirect chain without a code change.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:github-egress:Hosts"] = "mirror.example.com",
+                ["Network:Rules:github-egress:Ports"] = "443",
+                ["Network:Rules:github-egress:Methods"] = "GET",
+                ["Network:Rules:github-egress:Priority"] = "120",
+            }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (_, network) = registry.BuildAuthProvidersForTest();
+
+        var rule = network.Should().ContainSingle(r => r.Id == "github-egress").Subject;
+        rule.Hosts.Should().Equal("mirror.example.com");
+        rule.Priority.Should().Be(120);
+        // The managed github (token-injecting) rule is untouched.
+        network.Should().ContainSingle(r => r.Id == "github").Which.AuthProvider.Should().Be("github-auth");
+    }
+
+    [Fact]
+    public async Task Disabled_config_rule_named_after_a_managed_rule_removes_it()
+    {
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?> { ["Network:Rules:github-egress:Enabled"] = "false" }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (_, network) = registry.BuildAuthProvidersForTest();
+
+        network.Should().NotContain(r => r.Id == "github-egress");
+        network.Should().ContainSingle(r => r.Id == "github");
+    }
+
+    [Fact]
+    public async Task Config_providers_never_replace_managed_providers()
+    {
+        // A configured provider always lands under the cfg- wire prefix, so it can never collide with
+        // (or shadow) a managed provider identity.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["AuthProviders:partner-headers:Type"] = "headers",
+                ["AuthProviders:partner-headers:Hosts"] = "api.example.com",
+                ["AuthProviders:partner-headers:Headers:X-Api-Key:Value"] = "v",
+            }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (providers, _) = registry.BuildAuthProvidersForTest();
+
+        providers!.Select(p => p.Id).Should().BeEquivalentTo("github-auth", "cfg-partner-headers");
+    }
+
+    [Fact]
+    public async Task Header_values_never_reach_the_sandbox_create_request()
+    {
+        const string Canary = "sk-live-CANARY-NEVER-LEAKS";
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["AuthProviders:partner-headers:Type"] = "headers",
+                ["AuthProviders:partner-headers:Hosts"] = "api.example.com",
+                ["AuthProviders:partner-headers:Headers:X-Api-Key:Value"] = Canary,
+                ["Network:Rules:partner-api:Hosts"] = "api.example.com",
+                ["Network:Rules:partner-api:Ports"] = "443",
+                ["Network:Rules:partner-api:Methods"] = "GET",
+                ["Network:Rules:partner-api:AuthProvider"] = "partner-headers",
+                ["Network:Rules:partner-api:Priority"] = "100",
+            }
+        );
+
+        await using var registry = CreateRegistry(new AuthOptions(), options: options);
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+
+        var serialized = JsonSerializer.Serialize(new { providers, network });
+        serialized.Should().NotContain(Canary);
+        network
+            .Should()
+            .ContainSingle(r => r.Id == "partner-api")
+            .Which.AuthProvider.Should()
+            .Be("cfg-partner-headers");
+    }
+
+    [Fact]
+    public async Task Broad_allow_shadowing_a_managed_oauth_gate_fails_closed()
+    {
+        // The managed github gate sits at priority 100. A *.github.com allow at 50 is evaluated FIRST,
+        // so GitHub egress would proceed with no credential gate at all. The gateway hard-rejects this
+        // at sandbox-create; catching it here turns a 400 into an actionable failure.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:broad:Hosts"] = "*.github.com",
+                ["Network:Rules:broad:Ports"] = "443",
+                ["Network:Rules:broad:Methods"] = "GET",
+                ["Network:Rules:broad:Priority"] = "50",
+            }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+
+        var build = () => registry.BuildAuthProvidersForTest();
+        build.Should().Throw<ArgumentException>().WithMessage("*broad*").WithMessage("*github*");
+    }
+
+    [Fact]
+    public async Task Broad_allow_behind_a_managed_oauth_gate_is_allowed()
+    {
+        // Same rule at 500: first-match-wins by ascending priority means the managed gate still wins.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:broad:Hosts"] = "*.github.com",
+                ["Network:Rules:broad:Ports"] = "443",
+                ["Network:Rules:broad:Methods"] = "GET",
+                ["Network:Rules:broad:Priority"] = "500",
+            }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (_, network) = registry.BuildAuthProvidersForTest();
+
+        network.Should().ContainSingle(r => r.Id == "broad");
+        network.Should().ContainSingle(r => r.Id == "github").Which.AuthProvider.Should().Be("github-auth");
+    }
+
+    [Fact]
+    public async Task Broad_allow_shadowing_a_predefined_key_gate_fails_closed()
+    {
+        // Predefined egress keys are runtime state, invisible to the config-only startup check — they
+        // only appear in the MERGED rule set, which is why precedence is re-validated after the merge.
+        var dir = Directory.CreateTempSubdirectory("egr-prec");
+        try
+        {
+            var keys = new PredefinedKeyRegistry(
+                dir.FullName,
+                new NoopTokenStore(),
+                new HttpClient(),
+                NullLoggerFactory.Instance
+            );
+            await keys.UpsertAsync(
+                new PredefinedKeyEntry
+                {
+                    Id = "e1",
+                    Host = "api.example.com",
+                    Kind = PredefinedKeyKind.CustomHeaders,
+                    Headers = [new PredefinedHeader("X-Key", "v")],
+                }
+            );
+
+            var options = BindGatewayOptions(
+                new Dictionary<string, string?>
+                {
+                    ["Network:Rules:broad:Hosts"] = "*.example.com",
+                    ["Network:Rules:broad:Ports"] = "443",
+                    ["Network:Rules:broad:Methods"] = "GET",
+                    ["Network:Rules:broad:Priority"] = "50",
+                }
+            );
+
+            await using var registry = CreateRegistry(new AuthOptions(), keys, options);
+
+            var build = () => registry.BuildAuthProvidersForTest();
+            build.Should().Throw<ArgumentException>().WithMessage("*broad*").WithMessage("*predefined-e1*");
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Authenticated_broad_allow_shadowing_another_config_gate_fails_closed()
+    {
+        // A wildcard allow that CARRIES an auth provider is still a broad allow to the gateway — it just
+        // cannot shadow itself. Here it is evaluated in front of a different gate.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["AuthProviders:partner-headers:Type"] = "headers",
+                ["AuthProviders:partner-headers:Hosts"] = "*.x.com",
+                ["AuthProviders:partner-headers:Headers:X-Api-Key:Value"] = "v",
+                ["Network:Rules:wide-auth:Hosts"] = "*.x.com",
+                ["Network:Rules:wide-auth:Ports"] = "443",
+                ["Network:Rules:wide-auth:Methods"] = "GET",
+                ["Network:Rules:wide-auth:AuthProvider"] = "partner-headers",
+                ["Network:Rules:wide-auth:Priority"] = "50",
+                ["Network:Rules:blocked:Hosts"] = "*.x.com",
+                ["Network:Rules:blocked:Ports"] = "443",
+                ["Network:Rules:blocked:Methods"] = "*",
+                ["Network:Rules:blocked:Action"] = "deny",
+                ["Network:Rules:blocked:Priority"] = "100",
+            }
+        );
+
+        await using var registry = CreateRegistry(new AuthOptions(), options: options);
+
+        var build = () => registry.BuildAuthProvidersForTest();
+        build.Should().Throw<ArgumentException>().WithMessage("*wide-auth*").WithMessage("*blocked*");
+    }
+
+    [Fact]
+    public async Task Config_rule_replacing_a_managed_rule_is_not_judged_against_the_rule_it_replaced()
+    {
+        // A rule keyed `github` REPLACES the managed github gate, so after the merge there is no gate
+        // left for it to shadow — the wildcard is the whole policy for those hosts, by the operator's
+        // explicit choice. Judging it against the replaced rule would reject a legal configuration.
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:github:Hosts"] = "*.github.com",
+                ["Network:Rules:github:Ports"] = "443",
+                ["Network:Rules:github:Methods"] = "GET",
+                ["Network:Rules:github:Priority"] = "100",
+            }
+        );
+        var auth = new AuthOptions { Github = new GitHubAuthOptions { ClientId = "test-client" } };
+
+        await using var registry = CreateRegistry(auth, options: options);
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+
+        var rule = network.Should().ContainSingle(r => r.Id == "github").Subject;
+        rule.Hosts.Should().Equal("*.github.com");
+        rule.AuthProvider.Should().BeNull(); // the config rule, not the managed one
+        // The managed provider entry survives; only the RULE was replaced.
+        providers.Should().ContainSingle(p => p.Id == "github-auth");
+    }
+
+    [Fact]
+    public async Task Invalid_egress_configuration_fails_closed()
+    {
+        var options = BindGatewayOptions(
+            new Dictionary<string, string?>
+            {
+                ["Network:Rules:bad:Hosts"] = "localhost",
+                ["Network:Rules:bad:Ports"] = "443",
+                ["Network:Rules:bad:Methods"] = "GET",
+            }
+        );
+        await using var registry = CreateRegistry(new AuthOptions(), options: options);
+
+        var build = () => registry.BuildAuthProvidersForTest();
+        build.Should().Throw<ArgumentException>().WithMessage("*bad*");
+    }
+
+    [Fact]
+    public async Task Sample_config_emits_only_approved_documentation_hosts()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "LmDotnetTools.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        directory.Should().NotBeNull("the checked-in sample configuration must be tested");
+        var options = new SandboxGatewayOptions();
+        new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(directory!.FullName, "samples", "LmStreaming.Sample", "appsettings.json"))
+            .Build()
+            .GetSection("SandboxGateway")
+            .Bind(options);
+        await using var registry = CreateRegistry(new AuthOptions(), options: options);
+
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+        providers.Should().BeNull();
+        var rule = network.Should().ContainSingle().Subject;
+        rule.Hosts.Should()
+            .BeEquivalentTo(
+                "developer.apple.com",
+                "*.apple.com",
+                "developers.google.com",
+                "developer.android.com",
+                "firebase.google.com",
+                "ai.google.dev",
+                "docs.cloud.google.com",
+                "docs.stripe.com",
+                "learn.microsoft.com",
+                "docs.microsoft.com"
+            );
+        rule.Id.Should().Be("public-docs");
+        rule.Action.Should().Be("allow");
+        rule.Methods.Should().Equal("GET");
+        rule.Ports.Should().Equal(443);
+        rule.AuthProvider.Should().BeNull();
+    }
+
+    /// <summary>Binds an in-memory <c>SandboxGateway</c>-shaped configuration onto fresh options.</summary>
+    private static SandboxGatewayOptions BindGatewayOptions(Dictionary<string, string?> values)
+    {
+        var options = new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" };
+        new ConfigurationBuilder().AddInMemoryCollection(values).Build().Bind(options);
+        return options;
+    }
+
     private sealed class NoopTokenStore : IOAuthTokenStore
     {
         public Task<OAuthTokenRecord?> GetAsync(string provider, CancellationToken ct = default) =>
@@ -183,19 +539,24 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         public Task RemoveAsync(string provider, CancellationToken ct = default) => Task.CompletedTask;
     }
 
-    private static SandboxSessionRegistry CreateRegistry(AuthOptions auth, PredefinedKeyRegistry? predefinedKeys = null)
+    private static SandboxSessionRegistry CreateRegistry(
+        AuthOptions auth,
+        PredefinedKeyRegistry? predefinedKeys = null,
+        SandboxGatewayOptions? options = null
+    )
     {
         static HttpResponseMessage Unused(HttpRequestMessage _) => new(HttpStatusCode.OK);
+        options ??= new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" };
 
         var gateway = new SandboxGatewayLifetime(
-            new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
+            options,
             NullLogger<SandboxGatewayLifetime>.Instance,
             new HttpClient(new StubHandler(Unused))
         );
 
         return new SandboxSessionRegistry(
             gateway,
-            new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
+            options,
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             auth,

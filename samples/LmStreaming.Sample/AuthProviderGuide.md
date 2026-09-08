@@ -34,8 +34,21 @@ boundary, on the way out.
 
 Key properties:
 
-- **Default-deny egress.** Only the configured GitHub/ADO/M365 hosts are reachable from the sandbox,
-  and only when the matching provider is signed in. Everything else is blocked.
+- **Default-deny egress.** Configured GitHub/ADO/M365 rules require provider authentication;
+  predefined egress keys and explicit network-only rules grant their own scoped access.
+- **Configured egress policy.** `SandboxGateway:Network:Rules` and `SandboxGateway:AuthProviders`
+  in this sample's `appsettings.json` add hosts, verbs, paths and credential callbacks **as
+  configuration, not code** — see [Configured egress policy](#configured-egress-policy-appsettings)
+  below. The shipped `public-docs` rule allows **GET on port 443 only**, with **no automatic
+  credential injection**: `developer.apple.com`, `*.apple.com`, `developers.google.com`,
+  `developer.android.com`, `firebase.google.com`, `ai.google.dev`, `docs.cloud.google.com`,
+  `docs.stripe.com`, `learn.microsoft.com`, and `docs.microsoft.com`. The Apple wildcard includes
+  non-documentation subdomains. No HEAD, POST, PUT, PATCH or DELETE permission is added by this rule.
+  Use canonical Stripe/Cloud documentation URLs; redirects to unlisted hosts remain blocked
+  unless another configured rule permits them. Existing authenticated/key rules are unchanged
+  and may independently grant broader access. Shared SDK options default to no rules at all.
+  After changing this configuration, restart the app and use a new/recreated sandbox session;
+  reattaching to an existing session does not update its egress policy.
 - **One signed-in identity per provider, app-wide.** There is a single GitHub user, a single ADO
   user and a single M365 user for the whole app (not per chat / per session).
 - **Refresh tokens are persisted locally** under a gitignored `oauth-tokens/` directory and are
@@ -432,6 +445,124 @@ own gateway, you must set this yourself (or serve the webhook over HTTPS).
 8. **Force a refresh.** Wait past the access token's lifetime (or past the gateway's cache TTL) and
    repeat step 6. The gateway re-calls the webhook, the app refreshes from the stored refresh token,
    and the call still succeeds — no re-sign-in required.
+
+---
+
+## Configured egress policy (appsettings)
+
+Adding an egress host, verb, path or credential callback is a **configuration change, not a C#
+change**. Two `SandboxGateway` blocks drive it:
+
+```jsonc
+"SandboxGateway": {
+  "Network": {
+    "Rules": {
+      "public-docs": {
+        "Enabled": true,
+        "Action": "allow",
+        "Hosts": "docs.stripe.com,*.apple.com",
+        "Ports": "443",
+        "Methods": "GET",
+        "Paths": "*",
+        "Priority": 500
+      },
+      "partner-api": {
+        "Enabled": true,
+        "Action": "allow",
+        "Hosts": "api.example.com",
+        "Ports": "443",
+        "Methods": "GET,POST",
+        "Paths": "/v1/*",
+        "AuthProvider": "partner-headers",
+        "Priority": 100
+      }
+    }
+  },
+  "AuthProviders": {
+    "partner-headers": {
+      "Enabled": true,
+      "Type": "headers",
+      "Hosts": "api.example.com",
+      "CacheTtlSeconds": 30,
+      "Headers": {
+        "X-Client-Name": { "Value": "LmStreaming.Sample" },
+        "X-Api-Key": { "Value": "" }
+      }
+    },
+    "partner-webhook": {
+      "Enabled": false,
+      "Type": "webhook",
+      "Hosts": "api.example.com",
+      "Endpoint": "https://auth.example.com/egress",
+      "GatewayAuth": "",
+      "CacheTtlSeconds": 30,
+      "RequiredScopes": ""
+    }
+  }
+}
+```
+
+> `X-Api-Key` is intentionally empty — supply it via the env override below; an enabled provider with
+> an empty value fails startup.
+
+### Rules
+
+- **Keyed by rule id.** The key *is* the gateway rule id.
+- **Evaluation.** Rules are evaluated **ascending by `Priority`**, **first match wins**, and the
+  default action is **deny**. Dimensions are **AND**ed, entries within one dimension are **OR**ed,
+  and an **empty dimension matches anything**.
+- **`Hosts`** — an exact host, or a **single leading `*.`** suffix (`*.example.com`). A bare `*`,
+  a scheme/port/path, loopback, link-local/metadata hosts, and `*.<tld>` are rejected.
+  The gateway also lets `*.example.com` match the bare `example.com`, but this app's credential webhook
+  does not — list the apex host explicitly (in both the rule and the provider) if a credential must
+  reach it.
+- **`Ports`** — `1..65535`. An **authenticated** rule (one with an `AuthProvider`) is **443 only**,
+  so an injected credential never egresses in cleartext.
+- **`Methods`** — `GET HEAD POST PUT PATCH DELETE OPTIONS`, or `*` for any. Case-insensitive.
+- **`Paths`** — the gateway grammar is **only** `*` (any), a **trailing `/*`** inclusive prefix
+  (`/v1/*` matches `/v1` and `/v1/...`), or an **exact, case-sensitive** path. Empty means any path.
+- **`AuthProvider`** — the **un-prefixed** key of an entry under `AuthProviders`. Every host on an
+  authenticated rule must lie inside that provider's own `Hosts` scope.
+- **Managed rules can be replaced or removed by id.** Naming `github`, `github-egress`, `ado` or
+  `m365` **replaces** the built-in rule wholesale; setting `"Enabled": false` on that key
+  **removes** it. `predefined-*` ids are reserved for runtime egress keys and are rejected.
+
+### Auth providers
+
+- **`headers`** — this app's own auth webhook injects the configured static request headers.
+  The header **values never leave the app on the sandbox-create request**; the gateway only receives
+  a callback URL. Use a short `CacheTtlSeconds` so a rotated value takes effect promptly.
+- **`webhook`** — an **external** callback the gateway invokes directly, authenticated with its own
+  `GatewayAuth` secret. This app's per-session secret is **never** handed to an external endpoint,
+  and this app **denies** any callback that names a `webhook`-type provider.
+- **Wire ids are `cfg-`-prefixed.** `partner-headers` is sent to the gateway as `cfg-partner-headers`,
+  so a configured identity can never collide with a managed one (`github-auth`, `predefined-*`, …).
+  Rules reference the **un-prefixed** key; the prefix is added on the wire.
+
+### Overriding values
+
+Match lists are **comma-delimited strings, not JSON arrays**, on purpose: ASP.NET configuration
+merges arrays element-by-element across providers, so an override would leave stale elements behind.
+A scalar string is replaced **atomically** — the only safe semantic for a security boundary.
+
+Never commit a real secret. Override with environment variables or user-secrets, e.g.
+
+```bash
+SandboxGateway__AuthProviders__partner-headers__Headers__X-Api-Key__Value=<secret>
+SandboxGateway__Network__Rules__partner-api__Hosts=api.example.com,api2.example.com
+```
+
+### Validation and reload
+
+- **Fail-closed at startup.** The whole policy is validated when the host starts; a malformed entry
+  throws and the app does not boot. The aggregated message names the offending **rule/provider/header
+  id and field** — never a configured **value**, because it lands in startup logs.
+- **No hot reload.** Policy is applied at **sandbox creation**. After editing configuration, restart
+  the app **and** start a new sandbox session; reattaching to an existing session keeps its old policy.
+- **Broad allows are rejected.** A `*.`-wildcard allow rule that sits at or in front of a gate it
+  overlaps — a managed provider's hosts, or a configured deny/authenticated rule — is refused, because
+  first-match-wins would silently turn a credential-gated host into open egress. Move it **behind**
+  the gate (a higher `Priority`) instead.
 
 ---
 
