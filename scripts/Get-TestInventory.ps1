@@ -264,7 +264,13 @@ if ($IncludeDeclarations) {
                 $syntax = $tree.GetRoot()
                 if (@($tree.GetDiagnostics() | Where-Object Severity -eq "Error").Count -gt 0) { [void]$gaps.Add("syntax-errors:$source") }
                 if ($syntax.ContainsDirectives) { [void]$gaps.Add("conditional-source:$source") }
+                # Seed from the project-wide global aliases before the file's own, so an
+                # attribute aliased in another file still resolves. A file-local alias of the
+                # same name shadows the global one, matching C# resolution.
                 $aliases = @{}
+                foreach ($aliasName in $globalTypeAliases.Keys) {
+                    $aliases[$aliasName] = $globalTypeAliases[$aliasName]
+                }
                 foreach ($using in @($syntax.DescendantNodes() | Where-Object { $_ -is [Microsoft.CodeAnalysis.CSharp.Syntax.UsingDirectiveSyntax] -and $null -ne $_.Alias })) {
                     $aliases[$using.Alias.Name.Identifier.ValueText] = $using.Name.ToString()
                 }

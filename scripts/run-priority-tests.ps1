@@ -38,7 +38,12 @@ param(
     # Approves exactly the surfaces this run already selected, instead of hand-listing them.
     # It is an acknowledgement shortcut, not a prerequisite audit: every approved surface and
     # its outstanding requirements are printed before anything runs.
-    [switch]$ApproveSelectedProjects
+    [switch]$ApproveSelectedProjects,
+    # Set only by the escalation driver below. A tier that legitimately selects nothing - a
+    # component with no P0 family, say - must not abort the walk before a later tier with real
+    # work. An explicitly requested standalone run with an empty selection still fails, because
+    # there the emptiness is the answer to the question the caller asked.
+    [switch]$AllowEmptySelection
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,6 +88,9 @@ if ($Escalate.Count -gt 0) {
         if ($PSBoundParameters.ContainsKey($name) -and $PSBoundParameters[$name]) { $forwarded[$name] = $true }
     }
     $tierPreviews = [System.Collections.Generic.List[string]]::new()
+    # An empty tier is bypassed, not fatal; a tier that FAILS still stops the walk, so a broken
+    # baseline is never masked by a later green tier.
+    if ($Execute) { $forwarded["AllowEmptySelection"] = $true }
     foreach ($tier in $Escalate) {
         if ($Execute) { Write-Host "Priority escalation: running $tier." }
         $tierOutput = & $PSCommandPath @forwarded -Priority $tier
@@ -455,7 +463,11 @@ if (-not $Execute) { $plan | ConvertTo-Json -Depth 15; return }
 
 # Preflight the entire selection before executing anything. No partial passing lane.
 if ($policyStatus -ne "present") { throw "Execution blocked: reconcile $policyStatus priority policy first." }
-if ($selectedTests.Count -eq 0) { throw "Execution blocked: selection is empty." }
+if ($selectedTests.Count -eq 0) {
+    if (-not $AllowEmptySelection) { throw "Execution blocked: selection is empty." }
+    Write-Host "Priority escalation: $($Priority -join ',') selects nothing here; skipping."
+    return
+}
 $approved = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 foreach ($path in $ApprovedPath) { [void]$approved.Add(($path.Replace("\", "/") -replace '^\./', '')) }
 if ($ApproveSelectedProjects) {

@@ -771,6 +771,23 @@ try {
     Assert-True ($escalationStopped -and $global:PriorityTestInvocations.Count -eq 1) "A failing tier must stop the escalation before the next tier starts."
     $global:PriorityFailingFilter = $null
 
+    # A tier with no work HERE is not a failure. Tier0 declares only P0 and P2 families, so P1
+    # selects nothing; the documented P0,P1,P2 loop would be unusable on any component without a
+    # family in an early tier if that emptiness aborted the walk.
+    $global:PriorityTestInvocations.Clear()
+    Set-TrxPlans @(@(@{ Results = @(@{ Id = "regression"; Name = "Regression"; Outcome = "Passed"; Class = "Cases.Tests"; Method = "Regression" }) }))
+    & $runner -RepositoryRoot $fixture -Project "tests/Tier0/Tier0.csproj" -Escalate P1, P2 -Execute -ApproveSelectedProjects | Out-Null
+    Assert-True ($global:PriorityTestInvocations.Count -eq 1) "An empty early tier must be bypassed instead of aborting the escalation."
+    $bypassFilter = $global:PriorityTestInvocations[0][[array]::IndexOf($global:PriorityTestInvocations[0], "--filter") + 1]
+    Assert-True ($bypassFilter -ceq "FullyQualifiedName=Cases.Tests.Regression") "The tier after an empty one must still run its own selection."
+
+    # The bypass belongs to escalation only. Asking for one empty tier directly is still an error,
+    # because there the emptiness is the answer to the question the caller asked.
+    $standaloneEmpty = $false
+    try { & $runner -RepositoryRoot $fixture -Project "tests/Tier0/Tier0.csproj" -Priority P1 -Execute -ApproveSelectedProjects | Out-Null }
+    catch { $standaloneEmpty = $_.Exception.Message -like '*selection is empty*' }
+    Assert-True $standaloneEmpty "A standalone run whose selection is empty must still fail."
+
     $escalationPreview = @(& $runner -RepositoryRoot $fixture -Project "tests/Tier0/Tier0.csproj" -Escalate P0, P2 | ConvertFrom-Json)
     Assert-True (
         $escalationPreview.Count -eq 2 -and

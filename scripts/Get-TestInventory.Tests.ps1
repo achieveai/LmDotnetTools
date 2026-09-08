@@ -130,6 +130,7 @@ public partial class Checks : UnknownBase {
     [Xunit.Theory, Xunit.MemberData(nameof(Values))] public void Dynamic(int value) {}
     [WindowsOnlyFact(Skip = "Fixture skip")] public void Platform() {}
     [Xunit.Fact(Skip = null)] public void NullSkip() {}
+    [GlobalAlias] public void GloballyAliasedAttribute() {}
     [Microsoft.VisualStudio.TestTools.UnitTesting.TestMethod] public void Storage() {}
     public class Nested { [Xunit.Fact] public void Baseline() {} }
     public class Generic<T> { public class Inner<TFirst, TSecond> { [Xunit.Fact] public void GenericBaseline() {} } }
@@ -147,14 +148,20 @@ public sealed class PartialConcrete : PartialBase {}
     Set-FixtureFile "tests/Core/CrossNamespace.cs" 'namespace Other; public sealed class CrossNamespaceDirect : global::Contracts.DirectBase {}'
     Set-FixtureFile "tests/Core/AliasedNamespace.cs" 'using DirectAlias = Contracts.DirectBase; namespace Another; public sealed class AliasedNamespaceDirect : DirectAlias {}'
     Set-FixtureFile "tests/Core/ImportedNamespace.cs" 'using Contracts; namespace Imported; public sealed class ImportedNamespaceDirect : DirectBase {}'
-    Set-FixtureFile "tests/Core/GlobalUsings.cs" 'global using Contracts; global using GlobalDirectAlias = Contracts.DirectBase;'
+    Set-FixtureFile "tests/Core/GlobalUsings.cs" 'global using Contracts; global using GlobalDirectAlias = Contracts.DirectBase; global using GlobalAlias = Xunit.FactAttribute;'
     Set-FixtureFile "tests/Core/GlobalAliasedNamespace.cs" 'namespace GlobalAliased; public sealed class GlobalAliasedNamespaceDirect : GlobalDirectAlias {} namespace GlobalImported; public sealed class GlobalImportedNamespaceDirect : DirectBase {}'
     Set-FixtureFile "shared/Linked.cs" 'namespace Contracts; public class Linked { [Xunit.Fact] public void Shared() {} }'
     Set-FixtureFile "tests/Core/Core.csproj" '<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><Compile Include="../../shared/Linked.cs" /></ItemGroup></Project>'
     $declarationLines = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     $declarations = @($declarationLines | ForEach-Object { $_ | ConvertFrom-Json })
     $coreCases = @($declarations | Where-Object { $_.kind -eq "test-declaration" -and $_.path -eq "tests/Core/Core.csproj" })
-    Assert-True ($coreCases.Count -eq 12) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
+    Assert-True ($coreCases.Count -eq 13) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
+    # A test attribute aliased in ANOTHER file must still resolve. Without project-wide global
+    # aliases it matches no known attribute and no unresolved-attribute gap, so the family
+    # vanishes from inventory, manifest comparison and selection with nothing to notice it.
+    Assert-True (
+        @($coreCases | Where-Object method -eq "GloballyAliasedAttribute").Count -eq 1
+    ) "A recognized test attribute reached through a project-wide global using alias must still be inventoried."
     $baseline = $coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline"
     Assert-True ($baseline.id -ceq 'dotnet|tests/Core/Core.csproj|Contracts.Checks.Baseline()') "Declaration identity must be stable, container-scoped and independent of source lines."
     $genericBaseline = $coreCases | Where-Object method -eq "GenericBaseline"

@@ -213,6 +213,28 @@ try {
     Assert-True ($invalid.graph.referenceCount -eq 0) "An invalid graph emitted a null reference count."
     Assert-True (@($invalid.graph.unresolvedReferences).Count -eq 0) "An invalid graph emitted a null unresolved-reference entry."
 
+    # MSBuild writes Include paths with backslashes on every host. If separators are normalized
+    # only AFTER canonicalization, a POSIX host treats the whole value as one literal filename,
+    # every reference goes unresolved and selection silently degrades to full scope. The two
+    # separator forms must produce the identical closure.
+    #
+    # NOTE: this assertion can only FAIL on a POSIX host. Windows GetFullPath already accepts a
+    # backslash as a separator, so it passes here with or without the normalization it guards.
+    # A green Windows run is not evidence that the fix works; only a Linux/macOS run is.
+    $separatorRoot = Join-Path ([System.IO.Path]::GetTempPath()) "static-selector-separator-$([guid]::NewGuid().ToString('N'))"
+    $testRoots.Add($separatorRoot)
+    Add-TestProject -Root $separatorRoot -RelativePath "src/Core/Core.csproj"
+    Add-TestProject -Root $separatorRoot -RelativePath "tests/Backslash.Tests/Backslash.Tests.csproj" -References "..\..\src\Core\Core.csproj" -IsTest
+    Set-TestFile -Root $separatorRoot -RelativePath "src/Core/Core.cs" -Content "class Core {}"
+
+    $backslash = Invoke-Selector -Root $separatorRoot -ChangedPath "src/Core/Core.cs"
+    Assert-True ($backslash.mode -eq "selected") "A backslash ProjectReference must resolve rather than degrading to full scope."
+    Assert-True (@($backslash.graph.unresolvedReferences).Count -eq 0) "A backslash ProjectReference must not be reported unresolved."
+    Assert-True (
+        @($backslash.selectedProjects).Count -eq 1 -and
+        $backslash.selectedProjects[0] -eq "tests/Backslash.Tests/Backslash.Tests.csproj"
+    ) "A backslash ProjectReference must select the same consumer as its forward-slash equivalent."
+
     Write-Host "PASS: static test selection is deterministic and fails safely."
 }
 finally {

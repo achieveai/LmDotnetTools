@@ -153,7 +153,11 @@ foreach ($project in $projects.Values) {
         }
 
         $referenceCount++
-        $resolvedFullPath = [System.IO.Path]::GetFullPath([string]$reference.Include, [System.IO.Path]::GetDirectoryName($project.FullPath))
+        # MSBuild Include paths are written with backslashes regardless of host. GetFullPath
+        # treats a backslash as an ordinary character on POSIX, so normalize separators BEFORE
+        # canonicalizing or every such reference resolves to one literal filename and the
+        # selector silently degrades to full scope.
+        $resolvedFullPath = [System.IO.Path]::GetFullPath(([string]$reference.Include).Replace("\", "/"), [System.IO.Path]::GetDirectoryName($project.FullPath))
         $resolvedPath = ConvertTo-RepositoryPath ([System.IO.Path]::GetRelativePath($root, $resolvedFullPath))
         if (-not $projects.ContainsKey($resolvedPath)) {
             $unresolvedReferences.Add([ordered]@{ project = $project.Path; reference = ConvertTo-RepositoryPath ([string]$reference.Include) })
@@ -182,7 +186,8 @@ foreach ($project in $projects.Values) {
                 continue
             }
 
-            $itemFullPath = [System.IO.Path]::GetFullPath($include, $projectDirectory)
+            # Same separator-before-canonicalization ordering as ProjectReference above.
+            $itemFullPath = [System.IO.Path]::GetFullPath($include.Replace("\", "/"), $projectDirectory)
             if (-not $itemFullPath.StartsWith("$root$([System.IO.Path]::DirectorySeparatorChar)", [System.StringComparison]::OrdinalIgnoreCase)) {
                 continue
             }

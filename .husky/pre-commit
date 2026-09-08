@@ -23,4 +23,8 @@ dotnet build LmDotnetTools.sln --nologo || exit 1
 # Restricted to .NET surfaces: the client Vitest suite needs samples/LmStreaming.Sample/ClientApp
 # node_modules, which this repository does not provision, so including it here would fail every
 # commit that reaches the Sample. The client keeps its own unchanged CI gate.
-exec pwsh -NoProfile -Command '$staged = @(git diff --cached --name-only --diff-filter=ACMR | Where-Object { $_ }); if ($staged.Count -eq 0) { exit 0 }; & ./scripts/run-priority-tests.ps1 -Escalate P0,P1,P2 -Kind dotnet-project -ChangedPath $staged -Execute -ApproveSelectedProjects'
+# --no-renames makes a rename appear as its delete plus its add, so BOTH endpoints reach impact
+# selection; without it git reports only the destination and the old component is never selected.
+# Deletions are included for the same reason: removing a file changes what depends on it, and a
+# deletion-only commit would otherwise run no tier at all.
+exec pwsh -NoProfile -Command '$staged = @(git diff --cached --name-only --no-renames --diff-filter=ACMD | Where-Object { $_ }); if ($staged.Count -eq 0) { exit 0 }; & ./scripts/run-priority-tests.ps1 -Escalate P0,P1,P2 -Kind dotnet-project -ChangedPath $staged -Execute -ApproveSelectedProjects'
