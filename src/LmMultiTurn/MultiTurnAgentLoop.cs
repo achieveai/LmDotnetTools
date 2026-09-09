@@ -467,7 +467,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 new CompactionRuntimeHost
                 {
                     ThreadId = threadId,
-                    SystemPrompt = systemPrompt,
+                    // The base property, not the raw parameter: the base constructor has already
+                    // stored the prompt WITH the identity preamble prepended, and the compaction view
+                    // replaces the normal request once a checkpoint is active. Handing the host the
+                    // raw prompt made an agent forget its own name on the turn a checkpoint activated.
+                    SystemPrompt = SystemPrompt,
                     Store = store,
                     RunLedgerStore = RunLedgerStore,
                     DefaultOptions = DefaultOptions,

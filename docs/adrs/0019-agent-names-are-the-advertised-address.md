@@ -76,7 +76,9 @@ ended rather than being redirected.
 **The root agent is named from host configuration, defaulting to `MainAgent`**, and every agent is
 told who it is. The preamble — *You are `reviewer` (`agent-3`). Other agents address you as
 `reviewer`. You report to `MainAgent`.* — is prepended to the system prompt at the one chokepoint
-where the loop is constructed. The `primary` alias is unchanged.
+where the loop is constructed. The compaction runtime reads the same stored prompt, so the identity
+survives the switch to an envelope view; handing it the caller's raw prompt would make an agent forget
+its name on the turn a checkpoint activates. The `primary` alias is unchanged.
 
 **Every unknown-target refusal names the agents the caller could have meant**, through one shared
 helper so four sites cannot drift into four vocabularies. The roster differs by tool on purpose:
