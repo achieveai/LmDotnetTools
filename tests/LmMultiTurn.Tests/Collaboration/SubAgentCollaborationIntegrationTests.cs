@@ -947,18 +947,24 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CheckAgents_ContestedChildName_DoesNotBypassDirectoryAmbiguity()
+    public async Task ASecondAgentAskingForATakenName_LeavesTheFirstAddressableAndGetsItsOwn()
     {
+        // The end-to-end shape of the collision policy, through the real tool surface. Previously both
+        // agents lost the name: CheckAgents reported not_found, WaitForAgents errored, and SendMessage
+        // refused with ambiguous_name — for a name that was a perfectly good address a moment earlier.
         var root = CreateRegisteredRoot();
         var (_, provider) = CreateManager(root);
         var childId = await SpawnAndResolveIdAsync(provider, "reviewer");
-        _ = RegisterPeer(root, "reviewer");
+        var peer = RegisterPeer(root, "reviewer").Setup;
 
+        var grantedPeerName = root.Directory.FindById(peer.AgentId)!.Name;
+        grantedPeerName.Should().NotBe("reviewer", "the newcomer must not take a name that already answers");
+
+        // The first agent keeps the plain name, on every surface that resolves one.
         var check = await InvokeAsync(provider, "CheckAgents", new { agent_ids = "reviewer" });
         using var checkDoc = JsonDocument.Parse(check.Text);
-        checkDoc.RootElement.GetProperty("not_found").GetInt32().Should().Be(1);
-        var wait = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = "reviewer", timeout_seconds = 1 });
-        wait.IsError.Should().BeTrue();
+        checkDoc.RootElement.GetProperty("not_found").GetInt32().Should().Be(0);
+
         var sent = await InvokeAsync(
             provider,
             "SendMessage",
@@ -969,19 +975,22 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 msg_type = "question",
             }
         );
-        sent.ErrorCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        sent.IsError.Should().BeFalse(sent.Text);
+
+        // And the newcomer is reachable under the name it was actually granted.
+        root.Directory.Resolve("reviewer").Entry!.AgentId.Should().Be(childId);
+        root.Directory.Resolve(grantedPeerName).Entry!.AgentId.Should().Be(peer.AgentId);
 
         var roster = await InvokeAsync(provider, "GetAgents", new { });
         using var rosterDoc = JsonDocument.Parse(roster.Text);
-        foreach (
-            var row in rosterDoc
-                .RootElement.GetProperty("agents")
-                .EnumerateArray()
-                .Where(a => a.GetProperty("name").GetString() == "reviewer")
-        )
+        foreach (var row in rosterDoc.RootElement.GetProperty("agents").EnumerateArray())
         {
-            row.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeFalse();
+            row.GetProperty("name_resolves_to_agent")
+                .GetBoolean()
+                .Should()
+                .BeTrue("every advertised name is now a usable address");
         }
+
         var byId = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId, timeout_seconds = 10 });
         byId.IsError.Should().BeFalse(byId.Text);
     }
@@ -1007,9 +1016,12 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
     [Theory]
     [InlineData("primary")]
-    [InlineData("root")]
-    public async Task GetAgents_ContestedRootNames_DoNotAdvertiseUnusableAddresses(string contestedName)
+    [InlineData(AgentCollaborationSetup.DefaultRootName)]
+    public async Task GetAgents_AChildCannotTakeTheRootsNameOrItsAlias(string contestedName)
     {
+        // These two names are how every agent reaches the top of the conversation. A child claiming
+        // one used to leave it resolving to nothing for the whole hierarchy — the roster then had to
+        // advertise the root as unaddressable by name. Now the child is suffixed and both keep working.
         var root = CreateRegisteredRoot();
         _ = RegisterPeer(root, contestedName);
         var (_, provider) = CreateManager(root);
@@ -1020,8 +1032,11 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .RootElement.GetProperty("agents")
             .EnumerateArray()
             .Single(a => a.GetProperty("agent_id").GetString() == root.AgentId);
-        row.GetProperty("name_resolves_to_agent").GetBoolean().Should().Be(contestedName != "root");
-        row.GetProperty("aliases").GetArrayLength().Should().Be(contestedName == "primary" ? 0 : 1);
+
+        row.GetProperty("name_resolves_to_agent").GetBoolean().Should().BeTrue();
+        row.GetProperty("aliases").GetArrayLength().Should().Be(1);
+        root.Directory.Resolve("primary").Entry!.AgentId.Should().Be(root.AgentId);
+        root.Directory.Resolve(root.Name).Entry!.AgentId.Should().Be(root.AgentId);
     }
 
     [Fact]

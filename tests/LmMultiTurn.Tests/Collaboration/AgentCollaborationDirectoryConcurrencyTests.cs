@@ -8,7 +8,7 @@ namespace LmMultiTurn.Tests.Collaboration;
 /// <summary>
 /// Covers what the directory must still promise when several spawns land at once: an identifier is
 /// admitted exactly once, a refused registration leaves nothing addressable behind, and a name
-/// contested by concurrent arrivals latches ambiguous instead of resolving to a guess.
+/// contested by concurrent arrivals is granted to exactly one of them with the rest suffixed.
 /// </summary>
 /// <remarks>
 /// The directory keeps identity in one dictionary and name bindings in another, and a registration
@@ -163,7 +163,40 @@ public class AgentCollaborationDirectoryConcurrencyTests
     }
 
     [Fact]
-    public void TryRegister_UnderConcurrency_LatchesAContestedNameRatherThanGuessing()
+    public void TryRegister_RacingTheSameIdentity_LeavesTheWinnerHoldingThePlainNameAndNoStrayAlias()
+    {
+        // Validation rejects a duplicate id by checking then acting, which concurrency can slip
+        // between: several registrations of ONE agent can all pass validation and reach the name
+        // grant. Suffixing there would mint `reviewer-1` pointing at the very agent that already
+        // answers to `reviewer`, and releasing the name on the losing path would strip the winner of
+        // it. Exactly one registration is admitted, and the name map ends up holding exactly one entry
+        // for it.
+        for (var attempt = 0; attempt < Attempts; attempt++)
+        {
+            var directory = CreateDirectory();
+            var root = RegisterRoot(directory);
+            var shared = root.CreateChild("agent-1", AgentKind.SubAgent, "reviewer", "reviews");
+            var outcomes = new ConcurrentBag<AgentRegistrationResult>();
+
+            Race(Racers, _ => outcomes.Add(directory.TryRegister(shared, "reviewer", "running")));
+
+            outcomes.Count(o => o.Succeeded).Should().Be(1, "one identity is admitted once");
+            outcomes
+                .Where(o => !o.Succeeded)
+                .Should()
+                .OnlyContain(o => o.FailureCode == AgentDirectoryFailureCodes.DuplicateAgentId);
+
+            directory.Count.Should().Be(2);
+            directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-1");
+            directory.FindById("agent-1")!.Name.Should().Be("reviewer");
+
+            // No losing racer left a suffixed alias behind pointing at the same agent.
+            directory.Resolve("reviewer-1").Succeeded.Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public void TryRegister_UnderConcurrency_GivesEveryRacerADistinctUsableName()
     {
         for (var attempt = 0; attempt < Attempts; attempt++)
         {
@@ -173,19 +206,34 @@ public class AgentCollaborationDirectoryConcurrencyTests
                 .Range(0, Racers)
                 .Select(index => root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews"))
                 .ToArray();
+            var granted = new ConcurrentBag<string>();
 
-            // Distinct identifiers, one shared name: every racer is admitted, but the name they all
-            // claimed must end up owned by none of them.
+            // Distinct identifiers, one shared name. Claim-and-bind is a single TryAdd precisely so
+            // this race cannot end with two agents believing they own the same name; a check-then-bind
+            // would let several racers all read "reviewer" as free.
             Race(
                 Racers,
-                index => directory.TryRegister(children[index], "reviewer", "running").Succeeded.Should().BeTrue()
+                index =>
+                {
+                    var result = directory.TryRegister(children[index], "reviewer", "running");
+                    result.Succeeded.Should().BeTrue();
+                    granted.Add(result.Entry!.Name);
+                }
             );
 
             directory.Count.Should().Be(Racers + 1);
-            directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
 
-            // Ambiguity must not cost the agents their identity: each is still reachable by the
-            // canonical identifier that the name was only ever a convenience for.
+            // Exactly one racer keeps the unsuffixed name, and no two racers share one.
+            granted.Should().HaveCount(Racers);
+            granted.Distinct(StringComparer.Ordinal).Should().HaveCount(Racers);
+            granted.Count(name => name == "reviewer").Should().Be(1);
+
+            // Every granted name is an address that works, and identity is untouched either way.
+            foreach (var name in granted)
+            {
+                directory.Resolve(name).Succeeded.Should().BeTrue();
+            }
+
             for (var index = 0; index < Racers; index++)
             {
                 directory.Resolve($"agent-{index}").Entry!.AgentId.Should().Be($"agent-{index}");

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
@@ -307,13 +308,17 @@ public sealed class AgentCollaborationDirectory
             return new AgentRegistrationResult(null, failure);
         }
 
+        // Claimed before the entry is built, because the entry has to carry the name the agent will
+        // actually answer to. A caller reading Entry.Name off the result is reading its address.
+        var grantedName = GrantAndBindName(name, context.AgentId);
+
         // The root has no role or description to show — nothing has to choose whether to contact it —
         // so it is described structurally rather than being forced to invent metadata.
         var entry = new AgentDirectoryEntry
         {
             AgentId = context.AgentId,
             CollaborationId = context.CollaborationId,
-            Name = name,
+            Name = grantedName,
             ParentAgentId = context.ParentAgentId,
             AncestorAgentIds = context.AncestorAgentIds,
             Kind = context.Kind,
@@ -336,10 +341,23 @@ public sealed class AgentCollaborationDirectory
 
         if (!_byAgentId.TryAdd(entry.AgentId, registration))
         {
+            // Validation already refused a duplicate id, so reaching here means a concurrent
+            // registration of the SAME agent won the race. A refused registration must not leave an
+            // address behind, so the name is released — unless it is the very name the winner ended up
+            // carrying, in which case removing it would strip a live agent of its own address.
+            // "Did this call create the binding?" looks like the same question and is not: either racer
+            // may have created it, and only one of them is the one the admitted entry agrees with.
+            if (
+                _byAgentId.TryGetValue(entry.AgentId, out var admitted)
+                && !string.Equals(admitted.Entry.Name, grantedName, StringComparison.Ordinal)
+            )
+            {
+                _ = _byName.TryRemove(grantedName, out _);
+            }
+
             return new AgentRegistrationResult(null, AgentDirectoryFailureCodes.DuplicateAgentId);
         }
 
-        BindName(name, entry.AgentId);
         if (context.Kind == AgentKind.Root && context.ParentAgentId is null)
         {
             BindName(PrimaryAlias, entry.AgentId);
@@ -638,6 +656,73 @@ public sealed class AgentCollaborationDirectory
         }
 
         return _byAgentId.ContainsKey(context.AgentId) ? AgentDirectoryFailureCodes.DuplicateAgentId : null;
+    }
+
+    /// <summary>
+    /// Claims the name this agent will actually answer to: the one it asked for, or that name suffixed
+    /// with its ordinal when another agent already holds it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Replaces two collision policies that disagreed with each other. This directory used to latch a
+    /// collided name permanently ambiguous, so the name resolved to nothing even after one of the two
+    /// agents left; the legacy sub-agent map reassigned the name to the newcomer, silently
+    /// re-targeting anyone who had been talking to the first. One bricked a name, the other misrouted.
+    /// Production hit the first: <c>finance-controller</c> named two agents and the board could only
+    /// tell the model to pass an id instead.
+    /// </para>
+    /// <para>
+    /// The suffix is the agent's own ordinal rather than a fresh counter, because ordinals are unique
+    /// within a root conversation by construction, so one pass is normally enough — and because
+    /// <c>DeriveReadableName</c> already produces <c>{role}-{ordinal}</c>, so a suffixed name has the
+    /// exact shape the model already reads back from a spawn receipt.
+    /// </para>
+    /// <para>
+    /// A name held by a RETIRED agent is still taken. Its entry outlives it precisely so a sender
+    /// learns its target ended rather than that it never existed; handing the name to a newcomer would
+    /// turn that answer into a silent redirect to a different agent.
+    /// </para>
+    /// <para>
+    /// Claim and bind are one step, via <see cref="ConcurrentDictionary{TKey,TValue}.TryAdd"/>, so two
+    /// agents registering the same name concurrently cannot both read it as free. Checking first and
+    /// binding after would leave exactly the ambiguity latch this method exists to remove.
+    /// </para>
+    /// </remarks>
+    /// <param name="name">The name the agent asked for.</param>
+    /// <param name="agentId">The agent's canonical identifier, and the source of the suffix.</param>
+    private string GrantAndBindName(string name, string agentId)
+    {
+        var binding = new NameBinding(agentId, IsAmbiguous: false);
+        if (_byName.TryAdd(name, binding))
+        {
+            return name;
+        }
+
+        // The name is already ours. Validation rejects a duplicate id before reaching here, so this is
+        // the concurrent same-id race that a check-then-act validation cannot close: two registrations
+        // for one agent, one of which will lose the TryAdd below. Suffixing here would leave a stray
+        // `name-N` alias pointing at the very agent that already answers to `name`.
+        if (_byName.TryGetValue(name, out var held) && string.Equals(held.AgentId, agentId, StringComparison.Ordinal))
+        {
+            return name;
+        }
+
+        var suffix = SubAgentThreadIds.IsOrdinalAgentId(agentId)
+            ? agentId[SubAgentThreadIds.AgentIdPrefix.Length..]
+            : agentId;
+
+        var candidate = $"{name}-{suffix}";
+        var attempt = 0;
+
+        // An ordinal is unique within the root, so the first candidate normally wins. The loop covers
+        // the pathological case where a model literally named an earlier agent "reviewer-2".
+        // Terminates because every iteration proposes a candidate it has not proposed before.
+        while (!_byName.TryAdd(candidate, binding))
+        {
+            candidate = $"{name}-{suffix}-{++attempt}";
+        }
+
+        return candidate;
     }
 
     private void BindName(string name, string agentId)

@@ -597,6 +597,94 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_WithANameALiveAgentHolds_GrantsTheNewcomerADifferentOne()
+    {
+        // Mutation that must go red: restoring `_namesToIds[effectiveName] = agentId` unconditionally.
+        // The old code logged a warning and silently re-pointed the name at the newcomer, so a caller
+        // mid-conversation with the first agent started addressing the second. This is the
+        // collaboration-OFF path; the directory arbitrates the other one, by the same rule.
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager();
+
+        var firstJson = await _manager.SpawnAsync("test-agent", "first", runInBackground: true, name: "reviewer");
+        var secondJson = await _manager.SpawnAsync("test-agent", "second", runInBackground: true, name: "reviewer");
+
+        using var firstDoc = JsonDocument.Parse(firstJson);
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        var firstId = firstDoc.RootElement.GetProperty("agent_id").GetString()!;
+        var secondId = secondDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        firstDoc.RootElement.GetProperty("name").GetString().Should().Be("reviewer");
+
+        // The receipt must report the GRANTED name, not the requested one: it is the only thing the
+        // caller reads, so a receipt saying "reviewer" for an agent that answers to something else
+        // would send every follow-up to the first agent.
+        var grantedSecond = secondDoc.RootElement.GetProperty("name").GetString();
+        grantedSecond.Should().NotBe("reviewer");
+        grantedSecond.Should().StartWith("reviewer-");
+
+        // Resolving to different AGENTS, not merely different strings: the defect being closed is that
+        // one name reached the wrong runtime, so identity of the resolved instance is the real claim.
+        _manager.TryGetAgent("reviewer", out var byPlainName).Should().BeTrue();
+        _manager.TryGetAgent(grantedSecond!, out var bySuffixedName).Should().BeTrue();
+        _manager.TryGetAgent(firstId, out var firstById).Should().BeTrue();
+        _manager.TryGetAgent(secondId, out var secondById).Should().BeTrue();
+
+        byPlainName.Should().BeSameAs(firstById);
+        bySuffixedName.Should().BeSameAs(secondById);
+        byPlainName.Should().NotBeSameAs(bySuffixedName);
+
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ReusingTheNameOfAFINISHEDAgent_StillGrantsADifferentName()
+    {
+        // A finished sub-agent keeps its name because it stays addressable for follow-ups — the
+        // capacity refusal tells callers exactly that. Reassigning the name to a newcomer would send
+        // those follow-ups to a different agent, which is the defect, not an optimisation.
+        SetupSubAgentResponse([new TextMessage { Text = "done", Role = Role.Assistant }]);
+        _manager = CreateManager();
+
+        _ = await _manager.SpawnAsync("test-agent", "first", name: "reviewer");
+        var secondJson = await _manager.SpawnAsync("test-agent", "second", runInBackground: true, name: "reviewer");
+
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("name").GetString().Should().Be("reviewer-2");
+
+        // The finished agent is still the one "reviewer" reaches.
+        _manager.TryGetAgent("reviewer", out var finished).Should().BeTrue();
+        _manager.TryGetAgent("reviewer-2", out var newcomer).Should().BeTrue();
+        finished.Should().NotBeSameAs(newcomer);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_WhenTheSuffixedNameIsAlsoTaken_KeepsLookingForAFreeOne()
+    {
+        // The pathological case the suffix loop exists for: a caller literally named an earlier agent
+        // `reviewer-3`, which is exactly the name the third agent's ordinal would otherwise produce.
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager();
+
+        _ = await _manager.SpawnAsync("test-agent", "a", runInBackground: true, name: "reviewer");
+        _ = await _manager.SpawnAsync("test-agent", "b", runInBackground: true, name: "reviewer-3");
+        var thirdJson = await _manager.SpawnAsync("test-agent", "c", runInBackground: true, name: "reviewer");
+
+        using var thirdDoc = JsonDocument.Parse(thirdJson);
+        thirdDoc.RootElement.GetProperty("name").GetString().Should().Be("reviewer-3-1");
+
+        // All three remain individually addressable, which is the property the loop protects.
+        _manager.TryGetAgent("reviewer", out var first).Should().BeTrue();
+        _manager.TryGetAgent("reviewer-3", out var second).Should().BeTrue();
+        _manager.TryGetAgent("reviewer-3-1", out var third).Should().BeTrue();
+        new[] { first, second, third }.Distinct().Should().HaveCount(3);
+
+        release.SetResult(true);
+    }
+
+    [Fact]
     public async Task SpawnAsync_QueuedHandleIsImmediatelyObservable()
     {
         var release = new TaskCompletionSource<bool>();

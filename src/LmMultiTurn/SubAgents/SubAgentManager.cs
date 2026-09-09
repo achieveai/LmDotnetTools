@@ -298,8 +298,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Either way the slot is charged ONCE per agent identity and returned only by
     /// <see cref="RetireAgent"/>, so resuming an already-admitted child costs nothing.
     /// </remarks>
+    /// <returns>
+    /// The name the agent was actually GRANTED. Under collaboration the directory owns that decision —
+    /// it suffixes a name another agent already answers to — and every later use of the name has to
+    /// adopt its answer, or the child's identity preamble, its spawn receipt and its directory row
+    /// would each name it differently.
+    /// </returns>
     /// <exception cref="SubAgentCollaborationException">The spawn was refused.</exception>
-    private void AdmitAgent(
+    private string AdmitAgent(
         string agentId,
         string effectiveName,
         string templateName,
@@ -322,8 +328,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                         + "existing one instead of spawning another."
                 );
 
+            // No directory to arbitrate, so the legacy name map decides — by the same rule, so a host
+            // that turns collaboration on or off does not get a different collision policy.
             _admissions[agentId] = new SubAgentAdmission(Child: null, retainedLease);
-            return;
+            return GrantLegacyName(effectiveName, agentId);
         }
 
         if (!parent.CanDelegate)
@@ -422,7 +430,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, effectiveName), lease);
+        // The directory's answer, not the request: a suffixed child must be told the name it will
+        // actually answer to, because this handle is what composes its identity preamble.
+        var grantedName = registration.Entry!.Name;
+        _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, grantedName), lease);
+        return grantedName;
     }
 
     /// <summary>
@@ -704,7 +716,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
         // collaboration will not accept must never occupy a local slot or sit in the queue. No-op when
         // collaboration is off.
-        AdmitAgent(agentId, effectiveName, templateName, template, role, description);
+        // Adopted, not merely observed: the granted name is what the receipt reports and what the child
+        // is told it is called, so a caller that reads the receipt can address it and be right.
+        effectiveName = AdmitAgent(agentId, effectiveName, templateName, template, role, description);
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -854,7 +868,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         // When this spawn reassigns an already-live name away from a predecessor, remember whom it took
         // it from. If the spawn then fails, cleanup restores the name to that still-live predecessor
         // instead of deleting it - otherwise a failed spawn silently strips a working agent of its name.
-        string? displacedNameOwnerId = null;
 
         try
         {
@@ -935,23 +948,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _agents[agentId] = state;
                 if (!string.IsNullOrWhiteSpace(effectiveName))
                 {
-                    if (
-                        _namesToIds.TryGetValue(effectiveName, out var existingId)
-                        && existingId != agentId
-                        && _agents.ContainsKey(existingId)
-                    )
-                    {
-                        displacedNameOwnerId = existingId;
-                        _logger.LogWarning(
-                            "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
-                                + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
-                                + "address the new agent.",
-                            effectiveName,
-                            existingId,
-                            agentId
-                        );
-                    }
-
+                    // First writer wins, and the winner was decided at admission time. This used to
+                    // reassign the name to the newcomer and log a warning nobody reads, so a caller
+                    // mid-conversation with the first agent silently started addressing the second.
+                    // The write cannot steal: with collaboration off the name was already claimed
+                    // atomically for this agent by GrantLegacyName, and with it on the directory
+                    // guarantees the granted name is unique across the hierarchy.
                     _namesToIds[effectiveName] = agentId;
                 }
             }
@@ -992,13 +994,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // shrink the whole hierarchy's capacity permanently.
                 gateGuard.ReleaseOnce(_concurrencyGate);
                 RetireAgent(agentId, AgentCollaborationStatuses.Error);
+
+                // Admission claimed the name too, for the same reason it took the lease: both are
+                // root-wide reservations made before anything downstream knows this agent exists. A
+                // name left claimed here would suffix every later spawn that asks for it.
+                ReleaseNameClaim(effectiveName, agentId);
             }
             else
             {
                 // State may have been constructed but rejected at the shutdown-serialized registration
                 // boundary, or it may have registered and failed later. The shared cleanup handles both:
                 // dictionary removals are idempotent and it disposes the constructed loop/provider.
-                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard, displacedNameOwnerId);
+                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard);
             }
 
             throw;
@@ -1372,6 +1379,64 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// The name a spawn will answer to when there is no collaboration directory to arbitrate: the one
+    /// it asked for, or that name suffixed with its ordinal when a live agent already holds it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately the same rule as <c>AgentCollaborationDirectory</c>'s. These two paths used to
+    /// disagree outright — the directory latched a collided name permanently unusable, this map handed
+    /// it to the newcomer — and which policy applied depended only on whether collaboration happened to
+    /// be switched on. One bricked a name, the other misrouted messages to the wrong agent.
+    /// </para>
+    /// <para>
+    /// A FINISHED sub-agent still holds its name, matching the directory's treatment of a retired one.
+    /// That is not an oversight: a completed sub-agent stays in <see cref="_agents"/> precisely so it
+    /// can be sent a follow-up, so handing its name to a newcomer would route that follow-up to a
+    /// different agent — the exact defect this method exists to prevent. Only an agent removed
+    /// outright, by <see cref="CleanupFailedSpawnAsync"/> after a failed spawn, frees its name.
+    /// </para>
+    /// </remarks>
+    private string GrantLegacyName(string name, string agentId)
+    {
+        if (string.IsNullOrWhiteSpace(name) || _namesToIds.TryAdd(name, agentId))
+        {
+            return name;
+        }
+
+        // No same-id branch, unlike the directory's equivalent: this runs once per spawn and the
+        // ordinal allocator mints a fresh id each time, so a name already claimed here is always
+        // another agent's.
+        var suffix = SubAgentThreadIds.IsOrdinalAgentId(agentId)
+            ? agentId[SubAgentThreadIds.AgentIdPrefix.Length..]
+            : agentId;
+
+        var candidate = $"{name}-{suffix}";
+        var attempt = 0;
+
+        // Terminates because every iteration proposes a candidate it has not proposed before.
+        while (!_namesToIds.TryAdd(candidate, agentId))
+        {
+            candidate = $"{name}-{suffix}-{++attempt}";
+        }
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Gives back a name claimed at admission time by a spawn that then failed, so a name is not
+    /// reserved forever by an agent that never existed. A no-op unless the name still maps to this
+    /// agent — a later spawn may legitimately hold it by now.
+    /// </summary>
+    private void ReleaseNameClaim(string? name, string agentId)
+    {
+        if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mapped) && mapped == agentId)
+        {
+            _ = _namesToIds.TryRemove(name, out _);
+        }
+    }
+
+    /// <summary>
     /// Rolls back a spawn that failed after its <see cref="SubAgentState"/> was registered
     /// (possibly after the monitor already started, e.g. because <c>agent.SendAsync</c> threw):
     /// removes the partial registration from <see cref="_agents"/>/<see cref="_namesToIds"/>,
@@ -1386,27 +1451,18 @@ public sealed class SubAgentManager : IAsyncDisposable
         string agentId,
         string? name,
         SubAgentState state,
-        GateReleaseGuard gateGuard,
-        string? displacedNameOwnerId = null
+        GateReleaseGuard gateGuard
     )
     {
         _ = _agents.TryRemove(agentId, out _);
         RetireAgent(agentId, "error");
+
+        // The guard on the mapped id is what makes the removal safe. A spawn can no longer take a name
+        // from a live predecessor — it is granted a suffixed one instead — so a name this spawn owns is
+        // a name only it ever owned, and there is nothing to restore to anybody else.
         if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mappedId) && mappedId == agentId)
         {
-            // This spawn owns the name only because it took it from a live predecessor. Restoring it
-            // rather than deleting it keeps that predecessor addressable by name; a plain remove would
-            // let a failed spawn strip a working agent of a name it never lost on its own account. Only
-            // when the predecessor is still live - it may have been retired meanwhile, in which case the
-            // name is genuinely orphaned and removed.
-            if (!string.IsNullOrWhiteSpace(displacedNameOwnerId) && _agents.ContainsKey(displacedNameOwnerId))
-            {
-                _namesToIds[name] = displacedNameOwnerId;
-            }
-            else
-            {
-                _ = _namesToIds.TryRemove(name, out _);
-            }
+            _ = _namesToIds.TryRemove(name, out _);
         }
 
         try
