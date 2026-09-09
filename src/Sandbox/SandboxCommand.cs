@@ -58,6 +58,21 @@ public sealed record SandboxCommand
     public string? OperationId { get; }
 
     /// <summary>
+    /// Optional environment overlay applied to the command's process on top of the sandbox's own
+    /// environment (the gateway's <c>env</c> field). <c>null</c> (the default) sends nothing and the gateway
+    /// defaults it. Validated on assignment: every key is non-empty and contains neither <c>=</c> nor a NUL
+    /// byte, and no value contains a NUL byte — the two characters a POSIX environment block cannot carry.
+    /// The dictionary is copied, so later mutation of the caller's instance does not change the command.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Environment
+    {
+        get => _environment;
+        init => _environment = ValidateEnvironment(value);
+    }
+
+    private readonly IReadOnlyDictionary<string, string>? _environment;
+
+    /// <summary>
     /// The <see cref="WorkingDirectory"/> normalized to a clean, forward-slash, workspace-relative
     /// path (empty string = workspace root). Internal: production code uses this normalized form as
     /// the operation's <c>cwd</c> path, while the public <see cref="WorkingDirectory"/> preserves what
@@ -99,5 +114,42 @@ public sealed record SandboxCommand
         OperationId = operationId is null
             ? null
             : CommandOperation.ValidateAndCanonicalizeOperationId(operationId, nameof(operationId));
+    }
+
+    private static IReadOnlyDictionary<string, string>? ValidateEnvironment(IReadOnlyDictionary<string, string>? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var copy = new Dictionary<string, string>(value.Count, StringComparer.Ordinal);
+        foreach (var (key, entry) in value)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                throw new ArgumentException("Environment variable names must be non-empty.", nameof(Environment));
+            }
+
+            if (key.Contains('=', StringComparison.Ordinal) || key.Contains('\0', StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Environment variable name '{key}' contains '=' or a NUL byte.",
+                    nameof(Environment)
+                );
+            }
+
+            if (entry is null || entry.Contains('\0', StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Environment variable '{key}' has a null value or one containing a NUL byte.",
+                    nameof(Environment)
+                );
+            }
+
+            copy[key] = entry;
+        }
+
+        return copy;
     }
 }

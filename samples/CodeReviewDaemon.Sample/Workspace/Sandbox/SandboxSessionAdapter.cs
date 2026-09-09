@@ -111,7 +111,10 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         // alias distinct re-invocations of the same command (e.g. an intentional later `git fetch`) onto a
         // stale idempotent replay and return the earlier result instead of running — a meaningful id must be
         // a caller-minted per-logical-execution token the daemon does not currently produce.
-        var sdkCommand = new SdkSandboxCommand(command.Argv, ToWorkspaceRelativeDirectory(command.WorkingDirectory));
+        var sdkCommand = new SdkSandboxCommand(command.Argv, ToWorkspaceRelativeDirectory(command.WorkingDirectory))
+        {
+            Environment = command.Environment,
+        };
 
         // Bound every command with a per-command timeout (PR #121 H4): a command that runs longer than the
         // configured limit is cancelled client-side so untrusted PR code cannot hang the poller. This

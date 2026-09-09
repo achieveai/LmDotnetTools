@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -68,6 +69,42 @@ public sealed class SandboxSessionAdapterTests
 
         result.Succeeded.Should().BeTrue();
         result.Stdout.Should().Be("ok");
+    }
+
+    [Fact]
+    public async Task RunAsync_forwards_the_commands_environment_to_the_gateway_as_the_env_overlay()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(gateway);
+
+        var result = await adapter.RunAsync(
+            new SandboxCommand(
+                ["git", "rev-parse", "--show-toplevel"],
+                "/workspace/review_repo",
+                new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1", ["PYTHONDONTWRITEBYTECODE"] = "1" }
+            ),
+            CancellationToken.None
+        );
+
+        result.Succeeded.Should().BeTrue();
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        var env = body.RootElement.GetProperty("env");
+        env.GetProperty("GIT_CONFIG_COUNT").GetString().Should().Be("1");
+        env.GetProperty("PYTHONDONTWRITEBYTECODE").GetString().Should().Be("1");
+        env.EnumerateObject().Should().HaveCount(2);
+        body.RootElement.GetProperty("cwd").GetProperty("path").GetString().Should().Be("review_repo");
+    }
+
+    [Fact]
+    public async Task RunAsync_without_an_environment_sends_no_env_field()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(gateway);
+
+        _ = await adapter.RunAsync(new SandboxCommand(["git", "status"]), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
     }
 
     [Fact]

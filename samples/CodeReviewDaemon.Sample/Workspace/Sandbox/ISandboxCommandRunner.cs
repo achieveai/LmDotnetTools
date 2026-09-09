@@ -9,7 +9,13 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// <param name="Argv">The executable and its arguments (e.g. <c>["git", "clone", url]</c>). Must be
 /// non-empty.</param>
 /// <param name="WorkingDirectory">Optional absolute sandbox path to run in.</param>
-internal sealed record SandboxCommand(IReadOnlyList<string> Argv, string? WorkingDirectory = null);
+/// <param name="Environment">Optional environment overlay for the command's process, applied by the
+/// gateway on top of the sandbox's own environment. <c>null</c> sends nothing.</param>
+internal sealed record SandboxCommand(
+    IReadOnlyList<string> Argv,
+    string? WorkingDirectory = null,
+    IReadOnlyDictionary<string, string>? Environment = null
+);
 
 /// <summary>The captured outcome of a <see cref="SandboxCommand"/>.</summary>
 /// <param name="ExitCode">Process exit code (0 = success).</param>

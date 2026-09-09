@@ -108,7 +108,7 @@ public sealed partial class SandboxClient
             operationId,
             command.Arguments[0],
             command.Arguments.Count > 1 ? command.Arguments.Skip(1).ToList() : null,
-            null,
+            command.Environment is { Count: > 0 } ? command.Environment : null,
             new OperationCwdDto(mountId, command.NormalizedWorkingDirectory),
             GatewayExecutionTimeoutSeconds(),
             null

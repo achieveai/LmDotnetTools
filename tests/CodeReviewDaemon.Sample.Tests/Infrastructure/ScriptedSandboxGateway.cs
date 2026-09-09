@@ -29,6 +29,9 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     private const string StderrArtifactPath = ".mcp-gateway/operations/op/stderr";
 
     // ── Command flow configuration ──────────────────────────────────────────────────────────────
+    /// <summary>The JSON body of the most recent <c>POST .../operations</c> submit, for wire-level assertions.</summary>
+    public string? LastSubmitBody { get; private set; }
+
     public int CommandExitCode { get; init; }
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
@@ -124,6 +127,11 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// </summary>
     private async Task<HttpResponseMessage> RespondToOperationAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        if (request.Method == HttpMethod.Post && request.Content is not null)
+        {
+            LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
 
         if (SimulateExecutionTimeout)

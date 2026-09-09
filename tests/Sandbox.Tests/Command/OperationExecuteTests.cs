@@ -456,6 +456,73 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_Environment_IsSentAsTheEnvOverlayOfTheSubmitBody()
+    {
+        const string sessionId = "sess-env";
+        const string operationId = "op-env";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["git", "status"], operationId: operationId)
+            {
+                Environment = new Dictionary<string, string>
+                {
+                    ["GIT_CONFIG_COUNT"] = "1",
+                    ["GIT_CONFIG_KEY_0"] = "safe.directory",
+                    ["GIT_CONFIG_VALUE_0"] = "*",
+                },
+            }
+        );
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        var env = body.RootElement.GetProperty("env");
+        env.GetProperty("GIT_CONFIG_COUNT").GetString().Should().Be("1");
+        env.GetProperty("GIT_CONFIG_KEY_0").GetString().Should().Be("safe.directory");
+        env.GetProperty("GIT_CONFIG_VALUE_0").GetString().Should().Be("*");
+        env.EnumerateObject().Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoEnvironment_OmitsTheEnvFieldSoTheGatewayDefaultsIt()
+    {
+        const string sessionId = "sess-noenv";
+        const string operationId = "op-noenv";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"], operationId: operationId));
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CallerCancelsDuringPoll_ThrowsOperationCanceled_NotSandboxException()
     {
         const string sessionId = "sess-cancel";

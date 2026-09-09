@@ -111,4 +111,42 @@ public class SandboxCommandTests
 
         act.Should().Throw<ArgumentException>().WithParameterName("operationId");
     }
+
+    [Fact]
+    public void Environment_DefaultsToNull()
+    {
+        new SandboxCommand(["ls"]).Environment.Should().BeNull();
+    }
+
+    [Fact]
+    public void Environment_StoresADefensiveCopy()
+    {
+        var source = new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1" };
+
+        var command = new SandboxCommand(["git", "status"]) { Environment = source };
+        source["GIT_CONFIG_COUNT"] = "2";
+        source["INJECTED"] = "x";
+
+        command.Environment.Should().Equal(new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1" });
+    }
+
+    [Theory]
+    [InlineData("", "v")]
+    [InlineData("A=B", "v")]
+    [InlineData("A\0B", "v")]
+    [InlineData("A", "v\0w")]
+    public void Environment_InvalidEntry_Throws(string key, string value)
+    {
+        var act = () => new SandboxCommand(["ls"]) { Environment = new Dictionary<string, string> { [key] = value } };
+
+        act.Should().Throw<ArgumentException>().WithParameterName("Environment");
+    }
+
+    [Fact]
+    public void Environment_EmptyValue_IsAllowed()
+    {
+        var command = new SandboxCommand(["ls"]) { Environment = new Dictionary<string, string> { ["EMPTY"] = "" } };
+
+        command.Environment.Should().ContainKey("EMPTY").WhoseValue.Should().BeEmpty();
+    }
 }
