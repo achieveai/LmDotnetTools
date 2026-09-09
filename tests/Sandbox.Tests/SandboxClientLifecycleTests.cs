@@ -77,7 +77,17 @@ public class SandboxClientLifecycleTests
 
         var request = new SandboxCreateRequest(
             "my-workspace",
-            networkRules: [new SandboxNetworkRule("open", "allow", hosts: ["example.com"])]
+            networkRules:
+            [
+                new SandboxNetworkRule(
+                    "read-only-egress",
+                    "allow",
+                    hosts: ["docs.stripe.com", "*.apple.com"],
+                    ports: [443],
+                    methods: ["GET"],
+                    paths: ["*"]
+                ),
+            ]
         );
 
         _ = await client.CreateAsync(request);
@@ -85,6 +95,17 @@ public class SandboxClientLifecycleTests
         var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
         var body = JsonDocument.Parse(sent.Body!).RootElement;
         var networkRule = body.GetProperty("network").GetProperty("rules")[0];
+
+        body.TryGetProperty("auth_providers", out _).Should().BeFalse();
+        networkRule.GetProperty("methods").EnumerateArray().Select(x => x.GetString()).Should().Equal("GET");
+        networkRule.GetProperty("ports").EnumerateArray().Select(x => x.GetInt32()).Should().Equal(443);
+        networkRule.GetProperty("paths").EnumerateArray().Select(x => x.GetString()).Should().Equal("*");
+        networkRule
+            .GetProperty("hosts")
+            .EnumerateArray()
+            .Select(x => x.GetString())
+            .Should()
+            .Equal("docs.stripe.com", "*.apple.com");
 
         // A present-but-empty "auth_provider" is `Some("")` on the gateway's NetworkRule — a
         // provider-id lookup it fails — not "no provider". The field must be absent entirely.

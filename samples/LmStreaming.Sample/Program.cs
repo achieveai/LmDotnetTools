@@ -308,6 +308,19 @@ try
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
         ?? new SandboxGatewayOptions();
 
+    // Fail closed on a bad egress policy. Every configured rule widens a default-deny boundary and
+    // every configured provider is a credential-injection point, so a malformed entry must stop the
+    // host at startup rather than surface as a confusing gateway rejection on the first sandbox
+    // session. The aggregated message names rules/providers/fields only — never a configured value.
+    if (SandboxEgressPolicyCompiler.Validate(sandboxOptions) is { Count: > 0 } egressPolicyErrors)
+    {
+        throw new InvalidOperationException(
+            $"Invalid {SandboxGatewayOptions.SectionName} egress policy:"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, egressPolicyErrors.Select(e => "  - " + e))
+        );
+    }
+
     // Fail-fast sandbox credential validation (issue #153 M1). A configured-but-malformed key (bad
     // base64 / too short) is almost certainly a copy-paste/config mistake, so surface it as an
     // actionable startup error instead of a confusing 401 on the first sandbox request later. When

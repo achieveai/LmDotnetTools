@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
@@ -26,7 +27,8 @@ public sealed class AuthWebhookController(
     IAuthWebhookForwarder authWebhookForwarder,
     AuthOptions authOptions,
     ILogger<AuthWebhookController> logger,
-    PredefinedKeyRegistry? predefinedKeys = null
+    PredefinedKeyRegistry? predefinedKeys = null,
+    SandboxGatewayOptions? gatewayOptions = null
 ) : ControllerBase
 {
     /// <summary>
@@ -55,6 +57,31 @@ public sealed class AuthWebhookController(
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized auth-webhook call for provider {Provider}.", provider);
             return Unauthorized();
+        }
+
+        // Configured (appsettings) egress providers live in their own id namespace and resolve from
+        // configuration rather than from an IOAuthTokenProvider — there is no OAuth flow, no token
+        // store and nothing to defer to the auth-resolution policy.
+        if (SandboxEgressPolicyCompiler.IsConfiguredProviderId(provider))
+        {
+            // The always-200 allow/deny contract applies here too. This branch sits OUTSIDE the
+            // try/catch below, and a programmatic consumer can build SandboxGatewayOptions in code
+            // without running the validator — so any malformed-policy failure becomes a clean deny
+            // rather than an opaque 500. The reason stays generic and carries no configured value.
+            try
+            {
+                return Ok(EvaluateConfiguredProvider(provider, body));
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Auth-webhook failed evaluating configured provider {Provider} (host {DestinationHost}); denying.",
+                    provider,
+                    body.DestinationHost
+                );
+                return Ok(AuthWebhookResponse.Deny("configured provider evaluation failed"));
+            }
         }
 
         var tokenProvider = Resolve(provider);
@@ -285,6 +312,99 @@ public sealed class AuthWebhookController(
                 );
             }
         }
+    }
+
+    /// <summary>
+    /// The <c>cfg-</c> branch: injects a configured <c>headers</c> provider's static headers. Every
+    /// gate below is defense-in-depth over the gateway's own rule evaluation, so a rules
+    /// misconfiguration (or a misbehaving gateway) can never turn this endpoint into a
+    /// credential-leaking oracle. Fails closed on every unexpected shape.
+    /// <para>
+    /// A <c>webhook</c>-type configured provider is deliberately denied here: the gateway calls that
+    /// provider's OWN external endpoint, never this app.
+    /// </para>
+    /// </summary>
+    private AuthWebhookResponse EvaluateConfiguredProvider(string provider, AuthWebhookRequest body)
+    {
+        var configured = SandboxEgressPolicyCompiler.ResolveHeadersProvider(gatewayOptions, provider);
+        if (gatewayOptions is null || configured is null)
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for configured provider {Provider} (host {DestinationHost}): unknown, disabled, or not a headers provider.",
+                provider,
+                body.DestinationHost
+            );
+            return AuthWebhookResponse.Deny("unknown provider");
+        }
+
+        // The gateway must be asking for the provider it routed to; a mismatch means the request does
+        // not describe the rule that admitted it.
+        if (!string.Equals(body.ProviderId, provider, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for configured provider {Provider}: request provider_id does not match the route.",
+                provider
+            );
+            return AuthWebhookResponse.Deny("provider mismatch");
+        }
+
+        // HTTPS/443 only and inside the provider's declared host scope — a configured secret must never
+        // egress in cleartext, nor toward a host the provider does not declare.
+        if (
+            body.DestinationPort != 443
+            || !EgressHostMatcher.IsAllowed(
+                SandboxEgressPolicyCompiler.ParseList(configured.Hosts),
+                body.DestinationHost
+            )
+        )
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for configured provider {Provider}: destination {DestinationHost}:{DestinationPort} is outside its allowlist.",
+                provider,
+                body.DestinationHost,
+                body.DestinationPort
+            );
+            return AuthWebhookResponse.Deny($"destination not allowed for provider '{provider}'");
+        }
+
+        // Re-run the gateway's own first-match-wins evaluation over the CONFIGURED rules. The winning
+        // rule must be the allow rule that names this provider AND the rule the gateway reported —
+        // otherwise a higher-priority deny (or a different rule entirely) governs this destination.
+        var match = SandboxEgressPolicyCompiler.FirstMatchingRule(
+            gatewayOptions,
+            body.DestinationHost,
+            body.DestinationPort,
+            body.Method,
+            body.Path
+        );
+        if (
+            match is null
+            || !string.Equals(match.Action, "allow", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(match.AuthProvider, provider, StringComparison.Ordinal)
+            || !string.Equals(match.Id, body.RuleId, StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for configured provider {Provider} (host {DestinationHost}): no matching allow rule for the reported rule id {RuleId}.",
+                provider,
+                body.DestinationHost,
+                body.RuleId
+            );
+            return AuthWebhookResponse.Deny($"no matching allow rule for provider '{provider}'");
+        }
+
+        // Header VALUES are secrets: only the names are ever logged.
+        var headers = configured
+            .Headers.Where(h => h.Value.Enabled && h.Value.Value is not null)
+            .Select(h => new KeyValuePair<string, string>(h.Key, h.Value.Value!))
+            .ToArray();
+        logger.LogInformation(
+            "Auth-webhook allow for configured provider {Provider} (host {DestinationHost}), injecting {HeaderNames}.",
+            provider,
+            body.DestinationHost,
+            string.Join(",", headers.Select(h => h.Key))
+        );
+        return AuthWebhookResponse.AllowCustom(headers, DateTimeOffset.UtcNow.AddSeconds(configured.CacheTtlSeconds));
     }
 
     /// <summary>

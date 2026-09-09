@@ -2482,10 +2482,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
     /// <summary>
     /// Builds the optional <c>auth_providers</c> + <c>network</c> blocks for the sandbox-create
-    /// request from the configured OAuth providers. Each configured provider (one with a non-empty
-    /// client id) contributes a webhook auth-provider plus an allow rule scoping it to that
-    /// provider's hosts. Returns <c>(null, null)</c> when no provider is configured so both blocks
-    /// are omitted from the JSON.
+    /// request from managed OAuth providers, runtime predefined keys and the appsettings-driven egress
+    /// policy (<see cref="SandboxEgressPolicyCompiler"/>). Authenticated rules scope credential
+    /// injection to their provider's hosts; network-only rules need no provider. Empty blocks are
+    /// independently omitted from the JSON.
     /// </summary>
     /// <summary>
     /// Test seam: returns the gateway auth-provider ids the registry would attach to a
@@ -2657,7 +2657,43 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
         }
 
-        return providers.Count > 0 ? (providers, rules) : (null, null);
+        // Configured egress policy (appsettings). Validated here as well as at host startup: a
+        // programmatic consumer that builds SandboxGatewayOptions in code never runs the startup check,
+        // and a bad policy must fail closed rather than reach the gateway.
+        if (SandboxEgressPolicyCompiler.Validate(_options) is { Count: > 0 } errors)
+        {
+            throw new ArgumentException(
+                "Invalid sandbox egress policy: " + string.Join(" | ", errors),
+                nameof(SandboxGatewayOptions)
+            );
+        }
+
+        // A configured rule id that names a managed rule REPLACES it (and a disabled entry REMOVES it),
+        // so an operator can retarget or switch off a built-in rule without a code change. Removal is
+        // driven by the configured KEYS — enabled or not — while only enabled rules are re-added.
+        if (_options.Network?.Rules is { Count: > 0 } configuredRules)
+        {
+            var configuredIds = new HashSet<string>(configuredRules.Keys, StringComparer.OrdinalIgnoreCase);
+            _ = rules.RemoveAll(r => configuredIds.Contains(r.Id));
+            rules.AddRange(SandboxEgressPolicyCompiler.CompileRules(_options));
+        }
+
+        providers.AddRange(SandboxEgressPolicyCompiler.CompileProviders(_options, baseUrl, sessionSecret));
+
+        // Precedence over the EFFECTIVE (merged) rule set. The config-only check above cannot see the
+        // managed OAuth gates or the runtime predefined-key gates, and a config rule that REPLACES a
+        // managed rule leaves no gate behind — so shadowing is only decidable once everything is merged.
+        // The gateway hard-rejects this at sandbox-create; failing here turns an opaque 400 into a
+        // message naming both rules.
+        if (SandboxEgressPolicyCompiler.ValidateEffectivePrecedence(rules) is { Count: > 0 } precedenceErrors)
+        {
+            throw new ArgumentException(
+                "Invalid sandbox egress policy: " + string.Join(" | ", precedenceErrors),
+                nameof(SandboxGatewayOptions)
+            );
+        }
+
+        return (providers.Count > 0 ? providers : null, rules.Count > 0 ? rules : null);
     }
 
     /// <summary>
