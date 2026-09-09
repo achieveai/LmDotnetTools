@@ -146,10 +146,14 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WaitAgent_UnknownId_NamesTheIdsThatWouldHaveWorked()
+    public async Task WaitAgent_UnknownTarget_NamesTheAgentsThatWouldHaveWorked()
     {
         var (manager, provider) = CreateManager(BlockingAgent());
-        var agentId = await SpawnBackgroundAsync(manager);
+        using var spawn = JsonDocument.Parse(
+            await manager.SpawnAsync("test-agent", "Do some work", runInBackground: true)
+        );
+        var agentId = spawn.RootElement.GetProperty("agent_id").GetString()!;
+        var name = spawn.RootElement.GetProperty("name").GetString()!;
 
         var payload = await InvokeAsync(provider, new { agent_id = "not-an-agent" });
 
@@ -157,7 +161,12 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         payload.ErrorCode.Should().Be("unknown_agent");
         payload
             .Text.Should()
-            .Contain(agentId, "a mistyped id is a model mistake, and the fix is to show it the ids it could have used");
+            .Contain(
+                name,
+                "the correction has to offer the handle the model is supposed to use; an earlier version "
+                    + "listed ids alone, which is what taught it the ordinal was the address"
+            )
+            .And.Contain(agentId, "the id still follows in parentheses for when a name is genuinely not enough");
     }
 
     [Fact]

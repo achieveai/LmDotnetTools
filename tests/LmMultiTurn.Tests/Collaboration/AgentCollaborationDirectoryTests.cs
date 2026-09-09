@@ -6,13 +6,16 @@ namespace LmMultiTurn.Tests.Collaboration;
 
 /// <summary>
 /// Covers what the directory promises: admission is all-or-nothing, a canonical identifier always wins
-/// over a name, a contested name resolves to nothing rather than to a guess, and an agent that has
-/// left stays visible without staying addressable.
+/// over a name, a contested name is granted to exactly one agent with the rest suffixed, and an agent
+/// that has left stays visible without staying addressable.
 /// </summary>
 /// <remarks>
 /// Names are the hazard these tests are built around. A name is a convenience for a model choosing whom
 /// to talk to, but it is not identity: silently retargeting a contested name would deliver one agent's
-/// reply to a different agent, which is worse than refusing to resolve it at all.
+/// reply to a different agent. Refusing to resolve it is safer than that, but it is not the answer
+/// either — it costs BOTH agents an address they could have had. So the newcomer is renamed rather than
+/// the name being contested, and only names shared by DEAD agents, where there is nothing left to
+/// rename, still resolve to nothing.
 /// </remarks>
 public class AgentCollaborationDirectoryTests
 {

@@ -704,6 +704,14 @@ public class SubAgentManagerTests : IAsyncLifetime
         _manager.TryPeek(queuedId, out var peek).Should().BeTrue();
         JsonDocument.Parse(peek).RootElement.GetProperty("status").GetString().Should().Be("queued");
         _manager.KnownAgentIds().Should().Contain(queuedId);
+
+        // A model that has just read this spawn's receipt and immediately mistypes a target gets a
+        // correction built from this roster. Omitting the queued half would deny the very name the
+        // receipt handed out one call earlier.
+        _manager
+            .KnownAgents()
+            .Should()
+            .Contain(a => a.AgentId == queuedId && a.Name == "queued-worker", "a queued agent is still addressable");
         var observed = _manager.CheckAgents([queuedId, "queued-worker"]);
         observed.Entries.Should().OnlyContain(x => x.Status == "queued" && x.AgentId == queuedId);
         _manager.ListAgents().Should().Contain(x => x.AgentId == queuedId && x.Status == SubAgentStatus.Queued);

@@ -2452,6 +2452,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// common cause of an "unknown agent" check).</summary>
     public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys, .. _queuedSpawns.Keys];
 
+    /// <summary>The same sub-agents, each paired with the NAME it answers to, for the messages that ask
+    /// the model "who did you mean?". A name-less agent reports its own id as its name, so the caller
+    /// never has to decide what to print for one.</summary>
+    /// <remarks>
+    /// A queued spawn carries its granted name from admission, which is why it belongs here at all: a
+    /// model that has just read a spawn receipt and immediately checks on the agent is checking on one
+    /// that may still be waiting for capacity, and a roster that omitted it would deny the very name the
+    /// receipt just handed out.
+    /// </remarks>
+    public IReadOnlyList<(string AgentId, string Name)> KnownAgents() =>
+        [
+            .. _agents.Select(kv => (kv.Key, kv.Value.Name ?? kv.Key)),
+            .. _queuedSpawns.Select(kv => (kv.Key, kv.Value.EffectiveName)),
+        ];
+
     /// <summary>
     /// Observes a direct child's completion by id OR name, including one still waiting in the defer
     /// queue (which <see cref="ObserveCompletionAsync"/> cannot see, because a queued spawn has no

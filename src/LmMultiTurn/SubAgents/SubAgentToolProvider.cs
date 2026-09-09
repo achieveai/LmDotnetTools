@@ -1362,7 +1362,11 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (!dispatch.Result.Succeeded)
         {
-            var description = DescribeSendFailure(dispatch.Result.FailureCode, target);
+            var description = DescribeSendFailure(
+                dispatch.Result.FailureCode,
+                target,
+                DescribeKnownAgents(LiveCollaborators(collaboration))
+            );
 
             // The ledger's correlation codes stay authoritative (closed, unknown, wrong recipient, not a
             // delegation); what a refused task_update was missing is the set it could have named.
@@ -1457,7 +1461,15 @@ public class SubAgentToolProvider : IFunctionProvider
     /// Turns a refusal code into a sentence that tells the model what to do differently. Never echoes
     /// the message body.
     /// </summary>
-    private static string DescribeSendFailure(string? failureCode, string target)
+    /// <param name="failureCode">The refusal code the ledger or directory returned.</param>
+    /// <param name="target">The name or id the sender addressed, echoed back so it can see what it typed.</param>
+    /// <param name="knownAgents">
+    /// The collaboration-wide roster sentence from <see cref="DescribeKnownAgents"/>. Passed in rather
+    /// than computed here because this method is static and shared, and because the roster a SendMessage
+    /// failure needs is the whole collaboration — not the sender's own children, which is the narrower
+    /// set CheckAgent and WaitForAgents are entitled to.
+    /// </param>
+    private static string DescribeSendFailure(string? failureCode, string target, string knownAgents)
     {
         return failureCode switch
         {
@@ -1465,13 +1477,12 @@ public class SubAgentToolProvider : IFunctionProvider
             // resolved is a mistake to correct, a resolved-but-retired agent is a real agent whose work
             // is already over, and an agent lost to a restart is one whose work was never finished and
             // which the model may legitimately want back. Only the third says "spawn it again".
-            AgentDirectoryFailureCodes.NotFound =>
-                $"No agent matches '{target}'. Call GetAgents for current agent_ids.",
+            AgentDirectoryFailureCodes.NotFound => $"No agent matches '{target}'. {knownAgents}",
             AgentMessageFailureCodes.UnknownTarget =>
-                $"'{target}' has finished and can no longer be reached. Call GetAgents to see who is still live.",
+                $"'{target}' has finished and can no longer be reached. {knownAgents}",
             AgentDirectoryFailureCodes.TargetNotLive =>
                 $"'{target}' existed before this session was restarted and is not running now. Spawn it "
-                    + "again with Agent, or call GetAgents for who is live.",
+                    + $"again with Agent, or address one that is live. {knownAgents}",
             AgentDirectoryFailureCodes.AmbiguousName =>
                 $"More than one agent is named '{target}'. Address it by agent_id instead.",
             AgentMessageFailureCodes.InboxFull =>
@@ -1584,6 +1595,12 @@ public class SubAgentToolProvider : IFunctionProvider
                         {
                             ["message_id"] = entry.MessageId,
                             ["to_agent_id"] = entry.ToAgentId,
+                            // Named `to_name` and placed here to match the accepted-send receipt exactly:
+                            // an obligation row and the receipt that created it describe the same message,
+                            // and a model that read one should not have to learn a second spelling to read
+                            // the other. Without it the row carried the ordinal alone — the one vocabulary
+                            // the model does not use for its peers, on the rows it MUST act on.
+                            ["to_name"] = collaboration.Directory.FindById(entry.ToAgentId)?.Name ?? entry.ToAgentId,
                             ["msg_type"] = ToWireName(entry.MessageType),
                             ["state"] = ToWireName(entry.State),
                             ["reason"] = entry.ReasonCode,
@@ -1783,6 +1800,68 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
+    /// Names the agents a mistaken target could have meant, as <c>name (agent-id)</c> pairs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The NAME comes first because it is the handle the caller should use; the id follows in
+    /// parentheses for the case where a name is genuinely not enough. Every earlier version of these
+    /// messages listed ids alone and told the model to "call GetAgents for current agent_ids", which is
+    /// what taught it that the ordinal is the address. Production shows the cost: across 1279
+    /// conversations, models addressed peers as <c>lead</c>, <c>Revobot</c>, <c>parent</c> and
+    /// <c>manager</c> — role words and product names, never a mistyped ordinal — and 61 conversations
+    /// were answered with a sentence that named no agent at all.
+    /// </para>
+    /// <para>
+    /// One helper for every "who did you mean?" message, so four sites cannot drift into four
+    /// vocabularies. Sorted by name (ordinal) so repeated failures read identically instead of
+    /// shuffling, and capped at <see cref="MaxListedAgentIds"/> — a cap that ANNOUNCES itself, because
+    /// a silently truncated list invites the reader to conclude the agent it wanted does not exist.
+    /// </para>
+    /// </remarks>
+    internal static string DescribeKnownAgents(IReadOnlyList<(string AgentId, string Name)> known)
+    {
+        if (known.Count == 0)
+        {
+            return "There are no other agents to address right now.";
+        }
+
+        var sorted = known.OrderBy(a => a.Name, StringComparer.Ordinal).ThenBy(a => a.AgentId, StringComparer.Ordinal);
+
+        // An agent whose name IS its id prints once. "agent-3 (agent-3)" reads like two handles where
+        // there is one, and the whole point of the parenthesised id is that it differs from the name.
+        var listed = sorted
+            .Take(MaxListedAgentIds)
+            .Select(a =>
+                string.Equals(a.Name, a.AgentId, StringComparison.Ordinal) ? a.AgentId : $"{a.Name} ({a.AgentId})"
+            );
+
+        var suffix =
+            known.Count > MaxListedAgentIds ? $" (showing {MaxListedAgentIds} of {known.Count})" : string.Empty;
+
+        return $"Address one of these by name: {string.Join(", ", listed)}{suffix}.";
+    }
+
+    /// <summary>
+    /// Everyone in the collaboration the sender could address right now, itself excluded.
+    /// </summary>
+    /// <remarks>
+    /// Live only, unlike GetAgents, which also shows retained entries. These names go into a sentence
+    /// that answers "then who?" after a refused send, and a retired agent is not an answer to that
+    /// question — offering one would send the model straight into the refusal it just got.
+    /// </remarks>
+    private static IReadOnlyList<(string AgentId, string Name)> LiveCollaborators(AgentCollaborationSetup collaboration)
+    {
+        return
+        [
+            .. collaboration
+                .Directory.Snapshot()
+                .Where(e => e.IsLive && !string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal))
+                .Select(e => (e.AgentId, e.Name)),
+        ];
+    }
+
+    /// <summary>
     /// The rows a <c>GetAgents</c> result carries: every live agent, then as much of the retained tail
     /// as <paramref name="maxTotalAgents"/> leaves room for.
     /// </summary>
@@ -1856,7 +1935,7 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             return ToolHandlerResult.FromError(
                 $"You have no sub-agent matching: {string.Join(", ", unknown)}. "
-                    + "WaitForAgents only covers agents you spawned yourself.",
+                    + $"WaitForAgents only covers agents you spawned yourself. {DescribeKnownAgents(_manager.KnownAgents())}",
                 "unknown_agent"
             );
         }
@@ -2427,30 +2506,25 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Explains an unknown agent id to the model, naming the ids that would have worked.
+    /// Explains an unreachable agent to the model, naming the agents that would have worked.
     /// </summary>
     /// <remarks>
-    /// Shared by CheckAgent and WaitAgent so both mistakes are corrected the same way. The listing is
-    /// sorted (ordinal) so repeated failures read identically instead of shuffling, and capped at
-    /// <see cref="MaxListedAgentIds"/> — a cap that ANNOUNCES itself, because a silently truncated list
-    /// is worse than no list: it invites the model to conclude the id it wanted does not exist.
+    /// Shared by CheckAgent and WaitAgent so both mistakes are corrected the same way, and routed
+    /// through <see cref="DescribeKnownAgents"/> so they are corrected in the same vocabulary as a
+    /// refused SendMessage. The empty case keeps its own sentence: "there is nobody to address" and
+    /// "you have no sub-agents at all, and a synchronous spawn never needed this call" are different
+    /// facts, and only the second explains why the model is here.
     /// </remarks>
     private string DescribeUnknownAgent(string agentId, string toolName)
     {
-        var known = _manager.KnownAgentIds();
+        var known = _manager.KnownAgents();
         if (known.Count == 0)
         {
-            return $"No sub-agent with id '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
+            return $"No sub-agent '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
                 + $"call returns its result inline ({toolName} is unnecessary), and any background agents have completed.";
         }
 
-        var sorted = known.OrderBy(id => id, StringComparer.Ordinal).ToArray();
-        var listed = sorted.Take(MaxListedAgentIds);
-        var suffix =
-            sorted.Length > MaxListedAgentIds ? $" (showing {MaxListedAgentIds} of {sorted.Length})" : string.Empty;
-
-        return $"No sub-agent with id '{agentId}'. Use one of the ids the Agent tool returned: "
-            + $"{string.Join(", ", listed)}{suffix}.";
+        return $"No sub-agent '{agentId}'. {DescribeKnownAgents(known)}";
     }
 
     private static string? GetOptionalString(JsonElement root, string propertyName)

@@ -1213,7 +1213,13 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
-        payload.Text.Should().Contain("GetAgents");
+        payload
+            .Text.Should()
+            .Be(
+                "No agent matches 'nobody'. There are no other agents to address right now.",
+                "with nobody to offer, the refusal has to say so — the sentence it replaced sent the "
+                    + "model to GetAgents to read a roster containing only itself"
+            );
     }
 
     [Fact]
@@ -1267,7 +1273,15 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentDirectoryFailureCodes.TargetNotLive);
-        payload.Text.Should().Contain("restarted").And.Contain("Agent").And.Contain("GetAgents");
+        payload
+            .Text.Should()
+            .Contain("restarted")
+            .And.Contain("Spawn it again with Agent", "replacing it is the recovery this refusal alone carries")
+            .And.Contain(
+                "There are no other agents to address right now.",
+                "the alternative it offers instead is the same roster sentence every other refusal ends "
+                    + "with, so a model never has to learn two ways of being told who is reachable"
+            );
     }
 
     [Fact]
@@ -2081,6 +2095,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var goneRow = rows[toGone.Result.MessageId!];
         goneRow.GetProperty("state").GetString().Should().Be("delivery_failed");
         goneRow.GetProperty("to_agent_id").GetString().Should().Be(gone.AgentId);
+        goneRow
+            .GetProperty("to_name")
+            .GetString()
+            .Should()
+            .Be(
+                "gone",
+                "these are the rows the sender must act on, and the accepted-send receipt named the same "
+                    + "target by name — a row that carried the ordinal alone would ask it to act in a "
+                    + "vocabulary it does not use for its peers"
+            );
         goneRow.GetProperty("msg_type").GetString().Should().Be("question");
         goneRow.GetProperty("reason").GetString().Should().Be(AgentCollaborationMessenger.NoEndpointReasonCode);
 
@@ -2778,6 +2802,102 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 "every agent you named is real but none of them is one of your own children",
                 "the status has to be told apart from the refusal a name that matches nothing gets"
             );
+    }
+
+    #endregion
+
+    #region Unknown-target corrections
+
+    [Fact]
+    public async Task SendMessage_ToANameNobodyHas_OffersTheNamesItCouldHaveMeant()
+    {
+        // The refusal a mistyped target gets is the model's main lesson in how peers are addressed.
+        // Production shows what the old one taught: 61 conversations were answered with "call GetAgents
+        // for current agent_ids" — a sentence that names nobody and points at the ordinal.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var (_, reviewer) = RegisterPeer(root, "reviewer");
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "revie",
+                msg_type = "question",
+                content = "ping",
+            }
+        );
+
+        payload.IsError.Should().BeTrue(payload.Text);
+        payload
+            .Text.Should()
+            .Contain("reviewer", "the correction has to offer the handle the model is supposed to use next")
+            .And.Contain(reviewer.AgentId, "the id still follows, for the case where a name is not enough");
+    }
+
+    [Fact]
+    public async Task SendMessage_ToANameNobodyHas_DoesNotOfferAnAgentThatHasAlreadyLeft()
+    {
+        // GetAgents lists retained agents on purpose: a sender holding an open question needs to learn
+        // its target is gone. This sentence answers a different question — "then who?" — and a retired
+        // agent is not an answer to it. Offering one walks the model straight back into a refusal.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "reviewer");
+        var (_, archivist) = RegisterPeer(root, "archivist");
+        root.Directory.TryMarkRetained(archivist.AgentId).Should().BeTrue();
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "nobody-here",
+                msg_type = "question",
+                content = "ping",
+            }
+        );
+
+        payload.IsError.Should().BeTrue(payload.Text);
+        payload.Text.Should().Contain("reviewer");
+        payload
+            .Text.Should()
+            .NotContain(
+                "archivist",
+                "an agent that has finished cannot be the answer to 'who should I address instead?'"
+            );
+    }
+
+    [Fact]
+    public async Task WaitForAgents_UnknownTarget_OffersYourOwnChildrenAndNotEveryPeer()
+    {
+        // The two rosters are deliberately different and this is the case that tells them apart.
+        // WaitForAgents covers only agents the caller spawned, so naming a peer it may message but can
+        // never wait on would answer the refusal with a target that earns the same refusal again.
+        var root = CreateRegisteredRoot();
+        var (manager, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "reviewer");
+
+        using var spawn = JsonDocument.Parse(
+            await manager.SpawnAsync(
+                "worker",
+                "work",
+                runInBackground: true,
+                role: "worker role",
+                description: "Does a unit of work."
+            )
+        );
+        var childName = spawn.RootElement.GetProperty("name").GetString()!;
+
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = "nobody-here" });
+
+        payload.IsError.Should().BeTrue(payload.Text);
+        payload.ErrorCode.Should().Be("unknown_agent");
+        payload.Text.Should().Contain(childName, "the caller's own children are exactly what it may wait on");
+        payload
+            .Text.Should()
+            .NotContain("reviewer", "a peer it cannot wait on would send it straight back into this refusal");
     }
 
     #endregion
