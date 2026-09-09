@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipRestore
+    [switch]$SkipRestore,
+
+    [string[]]$ChangedPath = @(),
+
+    [string]$ChangedPathFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,7 +12,60 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
+$timingPath = Join-Path $repoRoot ".logs\ci-phase-timings.ndjson"
+$timingDirectory = Split-Path $timingPath -Parent
+$timingRunId = [guid]::NewGuid().ToString("N")
+New-Item -ItemType Directory -Path $timingDirectory -Force | Out-Null
+try {
+    Remove-Item $timingPath -Force -ErrorAction Stop
+}
+catch [System.Management.Automation.ItemNotFoundException] {
+    # A first run has no prior timing artifact to remove.
+}
+catch {
+    Write-Warning "Could not reset CI telemetry; prior rows may remain, and rows written by this run carry runId '$timingRunId': $($_.Exception.Message)"
+}
+
 $solution = "LmDotnetTools.sln"
+if (-not [string]::IsNullOrWhiteSpace($ChangedPathFile)) {
+    try {
+        $ChangedPath = @(Get-Content -Path $ChangedPathFile -ErrorAction Stop | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    catch {
+        Write-Warning "Could not read changed paths for test-impact shadow; full tests remain authoritative: $($_.Exception.Message)"
+        $ChangedPath = @()
+    }
+}
+
+$shadowSelectionPath = Join-Path $repoRoot ".logs\test-impact-shadow.json"
+try {
+    Remove-Item $shadowSelectionPath -Force -ErrorAction Stop
+}
+catch [System.Management.Automation.ItemNotFoundException] {
+    # A run without prior shadow telemetry has nothing to remove.
+}
+catch {
+    Write-Warning "Could not reset test-impact shadow telemetry; the current full test gate remains authoritative: $($_.Exception.Message)"
+}
+if ($ChangedPath.Count -gt 0) {
+    try {
+        $solutionProjects = @(dotnet sln $solution list | Where-Object { $_ -match '\.csproj$' })
+        if ($LASTEXITCODE -ne 0 -or $solutionProjects.Count -eq 0) {
+            throw "Could not enumerate projects in $solution."
+        }
+        $shadowSelectionJson = & (Join-Path $PSScriptRoot "select-impacted-tests.ps1") -RepositoryRoot $repoRoot -ChangedPath $ChangedPath -SolutionProject $solutionProjects
+        Set-Content -Path $shadowSelectionPath -Value $shadowSelectionJson -Encoding utf8 -ErrorAction Stop
+        $shadowSelection = $shadowSelectionJson | ConvertFrom-Json
+        Write-Host "Test impact shadow: $($shadowSelection.mode) ($($shadowSelection.reason)); selected $(@($shadowSelection.selectedProjects).Count)/$($shadowSelection.graph.testProjectCount) test projects. Full tests remain authoritative."
+    }
+    catch {
+        Write-Warning "Test impact shadow selection failed; full tests remain authoritative: $($_.Exception.Message)"
+    }
+}
+else {
+    Write-Host "Test impact shadow: no changed paths supplied; full tests remain authoritative."
+}
+
 # Test projects that are NOT in $solution and therefore have to be restored, built and run
 # separately. Keep this list as short as the repo allows: a project reachable only from here is
 # covered by a list entry rather than by a declaration, and #234 is what that costs -- a sample
@@ -27,10 +84,17 @@ function Invoke-CiStep {
         [string]$Name,
 
         [Parameter(Mandatory = $true)]
+        [ValidateSet("info", "restore", "format", "build", "test", "pack")]
+        [string]$Phase,
+
+        [Parameter(Mandatory = $true)]
         [scriptblock]$Command
     )
 
     Write-Host "::group::$Name"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $outcome = "passed"
+    $exitCode = 0
     try {
         # $ErrorActionPreference = "Stop" governs PowerShell cmdlet errors ONLY; a native
         # executable that exits non-zero sets $LASTEXITCODE and execution simply continues.
@@ -41,16 +105,41 @@ function Invoke-CiStep {
         # Reset first so a stale code from an earlier step cannot be misattributed to this one.
         $global:LASTEXITCODE = 0
         & $Command
-        if ($LASTEXITCODE -ne 0) {
-            throw "Step '$Name' failed with exit code $LASTEXITCODE."
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            throw "Step '$Name' failed with exit code $exitCode."
         }
     }
+    catch {
+        $outcome = "failed"
+        if ($exitCode -eq 0 -and $LASTEXITCODE -ne 0) {
+            $exitCode = $LASTEXITCODE
+        }
+        throw
+    }
     finally {
+        $stopwatch.Stop()
+        $record = [ordered]@{
+            runId = $timingRunId
+            timestampUtc = [datetime]::UtcNow.ToString("O")
+            phase = $Phase
+            step = $Name
+            outcome = $outcome
+            exitCode = if ($outcome -eq "failed" -and $exitCode -eq 0) { $null } else { $exitCode }
+            elapsedSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+        }
+        try {
+            Add-Content -Path $timingPath -Value ($record | ConvertTo-Json -Compress) -Encoding utf8 -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "CI telemetry write failed; the '$Name' outcome remains authoritative: $($_.Exception.Message)"
+        }
+        Write-Host ("CI timing: {0} [{1}] {2:N3}s ({3})" -f $Name, $Phase, $stopwatch.Elapsed.TotalSeconds, $outcome)
         Write-Host "::endgroup::"
     }
 }
 
-Invoke-CiStep "dotnet info" {
+Invoke-CiStep "dotnet info" "info" {
     dotnet --info
 }
 
@@ -60,17 +149,17 @@ Invoke-CiStep "dotnet info" {
 # formatting verdict. Restoring the manifest is two tools and is idempotent, so it costs a
 # skipped run almost nothing and keeps `./scripts/ci-test.ps1 -SkipRestore` -- the command
 # CONTRIBUTING.md tells contributors to use -- working.
-Invoke-CiStep "restore tools" {
+Invoke-CiStep "restore tools" "restore" {
     dotnet tool restore
 }
 
 if (-not $SkipRestore) {
-    Invoke-CiStep "restore solution" {
+    Invoke-CiStep "restore solution" "restore" {
         dotnet restore $solution
     }
 
     foreach ($project in $extraTestProjects) {
-        Invoke-CiStep "restore $project" {
+        Invoke-CiStep "restore $project" "restore" {
             dotnet restore $project
         }
     }
@@ -83,11 +172,11 @@ if (-not $SkipRestore) {
 # .config/dotnet-tools.json and restored unconditionally above, so the hook, the editor and this
 # gate all format identically. Pairs with the centralized TreatWarningsAsErrors flag so the build
 # step below catches any analyzer warning as an error.
-Invoke-CiStep "csharpier format verify" {
+Invoke-CiStep "csharpier format verify" "format" {
     dotnet csharpier check .
 }
 
-Invoke-CiStep "build solution" {
+Invoke-CiStep "build solution" "build" {
     dotnet build $solution --no-restore /p:UseSharedCompilation=false /p:RunBrowserE2ETests=false
 }
 
@@ -101,12 +190,12 @@ Write-Host "Browser E2E tests are excluded from this solution-wide run (compiled
 # single test exceeds the timeout. Without it, an infinite hang would just
 # eat the workflow's outer timeout-minutes budget and report "cancelled"
 # instead of pointing at the offending test.
-Invoke-CiStep "test solution" {
+Invoke-CiStep "test solution" "test" {
     dotnet test $solution --no-build --verbosity minimal --blame-hang --blame-hang-timeout 4m /p:RunBrowserE2ETests=false
 }
 
 foreach ($project in $extraTestProjects) {
-    Invoke-CiStep "test $project" {
+    Invoke-CiStep "test $project" "test" {
         dotnet test $project --no-restore --verbosity minimal /p:UseSharedCompilation=false --blame-hang --blame-hang-timeout 4m
     }
 }
@@ -116,7 +205,7 @@ foreach ($project in $extraTestProjects) {
 # a broken PackageReadmeFile, a NU5xxx error) on every PR without needing a
 # live gateway or Docker — the auth-enforced contract job (sandbox-contract.yml)
 # covers the runtime behavior separately.
-Invoke-CiStep "pack smoke: Sandbox SDK" {
+Invoke-CiStep "pack smoke: Sandbox SDK" "pack" {
     $sandboxProject = "src/Sandbox/AchieveAi.LmDotnetTools.Sandbox.csproj"
     $packOut = Join-Path ([System.IO.Path]::GetTempPath()) "sandbox-pack-smoke"
     if (Test-Path $packOut) { Remove-Item $packOut -Recurse -Force }

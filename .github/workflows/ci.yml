@@ -21,6 +21,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-tooling:
+    name: Test inventory and priority tooling
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Separate processes isolate fixture mocks; this job does not replace the full test gate.
+      - name: Test static inventory
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/Get-TestInventory.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test impact selection
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/select-impacted-tests.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test full-gate telemetry contract
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/ci-test-telemetry.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test priority policy and runner
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/run-priority-tests.Tests.ps1
+          exit $LASTEXITCODE
+
   build-test:
     name: Build and test
     runs-on: windows-latest
@@ -29,6 +63,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -38,9 +74,43 @@ jobs:
             9.0.x
             8.0.x
 
+      - name: Collect changed paths for test-impact shadow
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          New-Item -ItemType Directory -Path .logs -Force | Out-Null
+          $changedPathFile = ".logs/test-impact-changed-paths.txt"
+          $baseSha = $env:BASE_SHA
+          if ([string]::IsNullOrWhiteSpace($baseSha) -or $baseSha -match '^0+$') {
+            New-Item -ItemType File -Path $changedPathFile -Force | Out-Null
+            exit 0
+          }
+
+          try {
+            $paths = @(git diff --name-only $baseSha $env:GITHUB_SHA)
+            if ($LASTEXITCODE -ne 0) {
+              throw "git diff exited $LASTEXITCODE"
+            }
+            Set-Content -Path $changedPathFile -Value $paths -Encoding utf8
+          }
+          catch {
+            Write-Warning "Could not collect changed paths; the full test gate will remain authoritative: $($_.Exception.Message)"
+            New-Item -ItemType File -Path $changedPathFile -Force | Out-Null
+          }
+
       - name: Validate build and tests
         shell: pwsh
-        run: ./scripts/ci-test.ps1
+        run: ./scripts/ci-test.ps1 -ChangedPathFile .logs/test-impact-changed-paths.txt
+
+      - name: Upload test-impact shadow decision
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-impact-shadow
+          path: .logs/test-impact-shadow.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   daemon-tests-linux:
     # The .NET gate above is windows-latest, and until this job existed that was the ONLY place .NET

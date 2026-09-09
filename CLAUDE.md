@@ -39,6 +39,45 @@ dotnet test tests/LmCore.Tests/LmCore.Tests.csproj
 - See `src/LmTestUtils/README-SSE.md` for SSE testing docs
 - **Client UI testing:** See `samples/LmStreaming.Sample/PlaywrightTestingGuide.md` for Playwright scripts to test the chat client (mode switching, multi-turn conversations, thinking/tool call flows, etc.)
 
+### Test priority inner loop
+Every .NET test method family has an explicit P0–P3 priority in `scripts/test-priorities.ndjson`;
+`scripts/TEST-PRIORITIES.md` explains the tiers and the guarantees. Use them to shorten the edit
+loop, not to decide what is worth running:
+
+1. **P0 on every change** — the small critical baseline for the affected components.
+2. **P1 once P0 is green** — the primary supported contracts.
+3. **P2 before committing** — broader regressions and variations.
+4. **Full `scripts/ci-test.ps1` stays authoritative.** The priority runner never replaces it, and
+   CI runs the whole solution unfiltered regardless of any tier passing.
+
+```powershell
+# Preview first; this never loads or runs test code.
+./scripts/run-priority-tests.ps1 -Escalate P0,P1,P2 -ChangedPath src/LmCore/Messages.cs
+
+# Run the tiers in order, stopping at the first failure. Build separately first.
+dotnet build LmDotnetTools.sln
+./scripts/run-priority-tests.ps1 -Escalate P0,P1,P2 -Kind dotnet-project `
+  -ChangedPath src/LmCore/Messages.cs -Execute -ApproveSelectedProjects
+```
+
+Notes that matter:
+- Scope by `-ChangedPath` (or `-Project`). Unscoped tiers select the whole repository.
+- `-Escalate` runs one plan per tier in order and stops at the first failing tier, so a broken
+  baseline is never buried under a longer run. It is not a merged selection.
+- Execution needs `--no-build` binaries, so **build before running** or you test the last commit.
+- `-ApproveSelectedProjects` approves exactly the surfaces the run already selected and prints
+  each one with its outstanding requirements. It is an acknowledgement shortcut, **not** a
+  prerequisite audit — priority is unrelated to whether a test needs credentials, a host, or
+  network. Read the printed list; P1 can contain live or credential-reading cases.
+- A tier passing proves only that each selected **method family** was reported, not that every
+  dynamic data row ran.
+- `-Kind dotnet-project` is needed locally because P1 also selects the 94 client Vitest files and
+  `samples/LmStreaming.Sample/ClientApp/node_modules` is not provisioned. Drop the flag once the
+  client dependencies are installed. The client's own CI gate is unaffected either way.
+
+`.husky/pre-commit` runs this escalation over the staged paths after the formatting check. Set
+`SKIP_PRIORITY_TESTS=1` to bypass it when you are committing work in progress.
+
 ## Important Files
 - `Directory.Build.props` - Central build configuration
 - `FORMATTING.md` - Detailed formatting guidelines
