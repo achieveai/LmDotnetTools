@@ -113,6 +113,22 @@ public class SandboxCommandTests
     }
 
     [Fact]
+    public void ExecutionTimeout_DefaultsToNull()
+    {
+        new SandboxCommand(["ls"]).ExecutionTimeout.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ExecutionTimeout_NonPositive_Throws(int seconds)
+    {
+        var act = () => new SandboxCommand(["ls"]) { ExecutionTimeout = TimeSpan.FromSeconds(seconds) };
+
+        act.Should().Throw<ArgumentOutOfRangeException>().Which.ParamName.Should().Be("ExecutionTimeout");
+    }
+
+    [Fact]
     public void Environment_DefaultsToNull()
     {
         new SandboxCommand(["ls"]).Environment.Should().BeNull();

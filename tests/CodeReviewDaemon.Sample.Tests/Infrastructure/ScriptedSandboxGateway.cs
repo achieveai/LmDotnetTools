@@ -39,6 +39,9 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>When true, the operation terminalizes as <c>timed_out</c> (the SDK surfaces <c>ExecutionTimeout</c>).</summary>
     public bool SimulateExecutionTimeout { get; init; }
 
+    /// <summary>When set, every submit and poll reports the operation still <c>running</c>, so only a client-side deadline can end the call.</summary>
+    public bool HangOperations { get; init; }
+
     // ── Transfer flow configuration ─────────────────────────────────────────────────────────────
     /// <summary>Bytes a file read serves, or (for a listing) the NUL-delimited entry names.</summary>
     public byte[]? ReadBytes { get; init; }
@@ -133,6 +136,14 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
+
+        if (HangOperations)
+        {
+            return Json(
+                HttpStatusCode.OK,
+                JsonSerializer.Serialize(new { operation_id = operationId, status = "running" })
+            );
+        }
 
         if (SimulateExecutionTimeout)
         {

@@ -111,17 +111,22 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         // alias distinct re-invocations of the same command (e.g. an intentional later `git fetch`) onto a
         // stale idempotent replay and return the earlier result instead of running — a meaningful id must be
         // a caller-minted per-logical-execution token the daemon does not currently produce.
+        // The command's own deadline, else the configured one. It is forwarded to the SDK so the gateway's
+        // timeout_secs and the SDK's poll deadline for THIS operation match the client-side cut-off below,
+        // instead of the client-wide ExecutionTimeout the session was built with.
+        var timeout = command.Timeout ?? _limits.CommandTimeout;
         var sdkCommand = new SdkSandboxCommand(command.Argv, ToWorkspaceRelativeDirectory(command.WorkingDirectory))
         {
             Environment = command.Environment,
+            ExecutionTimeout = command.Timeout,
         };
 
         // Bound every command with a per-command timeout (PR #121 H4): a command that runs longer than the
-        // configured limit is cancelled client-side so untrusted PR code cannot hang the poller. This
-        // complements the gateway-side ExecutionTimeout (configured below) — either surfaces as the SAME
-        // TimeoutException the old orchestrator threw.
+        // limit is cancelled client-side so untrusted PR code cannot hang the poller. This complements the
+        // gateway-side ExecutionTimeout (configured below, overridden per operation above) — either
+        // surfaces as the SAME TimeoutException the old orchestrator threw.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_limits.CommandTimeout);
+        timeoutCts.CancelAfter(timeout);
 
         SdkSandboxCommandResult sdkResult;
         try
@@ -131,11 +136,11 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         catch (OperationCanceledException)
             when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw CommandTimedOut();
+            throw CommandTimedOut(timeout);
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.ExecutionTimeout)
         {
-            throw CommandTimedOut();
+            throw CommandTimedOut(timeout);
         }
 
         // Cap BOTH streams before they are materialized into the result, so a command that emits megabytes
@@ -255,9 +260,9 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
     /// <see cref="SandboxCredential"/>, so <see cref="SandboxCredential.AppKey"/> is always empty (keyless)
     /// or valid — it is passed straight through as <c>clientSecret</c>, yielding the IDENTICAL
     /// X-Sbx-App-Id/X-Sbx-App-Key stamping the old <c>BuildTransportHeaders</c> produced.
-    /// <c>ExecutionTimeout</c> is the daemon's per-command timeout (mapped to the operation's
-    /// <c>timeout_secs</c>); <c>TransportTimeout</c> adds a grace so a single call is never aborted
-    /// before that deadline. Plain HTTP is allowed because the daemon's gateway is a local/dev
+    /// <c>ExecutionTimeout</c> is the daemon's default per-command timeout (mapped to the operation's
+    /// <c>timeout_secs</c> unless the command names its own); <c>TransportTimeout</c> adds a grace so a
+    /// single call is never aborted before that deadline. Plain HTTP is allowed because the daemon's gateway is a local/dev
     /// endpoint, exactly as the old transport assumed.
     /// </summary>
     private SandboxClient BuildClient()
@@ -292,13 +297,10 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         return client;
     }
 
-    private TimeoutException CommandTimedOut()
+    private TimeoutException CommandTimedOut(TimeSpan timeout)
     {
-        _logger.LogWarning(
-            "Sandbox command exceeded the {Timeout} per-command timeout and was cancelled.",
-            _limits.CommandTimeout
-        );
-        return new TimeoutException($"Sandbox command exceeded the configured {_limits.CommandTimeout} timeout.");
+        _logger.LogWarning("Sandbox command exceeded the {Timeout} per-command timeout and was cancelled.", timeout);
+        return new TimeoutException($"Sandbox command exceeded the configured {timeout} timeout.");
     }
 
     /// <summary>Maps an absolute daemon working directory to the SDK's workspace-relative form (<c>null</c> ⇒ workspace root).</summary>

@@ -103,6 +103,9 @@ public sealed partial class SandboxClient
 
         var operationId = CommandOperation.ResolveOperationId(command.OperationId);
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
+        // One deadline governs both the gateway's timeout_secs and the SDK's own poll: the command's, when
+        // it names one, else the client-wide option.
+        var executionTimeout = command.ExecutionTimeout ?? _options.ExecutionTimeout;
 
         var requestDto = new CreateOperationRequestDto(
             operationId,
@@ -110,14 +113,14 @@ public sealed partial class SandboxClient
             command.Arguments.Count > 1 ? command.Arguments.Skip(1).ToList() : null,
             command.Environment is { Count: > 0 } ? command.Environment : null,
             new OperationCwdDto(mountId, command.NormalizedWorkingDirectory),
-            GatewayExecutionTimeoutSeconds(),
+            GatewayExecutionTimeoutSeconds(executionTimeout),
             null
         );
 
         var status = await SubmitOperationAsync(sessionId, operationId, requestDto, ct).ConfigureAwait(false);
         if (IsRunning(status.Status))
         {
-            status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
+            status = await PollOperationAsync(sessionId, operationId, executionTimeout, ct).ConfigureAwait(false);
         }
 
         var result = await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
@@ -274,8 +277,10 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>The gateway execution timeout, in whole seconds (at least 1), sent as the operation's <c>timeout_secs</c>.</summary>
-    private long GatewayExecutionTimeoutSeconds() =>
-        Math.Max(1, (long)Math.Ceiling(_options.ExecutionTimeout.TotalSeconds));
+    private long GatewayExecutionTimeoutSeconds() => GatewayExecutionTimeoutSeconds(_options.ExecutionTimeout);
+
+    private static long GatewayExecutionTimeoutSeconds(TimeSpan executionTimeout) =>
+        Math.Max(1, (long)Math.Ceiling(executionTimeout.TotalSeconds));
 
     /// <summary>Submits the operation and returns its initial status snapshot (a fresh <c>202</c> or an idempotent-replay <c>200</c>).</summary>
     private async Task<OperationStatusDto> SubmitOperationAsync(
@@ -317,16 +322,18 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Bounded poll for a terminal operation status using deadline-based exponential backoff. The
-    /// deadline is the configured <see cref="SandboxClientOptions.ExecutionTimeout"/> plus a short
-    /// grace, and honours caller cancellation; it deliberately does not busy-poll a fixed tiny window.
+    /// deadline is the operation's execution timeout (the command's own, else the configured
+    /// <see cref="SandboxClientOptions.ExecutionTimeout"/>) plus a short grace, and honours caller
+    /// cancellation; it deliberately does not busy-poll a fixed tiny window.
     /// </summary>
     private async Task<OperationStatusDto> PollOperationAsync(
         string sessionId,
         string operationId,
+        TimeSpan executionTimeout,
         CancellationToken ct
     )
     {
-        var deadline = DateTimeOffset.UtcNow + _options.ExecutionTimeout + S_commandPollGrace;
+        var deadline = DateTimeOffset.UtcNow + executionTimeout + S_commandPollGrace;
         var delay = S_commandPollInitialDelay;
         while (true)
         {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -105,6 +106,62 @@ public sealed class SandboxSessionAdapterTests
 
         using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
         body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_sends_a_per_command_timeout_as_that_operations_gateway_execution_timeout()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) }
+        );
+
+        _ = await adapter.RunAsync(
+            new SandboxCommand(["python3", "setup.py"], Timeout: TimeSpan.FromMinutes(11)),
+            CancellationToken.None
+        );
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(660);
+    }
+
+    [Fact]
+    public async Task RunAsync_without_a_timeout_sends_the_configured_command_timeout()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(7) }
+        );
+
+        _ = await adapter.RunAsync(new SandboxCommand(["git", "status"]), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(420);
+    }
+
+    [Fact]
+    public async Task RunAsync_cancels_client_side_at_the_per_command_timeout_not_the_configured_one()
+    {
+        // The gateway never terminalizes the operation, so only a client-side deadline ends the call. The
+        // configured limit is minutes; the command's own is 100 ms. The SDK's poll deadline (per-command
+        // value + 1 s grace) is the fallback: a call that took that long used the wrong deadline.
+        var gateway = new ScriptedSandboxGateway { HangOperations = true };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) }
+        );
+        var clock = Stopwatch.StartNew();
+
+        var act = () =>
+            adapter.RunAsync(
+                new SandboxCommand(["sleep", "600"], Timeout: TimeSpan.FromMilliseconds(100)),
+                CancellationToken.None
+            );
+
+        (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("00:00:00.1000000");
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(700));
     }
 
     [Fact]

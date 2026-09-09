@@ -73,6 +73,34 @@ public sealed record SandboxCommand
     private readonly IReadOnlyDictionary<string, string>? _environment;
 
     /// <summary>
+    /// Optional execution timeout for THIS operation. <c>null</c> (the default) uses the client-wide
+    /// <see cref="SandboxClientOptions.ExecutionTimeout"/>. When set it is what the SDK sends as the
+    /// operation's <c>timeout_secs</c> (rounded up to whole seconds, at least 1) and what bounds the
+    /// SDK's own poll for a terminal status, so one long-running command can be allowed more than the
+    /// client's default without raising the ceiling for every other command on the session. Must be
+    /// positive.
+    /// </summary>
+    public TimeSpan? ExecutionTimeout
+    {
+        get => _executionTimeout;
+        init
+        {
+            if (value is { } timeout && timeout <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(ExecutionTimeout),
+                    timeout,
+                    "A per-command execution timeout must be positive."
+                );
+            }
+
+            _executionTimeout = value;
+        }
+    }
+
+    private readonly TimeSpan? _executionTimeout;
+
+    /// <summary>
     /// The <see cref="WorkingDirectory"/> normalized to a clean, forward-slash, workspace-relative
     /// path (empty string = workspace root). Internal: production code uses this normalized form as
     /// the operation's <c>cwd</c> path, while the public <see cref="WorkingDirectory"/> preserves what
