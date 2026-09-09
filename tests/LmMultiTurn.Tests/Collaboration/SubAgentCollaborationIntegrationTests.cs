@@ -424,6 +424,31 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Spawn_ThatFailsAfterAdmission_LeavesNoDirectoryEntry_SoARetryGetsTheSameName()
+    {
+        // Mutation that must go red: the failed-spawn path calling RetireAgent instead of WithdrawAgent.
+        // Retirement keeps the entry and its name — right for an agent that ran, because a later sender
+        // learns it FINISHED. A spawn that threw before its first turn was never announced to anyone, so
+        // keeping "doomed" bound meant the caller's retry came back as "doomed-2" for no reason.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, FailingTemplate());
+
+        var spawn = async () => await InvokeAsync(provider, "Agent", NewSpawn("doomed"));
+        _ = await spawn.Should().ThrowAsync<InvalidOperationException>();
+
+        root.Directory.Resolve("doomed").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+        root.Directory.Snapshot().Should().OnlyContain(e => e.AgentId == root.AgentId, "nothing was left behind");
+
+        var (_, healthy) = CreateManager(root);
+        var retry = await InvokeAsync(healthy, "Agent", NewSpawn("doomed"));
+
+        retry.IsError.Should().BeFalse(retry.Text);
+        using var doc = JsonDocument.Parse(retry.Text);
+        doc.RootElement.GetProperty("name").GetString().Should().Be("doomed");
+        root.Directory.Resolve("doomed").Entry!.IsLive.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Spawn_CancelledWhileQueuedBehindASaturatedLocalGate_ReclaimsRootCapacityAndRetiresTheDirectoryEntry()
     {
         // Admission (a root-wide capacity lease and a "queued" directory row) happens inside
@@ -1280,6 +1305,93 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .GetString()
             .Should()
             .Be("model-root");
+    }
+
+    [Fact]
+    public async Task GetAgents_WithDetailed_JoinsUsageToAnAgentThroughTheExecutionItDeclares()
+    {
+        // A workflow controller's directory id is wfctl-{workflow}; its spend is filed under the controller
+        // thread. Neither derives the other, so the join has to be declared at registration — without it
+        // the detailed roster showed a controller that had spent nothing while the ledger held its rows.
+        // Mutation that must go red: UsageByAgentIndex.TryGet ignoring entry.ExecutionId.
+        var root = CreateRegisteredRoot();
+        var ledger = new UsageLedger("conv-1");
+        var (_, provider) = CreateManager(root, usageSink: ledger);
+
+        var controller = root.Context.CreateChild(
+            "wfctl-wf-1",
+            AgentKind.WorkflowController,
+            "controller",
+            "runs wf-1"
+        );
+        root.Directory.TryRegister(
+                controller,
+                "workflow-wf-1",
+                AgentCollaborationStatuses.Running,
+                agentType: "workflow-controller",
+                executionId: "ctl-thread-1"
+            )
+            .Succeeded.Should()
+            .BeTrue();
+
+        ledger.RecordUsage(
+            new UsageRecord
+            {
+                LogicalCallId = "ctl-1",
+                ProviderAttemptId = "ctl-1",
+                RootConversationId = "conv-1",
+                ParentExecutionId = "ctl-thread-1",
+                ExecutionKind = UsageExecutionKind.WorkflowController,
+                RequestedModel = "model-ctl",
+                InputTokens = 30,
+                OutputTokens = 3,
+            }
+        );
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        var row = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "workflow-wf-1");
+
+        row.GetProperty("agent_id").GetString().Should().Be("wfctl-wf-1");
+        row.GetProperty("usage").GetProperty("total_tokens").GetInt64().Should().Be(33);
+        row.GetProperty("usage")
+            .GetProperty("per_model")[0]
+            .GetProperty("model_id")
+            .GetString()
+            .Should()
+            .Be("model-ctl");
+    }
+
+    [Fact]
+    public async Task GetAgents_KeepsTheDepthAliasInDetailed_AndOutOfNormal()
+    {
+        // The pre-ADR-0019 listing published structural depth as "depth". A reader written against it
+        // still finds the key in the detailed shape; the compact shape never carried it and still does not.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        _ = await SpawnAndResolveIdAsync(provider, "peer");
+
+        var detailed = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+        var normal = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var detailedDoc = JsonDocument.Parse(detailed.Text);
+        var detailedRow = detailedDoc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "peer");
+        detailedRow.GetProperty("depth").GetInt32().Should().Be(1);
+        detailedRow.GetProperty("depth").GetInt32().Should().Be(detailedRow.GetProperty("structural_depth").GetInt32());
+
+        using var normalDoc = JsonDocument.Parse(normal.Text);
+        foreach (var row in normalDoc.RootElement.GetProperty("agents").EnumerateArray())
+        {
+            row.TryGetProperty("depth", out _).Should().BeFalse("the compact shape carries no depth");
+        }
     }
 
     [Fact]

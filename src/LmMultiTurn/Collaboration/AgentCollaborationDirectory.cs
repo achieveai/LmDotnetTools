@@ -290,6 +290,7 @@ public sealed class AgentCollaborationDirectory
     /// <param name="writeEndpoint">The capability that delivers to this agent.</param>
     /// <param name="readEndpoint">The capability that reads this agent's status and transcript.</param>
     /// <param name="agentType">Template the agent was spawned from, when it came from one.</param>
+    /// <param name="executionId">The execution the usage ledger files this agent under, when its id does not derive it; see <see cref="AgentDirectoryEntry.ExecutionId"/>.</param>
     /// <exception cref="ArgumentNullException"><paramref name="context"/> is null.</exception>
     public AgentRegistrationResult TryRegister(
         AgentCollaborationContext context,
@@ -297,7 +298,8 @@ public sealed class AgentCollaborationDirectory
         string status,
         IAgentWriteEndpoint? writeEndpoint = null,
         IAgentReadEndpoint? readEndpoint = null,
-        string? agentType = null
+        string? agentType = null,
+        string? executionId = null
     )
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -325,6 +327,7 @@ public sealed class AgentCollaborationDirectory
             Role = context.Role ?? context.Kind.ToString(),
             Description = context.Description ?? context.Kind.ToString(),
             AgentType = agentType,
+            ExecutionId = string.IsNullOrWhiteSpace(executionId) ? null : executionId,
             StructuralDepth = context.StructuralDepth,
             DelegationDepth = context.DelegationDepth,
             Status = status,
@@ -391,6 +394,53 @@ public sealed class AgentCollaborationDirectory
     public bool TryMarkRetained(string agentId)
     {
         return TryMutate(agentId, entry => entry with { IsLive = false });
+    }
+
+    /// <summary>
+    /// Removes an agent that was registered but never ran, releasing its id and every name bound to it, as
+    /// though the registration had not happened.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The counterpart of <see cref="TryMarkRetained"/>, for the other way an agent stops: retirement keeps
+    /// the entry so a later sender learns its target FINISHED, and keeps the name taken so nobody is
+    /// silently redirected to a newcomer. Both are the right answer for an agent that existed. An agent
+    /// whose construction threw never did — nobody was told its name, nothing was addressed to it — and
+    /// keeping its reservation only meant the next spawn asking for that name was suffixed for no reason.
+    /// </para>
+    /// <para>
+    /// Returns false when the id is unknown or the agent is no longer live, in which case nothing changes:
+    /// an agent that ran and retired is not something this method may undo.
+    /// </para>
+    /// </remarks>
+    public bool TryWithdraw(string agentId)
+    {
+        if (string.IsNullOrWhiteSpace(agentId) || !_byAgentId.TryGetValue(agentId, out var registration))
+        {
+            return false;
+        }
+
+        if (
+            !registration.Entry.IsLive
+            || !_byAgentId.TryRemove(new KeyValuePair<string, Registration>(agentId, registration))
+        )
+        {
+            return false;
+        }
+
+        // Every binding that named this agent, not just the granted one: a root also carries the primary
+        // alias, and a concurrent registration may have left a stray candidate. Unbinding is keyed on the
+        // agent id so a name that meanwhile came to mean another agent is left alone.
+        foreach (var (name, binding) in _byName)
+        {
+            if (!binding.IsAmbiguous && string.Equals(binding.AgentId, agentId, StringComparison.Ordinal))
+            {
+                _ = _byName.TryRemove(new KeyValuePair<string, NameBinding>(name, binding));
+            }
+        }
+
+        RaiseDirectoryChanged();
+        return true;
     }
 
     /// <summary>
@@ -693,7 +743,17 @@ public sealed class AgentCollaborationDirectory
     private string GrantAndBindName(string name, string agentId)
     {
         var binding = new NameBinding(agentId, IsAmbiguous: false);
-        if (_byName.TryAdd(name, binding))
+
+        // A name shaped like a canonical id is treated as already taken — by the agent that id will one
+        // day denote. Resolution consults ids before names, so a model that named agent-1 "agent-2" would
+        // be answered correctly only until agent-2 was minted, at which point every message to "agent-2"
+        // silently went to the newcomer. Suffixing keeps the request readable ("agent-2-1") and keeps the
+        // grant pointing at its recipient for as long as it is retained; an agent asking for its OWN id is
+        // asking for a name it already has.
+        var shapedLikeAnId =
+            SubAgentThreadIds.IsOrdinalAgentId(name) && !string.Equals(name, agentId, StringComparison.Ordinal);
+
+        if (!shapedLikeAnId && _byName.TryAdd(name, binding))
         {
             return name;
         }

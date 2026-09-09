@@ -72,6 +72,19 @@ ended rather than being redirected.
 * Retained: the tombstone latch. Two DEAD agents that answered to one name leave a sender no way to
   say which it meant and no live agent to suffix against. Persisted rows from before this record can
   carry such a pair; the directory still refuses to guess there.
+* A name shaped like a canonical id (`agent-N`) counts as already taken, by the agent that id will
+  one day denote, and is suffixed like any other collision (`agent-2` requested by `agent-1` is
+  granted `agent-2-1`). Resolution consults ids before names, so without this rule the name would be
+  honoured only until `agent-2` was minted and would then silently mean the newcomer. An agent asking
+  for its own id is granted it unsuffixed. Both the directory and the legacy map apply the rule.
+* A spawn that fails before its first turn is **withdrawn**, not retired: the directory forgets the id
+  and releases every name bound to it, and the legacy map does the same. Retirement keeps the entry
+  so a later sender learns its target FINISHED, which is right for an agent that existed; an agent
+  whose constructor threw was never announced to anyone, and keeping its reservation only meant the
+  caller's retry came back suffixed. Withdrawal refuses an agent that ran and retired.
+* The granted name is what a workflow controller is told, too. `TryAdmitController` builds the
+  controller's setup from the directory's `Entry.Name`, not the requested `workflow-{id}`, so under a
+  collision the controller's own preamble and receipts carry the address that routes to it.
 
 **The root agent is named from host configuration, defaulting to `MainAgent`**, and every agent is
 told who it is. The preamble — *You are `reviewer` (`agent-3`). Other agents address you as
@@ -89,7 +102,11 @@ they can act on. `CheckAgent` and `WaitAgent` resolve a name like `SendMessage` 
 **Per-agent usage is a view over the one root ledger.** `GetAgents` in detail mode reads each agent's
 row from the existing conversation-wide fold; the row gains a per-model breakdown produced by the
 same fold the conversation uses, and `UsageRecord.EffectiveModel` is now populated when the provider
-reports a model different from the one requested.
+reports a model different from the one requested. The join from directory row to ledger row is by
+agent id for every agent whose thread id encodes it. A workflow controller's directory id
+(`wfctl-{workflow}`) and its controller thread share nothing, so the entry **declares** the execution
+its spend is filed under (`AgentDirectoryEntry.ExecutionId`, persisted as `execution_id`, absent for
+every agent whose id derives it), and the view consults the declared execution first.
 
 * Rejected: giving each agent runtime its own ledger. Six things block it: the dedup key is
   attempt-global and a sub-agent's capture deliberately collides with its parent's relay on that
@@ -103,6 +120,12 @@ reports a model different from the one requested.
 **The task board keeps `AgentId` as the ownership key and adds a display name beside it.** The
 resolver hands back `DisplayName` alongside the canonical identity; the node persists it as an
 additive field and `list-tasks` renders it, falling back to the identifier when no name was offered.
+A board hydrated from a snapshot written before `add-task` resolved still carries the raw name the
+caller typed. Ownership checks read such a row through the resolver: when the stored string is the
+display name the resolver reports for the caller's agent, the row is the caller's, and it is rewritten
+in the canonical shape (identity as assignee, the legacy name kept as display name) on that first
+touch. An ambiguous or unknown legacy name, or a string the resolver does not report as the agent's
+own name, is left alone rather than guessed at.
 `add-task`, the one write path that stored the caller's text verbatim, now resolves like the other
 three. Every sentence the board speaks about an assignee — the assign receipt, the lease refusals,
 the todo digest — uses the display name too; an unknown assignee is refused with the live agents'
@@ -111,7 +134,10 @@ names, supplied by the host resolver, rather than a pointer at an id.
 **The sub-agent completion block opens with the agent's name.** `<sub-agent name="reviewer"
 template="general-purpose" id="agent-1">`: `name` is the address the parent spawned the child under
 (or the readable name derived from the template when it named none), the template moves to its own
-attribute, and the notification label says the same name. `SubAgentResultParser` reads only the id.
+attribute, and the notification label says the same name. `SubAgentResultParser` reads only the id —
+the FIRST `id="…"` it finds — so the name and template values are attribute-escaped (`& " < > CR LF`).
+Names are unvalidated model input; unescaped, a name carrying `" id="agent-9` would re-attribute the
+completion to another agent.
 
 * The reason recorded at the host wiring — "the canonical identifier, not the display name: the board
   compares ownership ordinally, and an identifier is the only thing guaranteed unique" — is **upheld,
@@ -133,7 +159,12 @@ message fabric durable (ADR 0009 decided against it and nothing here revisits it
 * Two policies became one. The legacy and collaboration surfaces now agree on collisions and on what a
   name is, which removes the class of behaviour that depended on a feature flag.
 * The persisted schema is unchanged for identity and additive for the board (`assigneeDisplayName`,
-  absent on older snapshots). No migration.
+  absent on older snapshots) and for the collaboration node (`execution_id`, present only on
+  controller rows). No migration; legacy board rows converge on first touch.
+* `GetAgents` detailed keeps the pre-record `depth` key beside `structural_depth` and
+  `delegation_depth`, for readers written against the old listing. The compact default shape never
+  carried it. The default shape itself is a decision of this record, not an oversight: a model reads
+  the roster to find a name, and the ids, lineage and usage are opt-in through `detail`.
 * The tombstone latch is now the only path that can produce `ambiguous_name`, and it is reachable
   only from replayed pre-record rows. It is kept and tested rather than deleted, because deleting the
   refusal would turn a genuinely undecidable case into a guess.

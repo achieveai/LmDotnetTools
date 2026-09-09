@@ -240,6 +240,74 @@ public class TaskManagerAssigneeResolutionTests
     }
 
     [Fact]
+    public void ALegacyRowHoldingTheRawName_IsStillOwnedByTheAgentItNames_AndConvergesOnFirstTouch()
+    {
+        // A board snapshotted before add-task resolved its assignee carries "reviewer" where every newer
+        // row carries "agent-3". Comparing those strings made the same agent a stranger to its own row
+        // after a restart: its refresh was refused as already claimed, and a second claim left it with
+        // two active tasks, one under each spelling.
+        // Mutation that must go red: IsHeldBy returning the plain ordinal comparison.
+        var legacy = new TaskManager();
+        _ = legacy.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+        _ = legacy.AddTask("Second unit of work");
+        _ = legacy.ClaimTask("1", "reviewer");
+        var snapshot = legacy.GetTodoBoardSnapshot("thread-1");
+        snapshot.Tasks.Should().Contain(t => t.Assignee == "reviewer", "the fixture is the pre-resolution shape");
+
+        var board = TaskManager.FromSnapshot(snapshot);
+        board.AssigneeResolver = _ => LiveNamed("agent-3", "reviewer");
+
+        var refresh = board.ClaimTask("1", "reviewer");
+
+        refresh.IsError.Should().BeFalse(refresh.Text);
+        refresh
+            .Text.Should()
+            .Contain("claim refreshed", "the agent is recognised as the holder, not refused as a stranger");
+        var converged = board.GetTasks().Single(t => t.Id == "1");
+        converged.Assignee.Should().Be("agent-3", "the row is rewritten in the canonical shape");
+        board.ListTasks().Text.Should().Contain("reviewer");
+
+        // The one-active-task rule sees through the legacy spelling too: claiming another task releases
+        // the first instead of leaving the agent holding both.
+        var second = board.ClaimTask("2", "reviewer");
+
+        second.IsError.Should().BeFalse(second.Text);
+        second.Text.Should().Contain("Released task 1");
+        board.GetTasks().Single(t => t.Id == "1").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        board.GetTasks().Single(t => t.Id == "2").Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void ALegacyRowWhoseNameIsNowAmbiguous_IsNotHandedToEitherClaimant()
+    {
+        // Convergence is only safe when the legacy name resolves to exactly one live agent. Two agents
+        // called reviewer means the row's owner is unknowable, and guessing would give one of them a task
+        // it never claimed. The fixture's resolver picks agent-3 AND reports the contest, so the only
+        // thing standing between the caller and the row is the candidate check itself — the board's
+        // convention everywhere else is that more than one candidate means ambiguous, whatever else the
+        // resolver filled in.
+        var legacy = new TaskManager();
+        _ = legacy.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+        _ = legacy.ClaimTask("1", "reviewer");
+        var board = TaskManager.FromSnapshot(legacy.GetTodoBoardSnapshot("thread-1"));
+        board.AssigneeResolver = name =>
+            name == "reviewer"
+                ? new TaskManager.AssigneeResolution(
+                    "agent-3",
+                    "agent-3",
+                    TaskManager.AssigneeLiveness.Live,
+                    Candidates: ["agent-3", "agent-4"],
+                    DisplayName: "reviewer"
+                )
+                : LiveNamed("agent-3", "reviewer");
+
+        var claim = board.ClaimTask("1", "agent-3");
+
+        claim.IsError.Should().BeTrue("a live lease held under an unresolvable name is not the caller's to refresh");
+        board.GetTasks().Single().Assignee.Should().Be("reviewer", "nothing was rewritten on a guess");
+    }
+
+    [Fact]
     public void ClaimTask_RefreshingAnExistingClaimByName_ResolvesBeforeComparing()
     {
         // The refresh branch compared task.Assignee — the RESOLVED identity — against the caller's raw

@@ -479,6 +479,46 @@ public sealed class SubAgentManager : IAsyncDisposable
         _ = admission.Lease.Release();
     }
 
+    /// <summary>
+    /// Hands back an admission whose agent never ran. Retirement would keep the directory entry and its
+    /// name (so a later sender learns the agent FINISHED), which is right for an agent that existed; a
+    /// spawn that threw before its first turn produced nothing anyone was told about, and keeping the
+    /// reservation only suffixed the next spawn that asked for the same name.
+    /// </summary>
+    private void WithdrawAgent(string agentId)
+    {
+        if (!_admissions.TryRemove(agentId, out var admission))
+        {
+            return;
+        }
+
+        if (Collaboration is { } parent && admission.Child is not null)
+        {
+            var abandoned = parent.Bundle.WithdrawAgent(agentId);
+            ObserveTaskFault(parent.Bundle.NotifyAbandonedObligationsAsync(abandoned, agentId));
+        }
+
+        _ = admission.Lease.Release();
+    }
+
+    /// <summary>
+    /// A model-authored value made safe to sit inside a double-quoted attribute of the completion block.
+    /// </summary>
+    /// <remarks>
+    /// Names are unvalidated model input. <c>SubAgentResultParser</c> correlates a completion by the FIRST
+    /// <c>id="…"</c> it finds, so a name containing <c>" id="agent-9</c> would, unescaped, re-attribute the
+    /// completion to another agent. Escaping the five characters that can end an attribute or open a tag
+    /// keeps every value data; the id itself is minted here and needs none.
+    /// </remarks>
+    internal static string AttributeValue(string? value) =>
+        (value ?? string.Empty)
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal)
+            .Replace("\r", "&#13;", StringComparison.Ordinal)
+            .Replace("\n", "&#10;", StringComparison.Ordinal);
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -1002,7 +1042,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // about an agent that was never constructed, and a lease left behind would
                 // shrink the whole hierarchy's capacity permanently.
                 gateGuard.ReleaseOnce(_concurrencyGate);
-                RetireAgent(agentId, AgentCollaborationStatuses.Error);
+                WithdrawAgent(agentId);
 
                 // Admission claimed the name too, for the same reason it took the lease: both are
                 // root-wide reservations made before anything downstream knows this agent exists. A
@@ -1408,7 +1448,18 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </remarks>
     private string GrantLegacyName(string name, string agentId)
     {
-        if (string.IsNullOrWhiteSpace(name) || _namesToIds.TryAdd(name, agentId))
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return name;
+        }
+
+        // Same rule as the directory's GrantAndBindName: a name shaped like a canonical id is taken by
+        // the agent that id will denote, because TryResolveAgentId consults ids before names and would
+        // hand the name to that newcomer the moment it was minted.
+        var shapedLikeAnId =
+            SubAgentThreadIds.IsOrdinalAgentId(name) && !string.Equals(name, agentId, StringComparison.Ordinal);
+
+        if (!shapedLikeAnId && _namesToIds.TryAdd(name, agentId))
         {
             return name;
         }
@@ -1464,7 +1515,9 @@ public sealed class SubAgentManager : IAsyncDisposable
     )
     {
         _ = _agents.TryRemove(agentId, out _);
-        RetireAgent(agentId, "error");
+        // Withdrawn rather than retired: this cleanup runs only from the spawn path, for an agent whose
+        // first turn was never sent, so nothing has been said about it that a retained entry would explain.
+        WithdrawAgent(agentId);
 
         // The guard on the mapped id is what makes the removal safe. A spawn can no longer take a name
         // from a live predecessor — it is granted a suffixed one instead — so a name this spawn owns is
@@ -4923,8 +4976,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             // eventual run is what performs the one true final completion (see the non-awaiting branch
             // below, invoked again for that later RunCompletedMessage).
             var awaitingResultText =
-                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[AwaitingAnswer] Task: {state.Task}\n"
                 + $"Result: (awaiting the human's answer to a pending question)\n"
                 + $"</sub-agent>";
@@ -5006,8 +5059,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (rcm.IsError)
         {
             resultText =
-                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[Error] Task: {state.Task}\n"
                 + $"Error: {rcm.ErrorMessage}\n"
                 + $"</sub-agent>";
@@ -5034,8 +5087,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             // spawned "reviewer" was told "general-purpose finished" and had to reconcile the id itself.
             // SubAgentResultParser reads only the id, so the extra attribute costs no consumer anything.
             resultText =
-                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[Completed] Task: {state.Task}\n"
                 + $"Result: {result}\n"
                 + $"</sub-agent>";

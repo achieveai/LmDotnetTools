@@ -237,6 +237,93 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
+    public void TryRegister_WithANameShapedLikeAnotherAgentsId_GrantsASuffixedNameInstead()
+    {
+        // Mutation that must go red: dropping the IsOrdinalAgentId guard in GrantAndBindName.
+        // Resolve consults ids before names, so agent-1 named "agent-2" was reachable by that name only
+        // until agent-2 was minted — from then on every message to "agent-2" went to the newcomer.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+
+        var first = directory.TryRegister(
+            root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"),
+            "agent-2",
+            "running"
+        );
+
+        first.Succeeded.Should().BeTrue();
+        first.Entry!.Name.Should().Be("agent-2-1", "the requested name is taken by the agent that id will denote");
+
+        _ = directory.TryRegister(root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"), "worker", "running");
+
+        directory.Resolve("agent-2").Entry!.AgentId.Should().Be("agent-2");
+        directory
+            .Resolve("agent-2-1")
+            .Entry!.AgentId.Should()
+            .Be("agent-1", "the granted name keeps pointing at its recipient");
+    }
+
+    [Fact]
+    public void TryRegister_WithTheAgentsOwnIdAsItsName_GrantsItUnsuffixed()
+    {
+        // The one ordinal-shaped name that is not a lie: an agent asking for its own id is asking for a
+        // name it already has, and suffixing it would manufacture a collision with nobody.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+
+        var result = directory.TryRegister(
+            root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"),
+            "agent-1",
+            "running"
+        );
+
+        result.Entry!.Name.Should().Be("agent-1");
+        directory.Resolve("agent-1").Entry!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public void TryWithdraw_ForgetsTheAgentAndFreesItsName_WhereRetirementKeepsBoth()
+    {
+        // Mutation that must go red: TryWithdraw delegating to TryMarkRetained. An agent whose spawn threw
+        // before its first turn was never told its name and never addressed, so keeping its reservation
+        // only suffixed the next spawn that asked for the same name (a retry, typically).
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "queued");
+
+        directory.TryWithdraw("agent-1").Should().BeTrue();
+
+        directory.FindById("agent-1").Should().BeNull("a withdrawn agent leaves no entry");
+        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+
+        var retry = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
+        retry.Entry!.Name.Should().Be("reviewer", "the name the failed spawn held is free again");
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public void TryWithdraw_RefusesAnAgentThatRanAndRetired_AndAnUnknownOne()
+    {
+        // Withdrawal is for an agent that never existed as far as anyone else knows. One that ran and
+        // retired has been seen, named and possibly messaged; forgetting it would turn "FINISHED" into
+        // "never existed" for every later sender.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryMarkRetained("agent-1");
+
+        directory.TryWithdraw("agent-1").Should().BeFalse();
+        directory.TryWithdraw("agent-9").Should().BeFalse();
+
+        directory.FindById("agent-1").Should().NotBeNull();
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
     public void TryRegister_WithANonOrdinalAgentId_SuffixesWithTheIdItself()
     {
         // A root's id is its thread id, not an ordinal. There is no number to borrow, so the id is the

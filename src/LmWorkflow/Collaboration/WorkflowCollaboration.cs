@@ -156,7 +156,10 @@ public static class WorkflowCollaboration
             AgentCollaborationStatuses.Running,
             writeEndpoint: endpoint,
             readEndpoint: endpoint,
-            agentType: ControllerAgentType
+            agentType: ControllerAgentType,
+            // The controller's spend is filed under its own conversation thread, which its wfctl- id does
+            // not encode; without this association the detailed roster shows a controller with no usage.
+            executionId: threadId
         );
 
         if (registration.Entry is not { } entry)
@@ -168,8 +171,10 @@ public static class WorkflowCollaboration
             );
         }
 
+        // The directory's granted name, not the requested one: under a collision the requested name belongs
+        // to the incumbent, and a setup carrying it would tell the controller an address that routes elsewhere.
         return new WorkflowControllerRegistration(
-            caller.ForChild(context, name),
+            caller.ForChild(context, entry.Name),
             CollaborationNodeRecord.FromEntry(entry),
             endpoint,
             lease

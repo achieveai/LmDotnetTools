@@ -1830,7 +1830,7 @@ public class SubAgentToolProvider : IFunctionProvider
         AgentCollaborationSetup collaboration,
         AgentDirectoryEntry e,
         bool detailed,
-        IReadOnlyDictionary<string, ExecutionUsageRow>? usageByAgent
+        UsageByAgentIndex? usageByAgent
     )
     {
         var row = new Dictionary<string, object?>(StringComparer.Ordinal) { ["name"] = e.Name };
@@ -1864,6 +1864,9 @@ public class SubAgentToolProvider : IFunctionProvider
             // and a workflow controller hop advances one without the other.
             row["structural_depth"] = e.StructuralDepth;
             row["delegation_depth"] = e.DelegationDepth;
+            // The pre-ADR-0019 listing published structural depth under this name as well; kept in the
+            // detailed shape so a reader written against that listing still finds it.
+            row["depth"] = e.StructuralDepth;
         }
 
         row["status"] = e.Status;
@@ -1883,8 +1886,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
                 .IsAllowed;
 
-            var usageKey = e.Kind == AgentKind.Root ? RootUsageKey : e.AgentId;
-            if (usageByAgent is not null && usageByAgent.TryGetValue(usageKey, out var usage))
+            if (usageByAgent is not null && usageByAgent.TryGet(e, out var usage))
             {
                 row["usage"] = new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
@@ -1934,7 +1936,7 @@ public class SubAgentToolProvider : IFunctionProvider
     /// is keyed by its own id and matches no directory row, which is the correct outcome: a listing
     /// must never attribute spend to an agent that did not incur it.
     /// </remarks>
-    private static IReadOnlyDictionary<string, ExecutionUsageRow>? UsageByAgent(UsageLedger? ledger)
+    private static UsageByAgentIndex? UsageByAgent(UsageLedger? ledger)
     {
         if (ledger is null)
         {
@@ -1942,15 +1944,40 @@ public class SubAgentToolProvider : IFunctionProvider
         }
 
         var byAgent = new Dictionary<string, ExecutionUsageRow>(StringComparer.Ordinal);
+        var byExecution = new Dictionary<string, ExecutionUsageRow>(StringComparer.Ordinal);
         foreach (var row in ConversationUsageAggregate.FoldByExecution(ledger.SnapshotRecords()))
         {
             var key = string.Equals(row.ExecutionId, ledger.RootConversationId, StringComparison.Ordinal)
                 ? RootUsageKey
                 : AgentExecutionRef.AgentIdFromThreadId(row.ExecutionId);
             _ = byAgent.TryAdd(key, row);
+            _ = byExecution.TryAdd(row.ExecutionId, row);
         }
 
-        return byAgent;
+        return new UsageByAgentIndex(byAgent, byExecution);
+    }
+
+    /// <summary>
+    /// The ledger's per-execution rows, reachable two ways: by the agent id a sub-agent thread encodes, and
+    /// by the raw execution id for an agent whose entry DECLARES one. A workflow controller is the second
+    /// kind — its directory id is <c>wfctl-{workflow}</c> and its spend is filed under the controller thread
+    /// — so without the declared association its row read as an agent that spent nothing.
+    /// </summary>
+    private sealed record UsageByAgentIndex(
+        IReadOnlyDictionary<string, ExecutionUsageRow> ByAgentId,
+        IReadOnlyDictionary<string, ExecutionUsageRow> ByExecutionId
+    )
+    {
+        public bool TryGet(AgentDirectoryEntry entry, out ExecutionUsageRow usage)
+        {
+            if (entry.ExecutionId is { } executionId && ByExecutionId.TryGetValue(executionId, out usage!))
+            {
+                return true;
+            }
+
+            var key = entry.Kind == AgentKind.Root ? RootUsageKey : entry.AgentId;
+            return ByAgentId.TryGetValue(key, out usage!);
+        }
     }
 
     /// <summary>

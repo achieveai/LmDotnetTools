@@ -141,6 +141,7 @@ public class AgentCollaborationContextTests
             Role = "reviewer",
             Description = "reviews diffs",
             AgentType = "code-reviewer",
+            ExecutionId = "ctl-thread-1",
             StructuralDepth = 1,
             DelegationDepth = 0,
             Status = "running",
@@ -153,8 +154,33 @@ public class AgentCollaborationContextTests
         // name rather than an ordinal that would change meaning if a member were ever inserted.
         json.Should().Contain("\"kind\":\"WorkflowController\"");
         json.Should().Contain("\"schema_version\":1");
+        json.Should()
+            .Contain("\"execution_id\":\"ctl-thread-1\"", "a controller's usage join has to survive a restart");
         round.SchemaVersion.Should().Be(CollaborationNodeRecord.CurrentSchemaVersion);
         round.ToEntry().Should().BeEquivalentTo(entry with { IsLive = false });
+    }
+
+    [Fact]
+    public void CollaborationNodeRecord_OmitsTheExecutionId_ForAnAgentWhoseIdDerivesIt()
+    {
+        // The field exists for the one kind of agent whose spend is filed under a thread its id does not
+        // encode. Writing a null for every sub-agent would make each persisted row say "no execution"
+        // about an agent that has one.
+        var entry = new AgentDirectoryEntry
+        {
+            AgentId = "agent-1",
+            CollaborationId = "collab-1",
+            Name = "reviewer",
+            Kind = AgentKind.SubAgent,
+            Role = "reviewer",
+            Description = "reviews diffs",
+            Status = "running",
+        };
+
+        var json = JsonSerializer.Serialize(CollaborationNodeRecord.FromEntry(entry));
+
+        json.Should().NotContain("execution_id");
+        JsonSerializer.Deserialize<CollaborationNodeRecord>(json)!.ToEntry().ExecutionId.Should().BeNull();
     }
 
     [Fact]

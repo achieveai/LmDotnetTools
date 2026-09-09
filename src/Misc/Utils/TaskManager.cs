@@ -838,7 +838,7 @@ Examples:
                 task.Status == TaskStatus.InProgress
                 && task.Assignee is not null
                 && ResolveAssignee(trimmedAgent, out var holder, out var holderDisplayName) is null
-                && string.Equals(task.Assignee, holder, StringComparison.Ordinal)
+                && IsHeldBy(task, holder)
             )
             {
                 if (RefuseIfBlocked(task) is { } refreshBlockedError)
@@ -937,11 +937,7 @@ Examples:
             // lease has actually gone stale — otherwise assign-task would be a silent way to
             // steal a live claim, or to hand the new assignee a task they can complete without
             // ever claiming it (Requirement 8.8). See F-002.
-            if (
-                task.Status == TaskStatus.InProgress
-                && task.Assignee != null
-                && !string.Equals(task.Assignee, trimmedAssignee, StringComparison.Ordinal)
-            )
+            if (task.Status == TaskStatus.InProgress && task.Assignee != null && !IsHeldBy(task, trimmedAssignee))
             {
                 var now = _timeProvider.GetUtcNow();
                 if (!IsLeaseStale(task, now, out var elapsed))
@@ -1269,11 +1265,7 @@ Examples:
             return resolutionError;
         }
 
-        if (
-            task.Status == TaskStatus.InProgress
-            && task.Assignee != null
-            && !string.Equals(task.Assignee, agent, StringComparison.Ordinal)
-        )
+        if (task.Status == TaskStatus.InProgress && task.Assignee != null && !IsHeldBy(task, agent))
         {
             if (!IsLeaseStale(task, now, out var elapsed))
             {
@@ -1295,7 +1287,7 @@ Examples:
             previous.Status = TaskStatus.NotStarted;
             previous.ClaimedAt = null;
             note +=
-                $" Released task {previous.DisplayId} back to 'not started' ({agent} can only have one active task).";
+                $" Released task {previous.DisplayId} back to 'not started' ({agentDisplayName ?? agent} can only have one active task).";
         }
 
         task.Status = TaskStatus.InProgress;
@@ -1399,11 +1391,62 @@ Examples:
     private PrivateTaskItem? FindOtherInProgressTaskFor(string agent, PrivateTaskItem excluding)
     {
         return GetAllTasksFlat(_state.RootTasks)
-            .FirstOrDefault(t =>
-                t != excluding
-                && t.Status == TaskStatus.InProgress
-                && string.Equals(t.Assignee, agent, StringComparison.Ordinal)
-            );
+            .FirstOrDefault(t => t != excluding && t.Status == TaskStatus.InProgress && IsHeldBy(t, agent));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="task"/> is owned by the agent whose canonical identity is
+    /// <paramref name="canonicalAgent"/>, reading a legacy assignee through the resolver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every write path stores the canonical identity now, but a board hydrated from a snapshot written
+    /// before <c>add-task</c> resolved its assignee still carries the raw name the caller typed
+    /// ("reviewer"). Comparing that string to the resolved caller ("agent-3") made the same agent a
+    /// stranger to its own row after a restart: its refresh was refused as already claimed, and a
+    /// second claim left it holding two active tasks, one under each spelling.
+    /// </para>
+    /// <para>
+    /// A match through the name path converges the row: the canonical identity becomes the stored
+    /// assignee and the legacy name survives as the display name, so the next snapshot is written in the
+    /// shape every other row already has. Ambiguous or unknown legacy names, and strings the resolver
+    /// does not report as the agent's own name, are left alone rather than guessed at.
+    /// </para>
+    /// </remarks>
+    private bool IsHeldBy(PrivateTaskItem task, string canonicalAgent)
+    {
+        if (task.Assignee is null)
+        {
+            return false;
+        }
+
+        if (string.Equals(task.Assignee, canonicalAgent, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (AssigneeResolver is not { } resolve)
+        {
+            return false;
+        }
+
+        // The stored string has to be THE NAME the resolver reports for the caller's agent, not merely a
+        // string that happens to resolve to it. A resolver is free to map anything it does not know
+        // somewhere; only the display-name match says "this row was written under that agent's name".
+        var resolution = resolve(task.Assignee);
+        if (
+            resolution.Candidates is { Count: > 1 }
+            || resolution.Liveness == AssigneeLiveness.Unknown
+            || !string.Equals(resolution.CanonicalName ?? resolution.AgentId, canonicalAgent, StringComparison.Ordinal)
+            || !string.Equals(resolution.DisplayName, task.Assignee, StringComparison.Ordinal)
+        )
+        {
+            return false;
+        }
+
+        task.AssigneeDisplayName ??= task.Assignee;
+        task.Assignee = canonicalAgent;
+        return true;
     }
 
     /// <summary>

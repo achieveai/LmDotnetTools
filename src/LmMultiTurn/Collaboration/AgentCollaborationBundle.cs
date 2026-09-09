@@ -332,6 +332,29 @@ public sealed class AgentCollaborationBundle
     }
 
     /// <summary>
+    /// Undoes the registration of an agent that never ran: the directory forgets its id and names, and any
+    /// message already correlated to it is abandoned with the same reason codes a retirement uses.
+    /// </summary>
+    /// <remarks>
+    /// Taken under the delivery gate like <see cref="RetireAgent"/>, so a delivery that resolved the agent a
+    /// moment ago cannot land in an inbox the directory has just dropped. The window is real: a sibling can
+    /// see the queued entry in a listing between admission and the constructor throwing.
+    /// </remarks>
+    public IReadOnlyList<string> WithdrawAgent(string agentId)
+    {
+        lock (_deliveryGate)
+        {
+            _ = Directory.TryWithdraw(agentId);
+
+            return
+            [
+                .. Ledger.AbandonMessagesFor(agentId, TargetLeftReasonCode),
+                .. Ledger.AbandonMessagesFrom(agentId, SenderLeftReasonCode),
+            ];
+        }
+    }
+
+    /// <summary>
     /// Records that an agent has left: it stays visible but unaddressable, and every obligation it was
     /// party to in either direction is closed.
     /// </summary>
