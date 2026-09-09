@@ -80,6 +80,7 @@ together with their slugs.
 * [0016 — Developer learnings are an append-only per-PR ledger with regenerated views](0016-developer-learnings-append-only-ledger.md)
 * [0017 — Infer resolution from absence over exposed PRs, and guard it against cohort drift](0017-resolution-from-absence-over-exposed-prs.md)
 * [0018 — Route improvement feedback to the producer, never to the judge](0018-feedback-to-producer-not-judge.md)
+* [0019 — Agent names are the advertised address; ordinals stay the stored key](0019-agent-names-are-the-advertised-address.md)
 
 Records 0015–0018 are the first ADRs covering `samples/CodeReviewDaemon.Sample`'s own architecture.
 Earlier records name that component only in passing: where it consumes a host or gateway decision
