@@ -328,19 +328,20 @@ public sealed class AgentTranscriptAccessTests
     }
 
     [Fact]
-    public async Task ReadTranscript_ByAnAmbiguousName_RefusesRatherThanPickingOne()
+    public async Task ReadTranscript_WhenTwoAgentsAskedForOneName_ReadsEachByTheNameItWasGranted()
     {
-        // Two agents claiming one name is permanent ambiguity in the directory, never "the most recent
-        // one". A read that guessed would hand a reader a transcript it never asked for, so the name is
-        // refused as an unknown target — while BOTH agents stay readable by their identifiers, which is
-        // what makes this an ambiguity result rather than name resolution simply not working.
+        // Two agents asking for one name is no longer an ambiguity the reader has to live with: the
+        // directory grants the second a suffixed name, so "twin" keeps meaning the agent it always meant
+        // and the newcomer is readable by the name its spawn receipt reported. A read is never a guess —
+        // each name selects exactly one transcript — and both stay readable by identifier as before.
         await using var loop = CreateLoop(CreateRootCollaboration());
         await using var pool = CreatePoolReturning(loop);
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var firstTwinId = await SpawnAsync(loop, "twin");
-        var secondTwinId = await SpawnAsync(loop, "twin");
+        var (secondTwinId, secondTwinName) = await SpawnWithGrantedNameAsync(loop, "twin");
         firstTwinId.Should().NotBe(secondTwinId);
+        secondTwinName.Should().NotBe("twin", "the name was already held by a live agent");
 
         var registry = new WorkflowRunRegistry();
         var store = new InMemoryConversationStore();
@@ -353,20 +354,36 @@ public sealed class AgentTranscriptAccessTests
             [Persisted("m2", new TextMessage { Text = "the second finding", Role = Role.Assistant })]
         );
 
-        AssertDenied(
-            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, "twin"),
-            TranscriptAccessReasons.UnknownTarget
+        var byIncumbentName = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, "twin")
         );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(byIncumbentName.Value)
+            .Select(m => m.Id)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("m1", "the name a second agent asked for still selects the agent that held it first");
+
+        var byGrantedName = Assert.IsType<OkObjectResult>(
+            await CreateController(pool, registry, store).GetAgentTranscript(RootThread, secondTwinName)
+        );
+        Assert
+            .IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(byGrantedName.Value)
+            .Select(m => m.Id)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("m2", "the granted name is a real address, not a label on an unreadable agent");
 
         var toolResult = await InvokeToolAsync(
             pool,
             registry,
             store,
             RootThread,
-            JsonSerializer.Serialize(new { agent_id = "twin" })
+            JsonSerializer.Serialize(new { agent_id = secondTwinName })
         );
-        toolResult.Payload.IsError.Should().BeTrue();
-        toolResult.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.UnknownTarget);
+        toolResult.Payload.IsError.Should().BeFalse(toolResult.Payload.Text);
 
         var first = Assert.IsType<OkObjectResult>(
             await CreateController(pool, registry, store).GetAgentTranscript(RootThread, firstTwinId)
@@ -1048,6 +1065,28 @@ public sealed class AgentTranscriptAccessTests
 
         using var doc = JsonDocument.Parse(json);
         return doc.RootElement.GetProperty("agent_id").GetString()!;
+    }
+
+    /// <summary>
+    /// Spawns like <see cref="SpawnAsync"/> but also returns the name the spawn was GRANTED, which is
+    /// what a test about a contested name has to read back: the requested name is only a request.
+    /// </summary>
+    private static async Task<(string AgentId, string Name)> SpawnWithGrantedNameAsync(
+        MultiTurnAgentLoop loop,
+        string requestedName
+    )
+    {
+        var json = await loop.SubAgentManager!.SpawnAsync(
+            "worker",
+            $"{requestedName}'s task",
+            name: requestedName,
+            runInBackground: true,
+            role: $"{requestedName}'s role",
+            description: $"contact {requestedName} about its role"
+        );
+
+        using var doc = JsonDocument.Parse(json);
+        return (doc.RootElement.GetProperty("agent_id").GetString()!, doc.RootElement.GetProperty("name").GetString()!);
     }
 
     private static ConversationsController CreateController(
