@@ -987,6 +987,38 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Completion_Background_OpensTheBlockWithTheGrantedName_AndKeepsTheTemplate()
+    {
+        // The completion block is the parent's most-read sentence about a child. Its name attribute
+        // used to carry the template, so a parent that spawned "reviewer" was told "general-purpose
+        // finished" and had to reconcile the id itself. The template still travels, under its own name.
+        SetupSubAgentResponse([new TextMessage { Text = "Looked it over.", Role = Role.Assistant }]);
+
+        _manager = CreateManager();
+        _ = await _manager.SpawnAsync("test-agent", "Review it", runInBackground: true, name: "reviewer");
+
+        NotifyMessage? completion = null;
+        await Wait.UntilAsync(
+            () =>
+            {
+                completion = _parentMock
+                    .Invocations.Where(i => i.Method.Name == nameof(IMultiTurnAgent.SendAsync))
+                    .SelectMany(i => (List<IMessage>)i.Arguments[0])
+                    .OfType<NotifyMessage>()
+                    .FirstOrDefault(m => m.NotifyKind == NotifyKinds.SubAgentCompletion);
+                return completion is not null;
+            },
+            "the parent received the completion block",
+            TimeSpan.FromSeconds(10)
+        );
+
+        var text = completion!.GetText() ?? string.Empty;
+        text.Should().Contain("<sub-agent name=\"reviewer\" template=\"test-agent\" id=\"");
+        text.Should().Contain("[Completed] Task: Review it");
+        completion.Label.Should().Be("reviewer", "the envelope names the agent the same way the block does");
+    }
+
+    [Fact]
     public async Task Completion_Background_SendsWrappedResultToParent()
     {
         // Arrange: sub-agent returns a text response then the run completes
@@ -1176,7 +1208,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                             p.SendAsync(
                                 It.Is<List<IMessage>>(msgs =>
                                     msgs.Count == 1
-                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")
+                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent-1")
                                 ),
                                 It.IsAny<string?>(),
                                 It.IsAny<string?>(),
@@ -1202,7 +1234,7 @@ public class SubAgentManagerTests : IAsyncLifetime
             p =>
                 p.SendAsync(
                     It.Is<List<IMessage>>(msgs =>
-                        msgs.Count == 1 && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")
+                        msgs.Count == 1 && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent-1")
                     ),
                     It.IsAny<string?>(),
                     It.IsAny<string?>(),
@@ -1231,7 +1263,7 @@ public class SubAgentManagerTests : IAsyncLifetime
             p =>
                 p.SendAsync(
                     It.Is<List<IMessage>>(msgs =>
-                        msgs.Count == 1 && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")
+                        msgs.Count == 1 && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent-1")
                     ),
                     It.IsAny<string?>(),
                     It.IsAny<string?>(),
@@ -1355,7 +1387,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                             p.SendAsync(
                                 It.Is<List<IMessage>>(msgs =>
                                     msgs.Count == 1
-                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")
+                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "color-agent")
                                 ),
                                 It.IsAny<string?>(),
                                 It.IsAny<string?>(),
@@ -1594,7 +1626,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                             p.SendAsync(
                                 It.Is<List<IMessage>>(msgs =>
                                     msgs.Count == 1
-                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")
+                                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "color-agent")
                                 ),
                                 It.IsAny<string?>(),
                                 It.IsAny<string?>(),
@@ -2977,7 +3009,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         }
 
         var text = nm.GetText() ?? string.Empty;
-        return text.Contains($"<sub-agent name=\"{templateName}\"")
+        return text.Contains($"template=\"{templateName}\"")
             && text.Contains("</sub-agent>")
             && text.Contains(expectedResultText);
     }
@@ -2994,7 +3026,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         }
 
         var text = nm.GetText() ?? string.Empty;
-        return text.Contains($"<sub-agent name=\"{templateName}\"")
+        return text.Contains($"template=\"{templateName}\"")
             && text.Contains("</sub-agent>")
             && text.Contains("[Error]");
     }
@@ -3017,7 +3049,7 @@ public class SubAgentManagerTests : IAsyncLifetime
 
     /// <summary>
     /// Checks if a message is the #246 descendant-question NotifyMessage for the given descendant
-    /// <paramref name="expectedAgentId"/>/<paramref name="expectedTemplateName"/>: the right
+    /// <paramref name="expectedAgentId"/>/<paramref name="expectedAgentName"/>: the right
     /// <see cref="NotifyKinds.DescendantQuestion"/> kind, <see cref="NotifyMessage.SourceToolCallId"/>
     /// stamped with the descendant's own agent id (not a tool-call id belonging to the question
     /// itself), and the "awaiting answer" wording rather than "[Completed]".
@@ -3025,7 +3057,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     private static bool ContainsDescendantQuestionNotification(
         IMessage message,
         string expectedAgentId,
-        string expectedTemplateName
+        string expectedAgentName
     )
     {
         if (message is not NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } nm)
@@ -3033,8 +3065,10 @@ public class SubAgentManagerTests : IAsyncLifetime
             return false;
         }
 
+        // The label is the agent's name — the granted one, or the readable one derived from the
+        // template when the spawn named none — so the root can address the asker by it.
         return nm.SourceToolCallId == expectedAgentId
-            && nm.Label == expectedTemplateName
+            && nm.Label == expectedAgentName
             && (nm.GetText() ?? string.Empty).Contains("[AwaitingAnswer]");
     }
 

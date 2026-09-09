@@ -104,7 +104,14 @@ reports a model different from the one requested.
 resolver hands back `DisplayName` alongside the canonical identity; the node persists it as an
 additive field and `list-tasks` renders it, falling back to the identifier when no name was offered.
 `add-task`, the one write path that stored the caller's text verbatim, now resolves like the other
-three.
+three. Every sentence the board speaks about an assignee — the assign receipt, the lease refusals,
+the todo digest — uses the display name too; an unknown assignee is refused with the live agents'
+names, supplied by the host resolver, rather than a pointer at an id.
+
+**The sub-agent completion block opens with the agent's name.** `<sub-agent name="reviewer"
+template="general-purpose" id="agent-1">`: `name` is the address the parent spawned the child under
+(or the readable name derived from the template when it named none), the template moves to its own
+attribute, and the notification label says the same name. `SubAgentResultParser` reads only the id.
 
 * The reason recorded at the host wiring — "the canonical identifier, not the display name: the board
   compares ownership ordinally, and an identifier is the only thing guaranteed unique" — is **upheld,

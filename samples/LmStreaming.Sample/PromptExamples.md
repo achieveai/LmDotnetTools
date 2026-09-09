@@ -797,3 +797,32 @@ meter (never `0%`), and `No usage recorded` for usage and cost (never `$0.0000`)
 `test-anthropic`. Expected: three rows (`Main agent` first, then both sub-agent ids, `sub-agent`),
 `Total (all agents)` = 600 tokens / `$0.0042`, and a `?threadId=` reload renders the identical rows
 (the reload reads the endpoint; the live view merged the same values from `context_pressure` frames).
+
+## Agent naming (ADR 0019) headless checks
+
+Both prompts run on `test-anthropic` (Mock) against a fresh conversation, headless: `POST
+/api/conversations {workspaceId:'default', providerId:'test-anthropic', modeId:'default'}`, then
+`POST /api/conversations/{threadId}/messages {text}` and poll `GET .../run-state`. Read the results
+from `GET .../messages`, `.../subagents` and `.../todos`. Child tasks must be plain text.
+
+**Turn 1 — two agents ask for one name; roster in both shapes.** Spawns `reviewer` twice in the
+background, seeds one board task, then lists agents with `detail` omitted, `detailed`, and a typo.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-reviewer","id_message":"Spawn reviewer","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"reviewer","role":"first reviewer","description":"Reviews the first half.","run_in_background":true,"prompt":"Reviewer one - stand by."}}]}]},{"id":"spawn-reviewer-2","id_message":"Spawn a second agent asking for the taken name","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"reviewer","role":"second reviewer","description":"Reviews the second half.","run_in_background":true,"prompt":"Reviewer two - stand by."}}]}]},{"id":"seed-board","id_message":"Seed one task","messages":[{"tool_call":[{"name":"bulk-initialize","args":{"tasks":[{"task":"Naming probe","subTasks":[],"notes":[]}]}}]}]},{"id":"roster","id_message":"List agents normal","messages":[{"tool_call":[{"name":"GetAgents","args":{}}]}]},{"id":"roster-detailed","id_message":"List agents detailed","messages":[{"tool_call":[{"name":"GetAgents","args":{"detail":"detailed"}}]}]},{"id":"roster-typo","id_message":"List agents with a typo","messages":[{"tool_call":[{"name":"GetAgents","args":{"detail":"verbose"}}]}]},{"id":"turn1-done","id_message":"Wrap up","messages":[{"text":"Turn 1 done."}]}]}<|instruction_end|>
+
+Expected: the second spawn receipt grants `reviewer-2` (nobody is bricked, nobody loses a name); the
+normal roster lists `MainAgent`, `reviewer`, `reviewer-2` with name, description, parent_name, status,
+is_you and **no** `agent_id` or `usage`; the detailed roster adds `agent_id` and a `usage` block with
+`per_model`; `detail: "verbose"` is refused with `invalid_args`.
+
+**Turn 2 — everything by name.** Send this as the next message on the same conversation.
+
+<|instruction_start|>{"instruction_chain":[{"id":"assign","id_message":"Assign task 1 to reviewer-2 by name","messages":[{"tool_call":[{"name":"assign-task","args":{"taskId":"1","assignee":"reviewer-2"}}]}]},{"id":"assign-bad","id_message":"Assign to a name nobody has","messages":[{"tool_call":[{"name":"assign-task","args":{"taskId":"1","assignee":"lead"}}]}]},{"id":"ask","id_message":"Ask reviewer by name","messages":[{"tool_call":[{"name":"SendMessage","args":{"target":"reviewer","msg_type":"question","content":"Status?"}}]}]},{"id":"ask-nobody","id_message":"Message a name nobody has","messages":[{"tool_call":[{"name":"SendMessage","args":{"target":"manager","msg_type":"question","content":"anyone?"}}]}]},{"id":"check","id_message":"CheckAgents by name","messages":[{"tool_call":[{"name":"CheckAgents","args":{"agent_ids":"reviewer-2, reviewer"}}]}]},{"id":"wait-bad","id_message":"WaitForAgents on a name nobody has","messages":[{"tool_call":[{"name":"WaitForAgents","args":{"agent_ids":"parent","timeout_seconds":1}}]}]},{"id":"list","id_message":"List tasks","messages":[{"tool_call":[{"name":"list-tasks","args":{}}]}]},{"id":"turn2-done","id_message":"Wrap up","messages":[{"text":"Turn 2 done."}]}]}<|instruction_end|>
+
+Expected: `Assigned task 1 to reviewer-2.`; the unknown assignee is refused naming the live agents
+(`Agents in this conversation: MainAgent, reviewer, reviewer-2.`); the unknown `SendMessage` and
+`WaitForAgents` targets are refused naming the agents they could have meant; `CheckAgents` reports
+both children by name; `list-tasks` shows `[@reviewer-2]`; the todo-digest notification says
+`assigned to reviewer-2`; each child's completion block opens `<sub-agent name="reviewer"
+template="general-purpose"` (and `reviewer-2`). Nothing in the transcript addresses an agent as
+`agent-N` except the `id` attributes and the detailed roster.

@@ -262,6 +262,60 @@ public class TodoDigestServiceTests
     }
 
     [Fact]
+    public void Digest_SpeaksTheResolvedName_AndStillDeliversToTheIdentity()
+    {
+        // The digest line is read by the primary conversation, which addresses agents by name; the
+        // delivery target is the transport's key. Both halves in one test so a fix that renamed the
+        // target to make the text right would be caught here.
+        var harness = new Harness();
+        harness.Manager.AssigneeResolver = _ => new TaskManager.AssigneeResolution(
+            "agent-3",
+            "agent-3",
+            TaskManager.AssigneeLiveness.Live,
+            Candidates: null,
+            DisplayName: "reviewer"
+        );
+        _ = harness.Manager.AddTask("Assign me"); // 1
+        _ = harness.Manager.AddTask("Claim me"); // 2
+        _ = harness.Build(PrimaryOnly);
+
+        _ = harness.Manager.AssignTask("1", "reviewer");
+        _ = harness.Manager.ClaimTask("2", "reviewer");
+        _ = harness.Manager.AddTask("Added owned", assignee: "reviewer"); // 3
+        harness.AdvancePastWindow();
+
+        var detail = harness.DetailFor(null);
+        detail
+            .Should()
+            .Contain("1 assigned to reviewer")
+            .And.Contain("2 claimed by reviewer")
+            .And.Contain("assignee reviewer");
+        detail.Should().NotContain("agent-3");
+    }
+
+    [Fact]
+    public void AssigneeDigest_TargetsTheIdentity_WhileTheTextSpeaksTheName()
+    {
+        var harness = new Harness();
+        harness.Manager.AssigneeResolver = _ => new TaskManager.AssigneeResolution(
+            "agent-3",
+            "agent-3",
+            TaskManager.AssigneeLiveness.Live,
+            Candidates: null,
+            DisplayName: "reviewer"
+        );
+        _ = harness.Manager.AddTask("Mine"); // 1
+        _ = harness.Manager.AssignTask("1", "reviewer");
+        _ = harness.Build();
+
+        _ = harness.Manager.ClaimTask("1", "reviewer");
+        harness.AdvancePastWindow();
+
+        harness.Targets.Should().BeEquivalentTo([null, "agent-3"]);
+        harness.DetailFor("agent-3").Should().Contain("1 claimed by reviewer");
+    }
+
+    [Fact]
     public void Subtree_ChildOverriddenToAnotherAgent_NotifiesBothAssignees()
     {
         // Membership is computed from the assigned task's subtree at diff time, never by assignee

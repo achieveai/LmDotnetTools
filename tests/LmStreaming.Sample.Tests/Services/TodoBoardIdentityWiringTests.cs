@@ -305,6 +305,37 @@ public sealed class TodoBoardIdentityWiringTests
     }
 
     [Fact]
+    public void AnUnknownName_CarriesTheLiveNamesTheDirectoryKnows()
+    {
+        // The board renders these into its refusal. Live agents only, sorted, so the sentence reads
+        // the same way twice and never offers a name that cannot take work.
+        var setup = RootHoldingAgentOne(RootA, "alpha");
+        var gone = SubAgentThreadIds.AgentIdFor(2);
+        var child = setup.Context.CreateChild(gone, AgentKind.SubAgent, "worker", "left already");
+        setup.Directory.TryRegister(child, "zulu", "running").Succeeded.Should().BeTrue();
+        setup.Directory.TryMarkRetained(gone).Should().BeTrue();
+
+        var resolution = TodoBoardIdentityWiring.Resolve(setup.Directory, RootA, "ghost");
+
+        resolution.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unknown);
+        resolution.KnownNames.Should().Equal("alpha", "conversation");
+    }
+
+    [Fact]
+    public void AttachedToABoard_AnUnknownNameIsRefusedNamingTheAgentsItCouldHaveMeant()
+    {
+        var rootA = RootHoldingAgentOne(RootA, "alpha");
+        var board = new TaskManager();
+        _ = board.AddTask("Wire the SSE endpoint");
+        TodoBoardIdentityWiring.Attach(board, rootA, RootA);
+
+        var refusal = board.AssignTask("1", "ghost");
+
+        refusal.ErrorCode.Should().Be("assignee_unknown");
+        refusal.Text.Should().Contain("alpha").And.Contain("conversation");
+    }
+
+    [Fact]
     public void AttachedToABoard_AForeignAgentCannotClaimATask()
     {
         // The end-to-end shape of the guarantee: cross-conversation scoping reaches the tool refusal,

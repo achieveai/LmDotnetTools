@@ -43,6 +43,92 @@ public class TaskManagerAssigneeResolutionTests
     private static TaskManager.AssigneeResolution LiveNamed(string agentId, string displayName) =>
         new(agentId, agentId, TaskManager.AssigneeLiveness.Live, Candidates: null, DisplayName: displayName);
 
+    /// <summary>An unknown name, with the names the host could have meant riding alongside.</summary>
+    private static TaskManager.AssigneeResolution UnknownAmong(params string[] knownNames) =>
+        new(
+            null,
+            null,
+            TaskManager.AssigneeLiveness.Unknown,
+            Candidates: null,
+            DisplayName: null,
+            KnownNames: knownNames
+        );
+
+    [Fact]
+    public void AssignTask_Receipt_SpeaksTheResolvedName_NotTheIdentity()
+    {
+        // The board keys on agent-3 and says reviewer. The receipt is the sentence the assigning model
+        // reads back, so an ordinal here teaches it to address the agent by a number it was never told.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => LiveNamed("agent-3", "reviewer");
+
+        var result = board.AssignTask(taskId, "reviewer");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Assigned task 1 to reviewer.").And.NotContain("agent-3");
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void AssignTask_Receipt_WithNoDisplayName_StillSpeaksTheStoredAssignee()
+    {
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => Live("agent-3");
+
+        board.AssignTask(taskId, "agent-3").Text.Should().Contain("Assigned task 1 to agent-3.");
+    }
+
+    [Fact]
+    public void AlreadyClaimed_Refusals_SpeakTheHoldersName()
+    {
+        // Both lease refusals — claim-task's and assign-task's — name the holder so the refused caller
+        // can go talk to them. "wait for agent-3" is an address nothing else in the conversation uses.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = name =>
+            name == "reviewer" ? LiveNamed("agent-3", "reviewer") : LiveNamed("agent-4", "author");
+        board.ClaimTask(taskId, "reviewer").IsError.Should().BeFalse();
+
+        var claim = board.ClaimTask(taskId, "author");
+        var assign = board.AssignTask(taskId, "author");
+
+        claim.ErrorCode.Should().Be("task_already_claimed");
+        claim.Text.Should().Contain("claimed by reviewer").And.NotContain("agent-3");
+        assign.ErrorCode.Should().Be("task_already_claimed");
+        assign.Text.Should().Contain("claimed by reviewer").And.Contain("wait for reviewer").And.NotContain("agent-3");
+    }
+
+    [Fact]
+    public void UnknownAssignee_Refusal_NamesTheAgentsTheHostKnows()
+    {
+        // The refusal is the one place a model that guessed a name learns the real ones. Listing them
+        // here saves the roster call the old sentence sent it on — and the old sentence sent it after
+        // an *id*, which is the wrong thing to come back with.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => UnknownAmong("MainAgent", "reviewer", "reviewer-2");
+
+        var result = board.AssignTask(taskId, "lead");
+
+        result.ErrorCode.Should().Be("assignee_unknown");
+        result.Text.Should().Contain("'lead' does not name an agent in this conversation");
+        result.Text.Should().Contain("Agents in this conversation: MainAgent, reviewer, reviewer-2.");
+        result.Text.Should().NotContain("numbered").And.NotContain("Agent ids");
+    }
+
+    [Fact]
+    public void UnknownAssignee_Refusal_WithNoNamesToOffer_PointsAtTheRoster()
+    {
+        // A host that resolves without a directory has no names to offer; the fallback still sends the
+        // caller after a name, not an id.
+        var board = BoardWithOneTask(out var taskId);
+        board.AssigneeResolver = _ => Unknown();
+
+        var result = board.AssignTask(taskId, "lead");
+
+        result.ErrorCode.Should().Be("assignee_unknown");
+        result.Text.Should().Contain("does not name an agent in this conversation");
+        result.Text.Should().Contain("agent listing").And.NotContain("Agent ids");
+    }
+
     [Fact]
     public void AddTask_WithAnUnknownAssignee_IsRefused()
     {

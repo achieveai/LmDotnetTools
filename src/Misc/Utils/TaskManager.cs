@@ -82,6 +82,11 @@ public class TaskManager : ITodoBoardSource
     ///     <c>agent-3</c>. Null falls back to the canonical value, which is the pre-existing behaviour
     ///     and what a host with no name to offer keeps getting.
     /// </param>
+    /// <param name="KnownNames">
+    ///     When nothing resolved, the names the host COULD have matched — the live agents of this
+    ///     conversation. The refusal lists them so a caller that guessed a name learns the real ones
+    ///     without a roster call. Null or empty when the host has none to offer.
+    /// </param>
     /// <remarks>
     ///     Deliberately carries no failure-code string: the codes below are this board's contract and
     ///     live with the code that emits them, so the resolver reports facts and <c>TaskManager</c>
@@ -92,7 +97,8 @@ public class TaskManager : ITodoBoardSource
         string? CanonicalName,
         AssigneeLiveness Liveness,
         IReadOnlyList<string>? Candidates = null,
-        string? DisplayName = null
+        string? DisplayName = null,
+        IReadOnlyList<string>? KnownNames = null
     );
 
     /// <summary>
@@ -345,8 +351,8 @@ Examples:
         // The fourth path that writes Assignee, and the one that used to skip resolution: it stored
         // the caller's text verbatim while claim-task, assign-task and update-task all stored the
         // resolved identity, so nothing that compares ownership could see a row created by name as
-        // belonging to the agent it was created for. Resolved before the lock, like the other guards
-        // here, because the resolver is the host's and must not be called holding this board's lock.
+        // belonging to the agent it was created for. Resolved before the lock, like the other argument
+        // guards here; the claim and assign paths resolve under it, so no lock-ordering rule is implied.
         // A blank assignee is left exactly as it was: the argument is optional and an empty string is
         // not a name to ask a resolver about.
         var resolvedAssignee = assignee;
@@ -942,7 +948,7 @@ Examples:
                 {
                     return FunctionResult.Error(
                         TaskAlreadyClaimedCode,
-                        $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale. Use claim-task once it goes stale, or wait for {task.Assignee} to finish."
+                        $"Error: Task {task.DisplayId} is already claimed by {AssigneeShown(task)} ({FormatElapsed(elapsed)} ago); its lease is not yet stale. Use claim-task once it goes stale, or wait for {AssigneeShown(task)} to finish."
                     );
                 }
 
@@ -955,7 +961,7 @@ Examples:
 
             task.Assignee = trimmedAssignee;
             task.AssigneeDisplayName = assigneeDisplayName;
-            return $"Assigned task {task.DisplayId} to {task.Assignee}. "
+            return $"Assigned task {task.DisplayId} to {AssigneeShown(task)}. "
                 + "They should claim it before starting, and break it into sub-items if it is more than one sitting.";
         }
     }
@@ -1273,11 +1279,11 @@ Examples:
             {
                 return FunctionResult.Error(
                     TaskAlreadyClaimedCode,
-                    $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale."
+                    $"Error: Task {task.DisplayId} is already claimed by {AssigneeShown(task)} ({FormatElapsed(elapsed)} ago); its lease is not yet stale."
                 );
             }
 
-            note += $" Took over a stale lease from {task.Assignee} (idle {FormatElapsed(elapsed)}).";
+            note += $" Took over a stale lease from {AssigneeShown(task)} (idle {FormatElapsed(elapsed)}).";
         }
 
         // One InProgress task per assignee: claiming a second releases the first, and the
@@ -1299,6 +1305,13 @@ Examples:
         task.CreatedAt ??= now;
         return null;
     }
+
+    /// <summary>
+    ///     The name a sentence about <paramref name="task" />'s assignee uses: the display name the host
+    ///     resolved, else the stored identity. For prose only — ownership compares
+    ///     <see cref="PrivateTaskItem.Assignee" />, never this.
+    /// </summary>
+    private static string AssigneeShown(PrivateTaskItem task) => task.AssigneeDisplayName ?? task.Assignee!;
 
     /// <summary>
     ///     Turns the assignee text a caller typed into the identity the board stores, or refuses it.
@@ -1351,10 +1364,15 @@ Examples:
 
         if (resolution.Liveness == AssigneeLiveness.Unknown)
         {
+            // Name the agents it could have meant. The refusal is read by a model that just guessed a
+            // name; the names are what it needs next, and sending it after an id — as this sentence
+            // once did — teaches it an address nothing else in the conversation uses.
+            var knownNames = resolution.KnownNames is { Count: > 0 } names
+                ? $" Agents in this conversation: {string.Join(", ", names)}."
+                : " Check the agent listing for the names in this conversation before assigning.";
             return FunctionResult.Error(
                 AssigneeUnknownCode,
-                $"Error: '{probe}' does not name an agent in this conversation. Agent ids are numbered "
-                    + "per conversation, so check the id with the sub-agent listing before assigning."
+                $"Error: '{probe}' does not name an agent in this conversation.{knownNames}"
             );
         }
 

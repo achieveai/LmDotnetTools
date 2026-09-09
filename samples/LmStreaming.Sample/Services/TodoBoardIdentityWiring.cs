@@ -65,7 +65,7 @@ public static class TodoBoardIdentityWiring
             // matcher for a shape SubAgentThreadIds already owns.
             if (!string.Equals(SubAgentThreadIds.For(rootThreadId, scopedAgentId), name, StringComparison.Ordinal))
             {
-                return new TaskManager.AssigneeResolution(null, null, TaskManager.AssigneeLiveness.Unknown);
+                return Unknown(directory);
             }
 
             target = scopedAgentId;
@@ -104,9 +104,34 @@ public static class TodoBoardIdentityWiring
             AgentDirectoryFailureCodes.TargetNotLive when directory.InvalidatedAgentId(target) is { } goneAgentId =>
                 new TaskManager.AssigneeResolution(goneAgentId, goneAgentId, TaskManager.AssigneeLiveness.Unreachable),
 
-            _ => new TaskManager.AssigneeResolution(null, null, TaskManager.AssigneeLiveness.Unknown),
+            _ => Unknown(directory),
         };
     }
+
+    /// <summary>
+    ///     Nothing resolved. The live names ride along so the board's refusal can name the agents the
+    ///     caller could have meant instead of sending it after an id.
+    /// </summary>
+    private static TaskManager.AssigneeResolution Unknown(AgentCollaborationDirectory directory) =>
+        new(
+            null,
+            null,
+            TaskManager.AssigneeLiveness.Unknown,
+            Candidates: null,
+            DisplayName: null,
+            LiveNames(directory)
+        );
+
+    /// <summary>The names of every live agent, sorted so a refusal reads the same way twice.</summary>
+    private static IReadOnlyList<string> LiveNames(AgentCollaborationDirectory directory) =>
+        [
+            .. directory
+                .Snapshot()
+                .Where(entry => entry.IsLive)
+                .Select(entry => entry.Name)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
 
     /// <summary>
     ///     The identifiers of every agent carrying <paramref name="name" />, ordered so the refusal

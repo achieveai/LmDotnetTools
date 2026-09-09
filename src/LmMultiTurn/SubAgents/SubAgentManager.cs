@@ -4815,7 +4815,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         detail: questionText,
                         sourceToolName: "Agent",
                         sourceToolCallId: state.AgentId,
-                        label: state.TemplateName
+                        label: state.Name ?? state.TemplateName
                     ),
                     ct
                 );
@@ -4923,7 +4923,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // eventual run is what performs the one true final completion (see the non-awaiting branch
             // below, invoked again for that later RunCompletedMessage).
             var awaitingResultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
+                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
                 + $"id=\"{state.AgentId}\">\n"
                 + $"[AwaitingAnswer] Task: {state.Task}\n"
                 + $"Result: (awaiting the human's answer to a pending question)\n"
@@ -5006,7 +5006,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (rcm.IsError)
         {
             resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
+                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
                 + $"id=\"{state.AgentId}\">\n"
                 + $"[Error] Task: {state.Task}\n"
                 + $"Error: {rcm.ErrorMessage}\n"
@@ -5029,8 +5029,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             // would trade this bug for a silent deadlock.
             var result = lastTextContent ?? "(no text response)";
 
+            // name is the address the parent spawned this agent under (ADR 0019); the template it came
+            // from rides under its own attribute. Until now name carried the template, so a parent that
+            // spawned "reviewer" was told "general-purpose finished" and had to reconcile the id itself.
+            // SubAgentResultParser reads only the id, so the extra attribute costs no consumer anything.
             resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
+                $"<sub-agent name=\"{state.Name ?? state.TemplateName}\" template=\"{state.TemplateName}\" "
                 + $"id=\"{state.AgentId}\">\n"
                 + $"[Completed] Task: {state.Task}\n"
                 + $"Result: {result}\n"
@@ -5230,7 +5234,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     detail: text,
                     sourceToolName: "Agent",
                     sourceToolCallId: state.AgentId,
-                    label: state.TemplateName
+                    label: state.Name ?? state.TemplateName
                 ),
             ]);
         }

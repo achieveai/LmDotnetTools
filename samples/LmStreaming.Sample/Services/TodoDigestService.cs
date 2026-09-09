@@ -321,8 +321,15 @@ public sealed class TodoDigestService : IAsyncDisposable
     private static string DescribeAdded(TaskManager.TaskItem task)
     {
         var line = $"{task.Id} added: {Truncate(task.Title)}";
-        return task.Assignee is { } agentName ? $"{line} (assignee {agentName})" : line;
+        return AssigneeShown(task) is { } agentName ? $"{line} (assignee {agentName})" : line;
     }
+
+    /// <summary>
+    ///     The name a digest line uses for an assignee: the display name the board's resolver offered,
+    ///     else the stored identity. Prose only — delivery still targets <see cref="TaskManager.TaskItem.Assignee" />,
+    ///     because that is the key the transport routes by.
+    /// </summary>
+    private static string? AssigneeShown(TaskManager.TaskItem task) => task.AssigneeDisplayName ?? task.Assignee;
 
     private static string DescribeChanged(TaskManager.TaskItem old, TaskManager.TaskItem task)
     {
@@ -334,7 +341,7 @@ public sealed class TodoDigestService : IAsyncDisposable
             parts.Add(
                 task.Status switch
                 {
-                    TaskStatus.InProgress => $"claimed by {task.Assignee ?? "unknown"}",
+                    TaskStatus.InProgress => $"claimed by {AssigneeShown(task) ?? "unknown"}",
                     TaskStatus.Completed => "completed",
                     TaskStatus.Blocked => task.BlockedBy.Count > 0
                         ? $"blocked by {string.Join(", ", task.BlockedBy)}"
@@ -354,7 +361,7 @@ public sealed class TodoDigestService : IAsyncDisposable
         var claimCoversAssignee = statusChanged && task.Status == TaskStatus.InProgress;
         if (!claimCoversAssignee && !string.Equals(old.Assignee, task.Assignee, StringComparison.Ordinal))
         {
-            parts.Add(task.Assignee is { } agentName ? $"assigned to {agentName}" : "unassigned");
+            parts.Add(AssigneeShown(task) is { } agentName ? $"assigned to {agentName}" : "unassigned");
         }
 
         if (!string.Equals(old.Title, task.Title, StringComparison.Ordinal))

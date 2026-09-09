@@ -498,7 +498,9 @@ public class SubAgentIntegrationTests
         snapshot[0]
             .SourceToolCallId.Should()
             .Be(spawnedAgentId, "the notification must be attributed to the descendant's own agent id");
-        snapshot[0].Label.Should().Be("asker");
+        snapshot[0]
+            .Label.Should()
+            .Be("asker-1", "the label is the agent's readable name, the address the root can answer to");
 
         // The primary/root's OWN deferred-call registry has nothing parked — the pending question
         // belongs entirely to the child, proving this notification genuinely came from the descendant
