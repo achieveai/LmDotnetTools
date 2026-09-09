@@ -256,7 +256,7 @@ public sealed class AgentTranscriptAccessTests
             .GetFunctions()
             .Single(f => f.Contract.Name == SubAgentToolProvider.GetAgentsToolName);
         var roster = Assert.IsType<ToolHandlerResult.Resolved>(
-            await getAgents.Handler("{}", new ToolCallContext(), CancellationToken.None)
+            await getAgents.Handler("""{"detail":"detailed"}""", new ToolCallContext(), CancellationToken.None)
         );
         using var rosterDoc = JsonDocument.Parse(roster.Payload.Text!);
         var row = rosterDoc

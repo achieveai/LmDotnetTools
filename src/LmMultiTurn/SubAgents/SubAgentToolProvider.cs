@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
@@ -882,15 +883,30 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             Name = GetAgentsToolName,
             Description =
-                "List every agent in this collaboration — not just your own sub-agents — with its "
-                + "name, agent_id, role, description, and where it sits in the hierarchy. Use it "
-                + "to find who already owns a piece of work BEFORE spawning someone new to do it, "
-                + "and to get the NAME to address with SendMessage (its agent_id and aliases work too). "
-                + "name_resolves_to_agent indicates whether the displayed name selects that row; "
-                + "aliases lists usable alternative addresses. 'primary' names the top-level conversation "
-                + "at every hierarchy depth unless that address collides. Resolution does not grant access: "
-                + "check is_live and transcript_readable; WaitForAgents still covers only your own children.",
-            Parameters = [],
+                "List every agent in this collaboration — not just your own sub-agents — by NAME, with "
+                + "what each one is for, who it reports to, and whether it is still running. Use it to "
+                + "find who already owns a piece of work BEFORE spawning someone new to do it, and to get "
+                + "the name to address with SendMessage. Pass detail='detailed' when you need more: the "
+                + "agent_id and aliases (both also work as addresses), hierarchy depths, whether you may "
+                + "read its transcript, and the tokens it has spent per model. 'primary' names the "
+                + "top-level conversation at every hierarchy depth unless that address collides. "
+                + "Resolution does not grant access; WaitForAgents still covers only your own children.",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "detail",
+                    Description =
+                        "How much to return per agent. 'normal' (default) gives the name, what the agent "
+                        + "is for, who it reports to, and whether it is still running — enough to decide "
+                        + "whom to contact. 'detailed' adds agent_id, aliases, role, depths, transcript "
+                        + "readability, and token usage broken down by model. Prefer 'normal': a detailed "
+                        + "listing of a large collaboration is several thousand tokens you pay for on "
+                        + "every call.",
+                    ParameterType = new JsonSchemaObject { Type = new("string"), Enum = ["normal", "detailed"] },
+                    IsRequired = false,
+                },
+            ],
         };
 
         return new FunctionDescriptor
@@ -1733,6 +1749,22 @@ public class SubAgentToolProvider : IFunctionProvider
             );
         }
 
+        string detail;
+        using (var doc = JsonDocument.Parse(argsJson))
+        {
+            detail = (GetOptionalString(doc.RootElement, "detail") ?? "normal").Trim().ToLowerInvariant();
+        }
+
+        if (detail is not ("normal" or "detailed"))
+        {
+            // Refused rather than treated as 'normal': a caller that mistyped 'detailed' and silently
+            // received the smaller shape would conclude the ids are gone, not that it asked wrongly.
+            return Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromError($"Unknown detail '{detail}'. Use 'normal' or 'detailed'.", "invalid_args")
+            );
+        }
+
+        var detailed = detail == "detailed";
         var snapshot = collaboration.Directory.Snapshot();
         var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
         var truncated = listed.Count < snapshot.Count;
@@ -1759,35 +1791,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "address is missing from this list.";
         }
 
-        payload["agents"] = listed.Select(e => new
-        {
-            agent_id = e.AgentId,
-            name = e.Name,
-            name_resolves_to_agent = collaboration.Directory.Resolve(e.Name).Entry?.AgentId == e.AgentId,
-            aliases = e.Kind == AgentKind.Root
-            && collaboration.Directory.Resolve(AgentCollaborationDirectory.PrimaryAlias).Entry?.AgentId == e.AgentId
-                ? (string[])[AgentCollaborationDirectory.PrimaryAlias]
-                : [],
-            role = e.Role,
-            description = e.Description,
-            kind = e.Kind.ToString(),
-            agent_type = e.AgentType,
-            parent_agent_id = e.ParentAgentId,
-            depth = e.StructuralDepth,
-            // Both depths, because they answer different questions and diverge: structural depth is
-            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
-            // and a workflow controller hop advances one without the other.
-            structural_depth = e.StructuralDepth,
-            delegation_depth = e.DelegationDepth,
-            status = e.Status,
-            is_live = e.IsLive,
-            is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
-            // Stated up front so the reader does not have to discover by refusal which transcripts
-            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
-            transcript_readable = collaboration
-                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
-                .IsAllowed,
-        });
+        var usageByAgent = detailed ? UsageByAgent(_manager.UsageLedger) : null;
+        payload["agents"] = listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)).ToList();
 
         var json = JsonSerializer.Serialize(payload);
 
@@ -1799,6 +1804,153 @@ public class SubAgentToolProvider : IFunctionProvider
         _manager.Instrumentation?.RecordDirectoryListing(listed.Count, Encoding.UTF8.GetByteCount(json));
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(json));
+    }
+
+    /// <summary>
+    /// One <c>GetAgents</c> row. The normal shape is what a model needs to decide whom to contact —
+    /// name, purpose, who it reports to, whether it is still running — and nothing that costs tokens
+    /// on every call without earning them. The detailed shape adds every identifier and measurement
+    /// the normal one leaves out.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A dictionary rather than an anonymous type because members are conditional: <c>parent_name</c>
+    /// is omitted when the agent has no parent or the parent is no longer in the directory, rather
+    /// than written as null, and <c>usage</c> is omitted when nothing was recorded for the agent.
+    /// A zero would claim the agent spent nothing; an absent member says nothing was recorded, which
+    /// is the only claim this listing can stand behind for an agent that has not run yet or whose
+    /// spend went to a ledger this loop cannot see.
+    /// </para>
+    /// <para>
+    /// The name leads and the id follows, in keeping with every other surface (ADR 0019): the id is
+    /// still carried, but only when asked for, so it is no longer what the listing teaches.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, object?> DescribeAgent(
+        AgentCollaborationSetup collaboration,
+        AgentDirectoryEntry e,
+        bool detailed,
+        IReadOnlyDictionary<string, ExecutionUsageRow>? usageByAgent
+    )
+    {
+        var row = new Dictionary<string, object?>(StringComparer.Ordinal) { ["name"] = e.Name };
+
+        if (detailed)
+        {
+            row["agent_id"] = e.AgentId;
+            row["name_resolves_to_agent"] = collaboration.Directory.Resolve(e.Name).Entry?.AgentId == e.AgentId;
+            row["aliases"] =
+                e.Kind == AgentKind.Root
+                && collaboration.Directory.Resolve(AgentCollaborationDirectory.PrimaryAlias).Entry?.AgentId == e.AgentId
+                    ? (string[])[AgentCollaborationDirectory.PrimaryAlias]
+                    : [];
+            row["role"] = e.Role;
+        }
+
+        row["description"] = e.Description;
+
+        if (e.ParentAgentId is { } parentId && collaboration.Directory.FindById(parentId) is { } parent)
+        {
+            row["parent_name"] = parent.Name;
+        }
+
+        if (detailed)
+        {
+            row["kind"] = e.Kind.ToString();
+            row["agent_type"] = e.AgentType;
+            row["parent_agent_id"] = e.ParentAgentId;
+            // Both depths, because they answer different questions and diverge: structural depth is
+            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+            // and a workflow controller hop advances one without the other.
+            row["structural_depth"] = e.StructuralDepth;
+            row["delegation_depth"] = e.DelegationDepth;
+        }
+
+        row["status"] = e.Status;
+
+        if (detailed)
+        {
+            row["is_live"] = e.IsLive;
+        }
+
+        row["is_you"] = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal);
+
+        if (detailed)
+        {
+            // Stated up front so the reader does not have to discover by refusal which transcripts
+            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+            row["transcript_readable"] = collaboration
+                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                .IsAllowed;
+
+            var usageKey = e.Kind == AgentKind.Root ? RootUsageKey : e.AgentId;
+            if (usageByAgent is not null && usageByAgent.TryGetValue(usageKey, out var usage))
+            {
+                row["usage"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["input_tokens"] = usage.InputTokens,
+                    ["output_tokens"] = usage.OutputTokens,
+                    ["cache_read_tokens"] = usage.CacheReadTokens,
+                    ["cache_write_tokens"] = usage.CacheWriteTokens,
+                    ["reasoning_tokens"] = usage.ReasoningTokens,
+                    ["total_tokens"] = usage.TotalTokens,
+                    ["attempt_count"] = usage.AttemptCount,
+                    ["preferred_cost_micros"] = usage.PreferredCostMicros,
+                    ["cost_provenance"] = usage.CostProvenance.ToString(),
+                    ["per_model"] = usage
+                        .PerModel.Select(m => new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["model_id"] = m.ModelId,
+                            ["input_tokens"] = m.InputTokens,
+                            ["output_tokens"] = m.OutputTokens,
+                            ["total_tokens"] = m.TotalTokens,
+                        })
+                        .ToList(),
+                };
+            }
+        }
+
+        return row;
+    }
+
+    /// <summary>
+    /// The key under which the root loop's own usage row is filed in <see cref="UsageByAgent"/>. The
+    /// root's execution id is its thread id, not an agent id, so it needs a key that cannot collide
+    /// with one; a sub-agent's key is its <c>agent-N</c>.
+    /// </summary>
+    private const string RootUsageKey = "\u0000root";
+
+    /// <summary>
+    /// A per-agent VIEW over <paramref name="ledger"/>: the same per-execution fold the conversation's
+    /// context report uses, re-keyed from execution (thread) id to the agent id the directory knows.
+    /// Not a second ledger — nothing is stored — and null when the loop keeps no ledger, so the caller
+    /// omits usage rather than reporting zeros nobody measured.
+    /// </summary>
+    /// <remarks>
+    /// The root's own attempts fold under the root thread id (their <c>ParentExecutionId</c> is null),
+    /// every sub-agent's under its own sub-agent thread, so <see cref="AgentExecutionRef.AgentIdFromThreadId"/>
+    /// recovers <c>agent-N</c> for the latter and the root is filed under <see cref="RootUsageKey"/>.
+    /// A thread id that decodes to neither (another conversation's records replayed into this ledger)
+    /// is keyed by its own id and matches no directory row, which is the correct outcome: a listing
+    /// must never attribute spend to an agent that did not incur it.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, ExecutionUsageRow>? UsageByAgent(UsageLedger? ledger)
+    {
+        if (ledger is null)
+        {
+            return null;
+        }
+
+        var byAgent = new Dictionary<string, ExecutionUsageRow>(StringComparer.Ordinal);
+        foreach (var row in ConversationUsageAggregate.FoldByExecution(ledger.SnapshotRecords()))
+        {
+            var key = string.Equals(row.ExecutionId, ledger.RootConversationId, StringComparison.Ordinal)
+                ? RootUsageKey
+                : AgentExecutionRef.AgentIdFromThreadId(row.ExecutionId);
+            _ = byAgent.TryAdd(key, row);
+        }
+
+        return byAgent;
     }
 
     /// <summary>

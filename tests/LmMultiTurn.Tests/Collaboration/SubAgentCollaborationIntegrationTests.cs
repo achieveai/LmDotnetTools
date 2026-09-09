@@ -872,7 +872,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         }
 
         var (_, provider) = CreateManager(caller);
-        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        var roster = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
         using var rosterDoc = JsonDocument.Parse(roster.Text);
         var rootRow = rosterDoc
             .RootElement.GetProperty("agents")
@@ -915,7 +915,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var root = CreateRegisteredRoot();
         var (_, provider) = CreateManager(root, restart.Template);
         var childId = await SpawnAndResolveIdAsync(provider, "reviewer");
-        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        var roster = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
         using var rosterDoc = JsonDocument.Parse(roster.Text);
         var row = rosterDoc
             .RootElement.GetProperty("agents")
@@ -981,7 +981,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         root.Directory.Resolve("reviewer").Entry!.AgentId.Should().Be(childId);
         root.Directory.Resolve(grantedPeerName).Entry!.AgentId.Should().Be(peer.AgentId);
 
-        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        var roster = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
         using var rosterDoc = JsonDocument.Parse(roster.Text);
         foreach (var row in rosterDoc.RootElement.GetProperty("agents").EnumerateArray())
         {
@@ -1026,7 +1026,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = RegisterPeer(root, contestedName);
         var (_, provider) = CreateManager(root);
 
-        var roster = await InvokeAsync(provider, "GetAgents", new { });
+        var roster = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
         using var doc = JsonDocument.Parse(roster.Text);
         var row = doc
             .RootElement.GetProperty("agents")
@@ -1069,7 +1069,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, provider) = CreateManager(root);
         _ = await SpawnAndResolveIdAsync(provider, "peer");
 
-        var payload = await InvokeAsync(provider, "GetAgents", new { });
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
 
         using var doc = JsonDocument.Parse(payload.Text);
         var child = doc
@@ -1123,7 +1123,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             _ = root.Bundle.RetireAgent(peer.AgentId, AgentCollaborationStatuses.Completed);
         }
 
-        var payload = await InvokeAsync(provider, "GetAgents", new { });
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
 
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("total").GetInt32().Should().Be(6);
@@ -1160,6 +1160,193 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .Select(a => a.GetProperty("name").GetString())
             .Should()
             .BeEquivalentTo([root.Name, "live-a", "live-b"]);
+    }
+
+    [Fact]
+    public async Task GetAgents_ByDefault_ReturnsTheNormalShapeWithoutIdsOrUsage()
+    {
+        // The default listing is what a model reads to decide whom to contact: name, purpose, who it
+        // reports to, whether it is still running. Ids and usage are paid for on every call by every
+        // agent that lists the roster, so they are opt-in.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        _ = await SpawnAndResolveIdAsync(provider, "peer");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        var child = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "peer");
+
+        child.GetProperty("description").GetString().Should().NotBeNull();
+        child.GetProperty("parent_name").GetString().Should().Be(root.Name);
+        child.GetProperty("status").GetString().Should().NotBeNullOrEmpty();
+        child.GetProperty("is_you").GetBoolean().Should().BeFalse();
+        child.TryGetProperty("agent_id", out _).Should().BeFalse("the id is a detailed-mode field");
+        child.TryGetProperty("usage", out _).Should().BeFalse("usage is a detailed-mode field");
+        child.TryGetProperty("transcript_readable", out _).Should().BeFalse();
+
+        var rootRow = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("is_you").GetBoolean());
+        rootRow.TryGetProperty("parent_name", out _).Should().BeFalse("the root reports to nobody");
+    }
+
+    [Fact]
+    public async Task GetAgents_WithDetailed_AddsTheIdAndAUsageBlockCarryingTheModel()
+    {
+        // Usage is a VIEW over the one ledger the loop already keeps, keyed by execution: the root
+        // folds under the root thread, a child under its sub-agent thread. Nothing here is a second
+        // ledger, so the per-agent figures sum to the conversation total by construction.
+        var root = CreateRegisteredRoot();
+        var ledger = new UsageLedger("conv-1");
+        var (_, provider) = CreateManager(root, usageSink: ledger);
+        var childId = await SpawnAndResolveIdAsync(provider, "peer");
+        var childThread = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, childId);
+
+        ledger.RecordUsage(
+            new UsageRecord
+            {
+                LogicalCallId = "root-1",
+                ProviderAttemptId = "root-1",
+                RootConversationId = "conv-1",
+                RequestedModel = "model-root",
+                InputTokens = 100,
+                OutputTokens = 10,
+            }
+        );
+        ledger.RecordUsage(
+            new UsageRecord
+            {
+                LogicalCallId = "child-1",
+                ProviderAttemptId = "child-1",
+                RootConversationId = "conv-1",
+                ParentExecutionId = childThread,
+                ExecutionKind = UsageExecutionKind.SubAgent,
+                RequestedModel = "model-a",
+                EffectiveModel = "model-a-2026",
+                InputTokens = 40,
+                OutputTokens = 4,
+            }
+        );
+        ledger.RecordUsage(
+            new UsageRecord
+            {
+                LogicalCallId = "child-2",
+                ProviderAttemptId = "child-2",
+                RootConversationId = "conv-1",
+                ParentExecutionId = childThread,
+                ExecutionKind = UsageExecutionKind.SubAgent,
+                RequestedModel = "model-b",
+                InputTokens = 20,
+                OutputTokens = 2,
+            }
+        );
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        var child = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "peer");
+
+        child.GetProperty("agent_id").GetString().Should().Be(childId);
+        child.GetProperty("delegation_depth").GetInt32().Should().Be(1);
+        child.GetProperty("transcript_readable").GetBoolean().Should().BeTrue();
+
+        var usage = child.GetProperty("usage");
+        usage.GetProperty("total_tokens").GetInt64().Should().Be(66);
+        usage.GetProperty("input_tokens").GetInt64().Should().Be(60);
+        usage.GetProperty("attempt_count").GetInt32().Should().Be(2);
+        var perModel = usage.GetProperty("per_model").EnumerateArray().ToList();
+        perModel.Select(m => m.GetProperty("model_id").GetString()).Should().Equal("model-a-2026", "model-b");
+        perModel[0].GetProperty("total_tokens").GetInt64().Should().Be(44);
+
+        var rootRow = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("is_you").GetBoolean());
+        rootRow.GetProperty("usage").GetProperty("total_tokens").GetInt64().Should().Be(110);
+        rootRow
+            .GetProperty("usage")
+            .GetProperty("per_model")[0]
+            .GetProperty("model_id")
+            .GetString()
+            .Should()
+            .Be("model-root");
+    }
+
+    [Fact]
+    public async Task GetAgents_WithDetailed_OmitsUsageForAnAgentThatSpentNothing()
+    {
+        // A zero would claim "this agent spent nothing"; an absent block says "nothing was recorded".
+        // Those are different statements, and only the second is true of an agent that has not run.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, usageSink: new UsageLedger("conv-1"));
+        _ = await SpawnAndResolveIdAsync(provider, "peer");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        foreach (var row in doc.RootElement.GetProperty("agents").EnumerateArray())
+        {
+            row.TryGetProperty("agent_id", out _).Should().BeTrue();
+            row.TryGetProperty("usage", out _).Should().BeFalse(row.GetRawText());
+        }
+    }
+
+    [Fact]
+    public async Task GetAgents_WithDetailed_ButNoLedger_StillListsTheIdsWithoutUsage()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var childId = await SpawnAndResolveIdAsync(provider, "peer");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        var child = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "peer");
+        child.GetProperty("agent_id").GetString().Should().Be(childId);
+        child.TryGetProperty("usage", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("verbose")]
+    [InlineData("")]
+    public async Task GetAgents_WithAnUnknownDetailValue_IsRefusedRatherThanSilentlyNormal(string detail)
+    {
+        // A typo must not quietly return the smaller shape: the caller would conclude the ids are
+        // gone rather than that it asked wrongly.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail });
+
+        payload.IsError.Should().BeTrue();
+        payload.Text.Should().Contain("normal").And.Contain("detailed");
+    }
+
+    [Fact]
+    public void GetAgents_Description_TeachesTheDetailParameter()
+    {
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+
+        var descriptor = provider.GetFunctions().Single(f => f.Contract.Name == "GetAgents");
+
+        var detail = descriptor.Contract.Parameters!.Should().ContainSingle(p => p.Name == "detail").Which;
+        detail.IsRequired.Should().BeFalse();
+        detail.Description.Should().Contain("normal").And.Contain("detailed").And.Contain("usage");
     }
 
     #endregion

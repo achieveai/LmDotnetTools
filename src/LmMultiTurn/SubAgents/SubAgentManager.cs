@@ -604,6 +604,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal SubAgentInstrumentation? Instrumentation => _options.Instrumentation;
 
+    /// <summary>
+    /// The usage ledger this manager relays descendant usage into, when the sink it was given is one —
+    /// the owning loop's <c>UsageLedger</c>, which for a root loop is the conversation's single ledger.
+    /// Exposed read-only so <see cref="SubAgentToolProvider"/> can render a per-agent VIEW of it in a
+    /// detailed <c>GetAgents</c> listing. It is never written through this member; nothing here is a
+    /// second ledger. Null when usage accounting is off or the sink is some other implementation.
+    /// </summary>
+    internal UsageLedger? UsageLedger => _usageSink as UsageLedger;
+
     internal IReadOnlyCollection<string>? AvailableModelIds => _options.AvailableModelIds;
 
     /// <summary>
