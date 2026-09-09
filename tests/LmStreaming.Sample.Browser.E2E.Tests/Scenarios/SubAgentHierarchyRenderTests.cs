@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -52,8 +53,11 @@ public sealed class SubAgentHierarchyRenderTests
     private const string LeadAnswer = "Lead finished, helper included.";
     private const string ParentAnswer = "All collaboration work is complete.";
 
-    /// <summary>The name <c>Program.cs</c> registers the conversation root under.</summary>
-    private const string RootName = "conversation";
+    /// <summary>
+    /// The name the conversation root is registered under when the chat mode names none (ADR 0019).
+    /// The helper addresses the root by it, so a rename here is the one this scenario must follow.
+    /// </summary>
+    private const string RootName = AgentCollaborationSetup.DefaultRootName;
 
     private readonly PlaywrightFixture _fixture;
 
