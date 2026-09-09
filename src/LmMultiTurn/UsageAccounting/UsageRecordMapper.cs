@@ -13,6 +13,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 public static class UsageRecordMapper
 {
     /// <summary>
+    ///     The <see cref="LmCore.Models.Usage.ExtraProperties" /> key a provider uses to report the model it
+    ///     actually served. Written today only by <c>OpenRouterUsageMiddleware</c> from OpenRouter's generation
+    ///     stats, where auto-routing and fallback can serve a model other than the requested one; every other
+    ///     provider reports none, and those records keep <see cref="UsageRecord.EffectiveModel" /> null.
+    /// </summary>
+    public const string ProviderReportedModel = "model";
+
+    /// <summary>
     ///     Builds a record from a usage message. <paramref name="ownerExecutionId" /> is the emitter's id
     ///     (the root thread id for the primary loop, the sub-agent id for a descendant) and forms the
     ///     dedup key together with the message's generation id.
@@ -20,7 +28,12 @@ public static class UsageRecordMapper
     /// <param name="message">The provider usage message to map.</param>
     /// <param name="ownerExecutionId">The emitting execution's id.</param>
     /// <param name="kind">How this attempt was produced.</param>
-    /// <param name="model">The effective model for the call, or null/empty when unknown.</param>
+    /// <param name="model">
+    ///     The model the caller asked this execution to run — the sub-agent's resolved model for a descendant,
+    ///     the loop's configured model for the primary. Becomes <see cref="UsageRecord.RequestedModel" />; the
+    ///     model the provider says it actually served is read off the usage payload (see
+    ///     <see cref="ProviderReportedModel" />). Null/empty when unknown.
+    /// </param>
     /// <param name="timeProvider">
     ///     Clock used to stamp <see cref="UsageRecord.OccurredAtUtc" />. Neither
     ///     <see cref="UsageMessage" /> nor <see cref="LmCore.Models.Usage" /> carries a provider timestamp, so
@@ -40,6 +53,7 @@ public static class UsageRecordMapper
 
         var usage = message.Usage;
         var providerReportedCostMicros = ToMicros(usage.TotalCost);
+        var requestedModel = string.IsNullOrEmpty(model) ? "unknown" : model;
 
         // A generation is one provider call; combined with the emitter id it is a stable, globally unique
         // dedup key across the conversation tree. Fall back to the run id, then — when the producer supplies
@@ -57,7 +71,8 @@ public static class UsageRecordMapper
             RootConversationId = ownerExecutionId,
             ParentExecutionId = kind == UsageExecutionKind.Primary ? null : ownerExecutionId,
             ExecutionKind = kind,
-            RequestedModel = string.IsNullOrEmpty(model) ? "unknown" : model,
+            RequestedModel = requestedModel,
+            EffectiveModel = EffectiveModelOf(usage, requestedModel),
             InputTokens = usage.PromptTokens,
             OutputTokens = usage.CompletionTokens,
             CacheReadTokens = usage.TotalCachedTokens,
@@ -72,6 +87,21 @@ public static class UsageRecordMapper
             OccurredAtUtc = (timeProvider ?? TimeProvider.System).GetUtcNow(),
             Finalized = true,
         };
+    }
+
+    /// <summary>
+    ///     The provider-reported model when it is known AND differs from what was requested, else null —
+    ///     matching <see cref="UsageRecord.EffectiveModel" />'s "when it differs" contract, so the documented
+    ///     <see cref="UsageRecord.EffectiveModelId" /> fallback keeps answering for the (overwhelmingly common)
+    ///     providers that report no model at all. Never defaulted to the requested model: that would make the
+    ///     field look delivered while carrying no provider observation.
+    /// </summary>
+    private static string? EffectiveModelOf(Usage usage, string requestedModel)
+    {
+        var reported = usage.GetExtraProperty<string>(ProviderReportedModel);
+        return string.IsNullOrEmpty(reported) || string.Equals(reported, requestedModel, StringComparison.Ordinal)
+            ? null
+            : reported;
     }
 
     /// <summary>
