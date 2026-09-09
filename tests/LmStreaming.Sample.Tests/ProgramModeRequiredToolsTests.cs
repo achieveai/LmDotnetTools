@@ -196,6 +196,34 @@ public sealed class ProgramModeRequiredToolsTests
     }
 
     /// <summary>
+    ///     Once the board resolves assignees, <c>Assignee</c> holds the canonical <c>agent-N</c> and the
+    ///     name the lead typed rides alongside as the display name. The probe is invoked with the SPAWN
+    ///     name, so it has to match that display name as well — comparing the name to the id alone can
+    ///     never match, and the #623 warning floor goes silent for every resolved assignment.
+    /// </summary>
+    [Fact]
+    public void HasOpenTaskAssignedTo_MatchesTheDisplayNameOfAResolvedAssignee()
+    {
+        var taskManager = new TaskManager
+        {
+            AssigneeResolver = name => new TaskManager.AssigneeResolution(
+                "agent-3",
+                "agent-3",
+                TaskManager.AssigneeLiveness.Live,
+                Candidates: null,
+                DisplayName: "reviewer"
+            ),
+        };
+        _ = taskManager.BulkInitialize([new TaskManager.BulkTaskItem { Task = "Board task" }]);
+        _ = taskManager.AssignTask(taskManager.GetTasks()[0].Id, "reviewer");
+        taskManager.GetTasks()[0].Assignee.Should().Be("agent-3", "the resolver keys ownership on the id");
+
+        global::Program.HasOpenTaskAssignedTo(taskManager, "Reviewer").Should().BeTrue("matched by display name");
+        global::Program.HasOpenTaskAssignedTo(taskManager, "agent-3").Should().BeTrue("matched by canonical id");
+        global::Program.HasOpenTaskAssignedTo(taskManager, "unrelated").Should().BeFalse();
+    }
+
+    /// <summary>
     /// PR #626 review F-004: the composition root turns an unresolvable required-tool pattern into
     /// a Warning naming the mode and the pattern — the only signal an operator hand-editing
     /// Prompts.yaml gets that a mode is typo'd rather than enforced.
