@@ -142,6 +142,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected string? SystemPrompt { get; }
 
     /// <summary>
+    /// The composed system prompt, for tests. Internal rather than public: the prompt is an
+    /// implementation detail of the loop, but the identity preamble is a behaviour worth pinning, and
+    /// asserting it through a mocked provider's captured request would test the mock's plumbing rather
+    /// than the composition.
+    /// </summary>
+    internal string? SystemPromptForTests => SystemPrompt;
+
+    /// <summary>
     /// The maximum turns per run.
     /// </summary>
     protected int MaxTurnsPerRun { get; }

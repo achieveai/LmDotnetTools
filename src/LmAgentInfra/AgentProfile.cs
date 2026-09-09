@@ -84,6 +84,14 @@ public sealed record AgentProfile(
     public string? SubAgentReasoningEffort { get; init; }
 
     /// <summary>
+    /// Display name for the ROOT agent of a conversation running this profile — the name sub-agents
+    /// read in their identity preamble and use to address the top-level conversation. Null or blank
+    /// leaves the collaboration's own default. Init-only property (not a positional parameter) for the
+    /// same shared-surface compatibility reason as <see cref="SubAgentPrompt"/>.
+    /// </summary>
+    public string? RootAgentName { get; init; }
+
+    /// <summary>
     /// Authoritative model-intelligence tier keyed by the canonical registered <c>subagent_type</c>.
     /// Null means this profile has no type-keyed routing policy. An empty map is still a policy when
     /// <see cref="DefaultSubAgentModelIntelligence"/> is present.

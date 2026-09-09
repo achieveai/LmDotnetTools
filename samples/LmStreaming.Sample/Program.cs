@@ -1611,7 +1611,12 @@ try
                     // for this chat mode. Every descendant (ordinary sub-agent, workflow controller,
                     // workflow delegate) receives THIS handle by reference, so there is exactly one
                     // directory and one ledger per conversation.
-                    var rootCollaboration = CreateRootCollaboration(collaborationHostOptions, caps, threadId);
+                    var rootCollaboration = CreateRootCollaboration(
+                        collaborationHostOptions,
+                        caps,
+                        threadId,
+                        mode.RootAgentName
+                    );
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
@@ -3468,14 +3473,17 @@ public partial class Program
     internal static AgentCollaborationSetup? CreateRootCollaboration(
         AgentCollaborationHostOptions hostOptions,
         ModeCapabilities caps,
-        string threadId
+        string threadId,
+        string? rootAgentName = null
     ) =>
         hostOptions.ResolveForMode(defaultEnabled: caps.Collaboration) is { } collabOptions
             ? AgentCollaborationSetup.CreateRoot(
                 collabOptions,
                 collaborationId: threadId,
                 agentId: threadId,
-                name: "conversation"
+                // Null or blank falls through to AgentCollaborationSetup.DefaultRootName. The old
+                // literal "conversation" named the thread, not an agent, so no model was ever told it.
+                name: rootAgentName
             )
             : null;
 

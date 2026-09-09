@@ -16,6 +16,14 @@
 - **Never** add `Co-Authored-By` or any AI/Claude signature to commits or PR bodies.
 - **No pre-existing test failures.** A red test that is not yours is a blocker to report, not a thing to work around.
 - **New test method families must be classified** in `scripts/test-priorities.ndjson`, or the manifest drifts and reddens `main` on merge.
+- **90%+ line coverage on new and changed code.** Measured per FILE, not per assembly — an assembly
+  number is dominated by untouched code and would pass at 90% with new branches at zero. Collect with
+  `<scratchpad>/agent-naming-coverage.runsettings` (Microsoft Code Coverage 2.0 → cobertura, with
+  `*.Tests.dll` excluded so a test helper cannot inflate the figure) and read it with
+  `.claude/scratchpad/conversation_memories/agent-naming-and-task-identity/Get-NewCodeCoverage.ps1`,
+  which prints per-file percentages plus the uncovered line numbers. A file missing from the report is
+  a failure (`NOT-IN-REPORT`), never a 100%. Rebuild before every measured run: `--no-build` after an
+  edit silently measures the previous binary.
 - **`agent-N` stays the canonical identifier.** Never change `SubAgentThreadIds`, the ordinal allocator, or the identity-binding schema.
 - **Ownership keys stay `AgentId`.** Display names are added *beside* the id, never *instead of* it.
 - The default root agent display name is exactly `MainAgent`.

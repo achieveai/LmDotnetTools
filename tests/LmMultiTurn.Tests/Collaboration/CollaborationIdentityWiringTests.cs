@@ -21,6 +21,63 @@ public class CollaborationIdentityWiringTests
             name: "root"
         );
 
+    [Fact]
+    public void CreateRoot_WithNoNameSupplied_NamesTheRootMainAgent()
+    {
+        // Mutation that must go red: restoring the old "root" default.
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+
+        setup.Name.Should().Be("MainAgent");
+    }
+
+    [Fact]
+    public void CreateRoot_WithABlankName_FallsBackToMainAgent()
+    {
+        // A host that reads an empty config value used to get an ArgumentException here.
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions(), name: "   ");
+
+        setup.Name.Should().Be("MainAgent");
+    }
+
+    [Fact]
+    public void CreateRoot_WithAConfiguredName_UsesIt()
+    {
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions(), name: "orchestrator");
+
+        setup.Name.Should().Be("orchestrator");
+    }
+
+    [Fact]
+    public void ASetupWhoseContextBelongsToAnotherCollaboration_IsRejected()
+    {
+        // The bundle carries the shared directory and ledger. Accepting a foreign context here would
+        // file this agent's rows under a collaboration it is not part of, so the guard is load-bearing.
+        var a = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions(), collaborationId: "collab-a");
+        var b = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions(), collaborationId: "collab-b");
+
+        var act = () => new AgentCollaborationSetup(a.Bundle, b.Context, "intruder");
+
+        act.Should().Throw<ArgumentException>().WithMessage("*different collaboration*");
+    }
+
+    [Fact]
+    public void ARootSetup_ExposesItsBundlesOptionsAndCanStillDelegate()
+    {
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+
+        setup.Options.Should().BeSameAs(setup.Bundle.Options);
+        setup.CanDelegate.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AChildAtTheDelegationLimit_CanNoLongerDelegate()
+    {
+        var root = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions { MaxDelegationDepth = 1 });
+        var childContext = root.Context.CreateChild("agent-1", AgentKind.SubAgent, "worker", "Does work.");
+
+        root.ForChild(childContext, "worker").CanDelegate.Should().BeFalse();
+    }
+
     /// <summary>Registers the root the way <c>MultiTurnAgentLoop</c>'s constructor does.</summary>
     private static AgentCollaborationSetup RegisterRoot(AgentCollaborationSetup setup)
     {

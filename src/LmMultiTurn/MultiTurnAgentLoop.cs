@@ -408,7 +408,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     )
         : base(
             threadId,
-            systemPrompt,
+            // The identity block has to be composed HERE, in the base-call argument list: SystemPrompt
+            // is assigned by the base constructor, which runs before `Collaboration` is set in this
+            // constructor's body. Composing it in the body would leave the prompt already stored.
+            AgentIdentityPreamble.Prepend(systemPrompt, collaboration),
             defaultOptions,
             maxTurnsPerRun,
             inputChannelCapacity,

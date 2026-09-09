@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Configuration;
@@ -121,6 +122,53 @@ public sealed class ProgramSubAgentCompositionTests
             setup.Should().BeNull();
             toolNames.Should().Contain("WaitAgent").And.NotContain("WaitForAgents");
         }
+    }
+
+    /// <summary>
+    /// The root agent's name has to survive the whole host chain — a mode on disk, through
+    /// <see cref="ChatMode.ToAgentProfile"/>, into the composition helper — because that is the only
+    /// route by which a configured name reaches the identity preamble sub-agents read. Asserting on
+    /// <c>CreateRootCollaboration</c> alone would leave the profile mapping free to drop the property.
+    /// </summary>
+    [Fact]
+    public void CreateRootCollaboration_CarriesAModesConfiguredRootNameThroughItsProfile()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId)! with
+        {
+            RootAgentName = "orchestrator",
+        };
+
+        var profile = mode.ToAgentProfile();
+        profile.RootAgentName.Should().Be("orchestrator", "the profile is the only thing the host reads");
+
+        var setup = global::Program.CreateRootCollaboration(
+            new AgentCollaborationHostOptions(),
+            ModeCapabilities.Resolve(mode),
+            "thread-1",
+            profile.RootAgentName
+        );
+
+        setup!.Name.Should().Be("orchestrator");
+    }
+
+    /// <summary>
+    /// The default path: a mode that configures no name still gets an agent the model can be told to
+    /// address. The old literal <c>"conversation"</c> named the thread, not an agent.
+    /// </summary>
+    [Fact]
+    public void CreateRootCollaboration_WithNoConfiguredName_NamesTheRootMainAgent()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId)!;
+        mode.RootAgentName.Should().BeNull("this proves nothing if the shipped mode already sets one");
+
+        var setup = global::Program.CreateRootCollaboration(
+            new AgentCollaborationHostOptions(),
+            ModeCapabilities.Resolve(mode),
+            "thread-1",
+            mode.ToAgentProfile().RootAgentName
+        );
+
+        setup!.Name.Should().Be(AgentCollaborationSetup.DefaultRootName).And.Be("MainAgent");
     }
 
     [Fact]
