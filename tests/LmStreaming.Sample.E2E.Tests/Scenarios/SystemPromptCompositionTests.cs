@@ -237,7 +237,17 @@ public sealed class SystemPromptCompositionTests
         var prompt = promptTheModelReceived!;
 
         // The four sections, each present...
-        prompt.Should().StartWith("The current date is", "the date line is prepended at the mode entry point");
+        // The identity preamble is prepended where the loop is constructed (ADR 0019), so it sits ahead
+        // of everything the mode entry point composed; the date line is the first thing after it.
+        prompt.Should().StartWith("You are `MainAgent`", "every agent is told who it is before anything else");
+        var dateIndex = prompt.IndexOf("The current date is", StringComparison.Ordinal);
+        dateIndex.Should().BePositive("the date line is prepended at the mode entry point, right after the identity");
+        dateIndex
+            .Should()
+            .BeLessThan(
+                prompt.IndexOf("Revobot", StringComparison.Ordinal),
+                "the date line still precedes everything the mode itself says"
+            );
         prompt.Should().Contain("Revobot", "the code-review-daemon mode prompt must reach the model");
         prompt
             .Should()
