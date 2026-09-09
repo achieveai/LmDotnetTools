@@ -2377,20 +2377,29 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Check the status and recent activity of a sub-agent.
+    /// Check the status and recent activity of a sub-agent, by id or by the name it answers to.
     /// </summary>
-    public string Peek(string agentId) =>
-        TryPeek(agentId, out var status)
+    public string Peek(string target) =>
+        TryPeek(target, out var status)
             ? status
-            : throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+            : throw new ArgumentException($"Unknown sub-agent '{target}'.", nameof(target));
 
     /// <summary>
     /// Non-throwing variant of <see cref="Peek"/>: returns <c>false</c> (with an empty status) when
-    /// <paramref name="agentId"/> is not a tracked sub-agent, so a caller (e.g. the CheckAgent tool) can
+    /// <paramref name="target"/> matches no tracked sub-agent, so a caller (e.g. the CheckAgent tool) can
     /// return a helpful "unknown agent" result to the model instead of surfacing a tool-execution error.
     /// </summary>
-    public bool TryPeek(string agentId, out string status)
+    /// <param name="target">
+    /// An agent id OR the name the agent answers to, resolved by the same rules messaging uses. Ids-only
+    /// was the inconsistency this closes: SendMessage took a name and CheckAgent/WaitAgent did not, so a
+    /// model that had just messaged `reviewer` was told `reviewer` did not exist when it checked on it —
+    /// and WaitAgent refused a name its own wait (ObserveTargetCompletionAsync) would have accepted.
+    /// </param>
+    /// <param name="status">The status document, or empty when nothing matched.</param>
+    public bool TryPeek(string target, out string status)
     {
+        var agentId = TryResolveAgentId(target, out var resolved) ? resolved : target;
+
         if (_queuedSpawns.TryGetValue(agentId, out var queued))
         {
             status = JsonSerializer.Serialize(

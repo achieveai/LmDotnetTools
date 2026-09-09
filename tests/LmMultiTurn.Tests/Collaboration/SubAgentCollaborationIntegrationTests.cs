@@ -213,8 +213,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var waitAgent = Description(legacy, "WaitAgent");
         var waitForAgents = Description(collaborative, "WaitForAgents");
 
-        waitAgent.Should().Contain("Use an `agent_id` returned by `Agent`; do not pass workflow IDs.");
-        waitForAgents.Should().Contain("Use `agent_ids` returned by `Agent`").And.Contain("do not pass workflow IDs.");
+        waitAgent.Should().Contain("Name the agent you spawned").And.Contain("do not pass workflow IDs.");
+        waitForAgents.Should().Contain("Name the agents you spawned").And.Contain("do not pass workflow IDs.");
 
         // The redirect is the actionable half — "not this tool" only helps if it names the one that
         // does work — so it is shared verbatim rather than paraphrased per descriptor.

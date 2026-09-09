@@ -84,7 +84,7 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
             .GetFunctions()
             .Single(f => f.Contract.Name == "WaitAgent")
             .Contract.Description.Should()
-            .Contain("Use an `agent_id` returned by `Agent`; do not pass workflow IDs.");
+            .Contain("Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass workflow IDs.");
     }
 
     [Fact]
@@ -143,6 +143,23 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
             .GetString()
             .Should()
             .Be("running", "the timeout abandons the observation only — nothing about the agent is cancelled");
+    }
+
+    [Fact]
+    public async Task WaitAgent_AcceptsTheNameTheAgentAnswersTo()
+    {
+        // WaitAgent's own guard was the only thing rejecting a name: the wait it guards
+        // (ObserveTargetCompletionAsync) has always resolved a name. So a model that spawned
+        // `analyst` and waited on `analyst` was told no such agent existed, by the half of the call
+        // that never needed the id in the first place.
+        var (manager, provider) = CreateManager(CompletingAgent("all done"));
+        _ = await manager.SpawnAsync("test-agent", "work", name: "analyst", runInBackground: true);
+
+        var payload = await InvokeAsync(provider, new { agent_id = "analyst" });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
     }
 
     [Fact]

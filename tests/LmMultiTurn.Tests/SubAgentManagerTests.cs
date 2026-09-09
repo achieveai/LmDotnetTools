@@ -892,7 +892,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Peek_ThrowsOnUnknownAgentId()
+    public void Peek_ThrowsOnAnUnknownTarget()
     {
         // Arrange
         _manager = CreateManager();
@@ -900,8 +900,31 @@ public class SubAgentManagerTests : IAsyncLifetime
         // Act
         var act = () => _manager.Peek("non-existent-id");
 
-        // Assert
-        act.Should().Throw<ArgumentException>().WithMessage("*Unknown agent ID*non-existent-id*");
+        // Assert: "sub-agent", not "agent ID" — the lookup takes a name too, and a message that names
+        // only the id namespace tells a caller who passed a name to go look in the wrong place.
+        act.Should().Throw<ArgumentException>().WithMessage("*Unknown sub-agent*non-existent-id*");
+    }
+
+    [Fact]
+    public async Task Peek_ResolvesTheNameTheAgentAnswersTo()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager();
+
+        using var spawn = JsonDocument.Parse(
+            await _manager.SpawnAsync("test-agent", "work", name: "analyst", runInBackground: true)
+        );
+        var agentId = spawn.RootElement.GetProperty("agent_id").GetString()!;
+
+        using var peeked = JsonDocument.Parse(_manager.Peek("analyst"));
+        peeked
+            .RootElement.GetProperty("agent_id")
+            .GetString()
+            .Should()
+            .Be(agentId, "a name is an address here exactly as it is for messaging");
+
+        release.SetResult(true);
     }
 
     [Fact]

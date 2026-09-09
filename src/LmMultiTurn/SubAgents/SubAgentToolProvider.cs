@@ -578,7 +578,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "target",
-                    Description = "The sub-agent's id (from Agent) or the name you assigned it.",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -610,8 +610,8 @@ public class SubAgentToolProvider : IFunctionProvider
             Name = SendMessageToolName,
             Description =
                 "Send a message to ANY agent in this collaboration — your own sub-agents, your "
-                + "parent, or a peer you found with GetAgents. Address it by the agent_id from "
-                + "GetAgents (always unambiguous) or by name.\n\n"
+                + "parent, or a peer you found with GetAgents. Address it by NAME; every agent's name "
+                + "is unique, and its agent_id also works.\n\n"
                 + "This never blocks: it returns as soon as the message is accepted, and the "
                 + "recipient handles it on its own turn. If you asked a question, the answer "
                 + "arrives later as a message to you — keep working meanwhile, or use "
@@ -623,9 +623,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "target",
                     Description =
-                        "The recipient's agent_id, exact unique name, or alias from GetAgents. "
+                        "The recipient's name, its agent_id, or an alias from GetAgents. "
                         + "'primary' addresses the top-level conversation, not your immediate parent. "
-                        + "IDs take precedence; use an ID when a name or alias collides.",
+                        + "Names do not collide: an agent that asked for a name another agent holds is "
+                        + "granted a suffixed one, and GetAgents reports the name it actually answers to.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -693,7 +694,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description = "The id of the sub-agent to check (from Agent or SendMessage).",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -729,14 +730,15 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
                 + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
                 + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
-                + "Use an `agent_id` returned by `Agent`; do not pass workflow IDs."
+                + "Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass "
+                + "workflow IDs."
                 + WorkflowIdRedirect,
             Parameters =
             [
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description = "The id of the sub-agent to wait for (from Agent or SendMessage).",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -784,8 +786,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "agent_ids",
                     Description =
-                        "Comma-separated agent ids, exact unique names, or aliases from GetAgents, "
-                        + "e.g. 'primary, auth-reviewer'. IDs take precedence; shared names require IDs.",
+                        "Comma-separated agent names, agent_ids, or aliases from GetAgents, "
+                        + "e.g. 'primary, auth-reviewer'. Names do not collide, so a name is enough.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -831,7 +833,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "children — a name that matches no agent at all is refused instead). Agents you "
                 + "named that are real but not yours to wait on come back in `not_waited`, each with "
                 + "the action that does apply.\n\n"
-                + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
+                + "Name the agents you spawned (or pass the `agent_ids` `Agent` returned); do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
             Parameters =
@@ -839,7 +841,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_ids",
-                    Description = "Comma-separated ids or names of your own sub-agents to wait for.",
+                    Description = "Comma-separated names (or agent_ids) of your own sub-agents to wait for.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -881,9 +883,9 @@ public class SubAgentToolProvider : IFunctionProvider
             Name = GetAgentsToolName,
             Description =
                 "List every agent in this collaboration — not just your own sub-agents — with its "
-                + "agent_id, name, role, description, and where it sits in the hierarchy. Use it "
+                + "name, agent_id, role, description, and where it sits in the hierarchy. Use it "
                 + "to find who already owns a piece of work BEFORE spawning someone new to do it, "
-                + "and to get an agent_id, exact unique name, or alias to address with SendMessage. "
+                + "and to get the NAME to address with SendMessage (its agent_id and aliases work too). "
                 + "name_resolves_to_agent indicates whether the displayed name selects that row; "
                 + "aliases lists usable alternative addresses. 'primary' names the top-level conversation "
                 + "at every hierarchy depth unless that address collides. Resolution does not grant access: "
