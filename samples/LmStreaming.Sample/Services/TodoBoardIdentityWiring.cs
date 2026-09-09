@@ -76,10 +76,14 @@ public static class TodoBoardIdentityWiring
         {
             // The canonical identifier, not the display name: the board compares ownership ordinally,
             // and an identifier is the only thing here guaranteed to be unique within the conversation.
+            // That reason still holds — the name rides ALONGSIDE it as the display value, so the board
+            // can say "reviewer" where it keys on "agent-1", and nothing compares the name.
             return new TaskManager.AssigneeResolution(
                 entry.AgentId,
                 entry.AgentId,
-                entry.IsLive ? TaskManager.AssigneeLiveness.Live : TaskManager.AssigneeLiveness.Unreachable
+                entry.IsLive ? TaskManager.AssigneeLiveness.Live : TaskManager.AssigneeLiveness.Unreachable,
+                Candidates: null,
+                DisplayName: entry.Name
             );
         }
 

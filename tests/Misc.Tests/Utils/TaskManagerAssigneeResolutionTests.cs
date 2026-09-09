@@ -6,12 +6,19 @@ namespace AchieveAi.LmDotnetTools.Misc.Tests.Utils;
 
 /// <summary>
 ///     #672: an assignee name may not silently decide ownership. Every path that writes
-///     <c>Assignee</c> — <c>claim-task</c>, <c>assign-task</c>, and <c>update-task</c> moving a row to
-///     in-progress on an agent's behalf — asks the host's <see cref="TaskManager.AssigneeResolver" />
-///     first, refuses a name that matches more than one agent or no agent, and stores the resolved
-///     canonical identity so the ordinal comparisons that decide ownership compare one stable string.
-///     With no resolver wired the board behaves exactly as it did before.
+///     <c>Assignee</c> — <c>add-task</c>, <c>claim-task</c>, <c>assign-task</c>, and <c>update-task</c>
+///     moving a row to in-progress on an agent's behalf — asks the host's
+///     <see cref="TaskManager.AssigneeResolver" /> first, refuses a name that matches more than one
+///     agent or no agent, and stores the resolved canonical identity so the ordinal comparisons that
+///     decide ownership compare one stable string. With no resolver wired the board behaves exactly as
+///     it did before.
 /// </summary>
+/// <remarks>
+///     <c>add-task</c> is listed above because it did NOT resolve until #agent-naming: it wrote the
+///     caller's text verbatim while every other path wrote the resolved identity, so a task assigned by
+///     name could never be claimed by the agent it was assigned to. This file's own class doc used to
+///     enumerate the other three and omit it, which is how the hole stayed invisible.
+/// </remarks>
 public class TaskManagerAssigneeResolutionTests
 {
     private const string TaskTitle = "Wire the SSE endpoint";
@@ -31,6 +38,165 @@ public class TaskManagerAssigneeResolutionTests
 
     private static TaskManager.AssigneeResolution Live(string agentId) =>
         new(agentId, agentId, TaskManager.AssigneeLiveness.Live);
+
+    /// <summary>A live agent whose human name differs from the identity ownership is keyed on.</summary>
+    private static TaskManager.AssigneeResolution LiveNamed(string agentId, string displayName) =>
+        new(agentId, agentId, TaskManager.AssigneeLiveness.Live, Candidates: null, DisplayName: displayName);
+
+    [Fact]
+    public void AddTask_WithAnUnknownAssignee_IsRefused()
+    {
+        // Mutation that must go red: removing the ResolveAssignee call from AddTaskCore.
+        var board = new TaskManager { AssigneeResolver = _ => Unknown() };
+
+        var result = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("assignee_unknown");
+        board.GetTasks().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddTask_ThenClaimByTheSameName_LeavesTheRowOwnedByTheResolvedIdentity()
+    {
+        // The D1 regression, end to end. The assertion that discriminates is the one taken BEFORE the
+        // claim: claiming a not-started row overwrites its assignee outright, so "add by name then
+        // claim by name succeeds" is true even with the create path writing raw text. What was broken
+        // is what the row is OWNED BY between the two calls — every other reader of the board (the
+        // one-in-progress-per-assignee sweep, assign-task's lease comparison, an agent looking for
+        // its own work under the ordinal GetAgents handed it) compares the resolved identity.
+        var board = new TaskManager { AssigneeResolver = _ => Live("agent-3") };
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+
+        var claim = board.ClaimTask("1", "reviewer");
+
+        claim.IsError.Should().BeFalse();
+        var task = board.GetTasks().Single();
+        task.Assignee.Should().Be("agent-3");
+        task.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+    }
+
+    [Fact]
+    public void AddTask_WithNoResolverWired_KeepsTheRawTextExactlyAsBefore()
+    {
+        var board = new TaskManager();
+
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        board.GetTasks().Single().Assignee.Should().Be("reviewer");
+    }
+
+    [Fact]
+    public void AddTask_SubItemInheritsTheCanonicalAssignee_NotTheTypedName()
+    {
+        // Inheritance is the mechanism behind "lead assigns, assignee breaks it down", so the value
+        // it copies down has to be the same identity ownership compares — otherwise every sub-item
+        // reintroduces the hole its parent just closed.
+        var board = new TaskManager { AssigneeResolver = _ => Live("agent-3") };
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        _ = board.AddTask("Break it down", parentId: "1");
+
+        board.GetTasks().Single().SubTasks.Single().Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void ListTasks_ShowsTheDisplayNameWhileOwnershipComparesTheId()
+    {
+        // The board speaks names and keys on ids. Both halves are asserted together on purpose: a
+        // renderer that showed the name by storing it as the assignee would satisfy the first half
+        // while putting free text back in the ownership key.
+        var board = new TaskManager { AssigneeResolver = _ => LiveNamed("agent-3", "reviewer") };
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        board.ListTasks().Text.Should().Contain("reviewer").And.NotContain("agent-3");
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void ListTasks_WithNoDisplayName_StillShowsTheStoredAssignee()
+    {
+        // The fallback, pinned: a resolver that reports no display name — and the no-resolver board —
+        // must render exactly what they rendered before this member existed.
+        var board = new TaskManager { AssigneeResolver = _ => Live("agent-3") };
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        board.ListTasks().Text.Should().Contain("agent-3");
+    }
+
+    [Fact]
+    public void ClaimTask_StoresTheDisplayNameBesideTheIdentity_NotInsteadOfIt()
+    {
+        var board = new TaskManager { AssigneeResolver = _ => LiveNamed("agent-3", "reviewer") };
+        _ = board.AddTask(TaskTitle);
+
+        _ = board.ClaimTask("1", "agent-3");
+
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+        board.ListTasks().Text.Should().Contain("reviewer");
+    }
+
+    [Fact]
+    public void ADisplayNameSurvivesTheSnapshotRoundTrip()
+    {
+        // It has to persist beside the assignee for the same reason the assignee itself does (#595):
+        // a rehydrated board that lost it would silently start rendering ordinals again after a
+        // restart, which reads as the feature having been reverted.
+        var board = new TaskManager { AssigneeResolver = _ => LiveNamed("agent-3", "reviewer") };
+        _ = board.AddTask(TaskTitle, parentId: null, assignee: "reviewer");
+
+        var rehydrated = TaskManager.FromSnapshot(board.GetTodoBoardSnapshot("thread-1"));
+
+        rehydrated.GetTasks().Single().Assignee.Should().Be("agent-3");
+        rehydrated.ListTasks().Text.Should().Contain("reviewer").And.NotContain("agent-3");
+    }
+
+    [Fact]
+    public void ClaimTask_RefreshingAnExistingClaimByName_ResolvesBeforeComparing()
+    {
+        // The refresh branch compared task.Assignee — the RESOLVED identity — against the caller's raw
+        // trimmed text, so an agent heartbeating its own claim by name never matched its own lease and
+        // fell through to the take-a-claim path instead. The result text is what discriminates: both
+        // paths leave the row claimed by the same agent, and only the refresh branch says so.
+        var board = new TaskManager { AssigneeResolver = _ => Live("agent-3") };
+        _ = board.AddTask(TaskTitle);
+        _ = board.ClaimTask("1", "reviewer");
+
+        var refresh = board.ClaimTask("1", "reviewer");
+
+        refresh.IsError.Should().BeFalse();
+        refresh.Text.Should().Contain("claim refreshed");
+        board.GetTasks().Single().Assignee.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void RefreshingAClaimOnARowPersistedBeforeDisplayNamesExisted_FillsTheNameIn()
+    {
+        // A row hydrated from a snapshot written before assigneeDisplayName existed carries the
+        // identity and no name, and nothing re-runs the resolver on hydration. The holder's next
+        // heartbeat is what fills it in — without that, every row claimed before this change would
+        // keep rendering its ordinal for the rest of its life and read as the feature not shipping.
+        var board = new TaskManager { AssigneeResolver = _ => LiveNamed("agent-3", "reviewer") };
+        _ = board.AddTask(TaskTitle);
+        _ = board.ClaimTask("1", "reviewer");
+
+        var snapshot = board.GetTodoBoardSnapshot("thread-1");
+        var withoutTheName = snapshot with { Tasks = [snapshot.Tasks[0] with { AssigneeDisplayName = null }] };
+        var rehydrated = TaskManager.FromSnapshot(withoutTheName);
+        rehydrated.AssigneeResolver = _ => LiveNamed("agent-3", "reviewer");
+
+        // The pre-state, so this cannot pass by the name having survived hydration after all.
+        rehydrated.ListTasks().Text.Should().Contain("agent-3");
+
+        var refresh = rehydrated.ClaimTask("1", "reviewer");
+
+        refresh.IsError.Should().BeFalse();
+        refresh.Text.Should().Contain("claim refreshed");
+        rehydrated.ListTasks().Text.Should().Contain("reviewer").And.NotContain("agent-3");
+        rehydrated.GetTasks().Single().Assignee.Should().Be("agent-3");
+    }
 
     [Fact]
     public void ClaimTask_WithAmbiguousAgent_IsRefusedAndLeavesTheRowUntouched()

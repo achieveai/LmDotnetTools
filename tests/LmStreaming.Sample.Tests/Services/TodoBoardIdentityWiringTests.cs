@@ -103,6 +103,36 @@ public sealed class TodoBoardIdentityWiringTests
     }
 
     [Fact]
+    public void AResolvedAgentCarriesItsDisplayNameBesideTheCanonicalIdentifier()
+    {
+        // #agent-naming: the board shows names and keys on ids. The identity slots keep the ordinal —
+        // the reason above (an identifier is the only thing guaranteed unique in the conversation) is
+        // upheld, not reversed — and the display name arrives BESIDE it, never instead of it.
+        var rootA = RootHoldingAgentOne(RootA, "alpha");
+
+        var resolved = TodoBoardIdentityWiring.Resolve(rootA.Directory, RootA, "alpha");
+
+        resolved.AgentId.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+        resolved.CanonicalName.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+        resolved.DisplayName.Should().Be("alpha");
+    }
+
+    [Fact]
+    public void AttachedToABoard_AnAssignmentByNameIsListedByNameAndOwnedByTheIdentifier()
+    {
+        // End to end through the real directory rather than a stub resolver: the whole point of the
+        // display name is what the model reads back out of list-tasks after assigning by name.
+        var rootA = RootHoldingAgentOne(RootA, "alpha");
+        var board = new TaskManager();
+        TodoBoardIdentityWiring.Attach(board, rootA, RootA);
+
+        _ = board.AddTask("Wire the SSE endpoint", parentId: null, assignee: "alpha");
+
+        board.GetTasks().Single().Assignee.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+        board.ListTasks().Text.Should().Contain("alpha").And.NotContain(SubAgentThreadIds.AgentIdFor(1));
+    }
+
+    [Fact]
     public void ARetainedAgentIsUnreachableRatherThanUnknown()
     {
         // A stopped agent still owns what it claimed; "gone" and "never existed" are different answers.
@@ -170,17 +200,22 @@ public sealed class TodoBoardIdentityWiringTests
     [Fact]
     public void ANameSharedByTwoAgentsLostToARestart_IsRefusedRatherThanGuessed()
     {
-        // The one path #676 opens that has no single answer: the name is ambiguous among tombstones, so
-        // the directory reports AmbiguousName with no live entry behind it and the candidate listing —
-        // which reads live registrations — comes back empty. The refusal must survive an empty list.
+        // The one path #676 opens that has no single answer, and the reason the directory's ambiguity
+        // latch survives the suffixing policy that removed every other contest: two TOMBSTONES can share
+        // a name. There is no live agent left to rename, and the records come from a previous process,
+        // which may have persisted a pair that a registration today would have kept apart. The directory
+        // reports AmbiguousName with no live entry behind it, and the candidate listing — which reads
+        // LIVE registrations — comes back empty. The refusal must survive an empty list.
         var previous = RootHoldingAgentOne(RootA, "alpha");
-        var second = previous.Context.CreateChild(
-            SubAgentThreadIds.AgentIdFor(2),
-            AgentKind.SubAgent,
-            "worker",
-            "does the work"
-        );
-        previous.Directory.TryRegister(second, "alpha", "running").Succeeded.Should().BeTrue();
+
+        // Built by hand rather than registered: registering a second "alpha" today would be granted a
+        // suffixed name, so going through the live path could not produce the pair being replayed here.
+        var persisted = previous
+            .Directory.SnapshotRecords()
+            .Where(r => !string.Equals(r.AgentId, RootA, StringComparison.Ordinal))
+            .ToList();
+        persisted.Should().ContainSingle().Which.Name.Should().Be("alpha");
+        persisted.Add(persisted[0] with { AgentId = SubAgentThreadIds.AgentIdFor(2) });
 
         var restarted = AgentCollaborationSetup.CreateRoot(
             new AgentCollaborationOptions(),
@@ -189,11 +224,7 @@ public sealed class TodoBoardIdentityWiringTests
             name: "conversation"
         );
         restarted.Directory.TryRegister(restarted.Context, "conversation", "running").Succeeded.Should().BeTrue();
-        foreach (
-            var record in previous
-                .Directory.SnapshotRecords()
-                .Where(r => !string.Equals(r.AgentId, RootA, StringComparison.Ordinal))
-        )
+        foreach (var record in persisted)
         {
             restarted.Directory.MarkInvalidated(record).Should().BeTrue();
         }
@@ -241,8 +272,11 @@ public sealed class TodoBoardIdentityWiringTests
     }
 
     [Fact]
-    public void AContestedNameReportsEveryCandidate()
+    public void ASecondAgentAskingForATakenName_LeavesTheBoardStillAbleToNameBoth()
     {
+        // Two LIVE agents can no longer contest a name: the directory grants the newcomer a suffixed
+        // one. This used to be the board's ambiguity case, and its cost was that a name the lead had
+        // been assigning work to became unusable to both agents the moment a second one asked for it.
         var rootA = RootHoldingAgentOne(RootA, "alpha");
         var second = rootA.Context.CreateChild(
             SubAgentThreadIds.AgentIdFor(2),
@@ -250,12 +284,24 @@ public sealed class TodoBoardIdentityWiringTests
             "worker",
             "does the work"
         );
-        rootA.Directory.TryRegister(second, "alpha", "running").Succeeded.Should().BeTrue();
 
-        var resolved = TodoBoardIdentityWiring.Resolve(rootA.Directory, RootA, "alpha");
+        var registration = rootA.Directory.TryRegister(second, "alpha", "running");
+        registration.Succeeded.Should().BeTrue();
+        var granted = registration.Entry!.Name;
+        granted.Should().NotBe("alpha", "the name was already held by a live agent");
 
-        resolved.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unknown);
-        resolved.Candidates.Should().Equal(SubAgentThreadIds.AgentIdFor(1), SubAgentThreadIds.AgentIdFor(2));
+        var incumbent = TodoBoardIdentityWiring.Resolve(rootA.Directory, RootA, "alpha");
+        incumbent.Liveness.Should().Be(TaskManager.AssigneeLiveness.Live);
+        incumbent.CanonicalName.Should().Be(SubAgentThreadIds.AgentIdFor(1));
+
+        var newcomer = TodoBoardIdentityWiring.Resolve(rootA.Directory, RootA, granted);
+        newcomer.Liveness.Should().Be(TaskManager.AssigneeLiveness.Live);
+        newcomer
+            .CanonicalName.Should()
+            .Be(
+                SubAgentThreadIds.AgentIdFor(2),
+                "the granted name is an address the board must accept, not a label on an unaddressable agent"
+            );
     }
 
     [Fact]
