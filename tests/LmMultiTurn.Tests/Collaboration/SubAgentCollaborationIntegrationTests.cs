@@ -449,6 +449,35 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Spawn_RefusedByAFullQueueAfterAdmission_LeavesNoDirectoryEntry_SoARetryGetsTheSameName()
+    {
+        // The other pre-start failure: admission succeeded, the local slot was taken, and the bounded
+        // defer queue then refused the spawn. No receipt ever named this agent, so the directory must
+        // forget it exactly as it forgets a spawn whose constructor threw.
+        // Mutation that must go red: the pre-enqueue catch calling RetireAgent instead of WithdrawAgent.
+        var root = CreateRegisteredRoot();
+        var (_, saturated) = CreateManager(
+            root,
+            template: BlockingTemplate(),
+            configure: o => o with { MaxConcurrentSubAgents = 1, MaxQueuedSubAgents = 0 }
+        );
+        _ = await SpawnAndResolveIdAsync(saturated, "blocker");
+
+        var overflow = await InvokeAsync(saturated, "Agent", NewSpawn("overflow"));
+        overflow.IsError.Should().BeTrue(overflow.Text);
+        overflow.ErrorCode.Should().Be("queue_full");
+
+        root.Directory.Resolve("overflow").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+
+        var (_, roomy) = CreateManager(root);
+        var retry = await InvokeAsync(roomy, "Agent", NewSpawn("overflow"));
+
+        retry.IsError.Should().BeFalse(retry.Text);
+        using var doc = JsonDocument.Parse(retry.Text);
+        doc.RootElement.GetProperty("name").GetString().Should().Be("overflow");
+    }
+
+    [Fact]
     public async Task Spawn_CancelledWhileQueuedBehindASaturatedLocalGate_ReclaimsRootCapacityAndRetiresTheDirectoryEntry()
     {
         // Admission (a root-wide capacity lease and a "queued" directory row) happens inside

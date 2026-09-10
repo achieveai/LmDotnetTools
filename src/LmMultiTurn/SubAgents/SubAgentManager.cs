@@ -859,8 +859,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         catch
         {
             // The spawn never reached the queue, so nothing downstream will ever retire it. Give the
-            // collaboration its slot back here or the cap leaks one agent per rejected spawn.
-            RetireAgent(agentId, "error");
+            // collaboration its slot back here or the cap leaks one agent per rejected spawn — and give
+            // its name back too: withdrawn, not retired, because no receipt ever named this agent and a
+            // retained binding would only suffix the caller's retry (see WithdrawAgent).
+            WithdrawAgent(agentId);
+            ReleaseNameClaim(effectiveName, agentId);
             throw;
         }
 
