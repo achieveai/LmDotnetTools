@@ -1611,7 +1611,12 @@ try
                     // for this chat mode. Every descendant (ordinary sub-agent, workflow controller,
                     // workflow delegate) receives THIS handle by reference, so there is exactly one
                     // directory and one ledger per conversation.
-                    var rootCollaboration = CreateRootCollaboration(collaborationHostOptions, caps, threadId);
+                    var rootCollaboration = CreateRootCollaboration(
+                        collaborationHostOptions,
+                        caps,
+                        threadId,
+                        mode.RootAgentName
+                    );
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
@@ -3468,14 +3473,17 @@ public partial class Program
     internal static AgentCollaborationSetup? CreateRootCollaboration(
         AgentCollaborationHostOptions hostOptions,
         ModeCapabilities caps,
-        string threadId
+        string threadId,
+        string? rootAgentName = null
     ) =>
         hostOptions.ResolveForMode(defaultEnabled: caps.Collaboration) is { } collabOptions
             ? AgentCollaborationSetup.CreateRoot(
                 collabOptions,
                 collaborationId: threadId,
                 agentId: threadId,
-                name: "conversation"
+                // Null or blank falls through to AgentCollaborationSetup.DefaultRootName. The old
+                // literal "conversation" named the thread, not an agent, so no model was ever told it.
+                name: rootAgentName
             )
             : null;
 
@@ -3839,6 +3847,14 @@ public partial class Program
     /// dispatch prompt may never mention the board while the primary has already assigned a task to
     /// the spawned agent's name.
     /// </summary>
+    /// <remarks>
+    /// The probe is called with the SPAWN name. Once <see cref="TodoBoardIdentityWiring"/> is attached
+    /// the board stores the canonical <c>agent-N</c> in <see cref="TaskManager.TaskItem.Assignee"/> and
+    /// the name the lead typed in <see cref="TaskManager.TaskItem.AssigneeDisplayName"/>, so the name is
+    /// matched against the display name as well as the identifier. Comparing it to the identifier alone
+    /// could never match a resolved assignment, and the warning went silent exactly where it was meant
+    /// to fire.
+    /// </remarks>
     internal static bool HasOpenTaskAssignedTo(TaskManager taskManager, string agentName)
     {
         ArgumentNullException.ThrowIfNull(taskManager);
@@ -3855,7 +3871,10 @@ public partial class Program
                 // Case-insensitive: agent names are human-typed on both sides (assign-task's
                 // assignee and the spawn's name), and a casing mismatch silencing the warning is
                 // exactly the #623 failure shape.
-                && string.Equals(task.Assignee, agentName, StringComparison.OrdinalIgnoreCase)
+                && (
+                    string.Equals(task.AssigneeDisplayName, agentName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(task.Assignee, agentName, StringComparison.OrdinalIgnoreCase)
+                )
             ) || task.SubTasks.Any(sub => HasOpenAssignment(sub, agentName));
     }
 

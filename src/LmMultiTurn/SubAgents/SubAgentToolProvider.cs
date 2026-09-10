@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
@@ -578,7 +579,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "target",
-                    Description = "The sub-agent's id (from Agent) or the name you assigned it.",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -610,8 +611,8 @@ public class SubAgentToolProvider : IFunctionProvider
             Name = SendMessageToolName,
             Description =
                 "Send a message to ANY agent in this collaboration — your own sub-agents, your "
-                + "parent, or a peer you found with GetAgents. Address it by the agent_id from "
-                + "GetAgents (always unambiguous) or by name.\n\n"
+                + "parent, or a peer you found with GetAgents. Address it by NAME; every agent's name "
+                + "is unique, and its agent_id also works.\n\n"
                 + "This never blocks: it returns as soon as the message is accepted, and the "
                 + "recipient handles it on its own turn. If you asked a question, the answer "
                 + "arrives later as a message to you — keep working meanwhile, or use "
@@ -623,9 +624,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "target",
                     Description =
-                        "The recipient's agent_id, exact unique name, or alias from GetAgents. "
+                        "The recipient's name, its agent_id, or an alias from GetAgents. "
                         + "'primary' addresses the top-level conversation, not your immediate parent. "
-                        + "IDs take precedence; use an ID when a name or alias collides.",
+                        + "Names do not collide: an agent that asked for a name another agent holds is "
+                        + "granted a suffixed one, and GetAgents reports the name it actually answers to.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -693,7 +695,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description = "The id of the sub-agent to check (from Agent or SendMessage).",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -729,14 +731,15 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
                 + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
                 + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
-                + "Use an `agent_id` returned by `Agent`; do not pass workflow IDs."
+                + "Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass "
+                + "workflow IDs."
                 + WorkflowIdRedirect,
             Parameters =
             [
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description = "The id of the sub-agent to wait for (from Agent or SendMessage).",
+                    Description = "The sub-agent's name, or the agent_id Agent returned for it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -784,8 +787,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "agent_ids",
                     Description =
-                        "Comma-separated agent ids, exact unique names, or aliases from GetAgents, "
-                        + "e.g. 'primary, auth-reviewer'. IDs take precedence; shared names require IDs.",
+                        "Comma-separated agent names, agent_ids, or aliases from GetAgents, "
+                        + "e.g. 'primary, auth-reviewer'. Names do not collide, so a name is enough.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -831,7 +834,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "children — a name that matches no agent at all is refused instead). Agents you "
                 + "named that are real but not yours to wait on come back in `not_waited`, each with "
                 + "the action that does apply.\n\n"
-                + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
+                + "Name the agents you spawned (or pass the `agent_ids` `Agent` returned); do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
             Parameters =
@@ -839,7 +842,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_ids",
-                    Description = "Comma-separated ids or names of your own sub-agents to wait for.",
+                    Description = "Comma-separated names (or agent_ids) of your own sub-agents to wait for.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -880,15 +883,30 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             Name = GetAgentsToolName,
             Description =
-                "List every agent in this collaboration — not just your own sub-agents — with its "
-                + "agent_id, name, role, description, and where it sits in the hierarchy. Use it "
-                + "to find who already owns a piece of work BEFORE spawning someone new to do it, "
-                + "and to get an agent_id, exact unique name, or alias to address with SendMessage. "
-                + "name_resolves_to_agent indicates whether the displayed name selects that row; "
-                + "aliases lists usable alternative addresses. 'primary' names the top-level conversation "
-                + "at every hierarchy depth unless that address collides. Resolution does not grant access: "
-                + "check is_live and transcript_readable; WaitForAgents still covers only your own children.",
-            Parameters = [],
+                "List every agent in this collaboration — not just your own sub-agents — by NAME, with "
+                + "what each one is for, who it reports to, and whether it is still running. Use it to "
+                + "find who already owns a piece of work BEFORE spawning someone new to do it, and to get "
+                + "the name to address with SendMessage. Pass detail='detailed' when you need more: the "
+                + "agent_id and aliases (both also work as addresses), hierarchy depths, whether you may "
+                + "read its transcript, and the tokens it has spent per model. 'primary' names the "
+                + "top-level conversation at every hierarchy depth unless that address collides. "
+                + "Resolution does not grant access; WaitForAgents still covers only your own children.",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "detail",
+                    Description =
+                        "How much to return per agent. 'normal' (default) gives the name, what the agent "
+                        + "is for, who it reports to, and whether it is still running — enough to decide "
+                        + "whom to contact. 'detailed' adds agent_id, aliases, role, depths, transcript "
+                        + "readability, and token usage broken down by model. Prefer 'normal': a detailed "
+                        + "listing of a large collaboration is several thousand tokens you pay for on "
+                        + "every call.",
+                    ParameterType = new JsonSchemaObject { Type = new("string"), Enum = ["normal", "detailed"] },
+                    IsRequired = false,
+                },
+            ],
         };
 
         return new FunctionDescriptor
@@ -1362,7 +1380,11 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (!dispatch.Result.Succeeded)
         {
-            var description = DescribeSendFailure(dispatch.Result.FailureCode, target);
+            var description = DescribeSendFailure(
+                dispatch.Result.FailureCode,
+                target,
+                DescribeKnownAgents(LiveCollaborators(collaboration))
+            );
 
             // The ledger's correlation codes stay authoritative (closed, unknown, wrong recipient, not a
             // delegation); what a refused task_update was missing is the set it could have named.
@@ -1457,7 +1479,15 @@ public class SubAgentToolProvider : IFunctionProvider
     /// Turns a refusal code into a sentence that tells the model what to do differently. Never echoes
     /// the message body.
     /// </summary>
-    private static string DescribeSendFailure(string? failureCode, string target)
+    /// <param name="failureCode">The refusal code the ledger or directory returned.</param>
+    /// <param name="target">The name or id the sender addressed, echoed back so it can see what it typed.</param>
+    /// <param name="knownAgents">
+    /// The collaboration-wide roster sentence from <see cref="DescribeKnownAgents"/>. Passed in rather
+    /// than computed here because this method is static and shared, and because the roster a SendMessage
+    /// failure needs is the whole collaboration — not the sender's own children, which is the narrower
+    /// set CheckAgent and WaitForAgents are entitled to.
+    /// </param>
+    private static string DescribeSendFailure(string? failureCode, string target, string knownAgents)
     {
         return failureCode switch
         {
@@ -1465,13 +1495,12 @@ public class SubAgentToolProvider : IFunctionProvider
             // resolved is a mistake to correct, a resolved-but-retired agent is a real agent whose work
             // is already over, and an agent lost to a restart is one whose work was never finished and
             // which the model may legitimately want back. Only the third says "spawn it again".
-            AgentDirectoryFailureCodes.NotFound =>
-                $"No agent matches '{target}'. Call GetAgents for current agent_ids.",
+            AgentDirectoryFailureCodes.NotFound => $"No agent matches '{target}'. {knownAgents}",
             AgentMessageFailureCodes.UnknownTarget =>
-                $"'{target}' has finished and can no longer be reached. Call GetAgents to see who is still live.",
+                $"'{target}' has finished and can no longer be reached. {knownAgents}",
             AgentDirectoryFailureCodes.TargetNotLive =>
                 $"'{target}' existed before this session was restarted and is not running now. Spawn it "
-                    + "again with Agent, or call GetAgents for who is live.",
+                    + $"again with Agent, or address one that is live. {knownAgents}",
             AgentDirectoryFailureCodes.AmbiguousName =>
                 $"More than one agent is named '{target}'. Address it by agent_id instead.",
             AgentMessageFailureCodes.InboxFull =>
@@ -1584,6 +1613,12 @@ public class SubAgentToolProvider : IFunctionProvider
                         {
                             ["message_id"] = entry.MessageId,
                             ["to_agent_id"] = entry.ToAgentId,
+                            // Named `to_name` and placed here to match the accepted-send receipt exactly:
+                            // an obligation row and the receipt that created it describe the same message,
+                            // and a model that read one should not have to learn a second spelling to read
+                            // the other. Without it the row carried the ordinal alone — the one vocabulary
+                            // the model does not use for its peers, on the rows it MUST act on.
+                            ["to_name"] = collaboration.Directory.FindById(entry.ToAgentId)?.Name ?? entry.ToAgentId,
                             ["msg_type"] = ToWireName(entry.MessageType),
                             ["state"] = ToWireName(entry.State),
                             ["reason"] = entry.ReasonCode,
@@ -1714,6 +1749,22 @@ public class SubAgentToolProvider : IFunctionProvider
             );
         }
 
+        string detail;
+        using (var doc = JsonDocument.Parse(argsJson))
+        {
+            detail = (GetOptionalString(doc.RootElement, "detail") ?? "normal").Trim().ToLowerInvariant();
+        }
+
+        if (detail is not ("normal" or "detailed"))
+        {
+            // Refused rather than treated as 'normal': a caller that mistyped 'detailed' and silently
+            // received the smaller shape would conclude the ids are gone, not that it asked wrongly.
+            return Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromError($"Unknown detail '{detail}'. Use 'normal' or 'detailed'.", "invalid_args")
+            );
+        }
+
+        var detailed = detail == "detailed";
         var snapshot = collaboration.Directory.Snapshot();
         var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
         var truncated = listed.Count < snapshot.Count;
@@ -1740,35 +1791,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "address is missing from this list.";
         }
 
-        payload["agents"] = listed.Select(e => new
-        {
-            agent_id = e.AgentId,
-            name = e.Name,
-            name_resolves_to_agent = collaboration.Directory.Resolve(e.Name).Entry?.AgentId == e.AgentId,
-            aliases = e.Kind == AgentKind.Root
-            && collaboration.Directory.Resolve(AgentCollaborationDirectory.PrimaryAlias).Entry?.AgentId == e.AgentId
-                ? (string[])[AgentCollaborationDirectory.PrimaryAlias]
-                : [],
-            role = e.Role,
-            description = e.Description,
-            kind = e.Kind.ToString(),
-            agent_type = e.AgentType,
-            parent_agent_id = e.ParentAgentId,
-            depth = e.StructuralDepth,
-            // Both depths, because they answer different questions and diverge: structural depth is
-            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
-            // and a workflow controller hop advances one without the other.
-            structural_depth = e.StructuralDepth,
-            delegation_depth = e.DelegationDepth,
-            status = e.Status,
-            is_live = e.IsLive,
-            is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
-            // Stated up front so the reader does not have to discover by refusal which transcripts
-            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
-            transcript_readable = collaboration
-                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
-                .IsAllowed,
-        });
+        var usageByAgent = detailed ? UsageByAgent(_manager.UsageLedger) : null;
+        payload["agents"] = listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)).ToList();
 
         var json = JsonSerializer.Serialize(payload);
 
@@ -1780,6 +1804,242 @@ public class SubAgentToolProvider : IFunctionProvider
         _manager.Instrumentation?.RecordDirectoryListing(listed.Count, Encoding.UTF8.GetByteCount(json));
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(json));
+    }
+
+    /// <summary>
+    /// One <c>GetAgents</c> row. The normal shape is what a model needs to decide whom to contact —
+    /// name, purpose, who it reports to, whether it is still running — and nothing that costs tokens
+    /// on every call without earning them. The detailed shape adds every identifier and measurement
+    /// the normal one leaves out.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A dictionary rather than an anonymous type because members are conditional: <c>parent_name</c>
+    /// is omitted when the agent has no parent or the parent is no longer in the directory, rather
+    /// than written as null, and <c>usage</c> is omitted when nothing was recorded for the agent.
+    /// A zero would claim the agent spent nothing; an absent member says nothing was recorded, which
+    /// is the only claim this listing can stand behind for an agent that has not run yet or whose
+    /// spend went to a ledger this loop cannot see.
+    /// </para>
+    /// <para>
+    /// The name leads and the id follows, in keeping with every other surface (ADR 0019): the id is
+    /// still carried, but only when asked for, so it is no longer what the listing teaches.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, object?> DescribeAgent(
+        AgentCollaborationSetup collaboration,
+        AgentDirectoryEntry e,
+        bool detailed,
+        UsageByAgentIndex? usageByAgent
+    )
+    {
+        var row = new Dictionary<string, object?>(StringComparer.Ordinal) { ["name"] = e.Name };
+
+        if (detailed)
+        {
+            row["agent_id"] = e.AgentId;
+            row["name_resolves_to_agent"] = collaboration.Directory.Resolve(e.Name).Entry?.AgentId == e.AgentId;
+            row["aliases"] =
+                e.Kind == AgentKind.Root
+                && collaboration.Directory.Resolve(AgentCollaborationDirectory.PrimaryAlias).Entry?.AgentId == e.AgentId
+                    ? (string[])[AgentCollaborationDirectory.PrimaryAlias]
+                    : [];
+            row["role"] = e.Role;
+        }
+
+        row["description"] = e.Description;
+
+        if (e.ParentAgentId is { } parentId && collaboration.Directory.FindById(parentId) is { } parent)
+        {
+            row["parent_name"] = parent.Name;
+        }
+
+        if (detailed)
+        {
+            row["kind"] = e.Kind.ToString();
+            row["agent_type"] = e.AgentType;
+            row["parent_agent_id"] = e.ParentAgentId;
+            // Both depths, because they answer different questions and diverge: structural depth is
+            // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+            // and a workflow controller hop advances one without the other.
+            row["structural_depth"] = e.StructuralDepth;
+            row["delegation_depth"] = e.DelegationDepth;
+            // The pre-ADR-0019 listing published structural depth under this name as well; kept in the
+            // detailed shape so a reader written against that listing still finds it.
+            row["depth"] = e.StructuralDepth;
+        }
+
+        row["status"] = e.Status;
+
+        if (detailed)
+        {
+            row["is_live"] = e.IsLive;
+        }
+
+        row["is_you"] = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal);
+
+        if (detailed)
+        {
+            // Stated up front so the reader does not have to discover by refusal which transcripts
+            // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+            row["transcript_readable"] = collaboration
+                .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                .IsAllowed;
+
+            if (usageByAgent is not null && usageByAgent.TryGet(e, out var usage))
+            {
+                row["usage"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["input_tokens"] = usage.InputTokens,
+                    ["output_tokens"] = usage.OutputTokens,
+                    ["cache_read_tokens"] = usage.CacheReadTokens,
+                    ["cache_write_tokens"] = usage.CacheWriteTokens,
+                    ["reasoning_tokens"] = usage.ReasoningTokens,
+                    ["total_tokens"] = usage.TotalTokens,
+                    ["attempt_count"] = usage.AttemptCount,
+                    ["preferred_cost_micros"] = usage.PreferredCostMicros,
+                    ["cost_provenance"] = usage.CostProvenance.ToString(),
+                    ["per_model"] = usage
+                        .PerModel.Select(m => new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["model_id"] = m.ModelId,
+                            ["input_tokens"] = m.InputTokens,
+                            ["output_tokens"] = m.OutputTokens,
+                            ["total_tokens"] = m.TotalTokens,
+                        })
+                        .ToList(),
+                };
+            }
+        }
+
+        return row;
+    }
+
+    /// <summary>
+    /// The key under which the root loop's own usage row is filed in <see cref="UsageByAgent"/>. The
+    /// root's execution id is its thread id, not an agent id, so it needs a key that cannot collide
+    /// with one; a sub-agent's key is its <c>agent-N</c>.
+    /// </summary>
+    private const string RootUsageKey = "\u0000root";
+
+    /// <summary>
+    /// A per-agent VIEW over <paramref name="ledger"/>: the same per-execution fold the conversation's
+    /// context report uses, re-keyed from execution (thread) id to the agent id the directory knows.
+    /// Not a second ledger — nothing is stored — and null when the loop keeps no ledger, so the caller
+    /// omits usage rather than reporting zeros nobody measured.
+    /// </summary>
+    /// <remarks>
+    /// The root's own attempts fold under the root thread id (their <c>ParentExecutionId</c> is null),
+    /// every sub-agent's under its own sub-agent thread, so <see cref="AgentExecutionRef.AgentIdFromThreadId"/>
+    /// recovers <c>agent-N</c> for the latter and the root is filed under <see cref="RootUsageKey"/>.
+    /// A thread id that decodes to neither (another conversation's records replayed into this ledger)
+    /// is keyed by its own id and matches no directory row, which is the correct outcome: a listing
+    /// must never attribute spend to an agent that did not incur it.
+    /// </remarks>
+    private static UsageByAgentIndex? UsageByAgent(UsageLedger? ledger)
+    {
+        if (ledger is null)
+        {
+            return null;
+        }
+
+        var byAgent = new Dictionary<string, ExecutionUsageRow>(StringComparer.Ordinal);
+        var byExecution = new Dictionary<string, ExecutionUsageRow>(StringComparer.Ordinal);
+        foreach (var row in ConversationUsageAggregate.FoldByExecution(ledger.SnapshotRecords()))
+        {
+            var key = string.Equals(row.ExecutionId, ledger.RootConversationId, StringComparison.Ordinal)
+                ? RootUsageKey
+                : AgentExecutionRef.AgentIdFromThreadId(row.ExecutionId);
+            _ = byAgent.TryAdd(key, row);
+            _ = byExecution.TryAdd(row.ExecutionId, row);
+        }
+
+        return new UsageByAgentIndex(byAgent, byExecution);
+    }
+
+    /// <summary>
+    /// The ledger's per-execution rows, reachable two ways: by the agent id a sub-agent thread encodes, and
+    /// by the raw execution id for an agent whose entry DECLARES one. A workflow controller is the second
+    /// kind — its directory id is <c>wfctl-{workflow}</c> and its spend is filed under the controller thread
+    /// — so without the declared association its row read as an agent that spent nothing.
+    /// </summary>
+    private sealed record UsageByAgentIndex(
+        IReadOnlyDictionary<string, ExecutionUsageRow> ByAgentId,
+        IReadOnlyDictionary<string, ExecutionUsageRow> ByExecutionId
+    )
+    {
+        public bool TryGet(AgentDirectoryEntry entry, out ExecutionUsageRow usage)
+        {
+            if (entry.ExecutionId is { } executionId && ByExecutionId.TryGetValue(executionId, out usage!))
+            {
+                return true;
+            }
+
+            var key = entry.Kind == AgentKind.Root ? RootUsageKey : entry.AgentId;
+            return ByAgentId.TryGetValue(key, out usage!);
+        }
+    }
+
+    /// <summary>
+    /// Names the agents a mistaken target could have meant, as <c>name (agent-id)</c> pairs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The NAME comes first because it is the handle the caller should use; the id follows in
+    /// parentheses for the case where a name is genuinely not enough. Every earlier version of these
+    /// messages listed ids alone and told the model to "call GetAgents for current agent_ids", which is
+    /// what taught it that the ordinal is the address. Production shows the cost: across 1279
+    /// conversations, models addressed peers as <c>lead</c>, <c>Revobot</c>, <c>parent</c> and
+    /// <c>manager</c> — role words and product names, never a mistyped ordinal — and 61 conversations
+    /// were answered with a sentence that named no agent at all.
+    /// </para>
+    /// <para>
+    /// One helper for every "who did you mean?" message, so four sites cannot drift into four
+    /// vocabularies. Sorted by name (ordinal) so repeated failures read identically instead of
+    /// shuffling, and capped at <see cref="MaxListedAgentIds"/> — a cap that ANNOUNCES itself, because
+    /// a silently truncated list invites the reader to conclude the agent it wanted does not exist.
+    /// </para>
+    /// </remarks>
+    internal static string DescribeKnownAgents(IReadOnlyList<(string AgentId, string Name)> known)
+    {
+        if (known.Count == 0)
+        {
+            return "There are no other agents to address right now.";
+        }
+
+        var sorted = known.OrderBy(a => a.Name, StringComparer.Ordinal).ThenBy(a => a.AgentId, StringComparer.Ordinal);
+
+        // An agent whose name IS its id prints once. "agent-3 (agent-3)" reads like two handles where
+        // there is one, and the whole point of the parenthesised id is that it differs from the name.
+        var listed = sorted
+            .Take(MaxListedAgentIds)
+            .Select(a =>
+                string.Equals(a.Name, a.AgentId, StringComparison.Ordinal) ? a.AgentId : $"{a.Name} ({a.AgentId})"
+            );
+
+        var suffix =
+            known.Count > MaxListedAgentIds ? $" (showing {MaxListedAgentIds} of {known.Count})" : string.Empty;
+
+        return $"Address one of these by name: {string.Join(", ", listed)}{suffix}.";
+    }
+
+    /// <summary>
+    /// Everyone in the collaboration the sender could address right now, itself excluded.
+    /// </summary>
+    /// <remarks>
+    /// Live only, unlike GetAgents, which also shows retained entries. These names go into a sentence
+    /// that answers "then who?" after a refused send, and a retired agent is not an answer to that
+    /// question — offering one would send the model straight into the refusal it just got.
+    /// </remarks>
+    private static IReadOnlyList<(string AgentId, string Name)> LiveCollaborators(AgentCollaborationSetup collaboration)
+    {
+        return
+        [
+            .. collaboration
+                .Directory.Snapshot()
+                .Where(e => e.IsLive && !string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal))
+                .Select(e => (e.AgentId, e.Name)),
+        ];
     }
 
     /// <summary>
@@ -1856,7 +2116,7 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             return ToolHandlerResult.FromError(
                 $"You have no sub-agent matching: {string.Join(", ", unknown)}. "
-                    + "WaitForAgents only covers agents you spawned yourself.",
+                    + $"WaitForAgents only covers agents you spawned yourself. {DescribeKnownAgents(_manager.KnownAgents())}",
                 "unknown_agent"
             );
         }
@@ -2427,30 +2687,25 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Explains an unknown agent id to the model, naming the ids that would have worked.
+    /// Explains an unreachable agent to the model, naming the agents that would have worked.
     /// </summary>
     /// <remarks>
-    /// Shared by CheckAgent and WaitAgent so both mistakes are corrected the same way. The listing is
-    /// sorted (ordinal) so repeated failures read identically instead of shuffling, and capped at
-    /// <see cref="MaxListedAgentIds"/> — a cap that ANNOUNCES itself, because a silently truncated list
-    /// is worse than no list: it invites the model to conclude the id it wanted does not exist.
+    /// Shared by CheckAgent and WaitAgent so both mistakes are corrected the same way, and routed
+    /// through <see cref="DescribeKnownAgents"/> so they are corrected in the same vocabulary as a
+    /// refused SendMessage. The empty case keeps its own sentence: "there is nobody to address" and
+    /// "you have no sub-agents at all, and a synchronous spawn never needed this call" are different
+    /// facts, and only the second explains why the model is here.
     /// </remarks>
     private string DescribeUnknownAgent(string agentId, string toolName)
     {
-        var known = _manager.KnownAgentIds();
+        var known = _manager.KnownAgents();
         if (known.Count == 0)
         {
-            return $"No sub-agent with id '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
+            return $"No sub-agent '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
                 + $"call returns its result inline ({toolName} is unnecessary), and any background agents have completed.";
         }
 
-        var sorted = known.OrderBy(id => id, StringComparer.Ordinal).ToArray();
-        var listed = sorted.Take(MaxListedAgentIds);
-        var suffix =
-            sorted.Length > MaxListedAgentIds ? $" (showing {MaxListedAgentIds} of {sorted.Length})" : string.Empty;
-
-        return $"No sub-agent with id '{agentId}'. Use one of the ids the Agent tool returned: "
-            + $"{string.Join(", ", listed)}{suffix}.";
+        return $"No sub-agent '{agentId}'. {DescribeKnownAgents(known)}";
     }
 
     private static string? GetOptionalString(JsonElement root, string propertyName)

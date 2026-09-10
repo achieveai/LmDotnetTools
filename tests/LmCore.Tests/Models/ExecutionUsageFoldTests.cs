@@ -20,7 +20,9 @@ public class ExecutionUsageFoldTests
         long? estimated = null,
         long? reported = null,
         CostCompleteness completeness = CostCompleteness.Unavailable,
-        string? compactionCheckpointId = null
+        string? compactionCheckpointId = null,
+        string requestedModel = "model-A",
+        string? effectiveModel = null
     ) =>
         new()
         {
@@ -29,7 +31,8 @@ public class ExecutionUsageFoldTests
             RootConversationId = "root",
             ParentExecutionId = parentExecutionId,
             ExecutionKind = kind,
-            RequestedModel = "model-A",
+            RequestedModel = requestedModel,
+            EffectiveModel = effectiveModel,
             Revision = revision,
             InputTokens = input,
             OutputTokens = output,
@@ -142,6 +145,78 @@ public class ExecutionUsageFoldTests
         row.PreferredCostMicros.Should().BeNull();
         row.EstimatedCostCompleteness.Should().Be(CostCompleteness.Unavailable);
         row.CostProvenance.Should().Be(CostProvenance.Unavailable);
+    }
+
+    [Fact]
+    public void FoldByExecution_ForAnAgentThatSwitchedModels_BreaksTheRowDownByModel()
+    {
+        // The row sums ACROSS models, so "which model did this agent spend on" is unanswerable from it alone.
+        // The breakdown belongs here rather than on ModelUsageRow, which answers the conversation-wide
+        // question and stays unchanged.
+        var records = new[]
+        {
+            Record(
+                "subagent-agent-1:g1",
+                "subagent-agent-1",
+                UsageExecutionKind.SubAgent,
+                100,
+                10,
+                estimated: 5,
+                reported: 9,
+                completeness: CostCompleteness.Complete,
+                requestedModel: "claude-opus-5"
+            ),
+            Record(
+                "subagent-agent-1:g2",
+                "subagent-agent-1",
+                UsageExecutionKind.SubAgent,
+                40,
+                4,
+                estimated: 2,
+                requestedModel: "claude-haiku-4-5"
+            ),
+        };
+
+        var row = ConversationUsageAggregate.FoldByExecution(records).Should().ContainSingle().Subject;
+
+        row.TotalTokens.Should().Be(154);
+        row.PerModel.Select(m => m.ModelId).Should().Equal("claude-haiku-4-5", "claude-opus-5");
+        row.PerModel.Sum(m => m.TotalTokens).Should().Be(row.TotalTokens);
+
+        var opus = row.PerModel.Single(m => m.ModelId == "claude-opus-5");
+        opus.InputTokens.Should().Be(100);
+        opus.OutputTokens.Should().Be(10);
+        opus.AttemptCount.Should().Be(1);
+        opus.PreferredCostMicros.Should().Be(9);
+        opus.EstimatedCostCompleteness.Should().Be(CostCompleteness.Complete);
+
+        var haiku = row.PerModel.Single(m => m.ModelId == "claude-haiku-4-5");
+        haiku.InputTokens.Should().Be(40);
+        haiku.PreferredCostMicros.Should().Be(2);
+        haiku.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void FoldByExecution_GroupsTheBreakdownByEffectiveModel_NotTheRequestedOne()
+    {
+        // A provider that served a different model than the one asked for must show up under the model that
+        // actually ran, matching how the conversation-wide fold groups (UsageRecord.EffectiveModelId).
+        var records = new[]
+        {
+            Record(
+                "subagent-agent-1:g1",
+                "subagent-agent-1",
+                UsageExecutionKind.SubAgent,
+                100,
+                10,
+                requestedModel: "claude-opus-5",
+                effectiveModel: "claude-opus-5-20260101"
+            ),
+        };
+
+        var row = ConversationUsageAggregate.FoldByExecution(records).Should().ContainSingle().Subject;
+
+        row.PerModel.Should().ContainSingle().Which.ModelId.Should().Be("claude-opus-5-20260101");
     }
 
     [Fact]

@@ -98,6 +98,14 @@ public record ChatMode
     public string? SubAgentReasoningEffort { get; init; }
 
     /// <summary>
+    /// Optional display name for this mode's ROOT agent — the name sub-agents see in their identity
+    /// preamble and use to address the top-level conversation. Null or blank means
+    /// <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.AgentCollaborationSetup.DefaultRootName"/>.
+    /// The <c>primary</c> alias keeps working either way.
+    /// </summary>
+    public string? RootAgentName { get; init; }
+
+    /// <summary>
     /// Authoritative model-intelligence tier keyed by canonical registered <c>subagent_type</c>.
     /// Null means the mode declares no type-keyed policy.
     /// </summary>
@@ -137,6 +145,7 @@ public record ChatMode
             SubAgentPromptPlacement = SubAgentPromptPlacement,
             SubAgentRequiredTools = SubAgentRequiredTools,
             SubAgentReasoningEffort = SubAgentReasoningEffort,
+            RootAgentName = RootAgentName,
             SubAgentModelIntelligenceByType = SubAgentModelIntelligenceByType,
             DefaultSubAgentModelIntelligence = DefaultSubAgentModelIntelligence,
         };

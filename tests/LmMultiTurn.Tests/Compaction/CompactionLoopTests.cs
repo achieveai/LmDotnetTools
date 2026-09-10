@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -142,7 +143,8 @@ public class CompactionLoopTests
             Func<string?, long?>? window = null,
             string? killSwitch = null,
             InMemoryConversationStore? store = null,
-            SubAgentOptions? subAgentOptions = null
+            SubAgentOptions? subAgentOptions = null,
+            AgentCollaborationSetup? collaboration = null
         )
         {
             Agent = new ScriptedAgent(script);
@@ -176,6 +178,7 @@ public class CompactionLoopTests
                 store: Store,
                 lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
                 subAgentOptions: subAgentOptions,
+                collaboration: collaboration,
                 compaction: Setup
             );
             _runTask = Loop.RunAsync(_cts.Token);
@@ -280,6 +283,45 @@ public class CompactionLoopTests
         request.Any(m =>
             m is TextMessage { Role: Role.User } t && t.Text.Contains("RecallConversation", StringComparison.Ordinal)
         );
+
+    [Fact]
+    public async Task CompactMode_KeepsTheAgentsIdentityInTheEnvelopeView()
+    {
+        // The identity preamble is prepended to the system prompt at loop construction (ADR 0019).
+        // The compaction view is built from the prompt the compaction host holds, so if the host were
+        // handed the caller's raw prompt the agent would forget who it is on the very turn a
+        // checkpoint activates — and every turn after, since the view stays in force.
+        var collaboration = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+        await using var h = new Harness(
+            EchoThenDone(7),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            collaboration: collaboration
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse();
+        var first = h.Agent.Requests.FindIndex(HasEnvelope);
+        first.Should().BePositive("the first requests go out raw");
+
+        var identity = AgentIdentityPreamble.Compose(collaboration)!;
+        h.Agent.Requests[first - 1]
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(
+                m => m.Role == Role.System && m.Text.StartsWith(identity, StringComparison.Ordinal),
+                "the raw request carries the identity"
+            );
+        h.Agent.Requests.Skip(first)
+            .Should()
+            .OnlyContain(
+                r =>
+                    r.OfType<TextMessage>()
+                        .Any(m => m.Role == Role.System && m.Text.StartsWith(identity, StringComparison.Ordinal)),
+                "the envelope view must carry the same identity the raw request did"
+            );
+    }
 
     [Fact]
     public async Task WarnMode_RecordsDecisions_AndNeverChangesTheProviderInput()

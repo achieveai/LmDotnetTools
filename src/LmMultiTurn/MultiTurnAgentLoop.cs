@@ -408,7 +408,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     )
         : base(
             threadId,
-            systemPrompt,
+            // The identity block has to be composed HERE, in the base-call argument list: SystemPrompt
+            // is assigned by the base constructor, which runs before `Collaboration` is set in this
+            // constructor's body. Composing it in the body would leave the prompt already stored.
+            AgentIdentityPreamble.Prepend(systemPrompt, collaboration),
             defaultOptions,
             maxTurnsPerRun,
             inputChannelCapacity,
@@ -464,7 +467,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 new CompactionRuntimeHost
                 {
                     ThreadId = threadId,
-                    SystemPrompt = systemPrompt,
+                    // The base property, not the raw parameter: the base constructor has already
+                    // stored the prompt WITH the identity preamble prepended, and the compaction view
+                    // replaces the normal request once a checkpoint is active. Handing the host the
+                    // raw prompt made an agent forget its own name on the turn a checkpoint activated.
+                    SystemPrompt = SystemPrompt,
                     Store = store,
                     RunLedgerStore = RunLedgerStore,
                     DefaultOptions = DefaultOptions,

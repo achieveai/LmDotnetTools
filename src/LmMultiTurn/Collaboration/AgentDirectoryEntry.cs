@@ -64,6 +64,13 @@ public sealed record AgentDirectoryEntry
     /// <summary>Template this agent was spawned from, when it came from one.</summary>
     public string? AgentType { get; init; }
 
+    /// <summary>
+    /// The execution the usage ledger files this agent's spend under, when it is not derivable from the
+    /// agent id. Null for an ordinary sub-agent, whose thread id encodes its ordinal; set for a workflow
+    /// controller, whose directory id (<c>wfctl-…</c>) and controller thread id share nothing.
+    /// </summary>
+    public string? ExecutionId { get; init; }
+
     /// <summary>How many hierarchy levels lie between the root and this agent.</summary>
     public int StructuralDepth { get; init; }
 
@@ -197,6 +204,11 @@ public sealed record CollaborationNodeRecord
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? SpawnedAt { get; init; }
 
+    /// <summary>See <see cref="AgentDirectoryEntry.ExecutionId"/>. Absent for every agent whose id derives it.</summary>
+    [JsonPropertyName("execution_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExecutionId { get; init; }
+
     /// <summary>Projects a live snapshot into its persisted form.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>
     public static CollaborationNodeRecord FromEntry(AgentDirectoryEntry entry)
@@ -214,6 +226,7 @@ public sealed record CollaborationNodeRecord
             Role = entry.Role,
             Description = entry.Description,
             AgentType = entry.AgentType,
+            ExecutionId = entry.ExecutionId,
             StructuralDepth = entry.StructuralDepth,
             DelegationDepth = entry.DelegationDepth,
             Status = entry.Status,
@@ -238,6 +251,7 @@ public sealed record CollaborationNodeRecord
             Role = Role,
             Description = Description,
             AgentType = AgentType,
+            ExecutionId = ExecutionId,
             StructuralDepth = StructuralDepth,
             DelegationDepth = DelegationDepth,
             Status = Status,

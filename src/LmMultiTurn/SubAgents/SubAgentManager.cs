@@ -298,8 +298,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Either way the slot is charged ONCE per agent identity and returned only by
     /// <see cref="RetireAgent"/>, so resuming an already-admitted child costs nothing.
     /// </remarks>
+    /// <returns>
+    /// The name the agent was actually GRANTED. Under collaboration the directory owns that decision —
+    /// it suffixes a name another agent already answers to — and every later use of the name has to
+    /// adopt its answer, or the child's identity preamble, its spawn receipt and its directory row
+    /// would each name it differently.
+    /// </returns>
     /// <exception cref="SubAgentCollaborationException">The spawn was refused.</exception>
-    private void AdmitAgent(
+    private string AdmitAgent(
         string agentId,
         string effectiveName,
         string templateName,
@@ -322,8 +328,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                         + "existing one instead of spawning another."
                 );
 
+            // No directory to arbitrate, so the legacy name map decides — by the same rule, so a host
+            // that turns collaboration on or off does not get a different collision policy.
             _admissions[agentId] = new SubAgentAdmission(Child: null, retainedLease);
-            return;
+            return GrantLegacyName(effectiveName, agentId);
         }
 
         if (!parent.CanDelegate)
@@ -422,7 +430,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, effectiveName), lease);
+        // The directory's answer, not the request: a suffixed child must be told the name it will
+        // actually answer to, because this handle is what composes its identity preamble.
+        var grantedName = registration.Entry!.Name;
+        _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, grantedName), lease);
+        return grantedName;
     }
 
     /// <summary>
@@ -466,6 +478,46 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _ = admission.Lease.Release();
     }
+
+    /// <summary>
+    /// Hands back an admission whose agent never ran. Retirement would keep the directory entry and its
+    /// name (so a later sender learns the agent FINISHED), which is right for an agent that existed; a
+    /// spawn that threw before its first turn produced nothing anyone was told about, and keeping the
+    /// reservation only suffixed the next spawn that asked for the same name.
+    /// </summary>
+    private void WithdrawAgent(string agentId)
+    {
+        if (!_admissions.TryRemove(agentId, out var admission))
+        {
+            return;
+        }
+
+        if (Collaboration is { } parent && admission.Child is not null)
+        {
+            var abandoned = parent.Bundle.WithdrawAgent(agentId);
+            ObserveTaskFault(parent.Bundle.NotifyAbandonedObligationsAsync(abandoned, agentId));
+        }
+
+        _ = admission.Lease.Release();
+    }
+
+    /// <summary>
+    /// A model-authored value made safe to sit inside a double-quoted attribute of the completion block.
+    /// </summary>
+    /// <remarks>
+    /// Names are unvalidated model input. <c>SubAgentResultParser</c> correlates a completion by the FIRST
+    /// <c>id="…"</c> it finds, so a name containing <c>" id="agent-9</c> would, unescaped, re-attribute the
+    /// completion to another agent. Escaping the five characters that can end an attribute or open a tag
+    /// keeps every value data; the id itself is minted here and needs none.
+    /// </remarks>
+    internal static string AttributeValue(string? value) =>
+        (value ?? string.Empty)
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal)
+            .Replace("\r", "&#13;", StringComparison.Ordinal)
+            .Replace("\n", "&#10;", StringComparison.Ordinal);
 
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
@@ -592,6 +644,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal SubAgentInstrumentation? Instrumentation => _options.Instrumentation;
 
+    /// <summary>
+    /// The usage ledger this manager relays descendant usage into, when the sink it was given is one —
+    /// the owning loop's <c>UsageLedger</c>, which for a root loop is the conversation's single ledger.
+    /// Exposed read-only so <see cref="SubAgentToolProvider"/> can render a per-agent VIEW of it in a
+    /// detailed <c>GetAgents</c> listing. It is never written through this member; nothing here is a
+    /// second ledger. Null when usage accounting is off or the sink is some other implementation.
+    /// </summary>
+    internal UsageLedger? UsageLedger => _usageSink as UsageLedger;
+
     internal IReadOnlyCollection<string>? AvailableModelIds => _options.AvailableModelIds;
 
     /// <summary>
@@ -704,7 +765,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
         // collaboration will not accept must never occupy a local slot or sit in the queue. No-op when
         // collaboration is off.
-        AdmitAgent(agentId, effectiveName, templateName, template, role, description);
+        // Adopted, not merely observed: the granted name is what the receipt reports and what the child
+        // is told it is called, so a caller that reads the receipt can address it and be right.
+        effectiveName = AdmitAgent(agentId, effectiveName, templateName, template, role, description);
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -796,8 +859,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         catch
         {
             // The spawn never reached the queue, so nothing downstream will ever retire it. Give the
-            // collaboration its slot back here or the cap leaks one agent per rejected spawn.
-            RetireAgent(agentId, "error");
+            // collaboration its slot back here or the cap leaks one agent per rejected spawn — and give
+            // its name back too: withdrawn, not retired, because no receipt ever named this agent and a
+            // retained binding would only suffix the caller's retry (see WithdrawAgent).
+            WithdrawAgent(agentId);
+            ReleaseNameClaim(effectiveName, agentId);
             throw;
         }
 
@@ -854,7 +920,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         // When this spawn reassigns an already-live name away from a predecessor, remember whom it took
         // it from. If the spawn then fails, cleanup restores the name to that still-live predecessor
         // instead of deleting it - otherwise a failed spawn silently strips a working agent of its name.
-        string? displacedNameOwnerId = null;
 
         try
         {
@@ -935,23 +1000,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _agents[agentId] = state;
                 if (!string.IsNullOrWhiteSpace(effectiveName))
                 {
-                    if (
-                        _namesToIds.TryGetValue(effectiveName, out var existingId)
-                        && existingId != agentId
-                        && _agents.ContainsKey(existingId)
-                    )
-                    {
-                        displacedNameOwnerId = existingId;
-                        _logger.LogWarning(
-                            "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
-                                + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
-                                + "address the new agent.",
-                            effectiveName,
-                            existingId,
-                            agentId
-                        );
-                    }
-
+                    // First writer wins, and the winner was decided at admission time. This used to
+                    // reassign the name to the newcomer and log a warning nobody reads, so a caller
+                    // mid-conversation with the first agent silently started addressing the second.
+                    // The write cannot steal: with collaboration off the name was already claimed
+                    // atomically for this agent by GrantLegacyName, and with it on the directory
+                    // guarantees the granted name is unique across the hierarchy.
                     _namesToIds[effectiveName] = agentId;
                 }
             }
@@ -991,14 +1045,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // about an agent that was never constructed, and a lease left behind would
                 // shrink the whole hierarchy's capacity permanently.
                 gateGuard.ReleaseOnce(_concurrencyGate);
-                RetireAgent(agentId, AgentCollaborationStatuses.Error);
+                WithdrawAgent(agentId);
+
+                // Admission claimed the name too, for the same reason it took the lease: both are
+                // root-wide reservations made before anything downstream knows this agent exists. A
+                // name left claimed here would suffix every later spawn that asks for it.
+                ReleaseNameClaim(effectiveName, agentId);
             }
             else
             {
                 // State may have been constructed but rejected at the shutdown-serialized registration
                 // boundary, or it may have registered and failed later. The shared cleanup handles both:
                 // dictionary removals are idempotent and it disposes the constructed loop/provider.
-                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard, displacedNameOwnerId);
+                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard);
             }
 
             throw;
@@ -1372,6 +1431,75 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// The name a spawn will answer to when there is no collaboration directory to arbitrate: the one
+    /// it asked for, or that name suffixed with its ordinal when a live agent already holds it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately the same rule as <c>AgentCollaborationDirectory</c>'s. These two paths used to
+    /// disagree outright — the directory latched a collided name permanently unusable, this map handed
+    /// it to the newcomer — and which policy applied depended only on whether collaboration happened to
+    /// be switched on. One bricked a name, the other misrouted messages to the wrong agent.
+    /// </para>
+    /// <para>
+    /// A FINISHED sub-agent still holds its name, matching the directory's treatment of a retired one.
+    /// That is not an oversight: a completed sub-agent stays in <see cref="_agents"/> precisely so it
+    /// can be sent a follow-up, so handing its name to a newcomer would route that follow-up to a
+    /// different agent — the exact defect this method exists to prevent. Only an agent removed
+    /// outright, by <see cref="CleanupFailedSpawnAsync"/> after a failed spawn, frees its name.
+    /// </para>
+    /// </remarks>
+    private string GrantLegacyName(string name, string agentId)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return name;
+        }
+
+        // Same rule as the directory's GrantAndBindName: a name shaped like a canonical id is taken by
+        // the agent that id will denote, because TryResolveAgentId consults ids before names and would
+        // hand the name to that newcomer the moment it was minted.
+        var shapedLikeAnId =
+            SubAgentThreadIds.IsOrdinalAgentId(name) && !string.Equals(name, agentId, StringComparison.Ordinal);
+
+        if (!shapedLikeAnId && _namesToIds.TryAdd(name, agentId))
+        {
+            return name;
+        }
+
+        // No same-id branch, unlike the directory's equivalent: this runs once per spawn and the
+        // ordinal allocator mints a fresh id each time, so a name already claimed here is always
+        // another agent's.
+        var suffix = SubAgentThreadIds.IsOrdinalAgentId(agentId)
+            ? agentId[SubAgentThreadIds.AgentIdPrefix.Length..]
+            : agentId;
+
+        var candidate = $"{name}-{suffix}";
+        var attempt = 0;
+
+        // Terminates because every iteration proposes a candidate it has not proposed before.
+        while (!_namesToIds.TryAdd(candidate, agentId))
+        {
+            candidate = $"{name}-{suffix}-{++attempt}";
+        }
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Gives back a name claimed at admission time by a spawn that then failed, so a name is not
+    /// reserved forever by an agent that never existed. A no-op unless the name still maps to this
+    /// agent — a later spawn may legitimately hold it by now.
+    /// </summary>
+    private void ReleaseNameClaim(string? name, string agentId)
+    {
+        if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mapped) && mapped == agentId)
+        {
+            _ = _namesToIds.TryRemove(name, out _);
+        }
+    }
+
+    /// <summary>
     /// Rolls back a spawn that failed after its <see cref="SubAgentState"/> was registered
     /// (possibly after the monitor already started, e.g. because <c>agent.SendAsync</c> threw):
     /// removes the partial registration from <see cref="_agents"/>/<see cref="_namesToIds"/>,
@@ -1386,27 +1514,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         string agentId,
         string? name,
         SubAgentState state,
-        GateReleaseGuard gateGuard,
-        string? displacedNameOwnerId = null
+        GateReleaseGuard gateGuard
     )
     {
         _ = _agents.TryRemove(agentId, out _);
-        RetireAgent(agentId, "error");
+        // Withdrawn rather than retired: this cleanup runs only from the spawn path, for an agent whose
+        // first turn was never sent, so nothing has been said about it that a retained entry would explain.
+        WithdrawAgent(agentId);
+
+        // The guard on the mapped id is what makes the removal safe. A spawn can no longer take a name
+        // from a live predecessor — it is granted a suffixed one instead — so a name this spawn owns is
+        // a name only it ever owned, and there is nothing to restore to anybody else.
         if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mappedId) && mappedId == agentId)
         {
-            // This spawn owns the name only because it took it from a live predecessor. Restoring it
-            // rather than deleting it keeps that predecessor addressable by name; a plain remove would
-            // let a failed spawn strip a working agent of a name it never lost on its own account. Only
-            // when the predecessor is still live - it may have been retired meanwhile, in which case the
-            // name is genuinely orphaned and removed.
-            if (!string.IsNullOrWhiteSpace(displacedNameOwnerId) && _agents.ContainsKey(displacedNameOwnerId))
-            {
-                _namesToIds[name] = displacedNameOwnerId;
-            }
-            else
-            {
-                _ = _namesToIds.TryRemove(name, out _);
-            }
+            _ = _namesToIds.TryRemove(name, out _);
         }
 
         try
@@ -2321,20 +2442,29 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Check the status and recent activity of a sub-agent.
+    /// Check the status and recent activity of a sub-agent, by id or by the name it answers to.
     /// </summary>
-    public string Peek(string agentId) =>
-        TryPeek(agentId, out var status)
+    public string Peek(string target) =>
+        TryPeek(target, out var status)
             ? status
-            : throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+            : throw new ArgumentException($"Unknown sub-agent '{target}'.", nameof(target));
 
     /// <summary>
     /// Non-throwing variant of <see cref="Peek"/>: returns <c>false</c> (with an empty status) when
-    /// <paramref name="agentId"/> is not a tracked sub-agent, so a caller (e.g. the CheckAgent tool) can
+    /// <paramref name="target"/> matches no tracked sub-agent, so a caller (e.g. the CheckAgent tool) can
     /// return a helpful "unknown agent" result to the model instead of surfacing a tool-execution error.
     /// </summary>
-    public bool TryPeek(string agentId, out string status)
+    /// <param name="target">
+    /// An agent id OR the name the agent answers to, resolved by the same rules messaging uses. Ids-only
+    /// was the inconsistency this closes: SendMessage took a name and CheckAgent/WaitAgent did not, so a
+    /// model that had just messaged `reviewer` was told `reviewer` did not exist when it checked on it —
+    /// and WaitAgent refused a name its own wait (ObserveTargetCompletionAsync) would have accepted.
+    /// </param>
+    /// <param name="status">The status document, or empty when nothing matched.</param>
+    public bool TryPeek(string target, out string status)
     {
+        var agentId = TryResolveAgentId(target, out var resolved) ? resolved : target;
+
         if (_queuedSpawns.TryGetValue(agentId, out var queued))
         {
             status = JsonSerializer.Serialize(
@@ -2395,6 +2525,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// which ids are actually valid (the Agent tool returns short ids; a mismatched/hallucinated id is the
     /// common cause of an "unknown agent" check).</summary>
     public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys, .. _queuedSpawns.Keys];
+
+    /// <summary>The same sub-agents, each paired with the NAME it answers to, for the messages that ask
+    /// the model "who did you mean?". A name-less agent reports its own id as its name, so the caller
+    /// never has to decide what to print for one.</summary>
+    /// <remarks>
+    /// A queued spawn carries its granted name from admission, which is why it belongs here at all: a
+    /// model that has just read a spawn receipt and immediately checks on the agent is checking on one
+    /// that may still be waiting for capacity, and a roster that omitted it would deny the very name the
+    /// receipt just handed out.
+    /// </remarks>
+    public IReadOnlyList<(string AgentId, string Name)> KnownAgents() =>
+        [
+            .. _agents.Select(kv => (kv.Key, kv.Value.Name ?? kv.Key)),
+            .. _queuedSpawns.Select(kv => (kv.Key, kv.Value.EffectiveName)),
+        ];
 
     /// <summary>
     /// Observes a direct child's completion by id OR name, including one still waiting in the defer
@@ -4726,7 +4871,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         detail: questionText,
                         sourceToolName: "Agent",
                         sourceToolCallId: state.AgentId,
-                        label: state.TemplateName
+                        label: state.Name ?? state.TemplateName
                     ),
                     ct
                 );
@@ -4834,8 +4979,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             // eventual run is what performs the one true final completion (see the non-awaiting branch
             // below, invoked again for that later RunCompletedMessage).
             var awaitingResultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[AwaitingAnswer] Task: {state.Task}\n"
                 + $"Result: (awaiting the human's answer to a pending question)\n"
                 + $"</sub-agent>";
@@ -4917,8 +5062,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (rcm.IsError)
         {
             resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[Error] Task: {state.Task}\n"
                 + $"Error: {rcm.ErrorMessage}\n"
                 + $"</sub-agent>";
@@ -4940,9 +5085,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             // would trade this bug for a silent deadlock.
             var result = lastTextContent ?? "(no text response)";
 
+            // name is the address the parent spawned this agent under (ADR 0019); the template it came
+            // from rides under its own attribute. Until now name carried the template, so a parent that
+            // spawned "reviewer" was told "general-purpose finished" and had to reconcile the id itself.
+            // SubAgentResultParser reads only the id, so the extra attribute costs no consumer anything.
             resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" "
-                + $"id=\"{state.AgentId}\">\n"
+                $"<sub-agent name=\"{AttributeValue(state.Name ?? state.TemplateName)}\" "
+                + $"template=\"{AttributeValue(state.TemplateName)}\" id=\"{state.AgentId}\">\n"
                 + $"[Completed] Task: {state.Task}\n"
                 + $"Result: {result}\n"
                 + $"</sub-agent>";
@@ -5141,7 +5290,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     detail: text,
                     sourceToolName: "Agent",
                     sourceToolCallId: state.AgentId,
-                    label: state.TemplateName
+                    label: state.Name ?? state.TemplateName
                 ),
             ]);
         }

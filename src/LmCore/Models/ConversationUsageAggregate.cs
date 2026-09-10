@@ -127,6 +127,16 @@ public sealed record ExecutionUsageRow
 
     /// <summary>How many of those attempts were <see cref="UsageExecutionKind.Compaction" /> passes.</summary>
     public int CompactionAttemptCount { get; init; }
+
+    /// <summary>
+    ///     This execution's own spend broken down by <see cref="UsageRecord.EffectiveModelId" />, ordered by
+    ///     model id — the same per-model fold <see cref="ConversationUsageAggregate.PerModel" /> applies
+    ///     conversation-wide, restricted to this execution's records. The row's own totals sum ACROSS models,
+    ///     so an agent that switched models (a fallback, a split-model sub-agent, a cheaper compaction pass)
+    ///     is unreadable from them alone; these rows answer "on which model". Their token counts sum to the
+    ///     row's, by construction.
+    /// </summary>
+    public IReadOnlyList<ModelUsageRow> PerModel { get; init; } = [];
 }
 
 /// <summary>
@@ -207,30 +217,7 @@ public sealed record ConversationUsageAggregate
         UsageCompleteness completeness = UsageCompleteness.InProgress
     )
     {
-        var deduped = DedupeByAttempt(records);
-
-        var perModel = deduped
-            .GroupBy(r => r.EffectiveModelId)
-            .OrderBy(g => g.Key, StringComparer.Ordinal)
-            .Select(g => new ModelUsageRow
-            {
-                ModelId = g.Key,
-                InputTokens = g.Sum(r => r.InputTokens),
-                OutputTokens = g.Sum(r => r.OutputTokens),
-                CacheReadTokens = g.Sum(r => r.CacheReadTokens),
-                CacheWriteTokens = g.Sum(r => r.CacheWriteTokens),
-                ReasoningTokens = g.Sum(r => r.ReasoningTokens),
-                TotalTokens = g.Sum(r => r.TotalTokens),
-                EstimatedPublicCostMicros = SumKnown(g.Select(r => r.EstimatedPublicCostMicros)),
-                ProviderReportedCostMicros = SumKnown(g.Select(r => r.ProviderReportedCostMicros)),
-                PreferredCostMicros = SumKnown(g.Select(r => r.PreferredCostMicros)),
-                EstimatedCostCompleteness = FoldCompleteness(
-                    SumKnown(g.Select(r => r.EstimatedPublicCostMicros)),
-                    g.Select(r => r.CostCompleteness)
-                ),
-                AttemptCount = g.Count(),
-            })
-            .ToList();
+        var perModel = FoldPerModel(DedupeByAttempt(records));
 
         var estimatedTotal = SumStrict(perModel.Select(m => m.EstimatedPublicCostMicros));
 
@@ -290,6 +277,43 @@ public sealed record ConversationUsageAggregate
                         EstimatedCostCompleteness = FoldCompleteness(estimated, g.Select(r => r.CostCompleteness)),
                         AttemptCount = g.Count(),
                         CompactionAttemptCount = g.Count(r => r.ExecutionKind == UsageExecutionKind.Compaction),
+                        PerModel = FoldPerModel(g),
+                    };
+                }),
+        ];
+    }
+
+    /// <summary>
+    ///     Sums already-deduplicated records into per-model rows grouped by
+    ///     <see cref="UsageRecord.EffectiveModelId" /> and ordered by model id. One definition shared by the
+    ///     conversation-wide <see cref="Fold" /> and the per-execution breakdown, so a row means the same thing
+    ///     in both — and an execution's rows sum to its own totals for the same reason the conversation's do.
+    /// </summary>
+    /// <param name="deduped">Records already collapsed by <see cref="DedupeByAttempt" />.</param>
+    private static IReadOnlyList<ModelUsageRow> FoldPerModel(IEnumerable<UsageRecord> deduped)
+    {
+        return
+        [
+            .. deduped
+                .GroupBy(r => r.EffectiveModelId)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g =>
+                {
+                    var estimated = SumKnown(g.Select(r => r.EstimatedPublicCostMicros));
+                    return new ModelUsageRow
+                    {
+                        ModelId = g.Key,
+                        InputTokens = g.Sum(r => r.InputTokens),
+                        OutputTokens = g.Sum(r => r.OutputTokens),
+                        CacheReadTokens = g.Sum(r => r.CacheReadTokens),
+                        CacheWriteTokens = g.Sum(r => r.CacheWriteTokens),
+                        ReasoningTokens = g.Sum(r => r.ReasoningTokens),
+                        TotalTokens = g.Sum(r => r.TotalTokens),
+                        EstimatedPublicCostMicros = estimated,
+                        ProviderReportedCostMicros = SumKnown(g.Select(r => r.ProviderReportedCostMicros)),
+                        PreferredCostMicros = SumKnown(g.Select(r => r.PreferredCostMicros)),
+                        EstimatedCostCompleteness = FoldCompleteness(estimated, g.Select(r => r.CostCompleteness)),
+                        AttemptCount = g.Count(),
                     };
                 }),
         ];

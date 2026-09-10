@@ -94,6 +94,97 @@ public class UsageRecordMapperTests
     }
 
     [Fact]
+    public void FromUsageMessage_WhenTheProviderReportsADifferentModel_StampsItAsEffective()
+    {
+        // OpenRouter's generation stats report the model that actually served the call, which under
+        // auto-routing/fallback is not the one the caller asked for (OpenRouterUsageMiddleware puts it on
+        // Usage.ExtraProperties["model"]). Without the stamp, EffectiveModelId silently reports the requested
+        // model and every per-model rollup attributes the spend to a model that never ran (ADR 0003).
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "model",
+            "anthropic/claude-opus-5-20260101"
+        );
+        var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            message,
+            "root",
+            UsageExecutionKind.Primary,
+            "anthropic/claude-opus-5"
+        );
+
+        record.RequestedModel.Should().Be("anthropic/claude-opus-5");
+        record.EffectiveModel.Should().Be("anthropic/claude-opus-5-20260101");
+        record.EffectiveModelId.Should().Be("anthropic/claude-opus-5-20260101");
+    }
+
+    [Fact]
+    public void FromUsageMessage_WhenTheProviderReportsADifferentModel_AsJsonElement_StampsItAsEffective()
+    {
+        // Persistence and provider deserialization re-hydrate ExtraProperties values as JsonElement, so the
+        // stamp must survive the shape the value actually arrives in, not only the CLR-string shape.
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "model",
+            JsonSerializer.SerializeToElement("anthropic/claude-opus-5-20260101")
+        );
+        var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            message,
+            "root",
+            UsageExecutionKind.Primary,
+            "anthropic/claude-opus-5"
+        );
+
+        record.EffectiveModelId.Should().Be("anthropic/claude-opus-5-20260101");
+    }
+
+    [Fact]
+    public void FromUsageMessage_WhenTheProviderReportsNoModel_LeavesEffectiveNullAndFallsBack()
+    {
+        // Every provider except the OpenRouter stats path reports no model at all. The documented fallback
+        // (EffectiveModelId => RequestedModel) must survive; stamping the requested model into EffectiveModel
+        // would make the field look delivered while carrying no provider observation.
+        var message = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+            GenerationId = "gen-1",
+        };
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            message,
+            "root",
+            UsageExecutionKind.Primary,
+            "anthropic/claude-opus-5"
+        );
+
+        record.EffectiveModel.Should().BeNull();
+        record.EffectiveModelId.Should().Be("anthropic/claude-opus-5");
+    }
+
+    [Fact]
+    public void FromUsageMessage_WhenTheProviderReportsTheRequestedModel_LeavesEffectiveNull()
+    {
+        // EffectiveModel is documented as "the effective model, WHEN IT DIFFERS from the requested one".
+        // Agreement carries no extra information for grouping — EffectiveModelId answers the same either way.
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "model",
+            "anthropic/claude-opus-5"
+        );
+        var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            message,
+            "root",
+            UsageExecutionKind.Primary,
+            "anthropic/claude-opus-5"
+        );
+
+        record.EffectiveModel.Should().BeNull();
+        record.EffectiveModelId.Should().Be("anthropic/claude-opus-5");
+    }
+
+    [Fact]
     public void CacheCreationTokens_FoldAdditively_IntoAggregateTotal()
     {
         var ledger = new UsageLedger("root");

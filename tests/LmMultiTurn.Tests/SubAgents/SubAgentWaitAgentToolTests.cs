@@ -84,7 +84,7 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
             .GetFunctions()
             .Single(f => f.Contract.Name == "WaitAgent")
             .Contract.Description.Should()
-            .Contain("Use an `agent_id` returned by `Agent`; do not pass workflow IDs.");
+            .Contain("Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass workflow IDs.");
     }
 
     [Fact]
@@ -146,10 +146,31 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WaitAgent_UnknownId_NamesTheIdsThatWouldHaveWorked()
+    public async Task WaitAgent_AcceptsTheNameTheAgentAnswersTo()
+    {
+        // WaitAgent's own guard was the only thing rejecting a name: the wait it guards
+        // (ObserveTargetCompletionAsync) has always resolved a name. So a model that spawned
+        // `analyst` and waited on `analyst` was told no such agent existed, by the half of the call
+        // that never needed the id in the first place.
+        var (manager, provider) = CreateManager(CompletingAgent("all done"));
+        _ = await manager.SpawnAsync("test-agent", "work", name: "analyst", runInBackground: true);
+
+        var payload = await InvokeAsync(provider, new { agent_id = "analyst" });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
+
+    [Fact]
+    public async Task WaitAgent_UnknownTarget_NamesTheAgentsThatWouldHaveWorked()
     {
         var (manager, provider) = CreateManager(BlockingAgent());
-        var agentId = await SpawnBackgroundAsync(manager);
+        using var spawn = JsonDocument.Parse(
+            await manager.SpawnAsync("test-agent", "Do some work", runInBackground: true)
+        );
+        var agentId = spawn.RootElement.GetProperty("agent_id").GetString()!;
+        var name = spawn.RootElement.GetProperty("name").GetString()!;
 
         var payload = await InvokeAsync(provider, new { agent_id = "not-an-agent" });
 
@@ -157,7 +178,12 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         payload.ErrorCode.Should().Be("unknown_agent");
         payload
             .Text.Should()
-            .Contain(agentId, "a mistyped id is a model mistake, and the fix is to show it the ids it could have used");
+            .Contain(
+                name,
+                "the correction has to offer the handle the model is supposed to use; an earlier version "
+                    + "listed ids alone, which is what taught it the ordinal was the address"
+            )
+            .And.Contain(agentId, "the id still follows in parentheses for when a name is genuinely not enough");
     }
 
     [Fact]

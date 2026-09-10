@@ -495,6 +495,30 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleCheckAgentToolAsync_AcceptsTheNameTheAgentAnswersTo()
+    {
+        // SendMessage took a name and CheckAgent did not, so a model that had just messaged `analyst`
+        // was told `analyst` did not exist the moment it checked on the same agent. The two tools now
+        // resolve a target the same way; nothing about the id path changes.
+        SetupBlockingSubAgent();
+        var spawnJson = await _manager!.SpawnAsync("researcher", "work", name: "analyst", runInBackground: true);
+        using var spawn = JsonDocument.Parse(spawnJson);
+        var agentId = spawn.RootElement.GetProperty("agent_id").GetString()!;
+
+        var result = await GetHandler("CheckAgent")(
+            JsonSerializer.Serialize(new { agent_id = "analyst" }),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        var payload = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("agent_id").GetString().Should().Be(agentId);
+        doc.RootElement.GetProperty("name").GetString().Should().Be("analyst");
+    }
+
+    [Fact]
     public async Task HandleCheckAgentToolAsync_MissingAgentId_ThrowsArgumentException()
     {
         // Arrange

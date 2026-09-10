@@ -43,6 +43,13 @@ public sealed class AgentCollaborationSetup
         Name = name;
     }
 
+    /// <summary>
+    /// The root agent's display name when a host configures none. Named rather than left as a literal
+    /// because it appears in the identity preamble every agent reads, and a drifting spelling would
+    /// make a child's "You report to X" disagree with the directory row it resolves.
+    /// </summary>
+    public const string DefaultRootName = "MainAgent";
+
     /// <summary>The root-owned collaboration state shared by every agent in the hierarchy.</summary>
     public AgentCollaborationBundle Bundle { get; }
 
@@ -73,7 +80,11 @@ public sealed class AgentCollaborationSetup
     /// <param name="options">The bounds for the whole collaboration. Validated here.</param>
     /// <param name="collaborationId">Identifier for the collaboration; generated when omitted.</param>
     /// <param name="agentId">Canonical identifier for the root agent; generated when omitted.</param>
-    /// <param name="name">Human-facing name for the root agent.</param>
+    /// <param name="name">
+    ///     Human-facing name for the root agent. Null or blank resolves to
+    ///     <see cref="DefaultRootName"/> — a host that configures no name still gets an agent the
+    ///     model can be told to address, rather than one it has to invent a handle for.
+    /// </param>
     /// <param name="timeProvider">Clock the ledger measures retention against.</param>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A bound in <paramref name="options"/> is unusable.</exception>
@@ -81,7 +92,7 @@ public sealed class AgentCollaborationSetup
         AgentCollaborationOptions options,
         string? collaborationId = null,
         string? agentId = null,
-        string name = "root",
+        string? name = null,
         TimeProvider? timeProvider = null
     )
     {
@@ -96,7 +107,8 @@ public sealed class AgentCollaborationSetup
 
         var bundle = new AgentCollaborationBundle(resolvedCollaborationId, options, timeProvider);
         var context = AgentCollaborationContext.ForRoot(resolvedCollaborationId, resolvedAgentId);
-        return new AgentCollaborationSetup(bundle, context, name);
+        var resolvedName = string.IsNullOrWhiteSpace(name) ? DefaultRootName : name;
+        return new AgentCollaborationSetup(bundle, context, resolvedName);
     }
 
     /// <summary>

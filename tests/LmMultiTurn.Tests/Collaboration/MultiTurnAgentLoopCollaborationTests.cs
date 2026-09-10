@@ -85,8 +85,34 @@ public class MultiTurnAgentLoopCollaborationTests
         setup.Bundle.Ledger.Find(dispatch.Result.MessageId!)!.State.Should().Be(AgentMessageDeliveryState.Delivered);
     }
 
-    private MultiTurnAgentLoop CreateLoop(AgentCollaborationSetup? collaboration) =>
-        new(_providerMock.Object, new FunctionRegistry(), "test-thread", collaboration: collaboration);
+    [Fact]
+    public async Task ALoopWithACollaboration_CarriesTheIdentityPreambleInItsSystemPrompt()
+    {
+        // Mutation that must go red: passing `systemPrompt` unchanged to the base constructor.
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+
+        await using var loop = CreateLoop(setup, systemPrompt: "Base instructions.");
+
+        loop.SystemPromptForTests.Should().StartWith("You are `MainAgent`");
+        loop.SystemPromptForTests.Should().EndWith("Base instructions.");
+    }
+
+    [Fact]
+    public async Task ALoopWithoutACollaboration_LeavesTheSystemPromptByteIdentical()
+    {
+        await using var loop = CreateLoop(collaboration: null, systemPrompt: "Base instructions.");
+
+        loop.SystemPromptForTests.Should().Be("Base instructions.");
+    }
+
+    private MultiTurnAgentLoop CreateLoop(AgentCollaborationSetup? collaboration, string? systemPrompt = null) =>
+        new(
+            _providerMock.Object,
+            new FunctionRegistry(),
+            "test-thread",
+            systemPrompt: systemPrompt,
+            collaboration: collaboration
+        );
 
     private static AgentCollaborationSetup CreateRegisteredRoot()
     {

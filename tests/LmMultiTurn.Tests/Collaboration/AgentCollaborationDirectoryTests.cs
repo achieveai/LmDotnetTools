@@ -6,13 +6,16 @@ namespace LmMultiTurn.Tests.Collaboration;
 
 /// <summary>
 /// Covers what the directory promises: admission is all-or-nothing, a canonical identifier always wins
-/// over a name, a contested name resolves to nothing rather than to a guess, and an agent that has
-/// left stays visible without staying addressable.
+/// over a name, a contested name is granted to exactly one agent with the rest suffixed, and an agent
+/// that has left stays visible without staying addressable.
 /// </summary>
 /// <remarks>
 /// Names are the hazard these tests are built around. A name is a convenience for a model choosing whom
 /// to talk to, but it is not identity: silently retargeting a contested name would deliver one agent's
-/// reply to a different agent, which is worse than refusing to resolve it at all.
+/// reply to a different agent. Refusing to resolve it is safer than that, but it is not the answer
+/// either — it costs BOTH agents an address they could have had. So the newcomer is renamed rather than
+/// the name being contested, and only names shared by DEAD agents, where there is nothing left to
+/// rename, still resolve to nothing.
 /// </remarks>
 public class AgentCollaborationDirectoryTests
 {
@@ -156,19 +159,186 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
-    public void Resolve_RefusesAContestedName_PermanentlyAndWithoutGuessing()
+    public void TryRegister_WithANameAnotherAgentHolds_GrantsASuffixedNameInsteadOfContestingIt()
     {
+        // Mutation that must go red: binding the requested name instead of the granted one.
+        // Production already hit the old behaviour: 'finance-controller' named two agents and the task
+        // board could only tell the model to "pass the agent id instead".
         var directory = CreateDirectory();
         var root = RegisterRoot(directory);
-        _ = directory.TryRegister(root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
-        _ = directory.TryRegister(root.CreateChild("agent-b", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
 
-        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        var second = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
 
-        // Latching, not toggling: once two agents have answered to a name, a sender still cannot know
-        // which one it meant even after one of them leaves.
-        _ = directory.TryMarkRetained("agent-b");
-        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        second.Succeeded.Should().BeTrue();
+        second.Entry!.Name.Should().Be("reviewer-2", "the suffix is the agent's own ordinal");
+    }
+
+    [Fact]
+    public void Resolve_AfterASuffixedRegistration_AddressesEachAgentUnambiguously()
+    {
+        // The point of suffixing rather than latching: BOTH agents stay reachable by name. The old
+        // policy left neither reachable, permanently, even after one of them left.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryRegister(root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-1");
+        directory.Resolve("reviewer-2").Entry!.AgentId.Should().Be("agent-2");
+
+        // And the first agent leaving does not brick either name.
+        _ = directory.TryMarkRetained("agent-1");
+        directory.Resolve("reviewer-2").Entry!.AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public void TryRegister_WithANameARetiredAgentHolds_StillSuffixes()
+    {
+        // A retired agent's entry outlives it so a sender learns its target ENDED rather than that it
+        // never existed. Reusing its name would turn that answer into a silent redirect.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        directory.TryMarkRetained("agent-1").Should().BeTrue();
+
+        var second = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
+
+        second.Entry!.Name.Should().Be("reviewer-2");
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-1");
+        directory.Resolve("reviewer").Entry!.IsLive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryRegister_WhenTheSuffixedNameIsAlsoTaken_KeepsGoing()
+    {
+        // The pathological case: a model literally named an earlier agent "reviewer-2".
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryRegister(root.CreateChild("agent-3", AgentKind.SubAgent, "r", "d"), "reviewer-2", "running");
+
+        var second = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
+
+        second.Entry!.Name.Should().Be("reviewer-2-1");
+        directory.Resolve("reviewer-2").Entry!.AgentId.Should().Be("agent-3");
+    }
+
+    [Fact]
+    public void TryRegister_WithANameShapedLikeAnotherAgentsId_GrantsASuffixedNameInstead()
+    {
+        // Mutation that must go red: dropping the IsOrdinalAgentId guard in GrantAndBindName.
+        // Resolve consults ids before names, so agent-1 named "agent-2" was reachable by that name only
+        // until agent-2 was minted — from then on every message to "agent-2" went to the newcomer.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+
+        var first = directory.TryRegister(
+            root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"),
+            "agent-2",
+            "running"
+        );
+
+        first.Succeeded.Should().BeTrue();
+        first.Entry!.Name.Should().Be("agent-2-1", "the requested name is taken by the agent that id will denote");
+
+        _ = directory.TryRegister(root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"), "worker", "running");
+
+        directory.Resolve("agent-2").Entry!.AgentId.Should().Be("agent-2");
+        directory
+            .Resolve("agent-2-1")
+            .Entry!.AgentId.Should()
+            .Be("agent-1", "the granted name keeps pointing at its recipient");
+    }
+
+    [Fact]
+    public void TryRegister_WithTheAgentsOwnIdAsItsName_GrantsItUnsuffixed()
+    {
+        // The one ordinal-shaped name that is not a lie: an agent asking for its own id is asking for a
+        // name it already has, and suffixing it would manufacture a collision with nobody.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+
+        var result = directory.TryRegister(
+            root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"),
+            "agent-1",
+            "running"
+        );
+
+        result.Entry!.Name.Should().Be("agent-1");
+        directory.Resolve("agent-1").Entry!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public void TryWithdraw_ForgetsTheAgentAndFreesItsName_WhereRetirementKeepsBoth()
+    {
+        // Mutation that must go red: TryWithdraw delegating to TryMarkRetained. An agent whose spawn threw
+        // before its first turn was never told its name and never addressed, so keeping its reservation
+        // only suffixed the next spawn that asked for the same name (a retry, typically).
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "queued");
+
+        directory.TryWithdraw("agent-1").Should().BeTrue();
+
+        directory.FindById("agent-1").Should().BeNull("a withdrawn agent leaves no entry");
+        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+
+        var retry = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
+        retry.Entry!.Name.Should().Be("reviewer", "the name the failed spawn held is free again");
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public void TryWithdraw_RefusesAnAgentThatRanAndRetired_AndAnUnknownOne()
+    {
+        // Withdrawal is for an agent that never existed as far as anyone else knows. One that ran and
+        // retired has been seen, named and possibly messaged; forgetting it would turn "FINISHED" into
+        // "never existed" for every later sender.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryMarkRetained("agent-1");
+
+        directory.TryWithdraw("agent-1").Should().BeFalse();
+        directory.TryWithdraw("agent-9").Should().BeFalse();
+
+        directory.FindById("agent-1").Should().NotBeNull();
+        directory.Resolve("reviewer").Entry!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public void TryRegister_WithANonOrdinalAgentId_SuffixesWithTheIdItself()
+    {
+        // A root's id is its thread id, not an ordinal. There is no number to borrow, so the id is the
+        // only thing guaranteed unique — an ugly name beats a colliding one.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+
+        var second = directory.TryRegister(
+            root.CreateChild("thread-xyz", AgentKind.SubAgent, "r", "d"),
+            "reviewer",
+            "running"
+        );
+
+        second.Entry!.Name.Should().Be("reviewer-thread-xyz");
     }
 
     [Theory]
@@ -191,18 +361,23 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
-    public void Resolve_PrimaryAliasCollision_RemainsAmbiguousAfterTheChildLeaves()
+    public void Resolve_AChildAskingForThePrimaryAlias_DoesNotTakeItFromTheRoot()
     {
+        // `primary` is the one name every agent can rely on to reach the top of the conversation, so a
+        // child claiming it used to brick the alias for the whole hierarchy. The child is suffixed
+        // instead, and the alias keeps pointing where it always did.
         var directory = CreateDirectory();
         var root = RegisterRoot(directory);
-        directory
-            .TryRegister(root.CreateChild("child", AgentKind.SubAgent, "r", "d"), "primary", "running")
-            .Succeeded.Should()
-            .BeTrue();
 
-        directory.Resolve("primary").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
-        directory.TryMarkRetained("child").Should().BeTrue();
-        directory.Resolve("primary").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
+        var child = directory.TryRegister(
+            root.CreateChild("child", AgentKind.SubAgent, "r", "d"),
+            "primary",
+            "running"
+        );
+
+        child.Entry!.Name.Should().Be("primary-child");
+        directory.Resolve("primary").Entry!.AgentId.Should().Be("agent-root");
+        directory.Resolve("primary-child").Entry!.AgentId.Should().Be("child");
         directory.Resolve("agent-root").Entry!.Name.Should().Be("root");
     }
 

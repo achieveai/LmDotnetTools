@@ -102,6 +102,18 @@ public sealed record TodoTaskNode
     [JsonPropertyName("assignee")]
     public string? Assignee { get; init; }
 
+    /// <summary>
+    ///     The human-facing name to SHOW for <see cref="Assignee" /> — <c>reviewer</c> where the key
+    ///     says <c>agent-3</c> — when the host's identity layer offered one. Never an ownership key:
+    ///     <see cref="Assignee" /> alone decides who owns the row, because an identifier is the only
+    ///     thing guaranteed unique within a conversation. Null means "show the assignee", which is
+    ///     every row persisted before this field existed. Additive to schema version 1, same contract
+    ///     as <see cref="BlockedBy" />: an older snapshot reads back with it simply absent, and the
+    ///     client tolerates unknown fields, so the version is deliberately not bumped.
+    /// </summary>
+    [JsonPropertyName("assigneeDisplayName")]
+    public string? AssigneeDisplayName { get; init; }
+
     /// <summary>When the row was created. Null on rows persisted before timestamps round-tripped.</summary>
     [JsonPropertyName("createdAt")]
     public DateTimeOffset? CreatedAt { get; init; }

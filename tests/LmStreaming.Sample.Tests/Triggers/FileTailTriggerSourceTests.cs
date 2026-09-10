@@ -342,7 +342,7 @@ public class FileTailTriggerSourceTests
             .BeFalse("a disposed handle must never fire");
     }
 
-    [SkippableFact]
+    [LinuxOnlyFact("case-variant confinement only differs on a case-sensitive filesystem.")]
     public async Task Arm_Rejects_CaseVariantSiblingRoot_OnCaseSensitiveFs()
     {
         // On a case-SENSITIVE filesystem (typical Linux ext4), "<root>-TAILS/evil.log" is a
@@ -351,11 +351,6 @@ public class FileTailTriggerSourceTests
         // and the sample root lives under world-writable /tmp). On Windows/macOS the two names ARE
         // the same directory, so the check can't be exercised there — skip visibly rather than pass
         // vacuously.
-        Skip.If(
-            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(),
-            "case-variant confinement only differs on a case-sensitive filesystem."
-        );
-
         var baseDir = CreateTempDir();
         var root = Path.Combine(baseDir, "tails");
         Directory.CreateDirectory(root);

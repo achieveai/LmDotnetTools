@@ -75,6 +75,66 @@ public class WorkflowCollaborationTests
     }
 
     [Fact]
+    public async Task AControllerWhoseNameCollides_IsToldTheNameItWasGranted_NotTheOneItAsked()
+    {
+        // Mutation that must go red: ForChild(context, name) — the requested name — in TryAdmitController.
+        // Under a collision the requested name belongs to the incumbent; a setup carrying it would put the
+        // incumbent's address in the controller's own identity preamble and every receipt it hands out.
+        var caller = Root();
+        var requested = "workflow-wf-collab-collide";
+        _ = caller.Directory.TryRegister(
+            caller.Context.CreateChild("agent-1", AgentKind.SubAgent, "impostor", "took the name first"),
+            requested,
+            AgentCollaborationStatuses.Running
+        );
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "drive",
+            inputs: null,
+            definition: MinimalDefinition(),
+            subAgentOptions: EmptyControllerOptions(),
+            controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
+            threadId: "wf-collab-collide-thread",
+            instanceId: "wf-collab-collide",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var node = caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-collide"))!;
+        node.Name.Should().NotBe(requested, "the incumbent keeps the name");
+        handle.Loop.Collaboration!.Name.Should().Be(node.Name, "the loop is told the name the directory granted");
+        caller.Directory.Resolve(handle.Loop.Collaboration.Name).Entry!.AgentId.Should().Be(node.AgentId);
+        caller.Directory.Resolve(requested).Entry!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public async Task AControllerDeclaresTheThreadItsSpendIsFiledUnder()
+    {
+        // The controller's directory id (wfctl-…) and its conversation thread share nothing, so the usage
+        // view cannot derive one from the other. The association is declared at admission and persisted
+        // with the node, or the detailed roster shows a controller that spent nothing.
+        var caller = Root();
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "drive",
+            inputs: null,
+            definition: MinimalDefinition(),
+            subAgentOptions: EmptyControllerOptions(),
+            controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
+            threadId: "wf-collab-thread",
+            instanceId: "wf-collab-exec",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var node = caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-exec"))!;
+        node.ExecutionId.Should().Be("wf-collab-thread");
+        handle.CollaborationNode!.ExecutionId.Should().Be("wf-collab-thread", "the persisted node carries it too");
+    }
+
+    [Fact]
     public async Task ADelegateLandsExactlyWhereAnOrdinarySubAgentOfTheCallerWouldHave()
     {
         // Non-vacuity: MaxDelegationDepth is 1. The delegate is only admissible BECAUSE the controller

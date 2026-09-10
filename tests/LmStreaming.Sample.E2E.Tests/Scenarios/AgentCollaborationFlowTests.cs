@@ -145,7 +145,9 @@ public sealed class AgentCollaborationFlowTests
             .Turn(t => t.ToolCall("CheckAgents", new { agent_ids = "lead, notifier" }))
             // GetAgents is hierarchy-wide: the helper is the lead's child, invisible to the root's
             // own manager, and must still be listed.
-            .Turn(t => t.ToolCall("GetAgents", new { }))
+            // role is a detailed-shape field (ADR 0019: the normal listing carries only what a caller
+            // needs to pick whom to contact), so the roster is asked for in detail.
+            .Turn(t => t.ToolCall("GetAgents", new { detail = "detailed" }))
             .Turn(t => t.Text(ParentAnswer))
             .Build();
 

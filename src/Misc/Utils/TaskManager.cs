@@ -75,6 +75,18 @@ public class TaskManager : ITodoBoardSource
     ///     The agents a name matched when it matched more than one. More than one entry means the name
     ///     cannot decide ownership; the board refuses rather than guessing which agent was meant.
     /// </param>
+    /// <param name="DisplayName">
+    ///     The human-facing name to SHOW for this assignee. Ownership still compares
+    ///     <paramref name="CanonicalName" />, because an identifier is the only thing guaranteed unique
+    ///     within a conversation; this exists so a listing can say <c>reviewer</c> where the key says
+    ///     <c>agent-3</c>. Null falls back to the canonical value, which is the pre-existing behaviour
+    ///     and what a host with no name to offer keeps getting.
+    /// </param>
+    /// <param name="KnownNames">
+    ///     When nothing resolved, the names the host COULD have matched — the live agents of this
+    ///     conversation. The refusal lists them so a caller that guessed a name learns the real ones
+    ///     without a roster call. Null or empty when the host has none to offer.
+    /// </param>
     /// <remarks>
     ///     Deliberately carries no failure-code string: the codes below are this board's contract and
     ///     live with the code that emits them, so the resolver reports facts and <c>TaskManager</c>
@@ -84,7 +96,9 @@ public class TaskManager : ITodoBoardSource
         string? AgentId,
         string? CanonicalName,
         AssigneeLiveness Liveness,
-        IReadOnlyList<string>? Candidates = null
+        IReadOnlyList<string>? Candidates = null,
+        string? DisplayName = null,
+        IReadOnlyList<string>? KnownNames = null
     );
 
     /// <summary>
@@ -334,6 +348,25 @@ Examples:
             );
         }
 
+        // The fourth path that writes Assignee, and the one that used to skip resolution: it stored
+        // the caller's text verbatim while claim-task, assign-task and update-task all stored the
+        // resolved identity, so nothing that compares ownership could see a row created by name as
+        // belonging to the agent it was created for. Resolved before the lock, like the other argument
+        // guards here; the claim and assign paths resolve under it, so no lock-ordering rule is implied.
+        // A blank assignee is left exactly as it was: the argument is optional and an empty string is
+        // not a name to ask a resolver about.
+        var resolvedAssignee = assignee;
+        string? assigneeDisplayName = null;
+        if (!string.IsNullOrWhiteSpace(assignee))
+        {
+            if (ResolveAssignee(assignee, out var canonicalAssignee, out assigneeDisplayName) is { } resolutionError)
+            {
+                return resolutionError;
+            }
+
+            resolvedAssignee = canonicalAssignee;
+        }
+
         lock (_sync)
         {
             PrivateTaskItem task;
@@ -349,7 +382,8 @@ Examples:
                     DisplayId = taskId.ToString(),
                     Title = title.Trim(),
                     Status = TaskStatus.NotStarted,
-                    Assignee = assignee,
+                    Assignee = resolvedAssignee,
+                    AssigneeDisplayName = assigneeDisplayName,
                     CreatedAt = now,
                 };
 
@@ -367,6 +401,7 @@ Examples:
 
             // Create subtask with hierarchical ID. Assignee inherits from the parent unless
             // explicitly overridden — the mechanism for "lead assigns, assignee breaks it down".
+            // The inherited value is already canonical; only the explicit argument needed resolving.
             var subtaskId = parentTask.NextSubTaskId++;
             task = new PrivateTaskItem
             {
@@ -375,7 +410,8 @@ Examples:
                 Title = title.Trim(),
                 Status = TaskStatus.NotStarted,
                 ParentId = parentTask.Id,
-                Assignee = assignee ?? parentTask.Assignee,
+                Assignee = resolvedAssignee ?? parentTask.Assignee,
+                AssigneeDisplayName = resolvedAssignee is null ? parentTask.AssigneeDisplayName : assigneeDisplayName,
                 CreatedAt = now,
             };
 
@@ -517,6 +553,7 @@ Examples:
                             Status = TaskStatus.NotStarted,
                             ParentId = mainTask.Id,
                             Assignee = mainTask.Assignee,
+                            AssigneeDisplayName = mainTask.AssigneeDisplayName,
                             CreatedAt = now,
                         };
 
@@ -789,9 +826,19 @@ Examples:
             var now = _timeProvider.GetUtcNow();
             var trimmedAgent = agent.Trim();
 
+            // Resolve BEFORE the comparison: the right-hand side is the stored identity, so comparing
+            // the caller's raw text meant an agent heartbeating its own claim by name never recognised
+            // its own lease and fell through to the take-a-claim path below.
+            //
+            // A refusal from that resolution is deliberately not returned from here — it drops out of
+            // the condition and ApplyClaim resolves again and reports the same refusal after its own
+            // not-claimable and blocked guards. So a caller whose name AND whose task are both bad
+            // still gets the answer in the order it got before this branch resolved anything.
             if (
                 task.Status == TaskStatus.InProgress
-                && string.Equals(task.Assignee, trimmedAgent, StringComparison.Ordinal)
+                && task.Assignee is not null
+                && ResolveAssignee(trimmedAgent, out var holder, out var holderDisplayName) is null
+                && IsHeldBy(task, holder)
             )
             {
                 if (RefuseIfBlocked(task) is { } refreshBlockedError)
@@ -800,6 +847,11 @@ Examples:
                 }
 
                 task.ClaimedAt = now;
+                if (holderDisplayName is not null)
+                {
+                    task.AssigneeDisplayName = holderDisplayName;
+                }
+
                 return $"Task {task.DisplayId} claim refreshed by {trimmedAgent}.";
             }
 
@@ -873,7 +925,7 @@ Examples:
 
             // Same choke point as ApplyClaim, and for the same reason: the comparison below decides
             // whether an existing lease is foreign, so both sides of it must be one stable identity.
-            if (ResolveAssignee(assignee, out var trimmedAssignee) is { } resolutionError)
+            if (ResolveAssignee(assignee, out var trimmedAssignee, out var assigneeDisplayName) is { } resolutionError)
             {
                 return resolutionError;
             }
@@ -885,18 +937,14 @@ Examples:
             // lease has actually gone stale — otherwise assign-task would be a silent way to
             // steal a live claim, or to hand the new assignee a task they can complete without
             // ever claiming it (Requirement 8.8). See F-002.
-            if (
-                task.Status == TaskStatus.InProgress
-                && task.Assignee != null
-                && !string.Equals(task.Assignee, trimmedAssignee, StringComparison.Ordinal)
-            )
+            if (task.Status == TaskStatus.InProgress && task.Assignee != null && !IsHeldBy(task, trimmedAssignee))
             {
                 var now = _timeProvider.GetUtcNow();
                 if (!IsLeaseStale(task, now, out var elapsed))
                 {
                     return FunctionResult.Error(
                         TaskAlreadyClaimedCode,
-                        $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale. Use claim-task once it goes stale, or wait for {task.Assignee} to finish."
+                        $"Error: Task {task.DisplayId} is already claimed by {AssigneeShown(task)} ({FormatElapsed(elapsed)} ago); its lease is not yet stale. Use claim-task once it goes stale, or wait for {AssigneeShown(task)} to finish."
                     );
                 }
 
@@ -908,7 +956,8 @@ Examples:
             }
 
             task.Assignee = trimmedAssignee;
-            return $"Assigned task {task.DisplayId} to {task.Assignee}. "
+            task.AssigneeDisplayName = assigneeDisplayName;
+            return $"Assigned task {task.DisplayId} to {AssigneeShown(task)}. "
                 + "They should claim it before starting, and break it into sub-items if it is more than one sitting.";
         }
     }
@@ -1211,26 +1260,22 @@ Examples:
         // Before the ownership comparison, not after: every string compared below has to be the same
         // stable identity, or a lease held by "agent-3" reads as free to someone who typed the same
         // agent's display name.
-        if (ResolveAssignee(rawAgent, out var agent) is { } resolutionError)
+        if (ResolveAssignee(rawAgent, out var agent, out var agentDisplayName) is { } resolutionError)
         {
             return resolutionError;
         }
 
-        if (
-            task.Status == TaskStatus.InProgress
-            && task.Assignee != null
-            && !string.Equals(task.Assignee, agent, StringComparison.Ordinal)
-        )
+        if (task.Status == TaskStatus.InProgress && task.Assignee != null && !IsHeldBy(task, agent))
         {
             if (!IsLeaseStale(task, now, out var elapsed))
             {
                 return FunctionResult.Error(
                     TaskAlreadyClaimedCode,
-                    $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale."
+                    $"Error: Task {task.DisplayId} is already claimed by {AssigneeShown(task)} ({FormatElapsed(elapsed)} ago); its lease is not yet stale."
                 );
             }
 
-            note += $" Took over a stale lease from {task.Assignee} (idle {FormatElapsed(elapsed)}).";
+            note += $" Took over a stale lease from {AssigneeShown(task)} (idle {FormatElapsed(elapsed)}).";
         }
 
         // One InProgress task per assignee: claiming a second releases the first, and the
@@ -1242,22 +1287,37 @@ Examples:
             previous.Status = TaskStatus.NotStarted;
             previous.ClaimedAt = null;
             note +=
-                $" Released task {previous.DisplayId} back to 'not started' ({agent} can only have one active task).";
+                $" Released task {previous.DisplayId} back to 'not started' ({agentDisplayName ?? agent} can only have one active task).";
         }
 
         task.Status = TaskStatus.InProgress;
         task.Assignee = agent;
+        task.AssigneeDisplayName = agentDisplayName;
         task.ClaimedAt = now;
         task.CreatedAt ??= now;
         return null;
     }
 
     /// <summary>
-    ///     Turns the assignee text a caller typed into the identity the board stores, or refuses it.
-    ///     Shared by every path that writes <see cref="PrivateTaskItem.Assignee" /> — <c>claim-task</c>,
-    ///     <c>assign-task</c>, and <c>update-task</c> moving a row to in-progress on an agent's behalf —
-    ///     so there is one place a name can decide ownership.
+    ///     The name a sentence about <paramref name="task" />'s assignee uses: the display name the host
+    ///     resolved, else the stored identity. For prose only — ownership compares
+    ///     <see cref="PrivateTaskItem.Assignee" />, never this.
     /// </summary>
+    private static string AssigneeShown(PrivateTaskItem task) => task.AssigneeDisplayName ?? task.Assignee!;
+
+    /// <summary>
+    ///     Turns the assignee text a caller typed into the identity the board stores, or refuses it.
+    ///     Shared by all four paths that write <see cref="PrivateTaskItem.Assignee" /> —
+    ///     <c>add-task</c>, <c>claim-task</c>, <c>assign-task</c>, and <c>update-task</c> moving a row
+    ///     to in-progress on an agent's behalf — so there is one place a name can decide ownership.
+    /// </summary>
+    /// <remarks>
+    ///     The sentence above used to say "every path" while enumerating three of the four, and
+    ///     <c>add-task</c> was the one it left out and the one that did not call this — a row created by
+    ///     name was owned by that name, while every comparison against it used the resolved identity.
+    ///     Enumerating the paths rather than asserting "every" is deliberate: a claim about a set the
+    ///     reader cannot see is one that goes stale silently.
+    /// </remarks>
     /// <remarks>
     ///     With no <see cref="AssigneeResolver" /> wired the text passes through untouched, which is the
     ///     board's behaviour with no collaboration layer at all. With one wired, a name matching more
@@ -1267,10 +1327,16 @@ Examples:
     /// </remarks>
     /// <param name="rawAgent">The text the caller supplied.</param>
     /// <param name="canonical">The identity to store; <paramref name="rawAgent" /> when nothing resolved it.</param>
+    /// <param name="displayName">
+    ///     The name to show for this assignee, or null when the resolver offered none — in which case
+    ///     every renderer falls back to <paramref name="canonical" />, exactly as it did before display
+    ///     names existed.
+    /// </param>
     /// <returns>The refusal, or null when <paramref name="canonical" /> may be used.</returns>
-    private FunctionResult? ResolveAssignee(string rawAgent, out string canonical)
+    private FunctionResult? ResolveAssignee(string rawAgent, out string canonical, out string? displayName)
     {
         canonical = rawAgent;
+        displayName = null;
         if (AssigneeResolver is not { } resolve)
         {
             return null;
@@ -1290,10 +1356,15 @@ Examples:
 
         if (resolution.Liveness == AssigneeLiveness.Unknown)
         {
+            // Name the agents it could have meant. The refusal is read by a model that just guessed a
+            // name; the names are what it needs next, and sending it after an id — as this sentence
+            // once did — teaches it an address nothing else in the conversation uses.
+            var knownNames = resolution.KnownNames is { Count: > 0 } names
+                ? $" Agents in this conversation: {string.Join(", ", names)}."
+                : " Check the agent listing for the names in this conversation before assigning.";
             return FunctionResult.Error(
                 AssigneeUnknownCode,
-                $"Error: '{probe}' does not name an agent in this conversation. Agent ids are numbered "
-                    + "per conversation, so check the id with the sub-agent listing before assigning."
+                $"Error: '{probe}' does not name an agent in this conversation.{knownNames}"
             );
         }
 
@@ -1313,17 +1384,69 @@ Examples:
         }
 
         canonical = resolution.CanonicalName ?? resolution.AgentId!;
+        displayName = string.IsNullOrWhiteSpace(resolution.DisplayName) ? null : resolution.DisplayName;
         return null;
     }
 
     private PrivateTaskItem? FindOtherInProgressTaskFor(string agent, PrivateTaskItem excluding)
     {
         return GetAllTasksFlat(_state.RootTasks)
-            .FirstOrDefault(t =>
-                t != excluding
-                && t.Status == TaskStatus.InProgress
-                && string.Equals(t.Assignee, agent, StringComparison.Ordinal)
-            );
+            .FirstOrDefault(t => t != excluding && t.Status == TaskStatus.InProgress && IsHeldBy(t, agent));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="task"/> is owned by the agent whose canonical identity is
+    /// <paramref name="canonicalAgent"/>, reading a legacy assignee through the resolver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every write path stores the canonical identity now, but a board hydrated from a snapshot written
+    /// before <c>add-task</c> resolved its assignee still carries the raw name the caller typed
+    /// ("reviewer"). Comparing that string to the resolved caller ("agent-3") made the same agent a
+    /// stranger to its own row after a restart: its refresh was refused as already claimed, and a
+    /// second claim left it holding two active tasks, one under each spelling.
+    /// </para>
+    /// <para>
+    /// A match through the name path converges the row: the canonical identity becomes the stored
+    /// assignee and the legacy name survives as the display name, so the next snapshot is written in the
+    /// shape every other row already has. Ambiguous or unknown legacy names, and strings the resolver
+    /// does not report as the agent's own name, are left alone rather than guessed at.
+    /// </para>
+    /// </remarks>
+    private bool IsHeldBy(PrivateTaskItem task, string canonicalAgent)
+    {
+        if (task.Assignee is null)
+        {
+            return false;
+        }
+
+        if (string.Equals(task.Assignee, canonicalAgent, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (AssigneeResolver is not { } resolve)
+        {
+            return false;
+        }
+
+        // The stored string has to be THE NAME the resolver reports for the caller's agent, not merely a
+        // string that happens to resolve to it. A resolver is free to map anything it does not know
+        // somewhere; only the display-name match says "this row was written under that agent's name".
+        var resolution = resolve(task.Assignee);
+        if (
+            resolution.Candidates is { Count: > 1 }
+            || resolution.Liveness == AssigneeLiveness.Unknown
+            || !string.Equals(resolution.CanonicalName ?? resolution.AgentId, canonicalAgent, StringComparison.Ordinal)
+            || !string.Equals(resolution.DisplayName, task.Assignee, StringComparison.Ordinal)
+        )
+        {
+            return false;
+        }
+
+        task.AssigneeDisplayName ??= task.Assignee;
+        task.Assignee = canonicalAgent;
+        return true;
     }
 
     /// <summary>
@@ -2115,6 +2238,7 @@ Examples:
             Artifacts = [.. task.Artifacts],
             BlockedBy = [.. task.BlockedBy],
             Assignee = task.Assignee,
+            AssigneeDisplayName = task.AssigneeDisplayName,
             CreatedAt = task.Times?.CreatedAt,
             ClaimedAt = task.Times?.ClaimedAt,
             CompletedAt = task.Times?.CompletedAt,
@@ -2567,7 +2691,10 @@ Examples:
         // Use hierarchical numbering with proper formatting
         var taskNumber = string.IsNullOrEmpty(task.DisplayId) ? task.Id.ToString() : task.DisplayId;
         var removedSuffix = task.Status == TaskStatus.Removed ? " (removed)" : string.Empty;
-        var assigneeSuffix = task.Assignee != null ? $" [@{task.Assignee}]" : string.Empty;
+        // The name the host resolved, falling back to the stored identity: the board speaks names and
+        // keys on ids, and a row whose resolver offered no name renders exactly as it always did.
+        var assigneeShown = task.AssigneeDisplayName ?? task.Assignee;
+        var assigneeSuffix = assigneeShown != null ? $" [@{assigneeShown}]" : string.Empty;
         var statusExtra = task.Status switch
         {
             TaskStatus.Blocked when task.BlockedBy.Count > 0 => $" (blocked by {string.Join(", ", task.BlockedBy)})",
@@ -2800,6 +2927,7 @@ Examples:
             // fields is hydration, not a transition — no OnChanged can fire here, because the
             // manager is still being constructed and the hook is only wired by the host afterwards.
             Assignee = node.Assignee,
+            AssigneeDisplayName = node.AssigneeDisplayName,
             CreatedAt = node.CreatedAt,
             ClaimedAt = node.ClaimedAt,
             CompletedAt = node.CompletedAt,
@@ -3011,6 +3139,13 @@ Examples:
         [JsonPropertyName("assignee")]
         public string? Assignee { get; init; }
 
+        /// <summary>
+        ///     The name to show for <see cref="Assignee" />; null means show the assignee itself.
+        ///     Never an ownership key — see <see cref="AssigneeResolution.DisplayName" />.
+        /// </summary>
+        [JsonPropertyName("assigneeDisplayName")]
+        public string? AssigneeDisplayName { get; init; }
+
         [JsonPropertyName("blockedBy")]
         public IList<string> BlockedBy { get; init; } = ImmutableList<string>.Empty;
 
@@ -3056,6 +3191,14 @@ Examples:
         [JsonPropertyName("assignee")]
         public string? Assignee { get; set; }
 
+        /// <summary>
+        ///     The name to SHOW for <see cref="Assignee" />, when the host's resolver offered one.
+        ///     Never compared: ownership is decided on <see cref="Assignee" /> alone. Null means "show
+        ///     the assignee", which is what every row carried before this field existed.
+        /// </summary>
+        [JsonPropertyName("assigneeDisplayName")]
+        public string? AssigneeDisplayName { get; set; }
+
         [JsonPropertyName("blockedBy")]
         public List<string> BlockedBy { get; set; } = [];
 
@@ -3092,6 +3235,7 @@ Examples:
                 Notes = [.. Notes],
                 SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
                 Assignee = Assignee,
+                AssigneeDisplayName = AssigneeDisplayName,
                 BlockedBy = [.. BlockedBy],
                 Artifacts = [.. Artifacts],
                 Times = times,
