@@ -105,6 +105,21 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 
     [Theory]
     [MemberData(nameof(AllStores))]
+    public async Task Action_tool_suppression_grant_survives_acceptance_roundtrip(StoreKind kind)
+    {
+        var store = CreateStore(kind);
+        var admission = Admission() with { ActionToolsSuppressed = true };
+        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        var enforced = admission with { State = InputAcceptanceState.Enforced };
+        (await store.TryRecordOutcomeAsync(enforced)).Should().BeTrue();
+        var reader = kind == StoreKind.InMemory ? store : CreateStore(kind);
+        (await reader.GetAcceptanceAsync(admission.ThreadId, admission.InputId))!
+            .ActionToolsSuppressed.Should()
+            .BeTrue();
+    }
+
+    [Theory]
+    [MemberData(nameof(AllStores))]
     public async Task TryReserveAcceptanceAsync_AdmitsOnce_AndHandsEveryLaterCallerTheStoredRecord(StoreKind kind)
     {
         var store = CreateStore(kind);

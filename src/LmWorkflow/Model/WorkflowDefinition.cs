@@ -10,6 +10,12 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 /// </summary>
 public sealed record WorkflowDefinition
 {
+    /// <summary>Enables typed binding and strict comparison semantics for authored automatic workflows.</summary>
+    public bool StrictContracts { get; init; }
+
+    /// <summary>The schema for admitted workflow inputs, including shared definitions.</summary>
+    public JsonNode? InputSchema { get; init; }
+
     /// <summary>The workflow schema version.</summary>
     public int SchemaVersion { get; init; }
 

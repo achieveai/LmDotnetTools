@@ -19,6 +19,9 @@ namespace CodeReviewDaemon.Sample.Tests.Workspace;
 /// </summary>
 public sealed class ReviewSlotPreparerTests : IDisposable
 {
+    private static FakeSandboxCommandRunner NewRunner() =>
+        new FakeSandboxCommandRunner().OnArgvContains("remote get-url", new SandboxCommandResult(0, StoreUrl, ""));
+
     private const string StoreUrl = "https://github.com/achieveai/AchieveAiReviews.git";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
     private const string Branch = "review/github/achieveai-lmdotnettools/151";
@@ -39,6 +42,69 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("https://github.com/acme/reviews.git", "https://GITHUB.com/acme/reviews/")]
+    [InlineData("https://github.com/acme/reviews", "https://user@github.com:443/ACME/reviews.git")]
+    [InlineData("https://dev.azure.com/org/project/_git/reviews", "https://org.visualstudio.com/project/_git/reviews")]
+    public async Task Origin_verification_accepts_equivalent_repository_urls(string configured, string actual)
+    {
+        var runner = new FakeSandboxCommandRunner().OnArgvContains(
+            "remote get-url",
+            new SandboxCommandResult(0, actual, "")
+        );
+        await ReviewSlotPreparer.VerifyStoreOriginAsync(new GitRunner(runner), "/store", configured, default);
+        runner.Commands.Should().HaveCount(2);
+        runner.Commands.Should().Contain(command => command.Argv.Contains("--push"));
+    }
+
+    [Theory]
+    [InlineData("https://github.com/acme/other")]
+    [InlineData("https://github.com:8443/acme/reviews")]
+    [InlineData("https://other.example/acme/reviews")]
+    [InlineData("https://evil.example/x@github.com/acme/reviews")]
+    [InlineData("https://github.com/acme/reviews?alternate=1")]
+    [InlineData("https://github.com/acme/reviews\nhttps://github.com/acme/other")]
+    [InlineData("")]
+    public async Task Origin_verification_rejects_wrong_or_ambiguous_push_destinations(string pushUrl)
+    {
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains("--push", new SandboxCommandResult(0, pushUrl, ""))
+            .OnArgvContains("remote get-url", new SandboxCommandResult(0, "https://github.com/acme/reviews", ""));
+        Func<Task> verify = () =>
+            ReviewSlotPreparer.VerifyStoreOriginAsync(
+                new GitRunner(runner),
+                "/store",
+                "https://github.com/acme/reviews",
+                default
+            );
+        await verify.Should().ThrowAsync<InvalidOperationException>().WithMessage("*origin*");
+        runner.Commands.Should().OnlyContain(command => command.Argv.Contains("get-url"));
+    }
+
+    [Fact]
+    public async Task EnsureStoreAsync_RefusesAnExistingCheckoutWithAnotherOriginBeforeAnyMutation()
+    {
+        var runner = NewRunner()
+            .OnArgvContains("rev-parse --git-dir", new SandboxCommandResult(0, ".git", ""))
+            .OnArgvContainsFirst(
+                "remote get-url",
+                new SandboxCommandResult(0, "https://github.com/other/reviews.git", "")
+            );
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            new FakeSandboxFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
+        Func<Task> ensure = () => preparer.EnsureStoreAsync("/trusted/store", StoreUrl, default);
+        await ensure.Should().ThrowAsync<InvalidOperationException>().WithMessage("*origin*");
+        runner
+            .Commands.Should()
+            .NotContain(command =>
+                command.Argv.Contains("clone") || command.Argv.Contains("set-url") || command.Argv.Contains("fetch")
+            );
+    }
+
     [Fact]
     public void SdkOwnershipMarker_LivesUnderGitMetadataSoHygieneCleanCannotDeleteIt()
     {
@@ -49,7 +115,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task EnsureStoreAsync_SdkPreparer_ReclonesAnUnmarkedHostPreparedStoreAndWritesMarker()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var fileSystem = SeedGitmodules(slot.StorePath);
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
@@ -79,7 +145,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task EnsureStoreAsync_SdkPreparer_ReusesAMarkedStore()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var fileSystem = SeedGitmodules(slot.StorePath)
             .Seed($"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}", "1\n");
         var preparer = new ReviewSlotPreparer(
@@ -109,7 +175,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // `rm -rf` and re-clone a store that was never unowned — the most expensive way possible to react to
         // a file we simply declined to load.
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var fileSystem = SeedGitmodules(slot.StorePath)
             .Seed(
                 $"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}",
@@ -148,7 +214,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var readOnlyPack = Path.Combine(packDir, "pack-deadbeef.idx");
         File.WriteAllText(readOnlyPack, "idx");
         File.SetAttributes(readOnlyPack, FileAttributes.ReadOnly);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -192,7 +258,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.SetAttributes(victim, FileAttributes.ReadOnly);
         DirectoryLink.Create(Path.Combine(slot.StorePath, ".git", "modules"), outside);
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()),
+            new GitRunner(NewRunner()),
             new HostFileSystem(),
             "github",
             NullLoggerFactory.Instance
@@ -227,7 +293,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.SetAttributes(victim, FileAttributes.ReadOnly);
         var storeRoot = Path.Combine(slotPath, "store");
         DirectoryLink.Create(storeRoot, outside);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -279,7 +345,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
         );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()),
+            new GitRunner(NewRunner()),
             new HostFileSystem(),
             "github",
             NullLoggerFactory.Instance
@@ -327,7 +393,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         await File.WriteAllTextAsync(victim, "notes");
         var storeRoot = Path.Combine(slotPath, "store");
         FileLink.Create(storeRoot, victim);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -367,7 +433,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slotPath = Path.Combine(_hostRoot, "slot-0");
         _ = Directory.CreateDirectory(slotPath);
         using var denied = UnreadableEntry.Create(slotPath);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -407,7 +473,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var opaque = Path.Combine(slot.StorePath, ".git", "objects");
         _ = Directory.CreateDirectory(opaque);
         using var denied = UnreadableEntry.UnlistableDirectory(opaque);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -456,7 +522,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         _ = Directory.CreateDirectory(objects);
         var planted = Path.Combine(objects, "planted");
         using var undeletable = UnreadableEntry.UndeletableLink(planted, outside);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -511,7 +577,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // first host-side store clone can never succeed while that sandbox path is pinned as the cwd. The
         // clone names an absolute target, so it needs no working directory at all.
         var slot = CreateSlot(withGitDir: false);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -538,7 +604,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // Non-regression for the host fix above: inside the sandbox `/workspace` IS a real, mounted directory
         // and stays the clone's working directory.
         var slot = CreateSlot(withGitDir: false);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new FakeSandboxFileSystem(),
@@ -575,7 +641,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
                 + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
         );
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
@@ -612,7 +678,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task EnsureStoreAsync_HostPreparer_ReusesAnUnmarkedStore()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             SeedGitmodules(slot.StorePath),
@@ -636,7 +702,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_NewBranch_BranchesFromDefaultBranchAndAdvancesSubmodule()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"rev-parse --verify origin/{Branch}",
             new SandboxCommandResult(1, string.Empty, "fatal: unknown revision")
@@ -698,7 +764,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_ExistingOriginBranch_ReusesItInsteadOfTheDefaultBranch()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"rev-parse --verify origin/{Branch}",
             new SandboxCommandResult(0, "abc123\n", string.Empty)
@@ -745,7 +811,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
                 + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
         );
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
@@ -784,7 +850,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var markerFile = Path.Combine(slot.ScratchPath, "stale-from-prior-review.txt");
         File.WriteAllText(markerFile, "leftover");
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var fileSystem = SeedGitmodules(slot.StorePath);
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
 
@@ -809,7 +875,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_ReturnsThePosixJoinedPreparedCheckoutPaths()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var fileSystem = SeedGitmodules(slot.StorePath);
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
 
@@ -839,7 +905,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var staleLock = Path.Combine(slot.StorePath, ".git", "index.lock");
         File.WriteAllText(staleLock, string.Empty);
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             SeedGitmodules(slot.StorePath),
@@ -867,7 +933,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot(withGitDir: false);
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()),
+            new GitRunner(NewRunner()),
             SeedGitmodules(slot.StorePath),
             "github",
             NullLoggerFactory.Instance
@@ -910,7 +976,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
         );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()),
+            new GitRunner(NewRunner()),
             new HostFileSystem(),
             "github",
             NullLoggerFactory.Instance
@@ -942,7 +1008,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_ReviewedSubmoduleFailsToInit_ThrowsSlotCorrupt()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             "submodule update --init",
             new SandboxCommandResult(
@@ -981,7 +1047,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_ReviewedSubmoduleUnknownInitFailure_DoesNotDriveReclone()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         // An init failure whose stderr matches neither a corrupt nor a transient marker classifies as
         // GitFailureKind.Unknown, which GitFailureClassifier documents as "treated as transient". It must
         // therefore retry the warm store, NOT drive a destructive reclone (matching the store-checkout path,
@@ -1019,7 +1085,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_NonCorruptHygieneRestoreFailure_DoesNotReclone()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         // Clean-on-entry hygiene's submodule restore (`submodule update --recursive --no-fetch ...`) fails
         // NON-corruptly (a missing local object / deinit'd submodule). EnsureCleanAsync proceeds (Clean) — the
         // review re-establishes submodules with permitted fetches — so PrepareAsync must NOT throw
@@ -1072,7 +1138,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_UnansweredHygieneProbe_ThrowsItsOwnType_NotRecloneOrRetire()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         // Exit 0 with no branch header: `status --porcelain -b` cannot produce that, so the output was lost.
         runner.OnArgvContains("status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
         var preparer = new ReviewSlotPreparer(
@@ -1114,7 +1180,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_ReviewedSubmoduleTransientInitFailure_DoesNotDriveReclone()
     {
         var slot = CreateSlot();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             "submodule update --init",
             new SandboxCommandResult(
@@ -1154,7 +1220,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot();
         var run = CreateRun();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"checkout --force {run.HeadSha}",
             new SandboxCommandResult(128, string.Empty, "fatal: Unable to create '.git/index.lock': File exists.")
@@ -1188,7 +1254,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot();
         var run = CreateRun();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"fetch origin {run.BaseSha} {run.HeadSha}",
             new SandboxCommandResult(
@@ -1233,7 +1299,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot();
         var run = CreateRun();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"checkout --force {run.HeadSha}",
             new SandboxCommandResult(128, string.Empty, NestedGitDirCheckoutStderr)
@@ -1270,7 +1336,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot();
         var run = CreateRun();
-        var runner = new FakeSandboxCommandRunner();
+        var runner = NewRunner();
         runner.OnArgvContains(
             $"checkout --force {run.HeadSha}",
             new SandboxCommandResult(128, string.Empty, NestedGitDirCheckoutStderr)
@@ -1327,7 +1393,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         string target,
         SandboxCommandResult mergeBase
     ) =>
-        new FakeSandboxCommandRunner()
+        NewRunner()
             .OnArgvContains($"-C {target} merge-base", mergeBase)
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
@@ -1494,7 +1560,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner()
+        var runner = NewRunner()
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
@@ -1543,7 +1609,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner()
+        var runner = NewRunner()
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
@@ -1583,7 +1649,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         string headSha,
         params SandboxCommandResult[] baseCounts
     ) =>
-        new FakeSandboxCommandRunner()
+        NewRunner()
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
@@ -1800,7 +1866,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner()
+        var runner = NewRunner()
             .OnArgvContainsSequence(
                 $"-C {target} merge-base",
                 new SandboxCommandResult(1, string.Empty, string.Empty),
@@ -1871,10 +1937,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner().OnArgvContains(
-            $"-C {target} merge-base",
-            new SandboxCommandResult(0, "d34db33f\n", string.Empty)
-        );
+        var runner = NewRunner()
+            .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(0, "d34db33f\n", string.Empty));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             SeedGitmodules(slot.StorePath),
@@ -1915,10 +1979,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner().OnArgvContains(
-            $"-C {target} merge-base",
-            new SandboxCommandResult(0, "d34db33f\n", string.Empty)
-        );
+        var runner = NewRunner()
+            .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(0, "d34db33f\n", string.Empty));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             SeedGitmodules(slot.StorePath),
@@ -1952,7 +2014,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     /// so the ONLY difference between the two tests below is the flag passed to the preparer.
     /// </summary>
     private static FakeSandboxCommandRunner ShallowCloneResolvingAfterOneDeepening(string target, ReviewRun run) =>
-        new FakeSandboxCommandRunner()
+        NewRunner()
             .OnArgvContainsSequence(
                 $"-C {target} merge-base",
                 new SandboxCommandResult(1, string.Empty, string.Empty),

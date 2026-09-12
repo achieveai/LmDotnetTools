@@ -1434,13 +1434,27 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     throw;
                 }
 
-                return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed);
+                return new SendReceipt(
+                    receiptId,
+                    inputId,
+                    queuedAt,
+                    SpawningSuppressed: suppressed,
+                    ActionToolsSuppressed: input.SuppressActionTools && EnforcesActionToolSuppression
+                );
             }
         }
 
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
+        return ValueTask.FromResult(
+            new SendReceipt(
+                receiptId,
+                inputId,
+                queuedAt,
+                SpawningSuppressed: suppressed,
+                ActionToolsSuppressed: input.SuppressActionTools && EnforcesActionToolSuppression
+            )
+        );
     }
 
     /// <inheritdoc />
@@ -1464,6 +1478,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </para>
     /// </summary>
     public virtual bool EnforcesSpawnSuppression => false;
+
+    /// <summary>Whether the loop enforces tool-free correction inputs at dispatch.</summary>
+    public virtual bool EnforcesActionToolSuppression => false;
 
     /// <summary>
     /// The value a receipt reports for <paramref name="input"/>. It states ENFORCEMENT, never the request: a
@@ -1544,7 +1561,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             inputId
         );
 
-        return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: WillSuppressSpawning(input));
+        return new SendReceipt(
+            receiptId,
+            inputId,
+            queuedAt,
+            SpawningSuppressed: WillSuppressSpawning(input),
+            ActionToolsSuppressed: input.SuppressActionTools && EnforcesActionToolSuppression
+        );
     }
 
     /// <inheritdoc />

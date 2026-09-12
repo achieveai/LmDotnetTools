@@ -35,6 +35,52 @@ public class ReviewSlotPoolTests : IDisposable
         new(maxSlots, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance);
 
     [Fact]
+    public async Task RecoverLease_reserves_exact_address_without_cleaning_and_advances_fresh_indices()
+    {
+        var original = CreatePool(2);
+        var assigned = await original.LeaseAsync(default);
+        Directory.CreateDirectory(assigned.StorePath);
+        var evidence = Path.Combine(assigned.StorePath, "unfinished.txt");
+        await File.WriteAllTextAsync(evidence, "retain this interrupted work");
+        var restarted = CreatePool(2);
+        var recovered = await restarted.RecoverLeaseAsync(assigned, default);
+        recovered.Should().Be(assigned);
+        (await File.ReadAllTextAsync(evidence)).Should().Be("retain this interrupted work");
+        var fresh = await restarted.LeaseAsync(default);
+        fresh.Index.Should().BeGreaterThan(assigned.Index);
+        await restarted.ReturnAsync(fresh, default);
+        await restarted.ReturnAsync(recovered, default);
+    }
+
+    [Fact]
+    public async Task RecoverLease_rejects_duplicate_active_adoption_before_waiting_for_capacity()
+    {
+        var original = CreatePool(1);
+        var assigned = await original.LeaseAsync(default);
+        var restarted = CreatePool(1);
+        await restarted.RecoverLeaseAsync(assigned, default);
+        await restarted
+            .Invoking(value => value.RecoverLeaseAsync(assigned, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task RecoverLease_rejects_an_address_outside_configured_pool()
+    {
+        var pool = CreatePool(1);
+        var foreign = new ReviewSlot(
+            0,
+            _outsideRoot,
+            Path.Combine(_outsideRoot, "store"),
+            Path.Combine(_outsideRoot, "scratch")
+        );
+        await pool.Invoking(value => value.RecoverLeaseAsync(foreign, default))
+            .Should()
+            .ThrowAsync<SlotAddressUnusableException>();
+    }
+
+    [Fact]
     public async Task LeaseAsync_FirstLease_AllocatesSlotAddressWithoutCreatingStore()
     {
         var pool = CreatePool(maxSlots: 2);
@@ -83,6 +129,33 @@ public class ReviewSlotPoolTests : IDisposable
         var secondSlot = await secondLeaseTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         secondSlot.Index.Should().Be(firstSlot.Index);
+    }
+
+    [Fact]
+    public async Task Preferred_lease_waits_for_and_returns_the_exact_persisted_address()
+    {
+        var pool = CreatePool(maxSlots: 2);
+        var preferred = await pool.LeaseAsync(default);
+        var other = await pool.LeaseAsync(default);
+        await pool.ReturnAsync(other, default);
+
+        var preferredLease = pool.LeasePreferredAsync(preferred, default);
+        preferredLease.IsCompleted.Should().BeFalse();
+        await pool.ReturnAsync(preferred, default);
+
+        (await preferredLease.WaitAsync(TimeSpan.FromSeconds(10))).Should().Be(preferred);
+    }
+
+    [Fact]
+    public async Task Try_lease_returns_immediately_when_the_only_slot_is_active()
+    {
+        var pool = CreatePool(maxSlots: 1);
+        var active = await pool.LeaseAsync(default);
+
+        (await pool.TryLeaseAsync(default)).Should().BeNull();
+
+        await pool.ReturnAsync(active, default);
+        (await pool.TryLeasePreferredAsync(active, default)).Should().Be(active);
     }
 
     [Fact]

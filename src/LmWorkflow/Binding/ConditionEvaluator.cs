@@ -19,30 +19,53 @@ public static partial class ConditionEvaluator
     ///     <c>true</c>; an empty <see cref="Condition.Any"/> is <c>false</c>. A leaf whose operator is
     ///     unset evaluates to <c>false</c>.
     /// </summary>
-    public static bool Evaluate(Condition condition, BindingContext context)
+    public static bool Evaluate(Condition condition, BindingContext context) =>
+        Evaluate(condition, context, ConditionEvaluationPolicy.Legacy);
+
+    /// <summary>
+    ///     Evaluates <paramref name="condition"/> using an explicit comparison <paramref name="policy"/>.
+    ///     Strict workflow evaluation validates every leaf before applying Boolean composition so a
+    ///     short-circuited branch cannot hide a missing or mistyped operand.
+    /// </summary>
+    public static bool Evaluate(Condition condition, BindingContext context, ConditionEvaluationPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(condition);
         ArgumentNullException.ThrowIfNull(context);
 
+        if (policy is not ConditionEvaluationPolicy.Legacy and not ConditionEvaluationPolicy.StrictWorkflow)
+        {
+            throw new ArgumentOutOfRangeException(nameof(policy), policy, "Unknown condition evaluation policy.");
+        }
+
+        if (policy == ConditionEvaluationPolicy.StrictWorkflow)
+        {
+            ValidateStrict(condition, context);
+        }
+
+        return EvaluateCore(condition, context, policy);
+    }
+
+    private static bool EvaluateCore(Condition condition, BindingContext context, ConditionEvaluationPolicy policy)
+    {
         if (condition.All is { } all)
         {
-            return all.All(child => Evaluate(child, context));
+            return all.All(child => EvaluateCore(child, context, policy));
         }
 
         if (condition.Any is { } any)
         {
-            return any.Any(child => Evaluate(child, context));
+            return any.Any(child => EvaluateCore(child, context, policy));
         }
 
         if (condition.Not is { } not)
         {
-            return !Evaluate(not, context);
+            return !EvaluateCore(not, context, policy);
         }
 
-        return EvaluateLeaf(condition, context);
+        return EvaluateLeaf(condition, context, policy);
     }
 
-    private static bool EvaluateLeaf(Condition condition, BindingContext context)
+    private static bool EvaluateLeaf(Condition condition, BindingContext context, ConditionEvaluationPolicy policy)
     {
         if (condition.Op is not { } op)
         {
@@ -54,17 +77,162 @@ public static partial class ConditionEvaluator
 
         return op switch
         {
-            ConditionOp.Eq => StructuralEquals(left, right),
-            ConditionOp.Ne => !StructuralEquals(left, right),
-            ConditionOp.Lt => Compare(left, right, op),
-            ConditionOp.Lte => Compare(left, right, op),
-            ConditionOp.Gt => Compare(left, right, op),
-            ConditionOp.Gte => Compare(left, right, op),
+            ConditionOp.Eq => Equals(left, right, policy),
+            ConditionOp.Ne => !Equals(left, right, policy),
+            ConditionOp.Lt => Compare(left, right, op, policy),
+            ConditionOp.Lte => Compare(left, right, op, policy),
+            ConditionOp.Gt => Compare(left, right, op, policy),
+            ConditionOp.Gte => Compare(left, right, op, policy),
             ConditionOp.In => EvaluateIn(left, right),
             ConditionOp.Empty => IsEmpty(left),
             ConditionOp.NonEmpty => !IsEmpty(left),
             _ => false,
         };
+    }
+
+    private static void ValidateStrict(Condition condition, BindingContext context)
+    {
+        if (condition.All is { } all)
+        {
+            foreach (var child in all)
+            {
+                ValidateStrict(child, context);
+            }
+
+            return;
+        }
+
+        if (condition.Any is { } any)
+        {
+            foreach (var child in any)
+            {
+                ValidateStrict(child, context);
+            }
+
+            return;
+        }
+
+        if (condition.Not is { } not)
+        {
+            ValidateStrict(not, context);
+            return;
+        }
+
+        ValidateStrictLeaf(condition, context);
+    }
+
+    private static void ValidateStrictLeaf(Condition condition, BindingContext context)
+    {
+        if (condition.Op is not { } op)
+        {
+            throw new InvalidOperationException("A strict workflow condition leaf requires an operator.");
+        }
+
+        if (string.IsNullOrWhiteSpace(condition.Path))
+        {
+            throw new InvalidOperationException($"Condition operator '{op}' requires a binding path.");
+        }
+
+        var left = context.Resolve(condition.Path);
+        if (op is ConditionOp.Empty or ConditionOp.NonEmpty)
+        {
+            return;
+        }
+
+        if (left is null)
+        {
+            throw MissingOperand(condition.Path, op);
+        }
+
+        var valuePath = GetValueBindingPath(condition.Value);
+        var right = ResolveValue(condition.Value, context);
+        if (right is null)
+        {
+            throw MissingOperand(valuePath ?? "comparison value", op);
+        }
+
+        switch (op)
+        {
+            case ConditionOp.Eq:
+            case ConditionOp.Ne:
+                ValidateEqualityTypes(condition.Path, left, right);
+                break;
+
+            case ConditionOp.Lt:
+            case ConditionOp.Lte:
+            case ConditionOp.Gt:
+            case ConditionOp.Gte:
+                ValidateNumericTypes(condition.Path, op, left, right);
+                break;
+
+            case ConditionOp.In:
+                if (left is not JsonArray && right is not JsonArray)
+                {
+                    throw new InvalidOperationException(
+                        $"Condition operator '{op}' at '{condition.Path}' requires one Array operand."
+                    );
+                }
+
+                break;
+
+            case ConditionOp.Empty:
+            case ConditionOp.NonEmpty:
+                break;
+
+            default:
+                throw new InvalidOperationException($"Unsupported strict workflow condition operator '{op}'.");
+        }
+    }
+
+    private static void ValidateEqualityTypes(string path, JsonNode left, JsonNode right)
+    {
+        var leftType = GetStrictType(left);
+        var rightType = GetStrictType(right);
+        if (leftType != rightType)
+        {
+            throw new InvalidOperationException(
+                $"Condition at '{path}' requires operands of the same type, but left is {leftType} and right is {rightType}."
+            );
+        }
+    }
+
+    private static void ValidateNumericTypes(string path, ConditionOp op, JsonNode left, JsonNode right)
+    {
+        if (!TryGetStrictNumber(left, out _) || !TryGetStrictNumber(right, out _))
+        {
+            throw new InvalidOperationException(
+                $"Condition operator '{op}' at '{path}' requires Number operands, but left is {GetStrictType(left)} and right is {GetStrictType(right)}."
+            );
+        }
+    }
+
+    private static InvalidOperationException MissingOperand(string path, ConditionOp op) =>
+        new($"Required condition operand '{path}' for operator '{op}' is missing.");
+
+    private static string GetStrictType(JsonNode node) =>
+        node.GetValueKind() switch
+        {
+            JsonValueKind.True or JsonValueKind.False => "Boolean",
+            JsonValueKind.Number => "Number",
+            JsonValueKind.String => "String",
+            JsonValueKind.Array => "Array",
+            JsonValueKind.Object => "Object",
+            JsonValueKind.Null => "Null",
+            _ => "Unsupported",
+        };
+
+    private static string? GetValueBindingPath(JsonNode? value)
+    {
+        if (
+            value is not null
+            && value.GetValueKind() == JsonValueKind.String
+            && WholeBindingPattern().Match(value.GetValue<string>()) is { Success: true } match
+        )
+        {
+            return match.Groups[1].Value;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -89,6 +257,21 @@ public static partial class ConditionEvaluator
     ///     Structural equality: numbers compared numerically, strings/booleans by value, objects and arrays
     ///     deep-compared. Two absent operands are equal; a kind mismatch (other than two numbers) is not.
     /// </summary>
+    private static bool Equals(JsonNode? left, JsonNode? right, ConditionEvaluationPolicy policy) =>
+        policy == ConditionEvaluationPolicy.StrictWorkflow
+            ? StrictEquals(left!, right!)
+            : StructuralEquals(left, right);
+
+    private static bool StrictEquals(JsonNode left, JsonNode right)
+    {
+        if (left.GetValueKind() == JsonValueKind.String)
+        {
+            return string.Equals(left.GetValue<string>(), right.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        return StructuralEquals(left, right);
+    }
+
     private static bool StructuralEquals(JsonNode? a, JsonNode? b)
     {
         if (a is null || b is null)
@@ -160,17 +343,17 @@ public static partial class ConditionEvaluator
     ///     comparison is numeric; otherwise it is an ordinal comparison of their text forms. A missing
     ///     operand yields <c>false</c>.
     /// </summary>
-    private static bool Compare(JsonNode? left, JsonNode? right, ConditionOp op)
+    private static bool Compare(JsonNode? left, JsonNode? right, ConditionOp op, ConditionEvaluationPolicy policy)
     {
         if (left is null || right is null)
         {
             return false;
         }
 
-        var comparison =
-            TryGetNumber(left, out var numericLeft) && TryGetNumber(right, out var numericRight)
-                ? numericLeft.CompareTo(numericRight)
-                : string.CompareOrdinal(JsonText.ToText(left), JsonText.ToText(right));
+        var bothNumeric = TryGetComparisonNumbers(left, right, policy, out var numericLeft, out var numericRight);
+        var comparison = bothNumeric
+            ? numericLeft.CompareTo(numericRight)
+            : string.CompareOrdinal(JsonText.ToText(left), JsonText.ToText(right));
 
         return op switch
         {
@@ -180,6 +363,21 @@ public static partial class ConditionEvaluator
             ConditionOp.Gte => comparison >= 0,
             _ => false,
         };
+    }
+
+    private static bool TryGetComparisonNumbers(
+        JsonNode left,
+        JsonNode right,
+        ConditionEvaluationPolicy policy,
+        out double numericLeft,
+        out double numericRight
+    )
+    {
+        numericLeft = 0;
+        numericRight = 0;
+        return policy == ConditionEvaluationPolicy.StrictWorkflow
+            ? TryGetStrictNumber(left, out numericLeft) && TryGetStrictNumber(right, out numericRight)
+            : TryGetNumber(left, out numericLeft) && TryGetNumber(right, out numericRight);
     }
 
     /// <summary>
@@ -249,6 +447,12 @@ public static partial class ConditionEvaluator
             ),
             _ => false,
         };
+    }
+
+    private static bool TryGetStrictNumber(JsonNode node, out double value)
+    {
+        value = 0;
+        return node.GetValueKind() == JsonValueKind.Number && TryGetNumber(node, out value) && double.IsFinite(value);
     }
 
     [GeneratedRegex(@"^\s*\{\{\s*(.*?)\s*\}\}\s*$", RegexOptions.CultureInvariant)]

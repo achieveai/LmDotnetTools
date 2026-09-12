@@ -496,6 +496,79 @@ public class SubAgentSpawnSuppressionTests
         suppressed.SpawningSuppressed.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Action_suppression_hides_all_tools_and_refuses_replayed_calls()
+    {
+        var spawnAttempts = 0;
+        await using var loop = CreateLoop(SpawnThenTextParent(), onSpawn: () => spawnAttempts++);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        _ = loop.RunAsync(cts.Token);
+        var input = NewInput("correct only the final JSON") with { SuppressActionTools = true };
+        var messages = await DrainAsync(loop, input, cts.Token);
+        spawnAttempts.Should().Be(0, "format correction must never invoke an action handler");
+        messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .Contain(result => result.IsError && result.Result.Contains("suppressed"));
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task Action_suppression_is_scoped_and_normal_tools_return_on_next_input()
+    {
+        var advertised = new List<IReadOnlyList<string>>();
+        await using var loop = CreateLoop(TextOnlyParent(advertised));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        _ = loop.RunAsync(cts.Token);
+        var input = NewInput("correct JSON") with { SuppressActionTools = true };
+        await DrainAsync(loop, input, cts.Token);
+        await DrainAsync(loop, NewInput("normal turn"), cts.Token);
+        advertised[0].Should().BeEmpty();
+        advertised[1].Should().Contain("Agent");
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task Action_suppression_also_removes_provider_tools_during_budget_wrapup()
+    {
+        var advertised = new List<IReadOnlyList<string>>();
+        var builtIns = new List<int>();
+        var parent = RecordingParent(
+            advertised,
+            turn =>
+                turn == 1
+                    ?
+                    [
+                        new ToolCallMessage
+                        {
+                            FunctionName = "publish",
+                            FunctionArgs = "{}",
+                            ToolCallId = "call-publish",
+                            Role = Role.Assistant,
+                        },
+                    ]
+                    : [new TextMessage { Text = "corrected JSON", Role = Role.Assistant }],
+            builtIns
+        );
+        await using var loop = new MultiTurnAgentLoop(
+            parent,
+            new FunctionRegistry(),
+            "correction-wrapup",
+            defaultOptions: new GenerateReplyOptions
+            {
+                Functions = [Contract("publish")],
+                BuiltInTools = [new object()],
+            },
+            maxTurnsPerRun: 1
+        );
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        _ = loop.RunAsync(cts.Token);
+        await DrainAsync(loop, NewInput("correct") with { SuppressActionTools = true }, cts.Token);
+        advertised.Should().HaveCount(2).And.AllSatisfy(tools => tools.Should().BeEmpty());
+        builtIns.Should().Equal(0, 0);
+        await cts.CancelAsync();
+    }
+
     #region Helpers
 
     /// <summary>Tool call id of the deferring call issued by <see cref="DeferringToolCall"/>.</summary>
@@ -651,7 +724,8 @@ public class SubAgentSpawnSuppressionTests
     /// </summary>
     private static IStreamingAgent RecordingParent(
         List<IReadOnlyList<string>> advertisedPerCall,
-        Func<int, List<IMessage>> reply
+        Func<int, List<IMessage>> reply,
+        List<int>? builtInCounts = null
     )
     {
         var mock = new Mock<IStreamingAgent>();
@@ -669,6 +743,7 @@ public class SubAgentSpawnSuppressionTests
                     lock (advertisedPerCall)
                     {
                         advertisedPerCall.Add(options?.Functions?.Select(f => f.Name).ToList() ?? []);
+                        builtInCounts?.Add(options?.BuiltInTools?.Count ?? 0);
                         turn = advertisedPerCall.Count;
                     }
 

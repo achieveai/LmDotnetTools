@@ -31,12 +31,12 @@ internal interface IReviewParkNotifier
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>It does not run <see cref="InfraNarrationFilter"/>, deliberately.</b> That filter's job is to keep the
+/// <b>It does not run publication formatting, deliberately.</b> That filter's job is to keep the
 /// daemon's own infrastructure commentary out of a REVIEW, and its <c>ExecutionBlockedPattern</c> matches
 /// phrases like "could not run" and "not available" — which is close to the only vocabulary a park notice
 /// has. Run over this message the filter would hold back the entire comment and the notice would silently
 /// never appear. The filter is applied by the review path at its own call site
-/// (<c>DaemonReviewStageExecutor.PostReviewCommentHostSideAsync</c>) and nowhere inside
+/// (<c>WorkflowPublicationGateway.PublishAsync</c>) and nowhere inside
 /// <see cref="ReviewPoster"/> or the publishers, so not calling it here is the whole of the bypass. The
 /// wording below is nevertheless kept factual and free of the environment nouns the filter pairs those
 /// phrases with, so routing it through the filter later would still not swallow it.
@@ -118,7 +118,7 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
                     run.Id,
                     new IdempotencyKeyComponents(
                         // The MAPPED namespace, matching what the review's own key carries: the review path
-                        // builds its key from DaemonReviewStageExecutor.ResolveRepo's already-mapped provider,
+                        // builds its key from the resolved repo identity's mapped provider,
                         // so a park notice keyed on the raw stored spelling would sit in a namespace no other
                         // key for this pull request uses.
                         Provider: provider,

@@ -17,6 +17,120 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class ReviewPosterTests : LoggingTestBase
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Workflow_receipt_reconciliation_after_expiry_only_adopts_visible_provider_proof(bool visible)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new IOException("Lost provider response.") };
+        publisher.OnFind = () =>
+            store
+                .GetArtifacts(run.Id)
+                .Should()
+                .Contain(a => a.ArtifactKind.StartsWith("workflow-publication-intent:", StringComparison.Ordinal));
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        await tools
+            .Invoking(value => value.PublishSummaryAsync("summary", "Exact body", default))
+            .Should()
+            .ThrowAsync<IOException>();
+        var receipt = store.GetOutboxForRun(run.Id).Single();
+        var intent = store
+            .GetArtifacts(run.Id)
+            .Single(a => a.ArtifactKind.StartsWith("workflow-publication-intent:", StringComparison.Ordinal));
+        intent.Payload.Should().Contain("Exact body").And.NotContain("IsStillAuthorized");
+        if (visible)
+            publisher.SeedExistingComment(receipt.IdempotencyKey, "provider-confirmed");
+        var resumed = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            false,
+            () => false
+        );
+        resumed.LimitToDeadline(DateTimeOffset.UtcNow.AddMinutes(-1));
+        await resumed.ReconcileAsync(default);
+        store.GetOutbox(receipt.Id)!.Status.Should().Be(visible ? OutboxStatus.Posted : OutboxStatus.Sending);
+        publisher.FindCallCount.Should().Be(2);
+        publisher.PostCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Workflow_receipt_without_intent_never_guesses_a_provider_target()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        store.EnqueueOutbox(
+            new OutboxEntry
+            {
+                ReviewRunId = runId,
+                Provider = "github",
+                ArtifactKind = "workflow-publication",
+                IdempotencyKey = "unknown",
+                Operation = "workflow-publish-summary",
+                Status = OutboxStatus.Sending,
+            }
+        );
+        var publisher = new FakeReviewCommentPublisher();
+        await Poster(publisher, store).ReconcilePublicationsAsync(runId, Repo, default);
+        publisher.FindCallCount.Should().Be(0);
+        publisher.PostCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Workflow_receipt_intent_with_changed_body_is_rejected_before_provider_access()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new IOException("Lost provider response.") };
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        await tools
+            .Invoking(value => value.PublishSummaryAsync("summary", "original-body", default))
+            .Should()
+            .ThrowAsync<IOException>();
+        var intent = store
+            .GetArtifacts(run.Id)
+            .Single(a => a.ArtifactKind.StartsWith("workflow-publication-intent:", StringComparison.Ordinal));
+        store.AddArtifact(
+            intent with
+            {
+                Id = 0,
+                Payload = intent.Payload.Replace("original-body", "modified-body", StringComparison.Ordinal),
+            }
+        );
+        await Poster(publisher, store)
+            .Invoking(value => value.ReconcilePublicationsAsync(run.Id, Repo, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        publisher.FindCallCount.Should().Be(1);
+        publisher.PostCount.Should().Be(0);
+    }
+
     private const string Provider = "github";
     private static readonly RepoIdentity Repo = new()
     {
@@ -175,6 +289,54 @@ public sealed class ReviewPosterTests : LoggingTestBase
     private ReviewPoster Poster(FakeReviewCommentPublisher publisher, ReviewStore store) =>
         new(publisher, store, LoggerFactory.CreateLogger<ReviewPoster>());
 
+    [Fact]
+    public async Task WorkflowPublication_UnknownSendDoesNotRepeatAfterNegativeScan()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        var publisher = new FakeReviewCommentPublisher();
+        var poster = Poster(publisher, store);
+        var request = Request(runId, false) with { RequireConfirmedOutcome = true };
+        var collected = await poster.PostReviewAsync(request, CancellationToken.None);
+        store.TryTransitionOutbox(collected.OutboxId, OutboxStatus.Collected, OutboxStatus.Sending).Should().BeTrue();
+
+        await poster
+            .Invoking(p => p.PostReviewAsync(request with { LivePostingAuthorized = true }, CancellationToken.None))
+            .Should()
+            .ThrowAsync<ReviewPublicationUncertainException>();
+
+        publisher.PostCount.Should().Be(0);
+        store.GetOutbox(collected.OutboxId)!.Status.Should().Be(OutboxStatus.Sending);
+    }
+
+    [Fact]
+    public async Task WorkflowPublication_RejectsChangedBodyForExistingAction()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var publisher = new FakeReviewCommentPublisher();
+        var poster = Poster(publisher, store);
+        var request = Request(SeedRun(store), false) with { RequireConfirmedOutcome = true };
+        _ = await poster.PostReviewAsync(request, CancellationToken.None);
+
+        await poster
+            .Invoking(p =>
+                p.PostReviewAsync(
+                    request with
+                    {
+                        Body = "different",
+                        LivePostingAuthorized = true,
+                    },
+                    CancellationToken.None
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        publisher.PostCount.Should().Be(0);
+    }
+
     private static PostReviewRequest Request(long runId, bool livePostingAuthorized) =>
         new(
             ReviewRunId: runId,
@@ -194,6 +356,148 @@ public sealed class ReviewPosterTests : LoggingTestBase
             Body: "## Review\nLooks good.",
             LivePostingAuthorized: livePostingAuthorized
         );
+
+    [Fact]
+    public async Task ScopedPublication_UsesAgentBodyVerbatim_AndStopsAtChangedHead()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var provider = new PublicationStateProvider();
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            provider,
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+
+        _ = await tools.PublishSummaryAsync("summary", "Agent-chosen body.\nExact wording.", CancellationToken.None);
+        publisher.PostedBodies.Should().Equal("Agent-chosen body.\nExact wording.");
+
+        provider.Head = "new-head";
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("another", "Another body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        publisher.PostCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ScopedPublication_ExpiredScopeNeverCallsProvider()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => false
+        );
+
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("summary", "body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        publisher.FindCallCount.Should().Be(0);
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ScopedPublication_DeadlineExpirationPreventsNewEffect(bool expireDuringProviderRead)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var provider = new PublicationStateProvider();
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            provider,
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        tools.LimitToDeadline(DateTimeOffset.UtcNow.AddMinutes(expireDuringProviderRead ? 5 : -5));
+        provider.OnHeadRead = () => tools.LimitToDeadline(DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("summary", "body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        publisher.FindCallCount.Should().Be(0);
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ScopedPublication_DeadlineExpirationDuringDedupeScanPreventsPost()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        tools.LimitToDeadline(DateTimeOffset.UtcNow.AddMinutes(5));
+        publisher.OnFind = () => tools.LimitToDeadline(DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("summary", "body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        publisher.FindCallCount.Should().Be(1);
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().ContainSingle().Which.Status.Should().Be(OutboxStatus.Pending);
+    }
+
+    private sealed class PublicationStateProvider : IPrProvider
+    {
+        public string Provider => "github";
+        public string Head { get; set; } = "head-sha";
+        public Action? OnHeadRead { get; set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
+
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(PrLifecycle.Open);
+
+        public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            OnHeadRead?.Invoke();
+            return Task.FromResult<string?>(Head);
+        }
+    }
 
     private static long SeedRun(ReviewStore store)
     {

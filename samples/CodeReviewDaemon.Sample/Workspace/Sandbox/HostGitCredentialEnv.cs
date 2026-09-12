@@ -31,7 +31,7 @@ internal static class HostGitCredentialEnv
 {
     /// <summary>
     /// The git host + Basic-auth username each supported OAuth provider authenticates with. All ADO URLs are
-    /// normalized to <c>dev.azure.com</c> upstream (see <c>DaemonReviewStageExecutor.TargetRemoteUrl</c>), so
+    /// normalized to <c>dev.azure.com</c> upstream (see <c>ReviewWorkspaceOperations.TargetRemoteUrl</c>), so
     /// a single host entry covers ADO clones/fetches.
     /// </summary>
     private static readonly IReadOnlyDictionary<string, (string Host, string Username)> ProviderGitHosts =

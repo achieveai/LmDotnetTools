@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -22,6 +24,99 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
     public PrPollingServiceTests(ITestOutputHelper output)
         : base(output) { }
+
+    [Fact]
+    public void Comment_window_keeps_new_and_changed_versions_and_excludes_only_exact_own_ids()
+    {
+        var comments = new ExistingReviewComment[]
+        {
+            new(null, null, "unchanged", "human", ProviderCommentId: "issue-comment:1", ProviderVersion: "v1"),
+            new(null, null, "edited", "human", ProviderCommentId: "issue-comment:2", ProviderVersion: "v2"),
+            new(null, null, "own", "bot", ProviderCommentId: "review-comment:7", ProviderVersion: "v1"),
+            new(null, null, "same numeric human", "human", ProviderCommentId: "issue-comment:7", ProviderVersion: "v1"),
+        };
+        var context = PrPollingService.BuildCommentContext(
+            PrDescriptor("118"),
+            comments,
+            new HashSet<string>(["review-comment:7"], StringComparer.Ordinal),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["issue-comment:1"] = "v1",
+                ["issue-comment:2"] = "v1",
+            }
+        );
+
+        context["CommentBaseline"]!
+            .AsArray()
+            .Select(IdOf)
+            .Should()
+            .Equal("issue-comment:1", "issue-comment:2", "issue-comment:7");
+        context["CommentWindow"]!.AsArray().Select(IdOf).Should().Equal("issue-comment:2", "issue-comment:7");
+    }
+
+    [Fact]
+    public void Comment_window_refuses_provider_data_without_an_exact_version()
+    {
+        var comments = new ExistingReviewComment[]
+        {
+            new(null, null, "body", "human", ProviderCommentId: "issue-comment:1"),
+        };
+
+        var act = () =>
+            PrPollingService.BuildCommentContext(
+                PrDescriptor("118"),
+                comments,
+                new HashSet<string>(StringComparer.Ordinal),
+                new Dictionary<string, string>(StringComparer.Ordinal)
+            );
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*stable id or version*");
+    }
+
+    [Fact]
+    public async Task Legacy_completed_run_without_scope_admits_current_discussion_once_as_a_durable_window()
+    {
+        using var database = new TempSqliteDatabase();
+        using var store = new ReviewStore(database.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        store.UpdateReviewRunState(run.Id, ReviewStage.Posted, WorkflowStatus.Completed, PrLifecycleState.Open);
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor())
+        {
+            ExistingComments =
+            [
+                new ExistingReviewComment(
+                    null,
+                    null,
+                    "historical comment",
+                    "human",
+                    ProviderCommentId: "issue-comment:1",
+                    ProviderVersion: "v1"
+                ),
+            ],
+        };
+
+        await BuildPoller(store, provider).PollOnceAsync(default);
+
+        var round = store.GetLatestWorkflowRound(repoId, "118", "head-118", WorkflowRoundKind.Discussion);
+        round.Should().NotBeNull();
+        round!.Outcome.Should().Be(WorkflowRoundOutcome.Succeeded);
+        var context = JsonNode.Parse(round.FrozenInputJson)!.AsObject();
+        context["CommentBaseline"]!.AsArray().Should().ContainSingle();
+        context["CommentWindow"]!
+            .AsArray()
+            .Should()
+            .ContainSingle("unanswered legacy discussion still needs a decision");
+
+        await BuildPoller(store, provider).PollOnceAsync(default);
+
+        store
+            .GetLatestWorkflowRound(repoId, "118", "head-118", WorkflowRoundKind.Discussion)!
+            .Id.Should()
+            .Be(round.Id, "the stable legacy window key must not create a duplicate round on restart");
+    }
+
+    private static string IdOf(JsonNode? value) => value!["ProviderCommentId"]!.GetValue<string>();
 
     [Fact]
     public async Task First_poll_resyncs_discovers_prs_creates_runs_and_advances_the_cursor()
@@ -121,11 +216,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         // Provider registered for "github" but the target asks for "azure-devops".
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
         var target = new PrPollTarget
@@ -155,11 +246,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         var provider = new MockPrProvider(Provider, [PrDescriptor("118"), PrDescriptor("119")], NextCursor());
         // PR 118's orchestration throws; 119 must still be processed to completion.
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(throwForPrId: "118"),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store, "118");
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -195,11 +282,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         var poison = new ThrowingPrProvider("azure-devops");
         var healthy = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var targets = new[]
         {
             new PrPollTarget
@@ -265,11 +348,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var stale = DatedDescriptor("201", updatedAt: now.AddDays(-30));
         var undated = DatedDescriptor("202", updatedAt: null);
         var provider = new MockPrProvider(Provider, [recent, stale, undated], NextCursor());
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -315,11 +394,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
         var ancient = DatedDescriptor("201", updatedAt: now.AddDays(-365));
         var provider = new MockPrProvider(Provider, [ancient], NextCursor());
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -353,11 +428,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -391,11 +462,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
 
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -603,8 +670,8 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             new ReviewArtifact
             {
                 ReviewRunId = run.Id,
-                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                ArtifactSchemaVersion = ReviewArtifactKinds.ReviewArtifactSchemaVersion,
+                ArtifactKind = ReviewArtifactKinds.ReviewArtifactKind,
                 Provider = Provider,
                 Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "run-1", "primary")),
             }
@@ -619,11 +686,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         int? lookbackDays = null
     )
     {
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -649,11 +712,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         Func<CancellationToken, Task> sweepAsync
     )
     {
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -665,11 +724,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
     private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
     {
-        var orchestrator = new PrOrchestrator(
-            store,
-            new RecordingStageExecutor(),
-            LoggerFactory.CreateLogger<PrOrchestrator>()
-        );
+        var orchestrator = Orchestrator(store);
         var target = new PrPollTarget
         {
             Provider = Provider,
@@ -683,6 +738,67 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             orchestrator,
             LoggerFactory.CreateLogger<PrPollingService>()
         );
+    }
+
+    private PrOrchestrator Orchestrator(ReviewStore store, string? failPrId = null) =>
+        new(store, new CompletingWorkflowRunner(store, failPrId), LoggerFactory.CreateLogger<PrOrchestrator>());
+
+    private sealed class CompletingWorkflowRunner(ReviewStore store, string? failPrId) : IReviewWorkflowRunner
+    {
+        private readonly Dictionary<long, JsonObject> _contexts = [];
+
+        public Task<WorkflowInvocationStatus> RunAsync(
+            ReviewRun run,
+            WorkflowRound? round,
+            JsonObject frozenContext,
+            CancellationToken cancellationToken
+        )
+        {
+            if (string.Equals(run.PrId, failPrId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("simulated workflow failure");
+            }
+            _contexts[run.Id] = (JsonObject)frozenContext.DeepClone();
+            if (round is null)
+            {
+                store.UpdateReviewRunState(run.Id, ReviewStage.Posted, WorkflowStatus.Completed, run.PrLifecycleState);
+            }
+            else
+            {
+                var instanceId = $"review-round-{round.Id}";
+                _ = store.TryBindWorkflowInstance(round.Id, instanceId);
+                _ = store.RecordWorkflowOutcome(round.Id, instanceId, WorkflowRoundOutcome.Succeeded);
+            }
+            return Task.FromResult(WorkflowInvocationStatus.Completed);
+        }
+
+        public Task<WorkflowInvocationStatus> RunOrResumeAsync(
+            ReviewRun run,
+            WorkflowRound? round,
+            JsonObject currentContext,
+            CancellationToken cancellationToken
+        ) => RunAsync(run, round, currentContext, cancellationToken);
+
+        public Task<WorkflowInvocationStatus> ResumeAsync(
+            ReviewRun run,
+            WorkflowRound? round,
+            CancellationToken cancellationToken
+        ) => Task.FromResult(WorkflowInvocationStatus.Completed);
+
+        public Task<JsonObject> ReadFrozenContextAsync(
+            ReviewRun run,
+            WorkflowRound? round,
+            CancellationToken cancellationToken
+        ) =>
+            Task.FromResult(
+                round is null
+                    ? (JsonObject)_contexts[run.Id].DeepClone()
+                    : JsonNode.Parse(round.FrozenInputJson)!.AsObject()
+            );
+
+        public Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public bool HasFrozenContext(ReviewRun run, WorkflowRound? round) => _contexts.ContainsKey(run.Id);
     }
 
     private static OpaqueCursor NextCursor() =>

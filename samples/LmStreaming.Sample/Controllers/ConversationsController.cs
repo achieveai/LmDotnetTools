@@ -215,7 +215,8 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner
+    ConversationDescendantScanner descendantScanner,
+    LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
 ) : ControllerBase
 {
     /// <summary>
@@ -1027,16 +1028,28 @@ public class ConversationsController(
     }
 
     [HttpGet("capabilities")]
-    public IActionResult GetCapabilities() =>
-        Ok(
+    public IActionResult GetCapabilities(string? providerId = null, string? modeId = null)
+    {
+        var publicationSupported =
+            workflowPublication?.Resolve(TryBuildCallerCredential(HttpContext?.Request?.Headers)?.AppId) is not null
+            && (providerId is null || WorkflowPublicationToolProvider.SupportsProvider(providerRegistry, providerId))
+            && (modeId is null || modeId == LmStreaming.Sample.Configuration.WorkflowPublicationOptions.ModeId);
+        return Ok(
             new ConversationCapabilitiesResponse
             {
                 SchemaVersion = 1,
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
+                ActionToolSuppression = true,
+                WorkflowPublication = publicationSupported,
+                WorkflowPublicationProviderId = publicationSupported ? providerId : null,
+                WorkflowPublicationModeId = publicationSupported
+                    ? LmStreaming.Sample.Configuration.WorkflowPublicationOptions.ModeId
+                    : null,
                 RootReasoningEffort = true,
             }
         );
+    }
 
     /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
@@ -1260,6 +1273,22 @@ public class ConversationsController(
             );
         }
 
+        if (
+            request.SuppressActionTools
+            && agent is not IActionToolSuppressingAgent { EnforcesActionToolSuppression: true }
+        )
+        {
+            return BadRequest(
+                new
+                {
+                    error = "action_tool_suppression_unsupported",
+                    code = "action_tool_suppression_unsupported",
+                    detail = "This conversation cannot enforce a tool-free correction input.",
+                    threadId,
+                }
+            );
+        }
+
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
         // turn does, and the resulting id is ADMITTED durably before anything is queued — so a repeat can be
         // answered from the record of what this host actually granted. That is the recovery a caller needs
@@ -1299,13 +1328,18 @@ public class ConversationsController(
         var admission = new InputAcceptance(
             threadId,
             idempotent
-                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+                ? IdempotentInputId.Create(
+                    request.IdempotencyKey!,
+                    request.SuppressSubAgentSpawning,
+                    request.SuppressActionTools
+                )
                 : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N"),
             timeProvider.GetUtcNow(),
             InputAcceptanceState.Pending,
             SpawningSuppressed: request.SuppressSubAgentSpawning,
             IdempotencyHonored: idempotent,
-            ReservationId: Guid.NewGuid()
+            ReservationId: Guid.NewGuid(),
+            ActionToolsSuppressed: request.SuppressActionTools
         );
 
         if (idempotent && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
@@ -1333,7 +1367,8 @@ public class ConversationsController(
                         [userMessage],
                         admission.InputId,
                         ParentRunId: null,
-                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning,
+                        SuppressActionTools: request.SuppressActionTools
                     ),
                     ct
                 )
@@ -1404,7 +1439,9 @@ public class ConversationsController(
         // make this host advertise a guarantee — and the negative is RECORDED, not just returned, so a retry
         // that arrives after the turn has been drained still reads "not suppressed" instead of being told by
         // a rebuilt-from-the-request answer that the guarantee held.
-        var guaranteeKept = !request.SuppressSubAgentSpawning || receipt.SpawningSuppressed;
+        var guaranteeKept =
+            (!request.SuppressSubAgentSpawning || receipt.SpawningSuppressed)
+            && (!request.SuppressActionTools || receipt.ActionToolsSuppressed);
         if (!guaranteeKept)
         {
             logger.LogWarning(
@@ -1419,6 +1456,7 @@ public class ConversationsController(
         {
             State = guaranteeKept ? InputAcceptanceState.Enforced : InputAcceptanceState.Unenforced,
             SpawningSuppressed = receipt.SpawningSuppressed,
+            ActionToolsSuppressed = receipt.ActionToolsSuppressed,
         };
 
         if (idempotent && !await acceptances!.TryRecordOutcomeAsync(granted, ct))
@@ -1581,6 +1619,7 @@ public class ConversationsController(
             {
                 State = InputAcceptanceState.Unenforced,
                 SpawningSuppressed = false,
+                ActionToolsSuppressed = false,
             },
             queued: false
         );
@@ -1618,6 +1657,8 @@ public class ConversationsController(
                 // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
                 // and already carries false.
                 SpawningSuppressed = acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
+                ActionToolsSuppressed =
+                    acceptance.State is InputAcceptanceState.Enforced && acceptance.ActionToolsSuppressed,
                 IdempotencyKeyHonored = acceptance.IdempotencyHonored,
             }
         );
@@ -1666,12 +1707,9 @@ public class ConversationsController(
 
     /// <summary>
     /// Namespace for an id this HOST minted because no key was supplied. Distinct from
-    /// <see cref="IdempotentInputIdPrefix"/> so a server-minted id can never be produced by any caller key.
+    /// the idempotent input namespace so a server-minted id can never be produced by any caller key.
     /// </summary>
     private const string ServerMintedInputIdPrefix = "srv:";
-
-    /// <summary>Namespace for an id derived from a caller's idempotency key.</summary>
-    private const string IdempotentInputIdPrefix = "idem:";
 
     /// <summary>
     /// A key must be storable and unambiguous as part of an input id. Control characters are rejected
@@ -1682,20 +1720,6 @@ public class ConversationsController(
         !string.IsNullOrWhiteSpace(idempotencyKey)
         && idempotencyKey.Length <= MaxIdempotencyKeyLength
         && !idempotencyKey.Any(char.IsControl);
-
-    /// <summary>
-    /// Derives the durable input id an idempotent send is recorded under. The options that change what the
-    /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
-    /// silently resolving to the earlier, differently-behaving input.
-    /// <para>
-    /// The mapping is injective by construction: both variable parts sit at FIXED positions — a one-character
-    /// suppression flag immediately after the namespace, then the key as the entire remainder. A suffix
-    /// instead of a prefix would not be, because a key may itself end in whatever marker was chosen, letting
-    /// two different (key, flag) pairs derive the same id and dedupe against each other.
-    /// </para>
-    /// </summary>
-    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
-        $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

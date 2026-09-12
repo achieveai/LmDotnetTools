@@ -1,7 +1,11 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
@@ -32,6 +36,12 @@ if (args is ["reviewbot", "init", ..])
 // achieveai` loads appsettings.achieveai.json (GitHub daemon). This is the single operator knob:
 // every setting (repo/store/paths/ports/gateway) lives in that one profile file, so no launch env
 // vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
+string? workflowOperation = null;
+if (args is ["--workflow-operation", var operation])
+{
+    workflowOperation = operation;
+    args = [];
+}
 var (reviewProfile, maxPrAgeDaysOverride, hostArgs) = ReviewProfileArgs.Extract(args);
 
 var builder = WebApplication.CreateBuilder(
@@ -39,8 +49,15 @@ var builder = WebApplication.CreateBuilder(
     {
         Args = hostArgs,
         EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
+        ContentRootPath = workflowOperation is null ? null : AppContext.BaseDirectory,
     }
 );
+if (workflowOperation is not null)
+{
+    // A scoped operation owns stdout exclusively; diagnostic logs stay on stderr.
+    builder.Logging.ClearProviders();
+    builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+}
 
 // A `--days N` / `--max-pr-age-days N` flag overrides the profile's CodeReviewDaemon:MaxPrAgeDays recency
 // bound for this run. Injected as the last (highest-precedence) config source so it wins over appsettings,
@@ -59,6 +76,9 @@ if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
 // operator opt-in to a higher-blast-radius behavior. See CodeReviewDaemonOptions.
+CodeReviewDaemonOptions.ValidateWorkflowConfiguration(
+    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName)
+);
 var daemonOptions =
     builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
     ?? new CodeReviewDaemonOptions();
@@ -319,9 +339,6 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
 // surface directly.
-builder.Services.AddSingleton<IDiscoveredItemsSource>(sp => new RegistryDiscoverySource(
-    sp.GetRequiredService<SandboxSessionRegistry>()
-));
 
 // Optional conversation persistence: when ConversationStorePath is set, the S2S review host persists its
 // full message history. The daemon retains the path for log auditing references.
@@ -347,19 +364,7 @@ if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
     );
 }
 
-// JudgeModelId is deliberately NOT validated here. It used to be refused outright on this path, because
-// S2SReviewAgentLoopFactory discarded its per-call modelId and the judge would have gone on grading with
-// the reviewer's own model while the operator believed the bias was gone — a silent reversal of the
-// setting, not a silent no-op. The factory now provisions the judge conversation with the requested id as
-// its ProviderId (a Copilot-discovered provider id IS a model id on the review host), so the setting does
-// what it says: DaemonReviewStageExecutor passes JudgeModelId into Create, and the judge artifact's
-// SelfGraded/JudgeModelId are derived from the effective id, which now differs from the generator's. An
-// id the review host cannot resolve fails that conversation's provision loudly, which is an ordinary
-// misconfiguration rather than the quiet wrong answer this guard existed to prevent — but loudly is not
-// cheaply: Judged runs before Posted, and PrOrchestrator.IsGovernedFailure answers false for Judged, so
-// the throw aborts the stage loop short of Posted while charging nothing to the retry budget. An
-// unresolvable judge id therefore blocks the review from ever posting and retries unbounded instead of
-// parking. Set this key to an id the host's discovered catalog actually carries.
+// The authored model id is resolved by the review host when its parent conversation is provisioned.
 if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 {
     throw new InvalidOperationException(
@@ -470,19 +475,6 @@ if (deepLinkRetention is { } retentionWindow)
     ));
 }
 
-builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
-{
-    var store = sp.GetRequiredService<ReviewStore>();
-    return new S2SReviewAgentLoopFactory(
-        sp.GetRequiredService<LmStreamingS2SClient>(),
-        daemonOptions,
-        sp.GetRequiredService<ILoggerFactory>(),
-        onConversationMinted: deepLinkRetention is null
-            ? null
-            : (threadId, title) => store.RecordDeepLinkConversation(threadId, title)
-    );
-});
-
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
 // Their HttpClient flows through the OperationPolicyHandler (plan §4 / PR #121 H2): every outbound
@@ -501,9 +493,7 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     daemonOptions.MaxPrsPerPage
 ));
 
-// GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
-// abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
-// GitHub reviews through this publisher. Registered unconditionally (every profile reviews GitHub by default).
+// LLM-selected publications use the host publisher with scoped authorization and durable receipts.
 builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
@@ -533,22 +523,14 @@ if (daemonOptions.EnableAdoProvider)
         daemonOptions.MaxPrsPerPage
     ));
 
-    // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
-    // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is
-    // ambiguous (both GitHub and ADO providers register against it).
+    // Resolve the concrete OAuth provider for this scoped publication adapter.
     builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()
     ));
 
-    // What the PR was ASKED to do — its linked work items, walked up to the Epic — injected into the review
-    // brief by DaemonReviewStageExecutor (ActivatorUtilities picks this up through the optional constructor
-    // parameter, so a GitHub-only daemon that never registers it simply gets null and renders no block).
-    // The reviewer had no route to this, and not by accident of model behaviour: the capability was offered
-    // in the PROMPT while across 644 observed review sub-agent spawns ZERO carried a tool that could reach
-    // ADO. Doing it here, in code, is what makes it happen at all. Same concrete AdoOAuthProvider as above,
-    // for the same reason.
+    // Linked work items are carried into the prepared workflow context as untrusted evidence.
     builder.Services.AddSingleton(sp => new AdoWorkItemContextReader(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
@@ -653,37 +635,32 @@ static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> BuildHostG
 // HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB
 // entry it carries must run OUTSIDE the sandbox the untrusted review agent shares, with the write
 // credential injected only into this host-process git runner. Registered only when a ReviewBot repo is
-// configured — otherwise DaemonReviewStageExecutor's null-fallback keeps writing through the sandbox
-// runner exactly as it does today. This iteration reuses the single existing GitHub credential (a
+// configured. Retention uses the host credential and a separate checkout.
+// This reuses the existing GitHub credential (a
 // dedicated write-scoped credential is a documented fast-follow, not introduced here).
-if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
+if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
 {
     builder.Services.AddSingleton(sp =>
     {
-        var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
-            ? Path.Combine(AppContext.BaseDirectory, "workspaces")
-            : daemonOptions.WorkspaceHostRoot;
         var runner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
             hostGitAdoOrgs
         );
-        return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
+        return new HostRetentionWorkspace(
+            runner,
+            new HostFileSystem(),
+            HostRetentionWorkspace.ResolveRoot(daemonOptions.WorkspaceHostRoot, daemonOptions.ResolvedStoreUrl)
+        );
     });
 }
 
 // ── Pooled scoped-writable review workspace + PR-lifecycle sweep (Layer 1) ─────────────────────────
-// Wired only when the pooled path is enabled (tool-assisted + reviewer-writes) AND a store is resolved.
-// Otherwise DaemonReviewStageExecutor's null-fallback keeps the per-run/diff-only checkout and no sweeper
-// runs. The pool, preparer, and sweeper share ONE host-side git runner (privileged, with the write
+// Every authored review uses the existing workspace pool.
+// The pool, preparer, and lifecycle sweep use host-side Git.
+// They retain the privileged write
 // credential) — never the sandbox the untrusted review agent shares (design §4.7).
-if (
-    daemonOptions.EnableToolAssistedReview
-    && daemonOptions.EnableReviewerWrites
-    && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl)
-)
 {
-    string storeUrl = daemonOptions.ResolvedStoreUrl;
     // The pool root MUST sit under the gateway's WorkspaceBasePath so a leased slot can be mounted at
     // /workspace (ReviewSessionProvisioner.GetOrCreateForSlotAsync expresses the slot relative to that
     // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
@@ -718,10 +695,6 @@ if (
 
     // Host-side only (never mounted) on the in-process path; on S2S the knowledge-extraction arm mounts it as
     // its own workspace, so it must be a sanitize-stable single segment too — hence the distinct leaf name.
-    var sweeperRepoRoot = daemonOptions.UseS2SReviewAgent
-        ? Path.Combine(poolRoot, "review-sweeper-store")
-        : Path.Combine(poolRoot, "sweeper-store");
-
     builder.Services.AddSingleton(sp =>
     {
         var hostRunner = new HostGitCommandRunner(
@@ -785,339 +758,307 @@ if (
             hostFileSystem
         );
     });
+}
 
+// Merged PRs enter the authored workflow; abandoned PRs retain the existing branch cleanup.
+if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
+{
     builder.Services.AddSingleton(sp =>
     {
-        var slots = sp.GetRequiredService<ReviewSlotWorkspace>();
         var store = sp.GetRequiredService<ReviewStore>();
-        var providers = sp.GetServices<IPrProvider>().ToList();
+        var retention = sp.GetRequiredService<HostRetentionWorkspace>();
+        var git = new GitRunner(retention.Git);
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        var hostGit = new GitRunner(slots.HostRunner);
-        // The sweeper is the ONLY caller that merges the notes branch into the default branch, so it is the
-        // only ReviewBranchManager that needs to rebuild the Knowledge Base's derived listings afterwards —
-        // the review-time managers commit onto the notes branch and merge nothing. See
-        // ReviewBranchManager.RebuildDerivedKnowledgeAsync for why a merge commit can un-index entries it
-        // kept (issue #218 item 6).
-        var listingRegenerator = new KnowledgeIndexRegenerator(
-            slots.HostFileSystem,
+        var logger = loggerFactory.CreateLogger<PrLifecycleSweeper>();
+        var providers = sp.GetServices<IPrProvider>().ToList();
+        var targets = PrPollTargetBuilder.Build(daemonOptions, logger);
+        var warnedOrphans = new HashSet<string>(StringComparer.Ordinal);
+        var index = new KnowledgeIndexRegenerator(
+            retention.FileSystem,
             loggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
         );
-        var branchManager = new ReviewBranchManager(
-            hostGit,
-            slots.HostFileSystem,
+        var manager = new ReviewBranchManager(
+            git,
+            retention.FileSystem,
             loggerFactory.CreateLogger<ReviewBranchManager>(),
-            (repoRoot, ct) =>
-                listingRegenerator.RegenerateAsync(
-                    $"{repoRoot.TrimEnd('/')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}",
-                    ct
-                )
+            (root, token) => index.RegenerateAsync(root.TrimEnd('/', '\\') + "/KnowledgeBase", token)
         );
-        var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
-        // The configured repos (full identity + provider) let the sweep resolve an orphaned review/* branch —
-        // whose new-scheme name carries only the repo slug + PR number — back to a pollable PR.
-        var sweepPollTargets = PrPollTargetBuilder.Build(daemonOptions, sweepLogger);
-
-        // At-close extraction (Layer-2, design §1). Wired when EnableKnowledgeAgent or
-        // EnableReviewFeedbackAgent is set: on a merged PR, read the PR's accumulated notes off its notes
-        // branch once, run the enabled gated extractions over the host store checkout, and let the sweeper's
-        // subsequent MergeToDefaultAsync carry the new/updated KnowledgeBase/ writes into the default branch.
-        // Both unset → null → the sweep is unchanged.
-        var loopFactory = sp.GetRequiredService<IReviewAgentLoopFactory>();
-        // Non-null only on the S2S path. The extraction loop there is a HOSTED conversation, and the S2S
-        // factory refuses to open one without a workspace — which is why this arm has been a silent no-op on
-        // S2S (the factory threw and KnowledgeExtractionCommitter's catch-all swallowed it). Naming the
-        // sweeper's own store checkout as a workspace both fixes that and grounds the extraction: the agent
-        // can read the existing KnowledgeBase/ before deciding whether this PR taught anything durable.
-        var s2sPreparer = sp.GetService<S2SReviewWorkspacePreparer>();
-        var sweeperLeaf = Path.GetFileName(sweeperRepoRoot.TrimEnd('/', '\\'));
-        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null;
-        if (daemonOptions.EnableKnowledgeAgent || daemonOptions.EnableReviewFeedbackAgent)
-        {
-            // The committer wraps the gated extraction with the git plumbing that carries its write into the
-            // default branch: check the notes branch out, run extraction, and — only when it wrote an entry —
-            // commit + push KnowledgeBase/ onto that branch so MergeToDefaultAsync fast-forwards it into main.
-            var committer = new KnowledgeExtractionCommitter(
-                hostGit,
-                sweeperRepoRoot,
-                loggerFactory.CreateLogger<KnowledgeExtractionCommitter>()
-            );
-            // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction passes run on a
-            // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
-            var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
-                ? null
-                : daemonOptions.KnowledgeModelId;
-            var extractionLogger = loggerFactory.CreateLogger("at-close-extraction");
-
-            // Idempotent: reuses the workspace pointing at this leaf across every extraction, and across both
-            // passes of one PR. Non-null only on the S2S path, where the factory refuses to open a hosted
-            // conversation without a workspace.
-            async Task<PreparedReviewWorkspace?> EnsureExtractionWorkspaceAsync(ReviewedPr pr, CancellationToken ct)
-            {
-                if (s2sPreparer is null)
-                {
-                    return null;
-                }
-
-                var workspaceId = await s2sPreparer
-                    .EnsureWorkspaceForLeafAsync(sweeperLeaf, "Knowledge extraction store", ct)
-                    .ConfigureAwait(false);
-                return new PreparedReviewWorkspace(sweeperLeaf, workspaceId, sweeperRepoRoot, pr.PrId);
-            }
-
-            async Task<KnowledgeExtractionResult> ExtractCuratedKnowledgeAsync(
-                ReviewedPr pr,
-                string notesInput,
-                string sourcePrRef,
-                string todayUtc,
-                CancellationToken ct
-            )
-            {
-                var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
-                await using var loop = loopFactory.Create(
-                    DaemonAgentFactory.CreateKnowledgeExtractionProfile(),
-                    modelId: knowledgeModelId,
-                    threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}",
-                    reviewWorkspace: workspace
-                );
-                var agent = new KnowledgeAgent(
-                    loop,
-                    slots.HostFileSystem,
-                    loggerFactory.CreateLogger<KnowledgeAgent>()
-                );
-                return await agent
-                    .TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
-                    .ConfigureAwait(false);
-            }
-
-            // Per-developer feedback: the same notes, read for what this PR's AUTHOR keeps getting wrong. Runs
-            // on its own conversation so neither pass sees the other's reply — the curated-knowledge prompt
-            // forbids naming people and this one is entirely about one person.
-            async Task<KnowledgeExtractionResult> ExtractReviewFeedbackAsync(
-                ReviewedPr pr,
-                string notesInput,
-                string sourcePrRef,
-                string todayUtc,
-                CancellationToken ct
-            )
-            {
-                var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
-                await using var loop = loopFactory.Create(
-                    DaemonAgentFactory.CreateReviewFeedbackExtractionProfile(),
-                    modelId: knowledgeModelId,
-                    threadId: $"feedback-extract-{pr.Provider}-{pr.PrId}",
-                    reviewWorkspace: workspace
-                );
-                var agent = new ReviewFeedbackAgent(
-                    loop,
-                    slots.HostFileSystem,
-                    loggerFactory.CreateLogger<ReviewFeedbackAgent>()
-                );
-                return await agent
-                    .TryExtractAsync(sweeperRepoRoot, pr.Author, notesInput, sourcePrRef, todayUtc, ct)
-                    .ConfigureAwait(false);
-            }
-
-            extractKnowledgeAsync = (pr, ct) =>
-            {
-                // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
-                // (deterministic — never the model) and stamped into the entry's `updated` frontmatter.
-                var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
-                return committer.RunAsync(
-                    pr.Branch,
-                    sourcePrRef,
-                    async innerCt =>
-                    {
-                        // Both passes read the SAME notes and write under KnowledgeBase/ on the same notes branch,
-                        // so they share one committer run: one checkout, one commit, one push.
-                        var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
-                            .ConfigureAwait(false);
-                        var todayUtc = DateTime.UtcNow.ToString(
-                            "yyyy-MM-dd",
-                            System.Globalization.CultureInfo.InvariantCulture
-                        );
-
-                        var knowledge = daemonOptions.EnableKnowledgeAgent
-                            ? await ExtractCuratedKnowledgeAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
-                                .ConfigureAwait(false)
-                            : KnowledgeExtractionResult.Declined(null);
-                        var feedback = daemonOptions.EnableReviewFeedbackAgent
-                            ? await ExtractReviewFeedbackAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
-                                .ConfigureAwait(false)
-                            : KnowledgeExtractionResult.Declined(null);
-
-                        // Wrote > Failed > Declined, and a write is committed even when the other pass failed —
-                        // see AtCloseExtractionSeam.Combine for why holding the commit back would be worse.
-                        var combined = AtCloseExtractionSeam.Combine(knowledge, feedback);
-                        if (combined.DroppedPass is { } dropped)
-                        {
-                            extractionLogger.LogWarning(
-                                "At-close extraction for {SourcePr}: the {Pass} pass failed while the other wrote; "
-                                    + "committing the write and dropping the failed pass for this PR.",
-                                sourcePrRef,
-                                dropped
-                            );
-                        }
-
-                        return combined.Result;
-                    },
-                    ct
-                );
-            };
-        }
-
-        // Lists the store's persistent review/* branches straight from origin (fresh each sweep) so orphaned
-        // notes branches are reconciled regardless of this daemon's DB state. A failure degrades to the DB set.
-        static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
-            GitRunner git,
-            string repoRoot,
-            ILogger logger,
-            CancellationToken cancellationToken
-        )
-        {
-            var result = await git.RunAsync(
-                    ["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"],
-                    repoRoot,
-                    cancellationToken
-                )
-                .ConfigureAwait(false);
-            if (!result.Succeeded)
-            {
-                logger.LogWarning(
-                    "PR-lifecycle sweep: listing review/* branches failed (exit {Exit}): {Err}; sweeping the DB set only.",
-                    result.ExitCode,
-                    result.Stderr
-                );
-                return [];
-            }
-
-            const string headsPrefix = "refs/heads/";
-            var branches = new List<string>();
-            foreach (
-                var line in result.Stdout.Split(
-                    '\n',
-                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
-                )
-            )
-            {
-                var tab = line.IndexOf('\t');
-                var refName = tab >= 0 ? line[(tab + 1)..] : line;
-                if (refName.StartsWith(headsPrefix, StringComparison.Ordinal))
-                {
-                    branches.Add(refName[headsPrefix.Length..]);
-                }
-            }
-
-            return branches;
-        }
-
-        // Persists across sweeps so a stray review/* branch that maps to no configured repo (e.g. a leftover
-        // pushed into this store by another daemon) is warned about ONCE, not on every sweep — one such branch
-        // otherwise floods the log (163x in a single mcqdb run).
-        var warnedOrphanBranches = new HashSet<string>(StringComparer.Ordinal);
-
         return new PrLifecycleSweeper(
             async ct =>
             {
-                // Ensure a host store checkout exists to merge/delete branches in; a clone failure logs and
-                // skips this sweep (retried next cycle) rather than aborting.
-                var cloneFailure = await ReviewBotCheckout
-                    .EnsureCheckoutAsync(hostGit, storeUrl, sweeperRepoRoot, sweepLogger, ct)
-                    .ConfigureAwait(false);
-                if (cloneFailure is not null)
-                {
-                    sweepLogger.LogWarning(
-                        "PR-lifecycle sweep skipped: store checkout unavailable ({Kind}): {Message}",
-                        cloneFailure.Kind,
-                        cloneFailure.Message
-                    );
-                    return [];
-                }
-
-                var rows = await store.ListReviewedPrsAsync(ct).ConfigureAwait(false);
+                await using var repositoryLease = await HostRetentionWorkspace.AcquireRepositoryLockAsync(
+                    retention.RepoRoot,
+                    ct
+                );
+                await sp.GetRequiredService<ReviewSlotWorkspace>()
+                    .HostPreparer.EnsureStoreAsync(retention.RepoRoot, daemonOptions.ResolvedStoreUrl, ct);
+                var rows = await store.ListReviewedPrsAsync(ct);
                 IReadOnlyList<ReviewedPr> reviewed =
                 [
-                    .. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!),
+                    .. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).OfType<ReviewedPr>(),
                 ];
-
-                // Reconcile against the store's actual review/* branches so a PR whose review row is absent
-                // from this daemon's DB (fresh DB / churn) still has its notes branch resolved when it closes.
-                var reviewBranches = await ListRemoteReviewBranchesAsync(hostGit, sweeperRepoRoot, sweepLogger, ct)
-                    .ConfigureAwait(false);
-                return OrphanBranchReconciler.Reconcile(
-                    reviewed,
-                    reviewBranches,
-                    sweepPollTargets,
-                    sweepLogger,
-                    warnedOrphanBranches
-                );
+                var branches = await ListRemoteReviewBranchesAsync(git, retention.RepoRoot, logger, ct);
+                return OrphanBranchReconciler.Reconcile(reviewed, branches, targets, logger, warnedOrphans);
             },
             (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
-            branchManager,
-            sweeperRepoRoot,
-            "main",
-            daemonOptions.MergeNotesBranchOnClose,
-            loggerFactory.CreateLogger<PrLifecycleSweeper>(),
-            extractKnowledgeAsync
+            manager,
+            retention.RepoRoot,
+            logger,
+            store,
+            sp.GetRequiredService<PrOrchestrator>(),
+            getCurrentHeadShaAsync: (pr, ct) =>
+                providers
+                    .Single(provider =>
+                        string.Equals(provider.Provider, pr.Provider, StringComparison.OrdinalIgnoreCase)
+                    )
+                    .GetCurrentHeadShaAsync(pr.Repo, pr.PrId, ct)
         );
     });
+}
+static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
+    GitRunner git,
+    string repoRoot,
+    ILogger logger,
+    CancellationToken cancellationToken
+)
+{
+    var result = await git.RunAsync(
+            ["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"],
+            repoRoot,
+            cancellationToken
+        )
+        .ConfigureAwait(false);
+    if (!result.Succeeded)
+    {
+        logger.LogWarning(
+            "PR-lifecycle sweep: listing review/* branches failed (exit {Exit}): {Err}; sweeping the DB set only.",
+            result.ExitCode,
+            result.Stderr
+        );
+        return [];
+    }
 
-    // Reads a merged PR's accumulated review notes off its persistent notes branch (they live on
-    // origin/<branch>, not yet on the sweeper checkout's default branch) and assembles them as the
-    // knowledge-extraction input. The notes dir mirrors the branch slug (review/<p>/<slug>/<pr> ->
-    // PRs/<p>/<slug>/<pr>). Best-effort: an unreadable/absent notes tree yields a short placeholder rather
-    // than throwing — extraction must never block the lifecycle (design §6).
-    static async Task<string> ReadPrNotesFromBranchAsync(
-        GitRunner git,
-        string repoRoot,
-        string branch,
-        CancellationToken ct
+    const string headsPrefix = "refs/heads/";
+    var branches = new List<string>();
+    foreach (
+        var line in result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
     )
     {
-        _ = await git.RunAsync(["-C", repoRoot, "fetch", "origin"], repoRoot, ct).ConfigureAwait(false);
-
-        var remoteRef = $"origin/{branch}";
-        var notesRelPath = branch.StartsWith("review/", StringComparison.Ordinal)
-            ? "PRs/" + branch["review/".Length..]
-            : branch;
-
-        var listed = await git.RunAsync(
-                ["-C", repoRoot, "ls-tree", "-r", "--name-only", remoteRef, "--", notesRelPath],
-                repoRoot,
-                ct
-            )
-            .ConfigureAwait(false);
-        if (!listed.Succeeded || string.IsNullOrWhiteSpace(listed.Stdout))
+        var tab = line.IndexOf('\t');
+        var refName = tab >= 0 ? line[(tab + 1)..] : line;
+        if (refName.StartsWith(headsPrefix, StringComparison.Ordinal))
         {
-            return $"(no accumulated notes found under {notesRelPath})";
+            branches.Add(refName[headsPrefix.Length..]);
         }
-
-        var builder = new System.Text.StringBuilder();
-        foreach (
-            var file in listed.Stdout.Split(
-                '\n',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
-            )
-        )
-        {
-            var show = await git.RunAsync(["-C", repoRoot, "show", $"{remoteRef}:{file}"], repoRoot, ct)
-                .ConfigureAwait(false);
-            if (show.Succeeded)
-            {
-                _ = builder.Append("## ").Append(file).Append('\n').Append(show.Stdout).Append("\n\n");
-            }
-        }
-
-        var assembled = builder.ToString().Trim();
-        return assembled.Length == 0 ? $"(no readable notes under {notesRelPath})" : assembled;
     }
+
+    return branches;
 }
 
-// The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
-// SandboxCredential is a value type, so it cannot be a DI singleton; pass the daemon identity explicitly
-// via ActivatorUtilities (its ctor param is the trailing, type-matched arg) while the rest resolves from DI.
-builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
-    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl)
+// One authored workflow; the existing stores own admission, receipts and durable execution state.
+var workflowPath = Path.GetFullPath(daemonOptions.WorkflowPath, builder.Environment.ContentRootPath);
+var workflowPackageRoot = Path.GetDirectoryName(workflowPath)!;
+var workflowStateRoot = Path.GetFullPath(daemonOptions.WorkflowStateDirectory ?? (databasePath + ".workflow"));
+var workflowRunRoot = Path.Combine(workflowStateRoot, "runs");
+builder.Services.AddSingleton<IWorkflowStore>(_ => new FileWorkflowStore(Path.Combine(workflowStateRoot, "snapshots")));
+builder.Services.AddSingleton<WorkflowPublicationScopes>();
+builder.Services.AddSingleton(sp => new WorkflowPublicationGateway(
+    builder.Configuration["WorkflowPublication:SharedSecret"] ?? string.Empty,
+    sp.GetRequiredService<WorkflowPublicationScopes>().ResolveAsync
+));
+builder.Services.AddSingleton(sp => new WorkflowContextReader(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<ReviewSlotWorkspace>(),
+    workflowRunRoot,
+    daemonOptions.Limits.MaxArtifactPayloadChars,
+    async (run, ct) =>
+    {
+        var repo =
+            sp.GetRequiredService<ReviewStore>().GetRepo(run.RepoId)
+            ?? throw new InvalidOperationException("Review repository is missing.");
+        return RepoIdentity.ToPublisherNamespace(repo.Provider) switch
+        {
+            "github" => JsonSerializer.SerializeToNode(
+                await sp.GetRequiredService<GitHubIssueContextReader>().ReadAsync(run.Id, ct)
+            ),
+            "ado" => JsonSerializer.SerializeToNode(
+                await sp.GetRequiredService<AdoWorkItemContextReader>().ReadAsync(repo, run.PrId, ct)
+            ),
+            _ => null,
+        };
+    }
+));
+builder.Services.AddSingleton(sp => new WorkflowWorkspace(
+    sp.GetRequiredService<ReviewStore>(),
+    daemonOptions,
+    sp.GetRequiredService<ReviewSlotWorkspace>(),
+    sp.GetRequiredService<S2SReviewWorkspacePreparer>().AdoptSlotAsync,
+    sp.GetRequiredService<ILoggerFactory>(),
+    async (run, admission, ct) =>
+    {
+        var context = await sp.GetRequiredService<WorkflowContextReader>().ReadAsync(run, admission, ct);
+        context["Execution"] = new JsonObject
+        {
+            ["PublicationMode"] =
+                daemonOptions.EnableCommentPosting && run.Mode == "post" && run.VariantId != "b"
+                    ? "post"
+                    : "collect_only",
+        };
+        var retention = sp.GetRequiredService<HostRetentionWorkspace>();
+        await using var repositoryLease = await HostRetentionWorkspace.AcquireRepositoryLockAsync(
+            retention.RepoRoot,
+            ct
+        );
+        await sp.GetRequiredService<ReviewSlotWorkspace>()
+            .HostPreparer.EnsureStoreAsync(
+                retention.RepoRoot,
+                daemonOptions.ResolvedStoreUrl ?? throw new InvalidOperationException("Review store URL is required."),
+                ct
+            );
+        return context;
+    }
+));
+var scriptEnvironment = WorkflowScriptHost.BuildEnvironment(
+    builder.Configuration,
+    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["REVIEW_DAEMON_EXECUTABLE"] = typeof(Program).Assembly.Location,
+        ["DOTNET_ENVIRONMENT"] = builder.Environment.EnvironmentName,
+        ["CodeReviewDaemon__DatabasePath"] = Path.GetFullPath(databasePath),
+        ["CodeReviewDaemon__WorkflowStateDirectory"] = workflowStateRoot,
+        ["CodeReviewDaemon__WorkflowPath"] = workflowPath,
+    }
 );
+builder.Services.AddSingleton(
+    new WorkflowScriptInvoker(
+        daemonOptions.WorkflowPythonExecutable,
+        daemonOptions.WorkflowPowerShellExecutable,
+        scriptEnvironment,
+        daemonOptions.Limits.MaxArtifactPayloadChars
+    )
+);
+var workflowGitGate = new SemaphoreSlim(1, 1);
+builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<WorkflowWorkspace>(),
+    daemonOptions,
+    workflowRunRoot,
+    (run, ct) =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var store = sp.GetRequiredService<ReviewStore>();
+        var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
+        var retention = sp.GetRequiredService<HostRetentionWorkspace>();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var index = new KnowledgeIndexRegenerator(
+            retention.FileSystem,
+            loggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
+        );
+        var manager = new ReviewBranchManager(
+            new GitRunner(retention.Git),
+            retention.FileSystem,
+            loggerFactory.CreateLogger<ReviewBranchManager>(),
+            (root, token) => index.RegenerateAsync(root.TrimEnd('/', '\\') + "/KnowledgeBase", token)
+        );
+        return Task.FromResult(
+            new WorkflowArtifactOperations(
+                store,
+                run,
+                repo,
+                retention.RepoRoot,
+                "main",
+                manager,
+                workflowGitGate,
+                new WorkflowKnowledgeEdits(
+                    retention.RepoRoot,
+                    repo,
+                    retention.FileSystem,
+                    loggerFactory.CreateLogger<WorkflowKnowledgeEdits>()
+                ),
+                token =>
+                    ReviewSlotPreparer.VerifyStoreOriginAsync(
+                        new GitRunner(retention.Git),
+                        retention.RepoRoot,
+                        daemonOptions.ResolvedStoreUrl
+                            ?? throw new InvalidOperationException("Review store URL is required."),
+                        token
+                    )
+            )
+        );
+    }
+));
+builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
+    workflowPath,
+    workflowRunRoot,
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<IWorkflowStore>(),
+    sp.GetRequiredService<WorkflowWorkspace>(),
+    (run, instanceId, directory, ct) =>
+    {
+        ct.ThrowIfCancellationRequested();
+        IWorkflowTaskInvoker invoker = new ReviewWorkflowInvoker(
+            run,
+            instanceId,
+            directory,
+            workflowPackageRoot,
+            sp.GetRequiredService<WorkflowScriptInvoker>(),
+            sp.GetRequiredService<WorkflowOperationDispatcher>(),
+            sp.GetRequiredService<LmStreamingS2SClient>(),
+            sp.GetRequiredService<WorkflowWorkspace>(),
+            sp.GetRequiredService<ReviewStore>(),
+            daemonOptions,
+            sp.GetRequiredService<WorkflowPublicationScopes>(),
+            (activeRun, activeInstance, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                var store = sp.GetRequiredService<ReviewStore>();
+                var repo =
+                    store.GetRepo(activeRun.RepoId)
+                    ?? throw new InvalidOperationException("Review repository is missing.");
+                var providerId = RepoIdentity.ToPublisherNamespace(repo.Provider);
+                var provider = sp.GetServices<IPrProvider>().Single(p => p.Provider == providerId);
+                var publisher = sp.GetServices<IReviewCommentPublisher>().Single(p => p.Provider == providerId);
+                var diff = JsonNode.Parse(
+                    store.TryGetLatestArtifact(activeRun.Id, "workflow-diff")?.Payload
+                        ?? throw new InvalidOperationException("Review diff evidence is missing.")
+                )!;
+                if (diff["HeadSha"]?.GetValue<string>() != activeRun.HeadSha)
+                    throw new InvalidOperationException("Review diff evidence belongs to another head.");
+                var manifest = UnifiedDiffParser.Parse(
+                    diff["Diff"]?.GetValue<string>(),
+                    diff["BaseSha"]?.GetValue<string>(),
+                    activeRun.HeadSha
+                );
+                var poster = new ReviewPoster(publisher, store, sp.GetRequiredService<ILogger<ReviewPoster>>());
+                return Task.FromResult(
+                    new ReviewPublicationTools(
+                        activeRun,
+                        repo,
+                        activeInstance,
+                        poster,
+                        provider,
+                        manifest,
+                        daemonOptions.EnableCommentPosting && activeRun.Mode == "post" && activeRun.VariantId != "b",
+                        () =>
+                            JsonSerializer
+                                .Deserialize<WorkflowWorkspaceAssignment>(
+                                    store
+                                        .TryGetLatestArtifact(activeRun.Id, WorkflowWorkspace.AssignmentArtifactKind)
+                                        ?.Payload
+                                        ?? "null"
+                                )
+                                ?.Active == true
+                    )
+                );
+            },
+            sp.GetRequiredService<ILoggerFactory>()
+        );
+        return Task.FromResult(invoker);
+    },
+    (run, _) => new Dictionary<string, string> { ["review-parent"] = $"review-parent-{run.Id}" },
+    invocationTimeout: TimeSpan.FromMinutes(Math.Max(1, daemonOptions.ReviewStageDeadlineMinutes))
+));
+
 builder.Services.AddSingleton<ReviewProgressReporter>();
 
 // In-memory retry governance for the orchestrator: attempt-counting + exponential backoff + park-after-K,
@@ -1147,7 +1088,7 @@ builder.Services.AddSingleton<IReviewParkNotifier>(sp => new ReviewParkNotifier(
 // zero from 08-29 onward, the transition exactly at the reconciler's first resume).
 builder.Services.AddSingleton(sp => new PrOrchestrator(
     sp.GetRequiredService<ReviewStore>(),
-    sp.GetRequiredService<IReviewStageExecutor>(),
+    sp.GetRequiredService<ReviewWorkflowRunner>(),
     sp.GetRequiredService<ILogger<PrOrchestrator>>(),
     sp.GetRequiredService<ReviewProgressReporter>(),
     sp.GetRequiredService<RetryGovernor>(),
@@ -1285,7 +1226,8 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     // registration must fail at startup rather than leave the standing check silently inert, which is the
     // exact failure mode — a control that is present and does nothing — this check exists to catch.
     progress: sp.GetRequiredService<ReviewProgressReporter>(),
-    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays
+    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays,
+    commentReaders: sp.GetServices<IReviewCommentPublisher>()
 ));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
@@ -1327,10 +1269,10 @@ static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
 }
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
-// The daemon exposes exactly TWO routes, both gateway callbacks authenticated by the same shared
-// secret: POST /api/auth/webhook/{provider} (post-auth callback) and POST /api/discovery/context_discovery
-// (context-discovery callback — returns 200 accept-and-ignore so a non-2xx never tears down the sandbox
-// session). MVC discovery is filtered to exactly those two controllers so no other route can leak in.
+// Gateway callbacks retain their existing shared-secret authentication. The workflow publication
+// callback has a separate host credential and validates each active workflow invocation.
+// Context discovery returns 200 so the callback never tears down the sandbox
+// session. MVC discovery remains restricted to the two gateway controllers.
 builder
     .Services.AddControllers()
     .ConfigureApplicationPartManager(apm =>
@@ -1358,6 +1300,19 @@ builder
 
 var app = builder.Build();
 
+if (workflowOperation is not null)
+{
+    // Building resolves configuration and credentials; hosted polling never starts in this child.
+    return await WorkflowScriptHost.RunAsync(
+        workflowOperation,
+        Console.In,
+        Console.Out,
+        Console.Error,
+        app.Services.GetRequiredService<WorkflowOperationDispatcher>().DispatchAsync,
+        CancellationToken.None
+    );
+}
+
 // One-time, non-blocking notice for the keyless dev path (see the per-app identity block above) — never
 // logs the key itself, since none was configured.
 if (daemonKeyMissing)
@@ -1373,6 +1328,35 @@ if (daemonKeyMissing)
 // gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway
 // does not sign its callbacks, so requiring a signature rejected every real callback.
 app.MapControllers();
+app.MapPost(
+    "api/workflow/publication",
+    async (HttpContext context, WorkflowPublicationGateway gateway) =>
+    {
+        if (!gateway.Authenticate(context.Request.Headers.Authorization.ToString()))
+            return Results.Unauthorized();
+        if (context.Request.ContentLength is > 131072)
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        try
+        {
+            var request = await context.Request.ReadFromJsonAsync<WorkflowPublicationRequest>(context.RequestAborted);
+            if (request is null)
+                return Results.BadRequest();
+            return Results.Json(await gateway.InvokeAsync(request, context.RequestAborted));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Results.Unauthorized();
+        }
+        catch (Exception error) when (error is JsonException or ArgumentException)
+        {
+            return Results.BadRequest(new { Error = "Invalid publication request." });
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Conflict(new { Error = "Publication could not be confirmed for this invocation." });
+        }
+    }
+);
 
 app.Run();
 

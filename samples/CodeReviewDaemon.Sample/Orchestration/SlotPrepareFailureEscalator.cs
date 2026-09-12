@@ -3,7 +3,7 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <summary>
 /// Counts CONSECUTIVE, identically-worded prepare failures for one pooled slot address, and says when the
 /// caller should escalate to a re-clone REGARDLESS of how <see cref="Workspace.Git.GitFailureClassifier"/>
-/// classified the failure (issue #582, fix 3). <see cref="DaemonReviewStageExecutor.PrepareWithRecoveryAsync"/>'s
+/// classified the failure (issue #582, fix 3). the historical review implementation's
 /// existing recovery ladder reclones only on a TYPE match (<c>SlotNeedsRecloneException</c> /
 /// <c>SlotCorruptException</c>); a message shape the classifier has not been taught surfaces a plain
 /// <c>InvalidOperationException</c> instead, which that filter does not catch, so nothing ever repairs it — that
@@ -42,7 +42,7 @@ internal sealed class SlotPrepareFailureEscalator
 
     /// <summary>
     /// Small on purpose: this is a BACKSTOP for a gap in classifier coverage, not the primary recovery path —
-    /// that remains <see cref="DaemonReviewStageExecutor.PrepareWithRecoveryAsync"/>'s type-filtered catch,
+    /// that remains the historical review implementation's type-filtered catch,
     /// which already re-clones on the FIRST classified-corrupt failure. Three identical repeats is enough to
     /// tell a stuck condition from ordinary noise while still being cheap in the currency that actually matters
     /// here — failed review runs — before the destructive re-clone fires.

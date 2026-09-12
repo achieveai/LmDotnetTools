@@ -1,0 +1,15 @@
+# Workspace review workflow
+
+`workflow.yaml` declares all three routes. The host admits a run and supplies `Route`, `PrId`, `HeadSha` and a frozen `WindowId` (empty when no discussion window applies). It binds the existing `review-parent` conversation and provisions independent grading and extraction sessions.
+
+Before running, configure the [host publication callback map](../../LmStreaming.Sample/README.md#hosted-review-publication-callbacks) and this daemon's matching `WorkflowPublication:SharedSecret`. The `achieveai` and `s2s` profiles share an AppId and are alternative configurations; `mcqdb` has a separate AppId and callback. Missing callback configuration fails capability preflight even in collect-only mode. Keep callback and provider credentials in host configuration, outside the reviewed workspace.
+
+Scripts require Python 3 and `REVIEW_DAEMON_EXECUTABLE`, an absolute path to the configured installed daemon executable or DLL. They forward the Context/Input envelope on stdin to `--workflow-operation <name>` without shell interpolation. The configured daemon resolves run ownership, checkout and credentials from its own store. Scripts never select remote URLs or branches from agent output. Script stdout is exactly one JSON value; diagnostic text goes to stderr.
+
+Scripts are trusted foreground operations. They must wait for all child work before exiting. Detached/background work is unsupported; exit zero cannot establish that a deliberately detached child has stopped. The shipped entrypoints synchronously wait for the daemon CLI. Cancellation kills and reaps discovered descendants, and uncertain termination makes the workspace unavailable. This contract provides no isolation against an operator-authored script that deliberately escapes its process ancestry.
+
+The preparation commands must supply an existing `ContextArtifact` containing the exact checkout/range, frozen discussion or complete history, toolchain facts, scoped knowledge locations and author/source metadata. Missing preparation is an error. The retention command captures trusted artifacts already saved for this run, uses the existing retention outbox and returns the actual pushed SHA. Closure rereads that durable receipt and closes only this PR's artifact branch after the source PR has merged. No manifest path is claimed.
+
+Agent steps return the named JSON schemas. A single format-only correction continues the same session without action tools. Findings, grades and extraction decisions come from agents. Scoped tools enforce publication receipts and contained knowledge writes. The host saves each completed result before routing and releases the workspace only after safe completion. It must not treat a structured Outcome as proof a provider action occurred.
+
+Changing the additional-extraction question or a skill requires editing these workspace files, with no workflow-specific C# DTO. Definitions and skills are trusted operator configuration; never load a replacement workflow from the untrusted PR checkout. Existing snapshots pin the definition used by unfinished runs.

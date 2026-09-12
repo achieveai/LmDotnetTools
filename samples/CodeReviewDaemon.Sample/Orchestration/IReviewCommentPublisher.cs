@@ -7,16 +7,28 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// separate from <see cref="IPrProvider"/> (which only <em>reads</em> open PRs) so the read path carries
 /// no posting capability. Real GitHub/ADO implementations land in P4.4; tests drive a fake.
 /// <para>
-/// <see cref="FindPostedCommentAsync"/> is the provider-side backstop to the outbox: if a previous
+/// <see cref="IReviewCommentPublisher.FindPostedCommentAsync"/> is the provider-side backstop to the outbox: if a previous
 /// attempt posted the comment but crashed before recording it, the daemon can still discover it by
 /// scanning for the idempotency-key marker rather than posting a duplicate.
 /// </para>
 /// </summary>
-internal interface IReviewCommentPublisher
+internal interface IReviewCommentReader
 {
     /// <summary>Provider namespace this publisher serves, e.g. <c>github</c>.</summary>
     string Provider { get; }
 
+    /// <summary>
+    /// Lists all provider comments needed to freeze an exact discussion window.
+    /// </summary>
+    Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken
+    );
+}
+
+/// <summary>Adds scoped publication operations to the provider comment reader.</summary>
+internal interface IReviewCommentPublisher : IReviewCommentReader
+{
     /// <summary>
     /// Scans the target PR for a comment already carrying <paramref name="idempotencyKey"/> and returns
     /// it, or <c>null</c> when none exists. This is the exactly-once backstop for the case where a post
@@ -39,24 +51,145 @@ internal interface IReviewCommentPublisher
         string body,
         CancellationToken cancellationToken
     );
-
-    /// <summary>
-    /// Lists the review comments/threads ALREADY on the target PR (inline findings + review summaries for
-    /// GitHub; thread comments for ADO), so the daemon can tell the reviewer what is already flagged and it
-    /// only posts genuinely NEW findings. Best-effort and read-only; a bounded, most-recent-first view is
-    /// enough for de-duplication. Returns an empty list when the PR has none.
-    /// </summary>
-    Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
-        ReviewCommentTarget target,
-        CancellationToken cancellationToken
-    );
 }
 
-/// <summary>Where a review comment is posted: the normalized repo and the PR within it.</summary>
-internal sealed record ReviewCommentTarget(RepoIdentity Repo, string PrId);
+/// <summary>The exact provider operation requested for a review comment.</summary>
+internal enum ReviewCommentKind
+{
+    Summary,
+    Inline,
+    Reply,
+}
+
+/// <summary>The side of a pull-request diff targeted by an inline comment.</summary>
+internal enum ReviewCommentSide
+{
+    Left,
+    Right,
+}
+
+/// <summary>
+/// Where a review comment is posted. The two-argument form remains a PR-level summary. Inline and reply
+/// operations carry only the provider coordinates needed for their exact endpoint.
+/// </summary>
+internal sealed record ReviewCommentTarget(
+    RepoIdentity Repo,
+    string PrId,
+    ReviewCommentKind Kind = ReviewCommentKind.Summary,
+    string? CommitId = null,
+    string? Path = null,
+    int? Line = null,
+    ReviewCommentSide? Side = null,
+    string? ProviderThreadId = null,
+    string? ReplyToProviderCommentId = null
+)
+{
+    public void ValidateFor(string provider)
+    {
+        RequirePositiveId(PrId, nameof(PrId));
+        if (!Enum.IsDefined(Kind))
+        {
+            throw new ArgumentOutOfRangeException(nameof(Kind), Kind, "Unknown review comment operation.");
+        }
+
+        switch (Kind)
+        {
+            case ReviewCommentKind.Summary:
+                RejectTargetCoordinates();
+                break;
+            case ReviewCommentKind.Inline:
+                if (!IsSafeRelativePath(Path))
+                {
+                    throw new ArgumentException(
+                        "Inline comment path must be a safe slash-delimited relative path.",
+                        nameof(Path)
+                    );
+                }
+                if (Line is null or <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(Line), Line, "Inline comment line must be positive.");
+                }
+                if (Side is null || !Enum.IsDefined(Side.Value))
+                {
+                    throw new ArgumentException("Inline comment side must be Left or Right.", nameof(Side));
+                }
+                if (ProviderThreadId is not null || ReplyToProviderCommentId is not null)
+                {
+                    throw new ArgumentException("Inline comments cannot carry reply coordinates.");
+                }
+                if (string.Equals(provider, "github", StringComparison.Ordinal))
+                {
+                    RequireCommitId(CommitId);
+                }
+                else if (CommitId is not null)
+                {
+                    RequireCommitId(CommitId);
+                }
+                break;
+            case ReviewCommentKind.Reply:
+                RequirePositiveId(ProviderThreadId, nameof(ProviderThreadId));
+                RequirePositiveId(ReplyToProviderCommentId, nameof(ReplyToProviderCommentId));
+                if (CommitId is not null || Path is not null || Line is not null || Side is not null)
+                {
+                    throw new ArgumentException("Replies cannot carry inline coordinates.");
+                }
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(Kind), Kind, "Unknown review comment operation.");
+        }
+    }
+
+    private void RejectTargetCoordinates()
+    {
+        if (
+            CommitId is not null
+            || Path is not null
+            || Line is not null
+            || Side is not null
+            || ProviderThreadId is not null
+            || ReplyToProviderCommentId is not null
+        )
+        {
+            throw new ArgumentException("Summary comments cannot carry inline or reply coordinates.");
+        }
+    }
+
+    private static bool IsSafeRelativePath(string? path) =>
+        !string.IsNullOrWhiteSpace(path)
+        && !path.StartsWith('/')
+        && !path.Contains('\\')
+        && !path.Contains(':')
+        && !path.Any(char.IsControl)
+        && path.Split('/').All(segment => segment.Length > 0 && segment is not "." and not "..");
+
+    private static void RequireCommitId(string? commitId)
+    {
+        if (commitId is null || commitId.Length is < 7 or > 64 || !commitId.All(char.IsAsciiHexDigit))
+        {
+            throw new ArgumentException("Commit id must contain 7 to 64 hexadecimal characters.", nameof(CommitId));
+        }
+    }
+
+    private static void RequirePositiveId(string? value, string parameterName)
+    {
+        if (
+            value is null
+            || !long.TryParse(
+                value,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var parsed
+            )
+            || parsed <= 0
+        )
+        {
+            throw new ArgumentException("Provider id must be a positive decimal integer.", parameterName);
+        }
+    }
+}
 
 /// <summary>A comment that exists on the provider, identified by the provider's own id.</summary>
-internal sealed record PostedComment(string ProviderResponseId);
+internal sealed record PostedComment(string ProviderResponseId, string? ProviderCommentId = null);
 
 /// <summary>
 /// A review comment already present on a PR. <see cref="Path"/>/<see cref="Line"/> are set for an inline
@@ -77,7 +210,9 @@ internal sealed record ExistingReviewComment(
     string? Author,
     bool IsActive = true,
     DateTimeOffset? PublishedAt = null,
-    string? ThreadId = null
+    string? ThreadId = null,
+    string? ProviderCommentId = null,
+    string? ProviderVersion = null
 );
 
 /// <summary>

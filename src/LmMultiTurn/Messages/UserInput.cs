@@ -16,9 +16,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 /// <see cref="SubAgents.ISpawnSuppressingAgent"/> honour it — a caller that NEEDS the guarantee must refuse
 /// any other agent rather than send the flag and hope.
 /// </param>
+/// <param name="SuppressActionTools">When true, no tools may execute during this correction run.</param>
 public record UserInput(
     List<IMessage> Messages,
     string? InputId = null,
     string? ParentRunId = null,
-    bool SuppressSubAgentSpawning = false
+    bool SuppressSubAgentSpawning = false,
+    bool SuppressActionTools = false
 );

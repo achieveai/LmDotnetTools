@@ -62,6 +62,7 @@ public enum InputAcceptanceState
 /// late (after the id was released and re-reserved by someone else) is rejected rather than deleting
 /// the new owner's record.
 /// </param>
+/// <param name="ActionToolsSuppressed">Persisted per-input grant that all action tools are disabled.</param>
 public sealed record InputAcceptance(
     string ThreadId,
     string InputId,
@@ -69,7 +70,8 @@ public sealed record InputAcceptance(
     InputAcceptanceState State,
     bool SpawningSuppressed,
     bool IdempotencyHonored,
-    Guid ReservationId
+    Guid ReservationId,
+    bool ActionToolsSuppressed = false
 );
 
 /// <summary>

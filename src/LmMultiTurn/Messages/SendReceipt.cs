@@ -13,9 +13,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 /// agent that ignores the flag leaves this <c>false</c>, so a host relaying it can never advertise a guarantee
 /// nothing is keeping. Callers that need the guarantee must fail closed when this is <c>false</c>.
 /// </param>
+/// <param name="ActionToolsSuppressed">True only when the accepted input is guaranteed tool-free.</param>
 public record SendReceipt(
     string ReceiptId,
     string? InputId = null,
     DateTimeOffset QueuedAt = default,
-    bool SpawningSuppressed = false
+    bool SpawningSuppressed = false,
+    bool ActionToolsSuppressed = false
 );

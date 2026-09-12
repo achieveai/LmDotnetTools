@@ -275,6 +275,18 @@ public record ConversationCapabilitiesResponse
     /// </summary>
     public required bool SpawnSuppression { get; init; }
 
+    /// <summary>Supports tool-free correction inputs, enforcing or refusing each requested guarantee.</summary>
+    public bool ActionToolSuppression { get; init; }
+
+    /// <summary>Whether native parent publication forwarding is configured on this host.</summary>
+    public bool WorkflowPublication { get; init; }
+
+    /// <summary>Echoed only when the queried provider supports native publication forwarding.</summary>
+    public string? WorkflowPublicationProviderId { get; init; }
+
+    /// <summary>Mode with native callbacks and provider egress denial; absent on older hosts.</summary>
+    public string? WorkflowPublicationModeId { get; init; }
+
     /// <summary>
     /// True when <see cref="ProvisionConversationRequest.ReasoningEffort"/> is understood and persisted before
     /// the hosted root agent is built. Callers check this side-effect-free capability before provisioning so an
@@ -303,6 +315,9 @@ public record SendMessageRequest
     /// </para>
     /// </summary>
     public bool SuppressSubAgentSpawning { get; init; }
+
+    /// <summary>Disables all tools for the run consuming this format-correction input.</summary>
+    public bool SuppressActionTools { get; init; }
 
     /// <summary>
     /// Makes this send safe to REPEAT. When supplied, the host records the input under an id derived from
@@ -337,6 +352,9 @@ public record SendMessageResponse
     /// unsupported host rather than silently proceeding without suppression.
     /// </summary>
     public bool SpawningSuppressed { get; init; }
+
+    /// <summary>Durable acknowledgment that the accepted input is enforced without tools.</summary>
+    public bool ActionToolsSuppressed { get; init; }
 
     /// <summary>
     /// Acknowledgement that <see cref="SendMessageRequest.IdempotencyKey"/> was supplied AND applied — i.e.

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Binding;
@@ -30,9 +31,19 @@ public static partial class TemplateRenderer
         return BindingPattern().Replace(template, match => RenderBinding(match.Groups[1].Value, context));
     }
 
-    private static string RenderBinding(string expression, BindingContext context)
+    /// <summary>Renders automatic workflow text using required, case-sensitive inputs/state bindings.</summary>
+    public static string RenderStrict(string template, BindingContext context)
     {
-        var node = context.Resolve(expression);
+        ArgumentNullException.ThrowIfNull(template);
+        ArgumentNullException.ThrowIfNull(context);
+        return BindingPattern().Replace(template, match => RenderBinding(match.Groups[1].Value, context, true));
+    }
+
+    private static string RenderBinding(string expression, BindingContext context, bool strict = false)
+    {
+        var node = strict
+            ? TypedInputBinder.Resolve(new JsonObject { ["from"] = expression.Trim() }, context)
+            : context.Resolve(expression);
         if (node is null)
         {
             return string.Empty;

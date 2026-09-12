@@ -5,11 +5,10 @@ namespace CodeReviewDaemon.Sample.Tests.Configuration;
 public class CodeReviewDaemonOptionsTests
 {
     [Fact]
-    public void Defaults_AreConservativeAndToolAssistedIsOff()
+    public void Defaults_KeepPublicationOffAndUseConfiguredDiscovery()
     {
         var options = new CodeReviewDaemonOptions();
 
-        options.EnableToolAssistedReview.Should().BeFalse();
         options.Marketplaces.Should().Equal("gb-plugins", "superpowers");
         options.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         options.WorkspaceHostRoot.Should().BeNull();
@@ -20,12 +19,6 @@ public class CodeReviewDaemonOptionsTests
     {
         var options = new CodeReviewDaemonOptions();
 
-        options
-            .ReviewMaxTokens.Should()
-            .BeGreaterThan(
-                16000,
-                "a multi-turn tool-assisted + sub-agent loop needs a larger token budget than the single-pass diff-only reviewer"
-            );
         options
             .ToolAssistedReasoningEffort.Should()
             .Be(
@@ -86,9 +79,7 @@ public class CodeReviewDaemonOptionsTests
     {
         var o = new CodeReviewDaemonOptions();
         o.ReviewPoolSize.Should().Be(2);
-        o.EnableReviewerWrites.Should().BeFalse("writes are an explicit opt-in");
         o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
-        o.MergeNotesBranchOnClose.Should().BeTrue();
         o.ScratchDirName.Should().Be("scratch");
         o.MaxConcurrentSubAgents.Should()
             .Be(5, "default matches the library's SubAgentOptions default; a profile raises it to fan out wider");
@@ -111,9 +102,6 @@ public class CodeReviewDaemonOptionsTests
 
         o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
         o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
-        o.KnowledgeModelId.Should()
-            .BeEmpty(
-                "empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model"
-            );
+        o.WorkflowPath.Should().Be(".review/workflow.yaml");
     }
 }

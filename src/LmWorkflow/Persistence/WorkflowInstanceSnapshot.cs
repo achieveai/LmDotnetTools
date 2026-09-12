@@ -65,6 +65,14 @@ public sealed record WorkflowInstanceSnapshot
     /// <summary>The per-task correlation/status bookkeeping (one entry per surfaced task occurrence).</summary>
     public IReadOnlyList<WorkflowTaskSnapshot> Tasks { get; init; } = [];
 
+    /// <summary>Named automatic-workflow parent sessions, pinned before their first invocation.</summary>
+    public IReadOnlyDictionary<string, string> Sessions { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Absolute task occurrence deadlines, shared by formatting corrections and reconciliation.</summary>
+    public IReadOnlyDictionary<string, DateTimeOffset> Deadlines { get; init; } =
+        new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
     /// <summary>
     ///     The controller's hierarchy node as it was admitted to the launching caller's collaboration, or
     ///     <c>null</c> when the run was never part of one.

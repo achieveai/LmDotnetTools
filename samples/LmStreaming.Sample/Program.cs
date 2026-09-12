@@ -87,6 +87,15 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    var workflowPublication =
+        builder.Configuration.GetSection(WorkflowPublicationOptions.SectionName).Get<WorkflowPublicationOptions>()
+        ?? new WorkflowPublicationOptions();
+    workflowPublication.Validate();
+    _ = builder.Services.AddSingleton(workflowPublication);
+    _ = builder
+        .Services.AddHttpClient(WorkflowPublicationOptions.HttpClientName)
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+
     // Bridge the operator-facing flat env var LMSTREAMING_S2S_INBOUND_SECRET into the section key the
     // InboundS2SAuth filter actually reads (Auth:S2SInboundSecret). The standard env-var provider only
     // maps the double-underscore form (Auth__S2SInboundSecret) into that section, so the documented
@@ -900,6 +909,7 @@ try
                 // case. Frozen for the pooled agent's lifetime; captured once here so every site in
                 // this factory threads the same value.
                 var callerCredential = context.CallerCredential;
+                var publicationCallback = workflowPublication.Resolve(callerCredential?.AppId);
 
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
@@ -974,6 +984,8 @@ try
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
                     var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
+                    if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
+                        workspaceRef = workspaceRef with { BlockProviderEgress = true };
                     if (workspace is not null)
                     {
                         try
@@ -2069,6 +2081,23 @@ try
                             conversationStore,
                             stampProvenance: true
                         );
+                    }
+
+                    if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
+                    {
+                        var publicationProvider = new WorkflowPublicationToolProvider(
+                            sp.GetRequiredService<IHttpClientFactory>()
+                                .CreateClient(WorkflowPublicationOptions.HttpClientName),
+                            publicationCallback,
+                            threadId,
+                            () => agent?.CurrentRunId
+                        );
+                        subAgentOptions = RegisterWorkflowPublicationTools(
+                            filteredRegistry,
+                            subAgentOptions,
+                            publicationProvider
+                        );
+                        ownedResources.Add(publicationProvider);
                     }
 
                     agent = new MultiTurnAgentLoop(
@@ -3659,6 +3688,26 @@ public partial class Program
                     threadId,
                     childAgentId
                 ),
+            };
+    }
+
+    /// <summary>Bind publication tools only to the hosted parent; descendants receive no forwarding authority.</summary>
+    internal static SubAgentOptions? RegisterWorkflowPublicationTools(
+        FunctionRegistry registry,
+        SubAgentOptions? options,
+        WorkflowPublicationToolProvider provider
+    )
+    {
+        _ = registry.AddProvider(provider);
+        return options is null
+            ? null
+            : options with
+            {
+                NonInheritedToolNames =
+                [
+                    .. options.NonInheritedToolNames ?? [],
+                    .. WorkflowPublicationToolProvider.ToolNames,
+                ],
             };
     }
 
