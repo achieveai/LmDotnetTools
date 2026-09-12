@@ -19,29 +19,44 @@ public static class TypedInputBinder
             if (obj.ContainsKey("from"))
             {
                 if (obj.Count != 1 || obj["from"] is not JsonValue from || !from.TryGetValue<string>(out var path))
+                {
                     throw new InvalidOperationException("A reference binding must contain only a string 'from'.");
+                }
+
                 return ResolvePath(path, context)?.DeepClone();
             }
             if (obj.ContainsKey("literal"))
             {
                 if (obj.Count != 1)
+                {
                     throw new InvalidOperationException("A literal binding must contain only 'literal'.");
+                }
+
                 return obj["literal"]?.DeepClone();
             }
             var result = new JsonObject();
             foreach (var (name, child) in obj)
+            {
                 result[name] = Resolve(child, context);
+            }
+
             return result;
         }
         if (binding is JsonArray array)
+        {
             return new JsonArray([.. array.Select(child => Resolve(child, context))]);
+        }
+
         return binding?.DeepClone();
     }
 
     internal static IReadOnlyList<PathSegment> ParsePath(string path)
     {
         if (!PathPattern.IsMatch(path))
+        {
             throw new InvalidOperationException($"Unsupported typed binding path '{path}'.");
+        }
+
         return JsonPath.Parse(path)!;
     }
 
@@ -53,15 +68,21 @@ public static class TypedInputBinder
         {
             var segment = segments[i];
             if (segment.IsIndex && node is JsonArray array && segment.Index!.Value < array.Count)
+            {
                 node = array[segment.Index.Value];
+            }
             else if (
                 !segment.IsIndex
                 && node is JsonObject obj
                 && obj.TryGetPropertyValue(segment.Name!, out var child)
             )
+            {
                 node = child;
+            }
             else
+            {
                 throw new InvalidOperationException($"Required binding '{path}' is missing.");
+            }
         }
         return node;
     }

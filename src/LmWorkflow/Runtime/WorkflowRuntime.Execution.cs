@@ -177,13 +177,21 @@ public sealed partial class WorkflowRuntime
             lock (_lock)
             {
                 if (_automaticDeadlines.TryGetValue(occurrence.Name, out var pinned))
+                {
                     deadline = pinned;
+                }
                 else if (AutomaticInvocationTimeout is { } timeout)
                 {
                     if (timeout <= TimeSpan.Zero)
+                    {
                         throw new InvalidOperationException("Invocation timeout must be positive.");
+                    }
+
                     if (occurrence.Status == WorkflowTaskStatus.InFlight)
+                    {
                         throw new InvalidDataException("An active invocation is missing its durable deadline.");
+                    }
+
                     deadline = DateTimeOffset.UtcNow + timeout;
                     _automaticDeadlines.Add(occurrence.Name, deadline.Value);
                 }
