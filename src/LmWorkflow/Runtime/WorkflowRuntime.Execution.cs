@@ -123,7 +123,7 @@ public sealed partial class WorkflowRuntime
         }
         finally
         {
-            _automaticDrive.Release();
+            _ = _automaticDrive.Release();
         }
     }
 

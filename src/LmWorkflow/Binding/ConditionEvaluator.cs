@@ -145,12 +145,7 @@ public static partial class ConditionEvaluator
         }
 
         var valuePath = GetValueBindingPath(condition.Value);
-        var right = ResolveValue(condition.Value, context);
-        if (right is null)
-        {
-            throw MissingOperand(valuePath ?? "comparison value", op);
-        }
-
+        var right = ResolveValue(condition.Value, context) ?? throw MissingOperand(valuePath ?? "comparison value", op);
         switch (op)
         {
             case ConditionOp.Eq:

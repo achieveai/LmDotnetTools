@@ -76,12 +76,12 @@ public sealed class WorkflowScriptInvoker
         }
         catch (WorkflowScriptTerminationException)
         {
-            _unavailableWorkspaces.TryAdd(workspace, 0);
+            _ = _unavailableWorkspaces.TryAdd(workspace, 0);
             throw;
         }
         finally
         {
-            gate.Release();
+            _ = gate.Release();
         }
     }
 
@@ -150,7 +150,7 @@ public sealed class WorkflowScriptInvoker
                         $"Workflow script {stream} exceeded the configured output limit."
                     );
                 }
-                result.Append(buffer, 0, count);
+                _ = result.Append(buffer, 0, count);
             }
             return result.ToString();
         }

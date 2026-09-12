@@ -71,17 +71,12 @@ public static class TypedInputBinder
             {
                 node = array[segment.Index.Value];
             }
-            else if (
-                !segment.IsIndex
-                && node is JsonObject obj
-                && obj.TryGetPropertyValue(segment.Name!, out var child)
-            )
-            {
-                node = child;
-            }
             else
             {
-                throw new InvalidOperationException($"Required binding '{path}' is missing.");
+                node =
+                    !segment.IsIndex && node is JsonObject obj && obj.TryGetPropertyValue(segment.Name!, out var child)
+                        ? child
+                        : throw new InvalidOperationException($"Required binding '{path}' is missing.");
             }
         }
         return node;
