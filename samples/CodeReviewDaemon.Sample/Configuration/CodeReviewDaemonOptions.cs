@@ -13,7 +13,7 @@ internal sealed class CodeReviewDaemonOptions
     public const string SectionName = "CodeReviewDaemon";
 
     /// <summary>Old stage controls cannot silently change the authored workflow's behavior.</summary>
-    internal static void ValidateWorkflowConfiguration(IConfigurationSection section)
+    internal static void ValidateWorkflowConfiguration(IConfigurationSection section, Action<string>? warn = null)
     {
         string[] retired =
         [
@@ -42,10 +42,10 @@ internal sealed class CodeReviewDaemonOptions
             .Where(key => retired.Contains(key, StringComparer.OrdinalIgnoreCase))
             .ToArray();
         if (present.Length > 0)
-            throw new InvalidOperationException(
-                "Retired CodeReviewDaemon settings: "
+            warn?.Invoke(
+                "Ignored retired CodeReviewDaemon settings: "
                     + string.Join(", ", present)
-                    + ". Move step selection and model choices into the YAML named by WorkflowPath, then remove these settings."
+                    + ". WorkflowPath is authoritative for step selection and model choices. Remove these settings when convenient."
             );
     }
 

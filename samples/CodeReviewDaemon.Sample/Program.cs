@@ -76,9 +76,6 @@ if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
 // operator opt-in to a higher-blast-radius behavior. See CodeReviewDaemonOptions.
-CodeReviewDaemonOptions.ValidateWorkflowConfiguration(
-    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName)
-);
 var daemonOptions =
     builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
     ?? new CodeReviewDaemonOptions();
@@ -213,6 +210,10 @@ var databasePath = string.IsNullOrWhiteSpace(daemonOptions.DatabasePath)
     ? Path.Combine(AppContext.BaseDirectory, "review.db")
     : daemonOptions.DatabasePath;
 var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+
+// This daemon's SQLite/workspace deployment has one coordinator. An OS-held lease rejects a
+// second host before polling; process exit releases it, so stale coordinators cannot keep writing.
+using var coordinatorLease = workflowOperation is null ? WorkflowCoordinatorLease.Acquire(databasePath) : null;
 
 // Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is still the serial
 // PrPollingService loop (each PR is orchestrated to completion before the next), so concurrent use does
@@ -857,7 +858,6 @@ static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
 
 // One authored workflow; the existing stores own admission, receipts and durable execution state.
 var workflowPath = Path.GetFullPath(daemonOptions.WorkflowPath, builder.Environment.ContentRootPath);
-var workflowPackageRoot = Path.GetDirectoryName(workflowPath)!;
 var workflowStateRoot = Path.GetFullPath(daemonOptions.WorkflowStateDirectory ?? (databasePath + ".workflow"));
 var workflowRunRoot = Path.Combine(workflowStateRoot, "runs");
 builder.Services.AddSingleton<IWorkflowStore>(_ => new FileWorkflowStore(Path.Combine(workflowStateRoot, "snapshots")));
@@ -1000,7 +1000,7 @@ builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
             run,
             instanceId,
             directory,
-            workflowPackageRoot,
+            Path.Combine(directory, "package"),
             sp.GetRequiredService<WorkflowScriptInvoker>(),
             sp.GetRequiredService<WorkflowOperationDispatcher>(),
             sp.GetRequiredService<LmStreamingS2SClient>(),
@@ -1080,7 +1080,8 @@ builder.Services.AddSingleton<IReviewParkNotifier>(sp => new ReviewParkNotifier(
     sp.GetRequiredService<ReviewStore>(),
     sp.GetServices<IReviewCommentPublisher>(),
     daemonOptions,
-    sp.GetRequiredService<ILoggerFactory>()
+    sp.GetRequiredService<ILoggerFactory>(),
+    sp.GetServices<IPrProvider>()
 ));
 
 // Registered by factory rather than by type because the durable retry budget is an int the container cannot
@@ -1300,6 +1301,10 @@ builder
     });
 
 var app = builder.Build();
+CodeReviewDaemonOptions.ValidateWorkflowConfiguration(
+    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName),
+    warning => app.Logger.LogWarning("{WorkflowMigrationWarning}", warning)
+);
 
 if (workflowOperation is not null)
 {

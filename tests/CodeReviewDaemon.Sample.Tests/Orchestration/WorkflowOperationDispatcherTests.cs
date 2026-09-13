@@ -16,6 +16,27 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 public sealed class WorkflowOperationDispatcherTests
 {
     [Fact]
+    public async Task Private_invocation_sentinels_are_never_exported_even_from_an_artifacts_filename()
+    {
+        using var fixture = new Fixture();
+        const string token = "private-token-SENTINEL-0123456789";
+        const string email = "private-person-SENTINEL@example.com";
+        File.WriteAllText(
+            Path.Combine(fixture.Directory, "artifacts", "review.json"),
+            new JsonObject
+            {
+                ["Input"] = token,
+                ["Output"] = email,
+                ["Error"] = token,
+            }.ToJsonString()
+        );
+        await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default);
+        var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
+        bundle.Should().NotContain(token).And.NotContain(email).And.NotContain("Input").And.NotContain("Error");
+        bundle.Should().Contain("summary.json");
+    }
+
+    [Fact]
     public async Task Valid_scope_dispatches_authoritative_statistics()
     {
         using var fixture = new Fixture();
@@ -72,7 +93,12 @@ public sealed class WorkflowOperationDispatcherTests
             default
         );
         var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
-        bundle.Should().Contain("original").And.NotContain("secret").And.NotContain("FrozenContext");
+        bundle
+            .Should()
+            .Contain("summary.json")
+            .And.NotContain("original")
+            .And.NotContain("secret")
+            .And.NotContain("FrozenContext");
         File.WriteAllText(Path.Combine(fixture.Directory, "artifacts", "review.json"), "{\"Raw\":\"changed\"}");
         var count = fixture.Runner.Commands.Count;
         JsonNode
@@ -146,7 +172,7 @@ public sealed class WorkflowOperationDispatcherTests
             .Should()
             .ThrowAsync<InvalidOperationException>();
         var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
-        bundle.Should().Contain("original");
+        bundle.Should().Contain("summary.json").And.NotContain("original");
         File.WriteAllText(Path.Combine(fixture.Directory, "artifacts", "review.json"), "{\"Raw\":\"changed\"}");
         (await fixture.Dispatcher.ReconcileAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default))
             .Should()
@@ -163,15 +189,9 @@ public sealed class WorkflowOperationDispatcherTests
     public async Task Empty_allowlist_never_retains_scope_or_other_files()
     {
         using var fixture = new Fixture();
-        await fixture
-            .Dispatcher.Invoking(value =>
-                value.DispatchAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default)
-            )
-            .Should()
-            .ThrowAsync<InvalidOperationException>()
-            .WithMessage("*zero artifacts*");
-        fixture.Runner.Commands.Should().BeEmpty();
-        fixture.Store.GetOutboxForRun(fixture.Run.Id).Should().BeEmpty();
+        await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default);
+        var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
+        bundle.Should().Contain("summary.json").And.NotContain("FrozenContext").And.NotContain("scope.json");
     }
 
     [Fact]
@@ -196,6 +216,7 @@ public sealed class WorkflowOperationDispatcherTests
                 ["Description"] = "Supported lesson",
             }
         );
+        input["KnowledgeReview"] = ReviewedKnowledgeTestExtensions.Approved((JsonArray)input["Extractions"]!);
         await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, input, default);
         var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
         bundle.Should().Contain("KnowledgeBase/widgets/contracts.md").And.Contain("KnowledgeBase/_index.jsonl");
@@ -243,6 +264,102 @@ public sealed class WorkflowOperationDispatcherTests
         fixture.Runner.Commands.Should().HaveCount(count);
     }
 
+    [Theory]
+    [InlineData("rejected")]
+    [InlineData("missing")]
+    [InlineData("changed")]
+    public async Task Knowledge_review_failure_stops_before_any_repository_operation(string failure)
+    {
+        using var fixture = new Fixture();
+        var input = fixture.RetentionInput;
+        if (failure == "missing")
+            input.Remove("KnowledgeReview");
+        else if (failure == "rejected")
+            input["KnowledgeReview"]!["Verdict"] = "rejected";
+        else
+            input["Extractions"]![0]!["Description"] = "Changed after review";
+        await fixture
+            .Dispatcher.Invoking(value => value.DispatchAsync("retain-artifacts", fixture.Context, input, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*safety review*");
+        fixture.FactoryCalls.Should().Be(0);
+        fixture.Runner.Commands.Should().BeEmpty();
+        fixture.Store.GetOutboxForRun(fixture.Run.Id).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Legacy_unrestricted_bundle_is_rejected_before_retention()
+    {
+        using var fixture = new Fixture();
+        File.WriteAllText(
+            Path.Combine(fixture.Directory, "retention-bundle.json"),
+            "{\"WorkflowInstanceId\":\"instance-1\",\"ReviewRunId\":1,\"ExtractionHash\":\"legacy\",\"Files\":[]}"
+        );
+        await fixture
+            .Dispatcher.Invoking(value =>
+                value.DispatchAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default)
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*bundle*");
+        fixture.Runner.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Canonical_draft_and_judge_are_private_and_retry_idempotent()
+    {
+        using var fixture = new Fixture();
+        fixture.Admission["Route"] = "new_head";
+        fixture.Scope["Admission"] = fixture.Admission.DeepClone();
+        fixture.SaveScope();
+        var canonical = new JsonObject
+        {
+            ["Review"] = new JsonObject { ["Findings"] = new JsonArray(), ["ReviewText"] = "private-draft-SENTINEL" },
+            ["Grade"] = new JsonObject
+            {
+                ["Assessments"] = new JsonArray(),
+                ["Description"] = "private-grade-SENTINEL",
+            },
+            ["Publication"] = new JsonObject
+            {
+                ["Outcome"] = "no_op",
+                ["Actions"] = new JsonArray(),
+                ["Description"] = "None",
+            },
+        };
+        var input = new JsonObject
+        {
+            ["Admission"] = fixture.Admission.DeepClone(),
+            ["Extractions"] = new JsonArray(),
+            ["Canonical"] = canonical,
+        };
+        fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = "workflow-diff",
+                ArtifactSchemaVersion = 1,
+                Provider = "github",
+                Payload = "{\"BaseSha\":\"base\",\"HeadSha\":\"head\",\"Diff\":\"private-diff-SENTINEL\"}",
+            }
+        );
+        await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, input, default);
+        var review = fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "review")!;
+        review.Payload.Should().Contain("private-draft-SENTINEL").And.Contain("validated-draft");
+        var judge = JsonNode.Parse(fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "judge")!.Payload)!;
+        judge["Score"].Should().BeNull();
+        judge["GradeKind"]!.GetValue<string>().Should().Be("per-finding-support");
+        fixture
+            .Store.TryGetLatestArtifact(fixture.Run.Id, "review-context")!
+            .Payload.Should()
+            .Contain("private-diff-SENTINEL");
+        var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
+        bundle.Should().NotContain("SENTINEL");
+        await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, input, default);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "review")!.Id.Should().Be(review.Id);
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db = new();
@@ -265,7 +382,16 @@ public sealed class WorkflowOperationDispatcherTests
                 ["WindowId"] = "window",
             };
         public JsonObject RetentionInput =>
-            new() { ["Admission"] = Admission.DeepClone(), ["Extractions"] = new JsonArray() };
+            new()
+            {
+                ["Admission"] = Admission.DeepClone(),
+                ["Extractions"] = new JsonArray(
+                    new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" }
+                ),
+                ["KnowledgeReview"] = ReviewedKnowledgeTestExtensions.Approved(
+                    new JsonArray(new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" })
+                ),
+            };
         public JsonObject Scope { get; }
         public WorkflowOperationDispatcher Dispatcher { get; }
         public int FactoryCalls { get; private set; }

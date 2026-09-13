@@ -57,11 +57,13 @@ internal sealed class WorkflowArtifactOperations(
     /// <summary>Builds knowledge files from explicitly bound validated extractions while holding only the Git operation gate.</summary>
     public async Task<IReadOnlyList<ReviewArtifactFile>> PrepareKnowledgeFilesAsync(
         JsonArray extractions,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        JsonObject? safetyReview = null
     )
     {
         if (extractions.Count == 0)
             return [];
+        WorkflowKnowledgeEdits.ValidateReview(extractions, safetyReview);
         if (run.PrLifecycleState != PrLifecycleState.Merged)
             throw new InvalidOperationException("Knowledge extraction retention requires a merged PR.");
         var helper =
@@ -84,7 +86,7 @@ internal sealed class WorkflowArtifactOperations(
                     cancellationToken
                 )
                 .ConfigureAwait(false);
-            return await helper.PrepareAsync(extractions, cancellationToken).ConfigureAwait(false);
+            return await helper.PrepareAsync(extractions, cancellationToken, safetyReview).ConfigureAwait(false);
         }
         finally
         {
@@ -356,6 +358,8 @@ internal sealed class WorkflowArtifactOperations(
                     nameof(files)
                 );
             }
+            if (path.StartsWith("PRs/", StringComparison.Ordinal))
+                WorkflowOperationDispatcher.ValidatePublicArtifact(file, run.Id);
         }
     }
 }

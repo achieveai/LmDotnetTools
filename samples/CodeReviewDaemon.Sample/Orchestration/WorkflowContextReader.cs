@@ -106,7 +106,9 @@ internal sealed class WorkflowContextReader(
                 ["Diff"] = diff.Stdout,
                 ["TargetDirectory"] = MountedPath(checkout.TargetDir, checkout.StoreRoot),
                 ["HistoryDirectory"] = MountedPath(checkout.NotesDir, checkout.StoreRoot),
-                ["KnowledgeDirectory"] = "/workspace/store/KnowledgeBase",
+                ["KnowledgeEntryPaths"] = await WorkflowKnowledgeEdits
+                    .ReadEntryPathsAsync(checkout.StoreRoot, store.GetRepo(run.RepoId)!, slots.HostFileSystem, ct)
+                    .ConfigureAwait(false),
                 ["RepositorySlug"] = ReviewBranchManager.RepoSlug(store.GetRepo(run.RepoId)!),
             },
         };

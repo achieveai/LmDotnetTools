@@ -72,17 +72,26 @@ types:
   Publication:
     type: object
     additionalProperties: false
-    required: [Outcome, Description]
+    required: [Outcome, Description, Actions]
     properties:
       Outcome: {type: string, enum: [published, replied, no_op]}
       Description: {type: string}
+      Actions: {type: array, items: {$ref: '#/$defs/PublicationAction'}}
+  PublicationAction:
+    type: object
+    additionalProperties: false
+    required: [ActionId, ReceiptId]
+    properties:
+      ActionId: {type: string, minLength: 1}
+      ReceiptId: {type: integer, minimum: 1}
   Discussion:
     type: object
     additionalProperties: false
-    required: [Outcome, Description]
+    required: [Outcome, Description, Actions]
     properties:
       Outcome: {type: string, enum: [replied, no_op]}
       Description: {type: string}
+      Actions: {type: array, items: {$ref: '#/$defs/PublicationAction'}}
   Extraction:
     type: object
     additionalProperties: false
@@ -98,6 +107,28 @@ types:
             Path: {type: string, minLength: 1}
             Content: {type: string}
       Description: {type: string}
+  KnowledgeReviewInput:
+    type: object
+    additionalProperties: false
+    required: [Extractions]
+    properties:
+      Extractions: {type: array, items: {$ref: '#/$defs/Extraction'}}
+  KnowledgeReview:
+    type: object
+    additionalProperties: false
+    required: [Verdict, Reviewed, Description]
+    properties:
+      Verdict: {type: string, enum: [approved, rejected]}
+      Reviewed: {$ref: '#/$defs/Extraction'}
+      Description: {type: string}
+  CanonicalReview:
+    type: object
+    additionalProperties: false
+    required: [Review, Grade, Publication]
+    properties:
+      Review: {$ref: '#/$defs/Review'}
+      Grade: {$ref: '#/$defs/Grade'}
+      Publication: {$ref: '#/$defs/Publication'}
   ProcessInput:
     type: object
     additionalProperties: false
@@ -137,6 +168,8 @@ types:
     properties:
       Admission: {$ref: '#/$defs/Admission'}
       Extractions: {type: array, items: {$ref: '#/$defs/Extraction'}}
+      KnowledgeReview: {$ref: '#/$defs/KnowledgeReview'}
+      Canonical: {$ref: '#/$defs/CanonicalReview'}
   Retention:
     type: object
     additionalProperties: false
@@ -219,6 +252,10 @@ steps:
     input:
       Admission: {from: inputs}
       Extractions: []
+      Canonical:
+        Review: {from: state.Review}
+        Grade: {from: state.Grade}
+        Publication: {from: state.Publication}
     outputType: Retention
     saveAs: ReviewRetention
     next: complete
@@ -235,7 +272,7 @@ steps:
     kind: agent
     session: review-parent
     skills: [skills/discussion.md]
-    tools: [review_publish_summary, review_publish_inline, review_reply]
+    tools: [review_reply]
     prompt: Address the frozen message window through scoped reply tools, or explicitly choose no_op.
     inputType: Prepared
     input: {from: state.PreparedDiscussion}
@@ -299,6 +336,18 @@ steps:
     outputType: Extraction
     saveAs: AdditionalExtraction
     maxValidationRetries: 1
+    next: knowledge-safety-review
+  - id: knowledge-safety-review
+    kind: agent
+    session: merged-knowledge-safety
+    skills: [skills/knowledge-safety.md]
+    prompt: Independently review and redact candidate knowledge for durable retention; reject if safe evidence cannot be preserved.
+    inputType: KnowledgeReviewInput
+    input:
+      Extractions: [{from: state.Learnings}, {from: state.AdditionalExtraction}]
+    outputType: KnowledgeReview
+    saveAs: KnowledgeSafety
+    maxValidationRetries: 1
     next: collect-statistics
   - id: collect-statistics
     kind: script
@@ -314,7 +363,8 @@ steps:
     inputType: RetentionInput
     input:
       Admission: {from: inputs}
-      Extractions: [{from: state.Learnings}, {from: state.AdditionalExtraction}]
+      Extractions: [{from: state.KnowledgeSafety.Reviewed}]
+      KnowledgeReview: {from: state.KnowledgeSafety}
     outputType: Retention
     saveAs: MergedRetention
     next: close-artifact-branch

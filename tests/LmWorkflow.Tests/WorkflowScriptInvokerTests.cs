@@ -141,23 +141,71 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     }
 
     [Fact]
-    public async Task Successful_parent_that_leaves_a_child_quarantines_the_workspace()
+    public async Task Immediate_zero_exit_with_a_live_child_quarantines_the_workspace_on_every_attempt()
     {
-        Write(
-            "detached.py",
-            "import subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\ntime.sleep(.2)\n"
-        );
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var workspace = Path.Combine(_directory, $"zero-{attempt}");
+            Directory.CreateDirectory(workspace);
+            File.WriteAllText(
+                Path.Combine(workspace, "detached.py"),
+                "import subprocess, sys\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\n"
+            );
+            File.WriteAllText(Path.Combine(workspace, "ok.py"), "print('{}')\n");
+            var invoker = new WorkflowScriptInvoker();
+
+            await invoker
+                .Invoking(x => x.InvokeAsync("detached.py", workspace, Context(), new JsonObject(), default))
+                .Should()
+                .ThrowAsync<WorkflowScriptTerminationException>()
+                .WithMessage("*scope could not be settled*");
+
+            var childId = int.Parse(await File.ReadAllTextAsync(Path.Combine(workspace, "child.txt")));
+            await WaitForExitAsync(childId);
+            await invoker
+                .Invoking(x => x.InvokeAsync("ok.py", workspace, Context(), new JsonObject(), default))
+                .Should()
+                .ThrowAsync<WorkflowScriptTerminationException>()
+                .WithMessage("*Workspace remains unavailable*");
+        }
+    }
+
+    [Fact]
+    public async Task Immediate_nonzero_parent_exit_with_a_live_child_is_contained_on_every_attempt()
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var workspace = Path.Combine(_directory, $"nonzero-{attempt}");
+            Directory.CreateDirectory(workspace);
+            File.WriteAllText(
+                Path.Combine(workspace, "detached.py"),
+                "import subprocess, sys\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\nsys.exit(7)\n"
+            );
+
+            await new WorkflowScriptInvoker()
+                .Invoking(x => x.InvokeAsync("detached.py", workspace, Context(), new JsonObject(), default))
+                .Should()
+                .ThrowAsync<WorkflowScriptTerminationException>()
+                .WithMessage("*scope could not be settled*");
+
+            var childId = int.Parse(await File.ReadAllTextAsync(Path.Combine(workspace, "child.txt")));
+            await WaitForExitAsync(childId);
+        }
+    }
+
+    [Fact]
+    public async Task Containment_probe_failure_quarantines_the_workspace()
+    {
+        Write("wait.py", "print('{}')\n");
         Write("ok.py", "print('{}')\n");
-        var invoker = new WorkflowScriptInvoker();
+        var invoker = new WorkflowScriptInvoker(forceContainmentProbeFailure: true);
 
         await invoker
-            .Invoking(x => x.InvokeAsync("detached.py", _directory, Context(), new JsonObject(), default))
+            .Invoking(x => x.InvokeAsync("wait.py", _directory, Context(), new JsonObject(), default))
             .Should()
             .ThrowAsync<WorkflowScriptTerminationException>()
-            .WithMessage("*left child processes running*");
+            .WithMessage("*scope could not be established*");
 
-        var childId = int.Parse(await File.ReadAllTextAsync(Path.Combine(_directory, "child.txt")));
-        await WaitForExitAsync(childId);
         await invoker
             .Invoking(x => x.InvokeAsync("ok.py", _directory, Context(), new JsonObject(), default))
             .Should()
@@ -166,20 +214,26 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     }
 
     [Fact]
-    public async Task Unreadable_process_tree_enumeration_quarantines_the_workspace()
+    public async Task Final_containment_probe_failure_kills_an_immediate_orphan_and_quarantines_the_workspace()
     {
-        Write("wait.py", "import time\ntime.sleep(60)\n");
+        Write(
+            "detached.py",
+            "import subprocess, sys\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\n"
+        );
         Write("ok.py", "print('{}')\n");
-        var invoker = new WorkflowScriptInvoker(_ =>
-            throw new UnauthorizedAccessException("The Linux process table cannot be read.")
+        var invoker = new WorkflowScriptInvoker(
+            forceContainmentProbeFailure: false,
+            forceFinalContainmentProbeFailure: true
         );
 
         await invoker
-            .Invoking(x => x.InvokeAsync("wait.py", _directory, Context(), new JsonObject(), default))
+            .Invoking(x => x.InvokeAsync("detached.py", _directory, Context(), new JsonObject(), default))
             .Should()
             .ThrowAsync<WorkflowScriptTerminationException>()
-            .WithMessage("*Could not establish the script process tree*");
+            .WithMessage("*scope could not be settled*");
 
+        var childId = int.Parse(await File.ReadAllTextAsync(Path.Combine(_directory, "child.txt")));
+        await WaitForExitAsync(childId);
         await invoker
             .Invoking(x => x.InvokeAsync("ok.py", _directory, Context(), new JsonObject(), default))
             .Should()

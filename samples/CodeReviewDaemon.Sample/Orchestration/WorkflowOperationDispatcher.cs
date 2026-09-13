@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -26,10 +27,13 @@ internal sealed class WorkflowOperationDispatcher(
         string InstanceId,
         string Directory,
         JsonObject Admission,
-        JsonArray Extractions
+        JsonArray Extractions,
+        JsonObject? KnowledgeReview,
+        JsonObject? Canonical
     );
 
     private sealed record RetentionBundle(
+        int ExportSchema,
         string WorkflowInstanceId,
         long ReviewRunId,
         string ExtractionHash,
@@ -52,6 +56,8 @@ internal sealed class WorkflowOperationDispatcher(
                     .ConfigureAwait(false)
             ).Output;
         }
+        if (operation == "retain-artifacts")
+            PersistCanonical(scope);
         var operations = await artifactOperations(scope.Run, cancellationToken).ConfigureAwait(false);
         return operation switch
         {
@@ -203,7 +209,18 @@ internal sealed class WorkflowOperationDispatcher(
             || (route != "merged" && extractions.Count != 0)
         )
             throw new InvalidOperationException("Operation input does not match the frozen workflow admission.");
-        return new Scope(run, instance, directory, admission, extractions);
+        var review = operation == "retain-artifacts" ? input["KnowledgeReview"] as JsonObject : null;
+        if (operation == "retain-artifacts" && route == "merged")
+            WorkflowKnowledgeEdits.ValidateReview(extractions, review);
+        return new Scope(
+            run,
+            instance,
+            directory,
+            admission,
+            extractions,
+            review,
+            operation == "retain-artifacts" ? input["Canonical"] as JsonObject : null
+        );
     }
 
     private async Task<IReadOnlyList<ReviewArtifactFile>> ReadOrCaptureBundleAsync(
@@ -221,31 +238,23 @@ internal sealed class WorkflowOperationDispatcher(
             int.Parse(scope.Run.PrId, CultureInfo.InvariantCulture)
         );
         var prefix = $"PRs/{branch["review/".Length..]}/{InstanceDirectoryName(scope.InstanceId)}/";
-        var artifactsPath = WorkflowScriptInvoker.ResolveWorkspaceAsset("artifacts", scope.Directory);
-        var files = new List<ReviewArtifactFile>();
-        long capturedCharacters = 0;
-        foreach (
-            var path in Directory
-                .EnumerateFiles(artifactsPath, "*.json", SearchOption.TopDirectoryOnly)
-                .Order(StringComparer.Ordinal)
-        )
+        // Public Git receives only fixed host metadata. Invocation payloads and canonical
+        // review records remain private; filenames never authorize an export.
+        var summary = new JsonObject
         {
-            var name = Path.GetFileName(path);
-            var safePath = WorkflowScriptInvoker.ResolveWorkspaceAsset("artifacts/" + name, scope.Directory);
-            var content = await ReadBoundedAsync(safePath, cancellationToken).ConfigureAwait(false);
-            capturedCharacters += content.Length;
-            if (capturedCharacters > options.Limits.MaxArtifactPayloadChars)
-                throw new InvalidOperationException("Retention bundle exceeds the configured artifact limit.");
-            _ = JsonNode.Parse(content) ?? throw new InvalidOperationException("Retained artifact must contain JSON.");
-            files.Add(new ReviewArtifactFile(prefix + name, content));
-        }
-        if (files.Count == 0)
-            throw new InvalidOperationException("Required retention cannot contain zero artifacts.");
+            ["SchemaVersion"] = 1,
+            ["ReviewRunId"] = scope.Run.Id,
+            ["Route"] = scope.Admission["Route"]!.DeepClone(),
+            ["KnowledgeEntryCount"] = scope.Extractions.Sum(value => (value?["Edits"] as JsonArray)?.Count ?? 0),
+        };
+        var files = new List<ReviewArtifactFile> { new(prefix + "summary.json", summary.ToJsonString()) };
         files.AddRange(
-            await operations.PrepareKnowledgeFilesAsync(scope.Extractions, cancellationToken).ConfigureAwait(false)
+            await operations
+                .PrepareKnowledgeFilesAsync(scope.Extractions, cancellationToken, scope.KnowledgeReview)
+                .ConfigureAwait(false)
         );
         var bytes = JsonSerializer.SerializeToUtf8Bytes(
-            new RetentionBundle(scope.InstanceId, scope.Run.Id, ExtractionHash(scope.Extractions), files)
+            new RetentionBundle(1, scope.InstanceId, scope.Run.Id, ExtractionHash(scope.Extractions), files)
         );
         if (Encoding.UTF8.GetCharCount(bytes) > options.Limits.MaxArtifactPayloadChars)
             throw new InvalidOperationException("Retention bundle exceeds the configured artifact limit.");
@@ -281,12 +290,15 @@ internal sealed class WorkflowOperationDispatcher(
         );
         if (
             bundle is null
+            || bundle.ExportSchema != 1
             || bundle.WorkflowInstanceId != scope.InstanceId
             || bundle.ReviewRunId != scope.Run.Id
             || bundle.Files is null
             || (checkExtractions && bundle.ExtractionHash != ExtractionHash(scope.Extractions))
         )
             throw new InvalidOperationException("Retention bundle does not match the trusted workflow scope.");
+        foreach (var file in bundle.Files.Where(file => file.RelativePath.StartsWith("PRs/", StringComparison.Ordinal)))
+            ValidatePublicArtifact(file, scope.Run.Id);
         return bundle.Files;
     }
 
@@ -305,6 +317,138 @@ internal sealed class WorkflowOperationDispatcher(
         {
             return null;
         }
+    }
+
+    // Compatibility projections stay in the private store. Draft text and publication are
+    // explicitly distinct; per-finding support does not invent a historical numeric grade.
+    private void PersistCanonical(Scope scope)
+    {
+        if (scope.Admission["Route"]?.GetValue<string>() != "new_head" || scope.Canonical is null)
+            return;
+        var canonical = scope.Canonical;
+        var review =
+            canonical["Review"] as JsonObject ?? throw new InvalidOperationException("Canonical review is missing.");
+        var grade =
+            canonical["Grade"] as JsonObject ?? throw new InvalidOperationException("Canonical grade is missing.");
+        var findings =
+            review["Findings"] as JsonArray ?? throw new InvalidOperationException("Canonical findings are missing.");
+        var reviewPayload = JsonSerializer
+            .SerializeToNode(
+                new ReviewArtifactPayload(review["ReviewText"]!.GetValue<string>(), null, scope.Run.VariantId)
+            )!
+            .AsObject();
+        reviewPayload["TextKind"] = "validated-draft";
+        reviewPayload["Publication"] = canonical["Publication"]?.DeepClone();
+        Save(ReviewArtifactKinds.ReviewArtifactKind, ReviewArtifactKinds.ReviewArtifactSchemaVersion, reviewPayload);
+        var records = new JsonArray();
+        foreach (var finding in findings)
+        {
+            var record = JsonSerializer
+                .SerializeToNode(
+                    new ReviewFindingRecord(
+                        "workflow-review",
+                        "workflow",
+                        finding!["Description"]!.GetValue<string>(),
+                        finding["Path"]!.GetValue<string>()
+                            + ":"
+                            + finding["Line"]!.GetValue<int>().ToString(CultureInfo.InvariantCulture),
+                        finding["Severity"]!.GetValue<string>(),
+                        [finding["Severity"]!.GetValue<string>()],
+                        "uncompared",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null
+                    )
+                )!
+                .AsObject();
+            record["Id"] = finding["Id"]!.DeepClone();
+            records.Add(record);
+        }
+        Save(
+            ReviewArtifactKinds.FindingsArtifactKind,
+            ReviewArtifactKinds.FindingsArtifactSchemaVersion,
+            new JsonObject
+            {
+                ["Round"] = 1,
+                ["DerivedFrom"] = "validated-workflow-draft",
+                ["Compared"] = false,
+                ["ParsedCount"] = findings.Count,
+                ["RecordedCount"] = findings.Count,
+                ["Sources"] = new JsonArray(),
+                ["Findings"] = records,
+            }
+        );
+        var judge = JsonSerializer
+            .SerializeToNode(
+                new JudgeArtifactPayload(
+                    null,
+                    grade["Description"]!.GetValue<string>(),
+                    scope.Run.VariantId,
+                    null,
+                    null,
+                    null,
+                    0
+                )
+            )!
+            .AsObject();
+        judge["Assessments"] = grade["Assessments"]!.DeepClone();
+        judge["GradeKind"] = "per-finding-support";
+        Save(ReviewArtifactKinds.JudgeArtifactKind, ReviewArtifactKinds.JudgeArtifactSchemaVersion, judge);
+        var evidence = store.TryGetLatestArtifact(scope.Run.Id, "workflow-diff");
+        if (evidence is not null)
+        {
+            var diff = JsonNode.Parse(evidence.Payload)!;
+            if (diff["HeadSha"]?.GetValue<string>() != scope.Run.HeadSha)
+                throw new InvalidOperationException("Canonical context diff does not match the run head.");
+            Save(
+                ReviewArtifactKinds.ContextArtifactKind,
+                ReviewArtifactKinds.ContextArtifactSchemaVersion,
+                JsonSerializer.SerializeToNode(
+                    new ContextArtifactPayload(
+                        scope.Run.PrId,
+                        scope.Run.BaseSha,
+                        scope.Run.HeadSha,
+                        diff["Diff"]!.GetValue<string>(),
+                        MergeBaseSha: diff["BaseSha"]?.GetValue<string>()
+                    )
+                )!
+            );
+        }
+
+        void Save(string kind, int version, JsonNode payload)
+        {
+            var serialized = payload.ToJsonString();
+            if (store.TryGetLatestArtifact(scope.Run.Id, kind)?.Payload == serialized)
+                return;
+            store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = scope.Run.Id,
+                    ArtifactKind = kind,
+                    ArtifactSchemaVersion = version,
+                    Provider = RepoIdentity.ToPublisherNamespace(store.GetRepo(scope.Run.RepoId)!.Provider),
+                    Payload = serialized,
+                }
+            );
+        }
+    }
+
+    internal static void ValidatePublicArtifact(ReviewArtifactFile file, long runId)
+    {
+        var summary = JsonNode.Parse(file.Content) as JsonObject;
+        if (
+            !file.RelativePath.EndsWith("/summary.json", StringComparison.Ordinal)
+            || summary is null
+            || summary.Count != 4
+            || summary["SchemaVersion"]?.GetValue<int>() != 1
+            || summary["ReviewRunId"]?.GetValue<long>() != runId
+            || summary["Route"]?.GetValue<string>() is not ("new_head" or "discussion" or "merged")
+            || summary["KnowledgeEntryCount"]?.GetValue<int>() is not >= 0
+        )
+            throw new InvalidOperationException("Public retention permits only the fixed metadata summary schema.");
     }
 
     private static string ExtractionHash(JsonArray extractions) =>

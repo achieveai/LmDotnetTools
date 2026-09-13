@@ -34,6 +34,7 @@ internal sealed class ReviewWorkflowInvoker(
 ) : IWorkflowTaskInvoker
 {
     private ReviewPublicationTools? _publicationTools;
+    private IDisposable? _publicationRegistration;
 
     private sealed record SessionBinding(
         string SessionId,
@@ -60,6 +61,7 @@ internal sealed class ReviewWorkflowInvoker(
     )
     {
         ArgumentNullException.ThrowIfNull(invocation);
+        var callerToken = ct;
         if (invocation.InstanceId != instanceId)
             return new(WorkflowInvocationStatus.Failed, Error: "Invocation does not belong to this workflow instance.");
         try
@@ -134,7 +136,7 @@ internal sealed class ReviewWorkflowInvoker(
                             HasUnresolvedReceipt("workflow-")
                                 ? WorkflowInvocationStatus.Unknown
                                 : WorkflowInvocationStatus.Failed,
-                            Error: ex.Message
+                            Error: WorkflowAgentInvoker.Diagnostic(ex)
                         );
                     }
                 }
@@ -142,8 +144,23 @@ internal sealed class ReviewWorkflowInvoker(
             else
                 result = new(WorkflowInvocationStatus.Failed, Error: "Unsupported workflow invocation delegate.");
 
+            if (result.Status == WorkflowInvocationStatus.Completed && invocation.Task.Delegate == DelegateKind.Agent)
+                result = await ValidateAgentResultAsync(invocation, result, ct).ConfigureAwait(false);
             await SaveResultAsync(invocation, result, ct).ConfigureAwait(false);
+            if (result.Status is WorkflowInvocationStatus.Completed or WorkflowInvocationStatus.Failed)
+            {
+                _publicationRegistration?.Dispose();
+                _publicationRegistration = null;
+            }
             return result;
+        }
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (WorkflowScriptTerminationException)
+        {
+            throw;
         }
         catch (Exception ex)
             when (ex
@@ -157,7 +174,7 @@ internal sealed class ReviewWorkflowInvoker(
         {
             // A missing response/evidence does not authorize replaying a script that may have committed
             // an external effect. Reconciliation must recover its receipt or keep the invocation blocked.
-            return new(WorkflowInvocationStatus.Unknown, Error: ex.Message);
+            return new(WorkflowInvocationStatus.Unknown, Error: WorkflowAgentInvoker.Diagnostic(ex));
         }
     }
 
@@ -194,7 +211,7 @@ internal sealed class ReviewWorkflowInvoker(
             // shallow review. Keep the invocation retryable while preventing any provision or host send.
             return new(
                 WorkflowInvocationStatus.Unknown,
-                Error: "The reviewer capability catalog could not be verified: " + ex.Message
+                Error: "The reviewer capability catalog could not be verified. " + WorkflowAgentInvoker.Diagnostic(ex)
             );
         }
     }
@@ -273,8 +290,11 @@ internal sealed class ReviewWorkflowInvoker(
         }
 
         var tools = await scopeFactory(run, instanceId, ct).ConfigureAwait(false);
+        tools.BindInvocation(invocation, await ReadAdmittedDiscussionAsync(ct).ConfigureAwait(false));
         _publicationTools = tools;
-        publicationScopes.Register(binding.ThreadId, invocation, tools);
+        var registration = publicationScopes.Register(binding.ThreadId, invocation, tools);
+        _publicationRegistration?.Dispose();
+        _publicationRegistration = registration;
         return new S2SReviewAgent(
             client,
             prepared.WorkspaceId,
@@ -325,6 +345,66 @@ internal sealed class ReviewWorkflowInvoker(
             : null;
     }
 
+    private async Task<JsonArray> ReadAdmittedDiscussionAsync(CancellationToken ct)
+    {
+        var path = WorkflowScriptInvoker.ResolveWorkspaceAsset("scope.json", Path.GetFullPath(runDirectory));
+        if (!File.Exists(path))
+            return [];
+        var scope = JsonNode.Parse(await File.ReadAllTextAsync(path, ct).ConfigureAwait(false));
+        if (
+            scope?["ReviewRunId"]?.GetValue<long>() != run.Id
+            || scope["WorkflowInstanceId"]?.GetValue<string>() != instanceId
+        )
+            throw new InvalidOperationException("Discussion scope does not match the admitted workflow.");
+        return scope["FrozenContext"]?["CommentWindow"]?.DeepClone() as JsonArray ?? [];
+    }
+
+    private async Task<WorkflowInvocationResult> ValidateAgentResultAsync(
+        WorkflowInvocation invocation,
+        WorkflowInvocationResult result,
+        CancellationToken ct
+    )
+    {
+        JsonObject? output;
+        try
+        {
+            output = JsonNode.Parse(result.Output ?? "null") as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return result; // Preserve the runtime's existing syntax-correction path.
+        }
+        if (output is null)
+            return result; // The runtime owns JSON/schema correction.
+        if (invocation.Task.OutputSchema?["properties"]?["Assessments"] is not null)
+            ValidateAssessmentIds(invocation.Input, output);
+        if (invocation.Task.OutputSchema?["properties"]?["Outcome"] is not null)
+            await (_publicationTools ?? throw new InvalidOperationException("Publication scope is missing."))
+                .ValidateOutcomeAsync(output, ct)
+                .ConfigureAwait(false);
+        return result;
+    }
+
+    internal static void ValidateAssessmentIds(JsonNode input, JsonObject output)
+    {
+        var findings =
+            input["Review"]?["Findings"] as JsonArray
+            ?? throw new InvalidOperationException("Grading requires the admitted findings.");
+        var assessments =
+            output["Assessments"] as JsonArray
+            ?? throw new InvalidOperationException("Grading requires assessments for every finding.");
+        var ids = findings.Select(value => value?["Id"]?.GetValue<string>()).ToArray();
+        var graded = assessments.Select(value => value?["Id"]?.GetValue<string>()).ToArray();
+        if (
+            ids.Any(string.IsNullOrWhiteSpace)
+            || graded.Any(string.IsNullOrWhiteSpace)
+            || ids.Distinct(StringComparer.Ordinal).Count() != ids.Length
+            || graded.Distinct(StringComparer.Ordinal).Count() != graded.Length
+            || !ids.ToHashSet(StringComparer.Ordinal).SetEquals(graded)
+        )
+            throw new InvalidOperationException("Assessment IDs must match every admitted finding exactly once.");
+    }
+
     private bool HasUnresolvedReceipt(string kindPrefix) =>
         store
             .GetOutboxForRun(run.Id)
@@ -344,7 +424,7 @@ internal sealed class ReviewWorkflowInvoker(
 
     private string ResultPath(WorkflowInvocation invocation) =>
         WorkflowScriptInvoker.ResolveWorkspaceAsset(
-            "artifacts/invocation-" + Hash(invocation.InvocationId) + ".json",
+            "private/invocation-" + Hash(invocation.InvocationId) + ".json",
             Path.GetFullPath(runDirectory)
         );
 
@@ -352,7 +432,16 @@ internal sealed class ReviewWorkflowInvoker(
     {
         var path = ResultPath(invocation);
         if (!File.Exists(path))
+        {
+            var legacy = Path.Combine(
+                runDirectory,
+                "artifacts",
+                "invocation-" + Hash(invocation.InvocationId) + ".json"
+            );
+            if (File.Exists(legacy))
+                throw new InvalidOperationException("Legacy invocation evidence requires explicit recovery.");
             return null;
+        }
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         if (stream.Length > checked(options.Limits.MaxArtifactPayloadChars * 4L))
             throw new InvalidOperationException("Invocation artifact exceeds the configured limit.");

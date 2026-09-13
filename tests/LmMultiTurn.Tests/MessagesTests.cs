@@ -12,6 +12,41 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public class MessagesTests
 {
+    [Fact]
+    public void Published_record_constructor_and_deconstruct_signatures_remain_available()
+    {
+        var contracts = new (Type Type, Type[] Parameters)[]
+        {
+            (typeof(UserInput), [typeof(List<IMessage>), typeof(string), typeof(string), typeof(bool)]),
+            (typeof(SendReceipt), [typeof(string), typeof(string), typeof(DateTimeOffset), typeof(bool)]),
+            (
+                typeof(AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.InputAcceptance),
+                [
+                    typeof(string),
+                    typeof(string),
+                    typeof(DateTimeOffset),
+                    typeof(AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.InputAcceptanceState),
+                    typeof(bool),
+                    typeof(bool),
+                    typeof(Guid),
+                ]
+            ),
+        };
+        foreach (var contract in contracts)
+        {
+            contract.Type.GetConstructor(contract.Parameters).Should().NotBeNull();
+            contract
+                .Type.GetMethod("Deconstruct", [.. contract.Parameters.Select(type => type.MakeByRefType())])
+                .Should()
+                .NotBeNull();
+        }
+        var receipt = new SendReceipt("id", null, default, false, true);
+        JsonSerializer
+            .Deserialize<SendReceipt>(JsonSerializer.Serialize(receipt))!
+            .ActionToolsSuppressed.Should()
+            .BeTrue();
+    }
+
     #region UserInput Tests
 
     [Fact]

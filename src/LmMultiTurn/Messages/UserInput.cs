@@ -17,10 +17,30 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 /// any other agent rather than send the flag and hope.
 /// </param>
 /// <param name="SuppressActionTools">When true, no tools may execute during this correction run.</param>
+[method: System.Text.Json.Serialization.JsonConstructor]
 public record UserInput(
     List<IMessage> Messages,
     string? InputId = null,
     string? ParentRunId = null,
     bool SuppressSubAgentSpawning = false,
     bool SuppressActionTools = false
-);
+)
+{
+    /// <summary>Preserves the constructor used by previously compiled consumers.</summary>
+    public UserInput(List<IMessage> Messages, string? InputId, string? ParentRunId, bool SuppressSubAgentSpawning)
+        : this(Messages, InputId, ParentRunId, SuppressSubAgentSpawning, false) { }
+
+    /// <summary>Preserves positional deconstruction for previously compiled consumers.</summary>
+    public void Deconstruct(
+        out List<IMessage> Messages,
+        out string? InputId,
+        out string? ParentRunId,
+        out bool SuppressSubAgentSpawning
+    )
+    {
+        Messages = this.Messages;
+        InputId = this.InputId;
+        ParentRunId = this.ParentRunId;
+        SuppressSubAgentSpawning = this.SuppressSubAgentSpawning;
+    }
+}

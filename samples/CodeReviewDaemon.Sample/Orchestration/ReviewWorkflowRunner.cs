@@ -132,18 +132,22 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         }
 
         var saved = await _workflowStore.LoadAsync(instanceId, cancellationToken).ConfigureAwait(false);
-        var runtime = saved is null
-            ? CreateRuntime(admission, cancellationToken)
-            : RestoreRuntime(saved, instanceId, admission);
-        runtime.AutomaticInvocationTimeout = _invocationTimeout;
-        ApplySessionBindings(runtime, storedRun, storedRound);
-
         if (saved?.IsComplete == true)
         {
+            ValidateSnapshot(saved, instanceId, admission);
             CompleteAdmission(storedRun, storedRound, instanceId);
             await ReleaseSettledAssignmentIfActiveAsync(storedRun, instanceId, cancellationToken).ConfigureAwait(false);
             return WorkflowInvocationStatus.Completed;
         }
+        var admittedWorkflow = await WorkflowPackageSnapshot
+            .PrepareAsync(_workflowPath, runDirectory, saved is not null, cancellationToken)
+            .ConfigureAwait(false);
+        var runtime = saved is null
+            ? CreateRuntime(admission, admittedWorkflow, cancellationToken)
+            : RestoreRuntime(saved, instanceId, admission);
+        runtime.AutomaticInvocationTimeout = _invocationTimeout;
+        ApplySessionBindings(runtime, storedRun, storedRound);
+
         if (storedRound?.CompletedAt is not null)
         {
             throw new InvalidDataException("A completed workflow round is missing its durable completed snapshot.");
@@ -213,6 +217,17 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
                 }
             }
             return runtimeStatus.Value;
+        }
+        catch (WorkflowScriptTerminationException)
+        {
+            // A settled snapshot cannot prove OS process containment. Keep this owner's lease.
+            releaseLease = false;
+            _reviewStore.TryMarkReviewRunParked(
+                storedRun.Id,
+                DateTimeOffset.UtcNow,
+                "Script containment could not be proven. Reconcile processes and workspace manually before unpark."
+            );
+            throw;
         }
         catch
         {
@@ -311,7 +326,7 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     /// <summary>Restores every unresolved workspace lease before fresh polling starts.</summary>
     public async Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken)
     {
-        foreach (var run in _reviewStore.ListReviewRunsWithArtifact(WorkflowWorkspace.AssignmentArtifactKind))
+        foreach (var run in _reviewStore.ListActiveWorkflowWorkspaceRuns())
         {
             cancellationToken.ThrowIfCancellationRequested();
             var artifact = _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)!;
@@ -403,6 +418,8 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         CancellationToken cancellationToken
     )
     {
+        if (run.ParkedAt is not null)
+            return false;
         if (string.Equals(instanceId, InstanceIdFor(run, null), StringComparison.Ordinal))
         {
             return await IsDurablySettledAsync(instanceId, BuildAdmission(run, null), cancellationToken)
@@ -474,6 +491,8 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         var stored =
             _reviewStore.GetReviewRun(run.Id)
             ?? throw new InvalidOperationException("Review run does not exist in the configured store.");
+        if (stored.ParkedAt is not null)
+            throw new InvalidOperationException("Parked review runs require operator reconciliation before admission.");
         if (
             stored.RepoId != run.RepoId
             || !string.Equals(stored.PrId, run.PrId, StringComparison.Ordinal)
@@ -541,10 +560,14 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
             ["WindowId"] = round?.EventKey ?? string.Empty,
         };
 
-    private WorkflowRuntime CreateRuntime(JsonObject admission, CancellationToken cancellationToken)
+    private WorkflowRuntime CreateRuntime(
+        JsonObject admission,
+        string admittedWorkflow,
+        CancellationToken cancellationToken
+    )
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var yaml = File.ReadAllText(_workflowPath);
+        var yaml = File.ReadAllText(admittedWorkflow);
         var definition = SimpleWorkflow.DeserializeYaml(yaml).ToDefinition() with
         {
             Inputs = (JsonObject)admission.DeepClone(),

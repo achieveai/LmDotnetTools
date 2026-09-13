@@ -18,10 +18,63 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+$gitRoutingVariables = @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+
+function Get-RepositoryGitDirectory {
+    param([string]$RepositoryPath)
+    $dotGit = Join-Path $RepositoryPath ".git"
+    if (Test-Path -LiteralPath $dotGit -PathType Container) {
+        return (Resolve-Path -LiteralPath $dotGit).Path
+    }
+    if (-not (Test-Path -LiteralPath $dotGit -PathType Leaf)) {
+        throw "Repository Git metadata is missing: $dotGit"
+    }
+    $pointer = [System.IO.File]::ReadAllText($dotGit).Trim()
+    if ($pointer -notmatch '^gitdir:\s*(.+)$') {
+        throw "Repository Git metadata pointer is invalid: $dotGit"
+    }
+    $gitDirectoryPath = $Matches[1]
+    if (-not [System.IO.Path]::IsPathRooted($gitDirectoryPath)) {
+        $gitDirectoryPath = Join-Path $RepositoryPath $gitDirectoryPath
+    }
+    $gitDirectory = (Resolve-Path -LiteralPath $gitDirectoryPath).Path
+    $worktreePointer = Join-Path $gitDirectory "gitdir"
+    if (Test-Path -LiteralPath $worktreePointer -PathType Leaf) {
+        $declaredDotGitPath = [System.IO.File]::ReadAllText($worktreePointer).Trim()
+        if (-not [System.IO.Path]::IsPathRooted($declaredDotGitPath)) {
+            $declaredDotGitPath = Join-Path $gitDirectory $declaredDotGitPath
+        }
+        $declaredDotGit = (Resolve-Path -LiteralPath $declaredDotGitPath).Path
+        $expectedDotGit = (Resolve-Path -LiteralPath $dotGit).Path
+        if (-not [string]::Equals($declaredDotGit, $expectedDotGit, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Repository Git metadata does not belong to the requested root: $RepositoryPath"
+        }
+    }
+    return $gitDirectory
+}
+
+function Invoke-RepositoryGit {
+    param([string[]]$Arguments)
+    $previous = @{}
+    foreach ($name in $gitRoutingVariables) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        if ($null -ne $item) { $previous[$name] = $item.Value }
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try {
+        $env:GIT_DIR = Get-RepositoryGitDirectory -RepositoryPath $root
+        $env:GIT_WORK_TREE = $root
+        & git -C $root -c core.quotepath=false @Arguments
+    }
+    finally {
+        foreach ($name in $gitRoutingVariables) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $previous.Keys) { Set-Item -LiteralPath "Env:$name" -Value $previous[$name] }
+    }
+}
 
 function Get-GitPaths {
     param([string[]]$GitArguments)
-    $paths = @(& git -C $root -c core.quotepath=false ls-files @GitArguments)
+    $paths = @(Invoke-RepositoryGit -Arguments (@("ls-files") + $GitArguments))
     if ($LASTEXITCODE -ne 0) { throw "Git file inventory failed (exit $LASTEXITCODE)." }
     return $paths
 }

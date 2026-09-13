@@ -33,7 +33,7 @@ public sealed class WorkflowPackageTests
     [InlineData("discussion", "prepare-discussion,discussion,retain-discussion")]
     [InlineData(
         "merged",
-        "prepare-history,learnings,process-judge,additional-extraction,collect-statistics,retain-merged,close-artifact-branch"
+        "prepare-history,learnings,process-judge,additional-extraction,knowledge-safety-review,collect-statistics,retain-merged,close-artifact-branch"
     )]
     public void Shipped_routes_follow_the_declared_operations(string route, string expected)
     {
@@ -71,6 +71,7 @@ public sealed class WorkflowPackageTests
             .ToDictionary(node => node.Id, node => node.TaskList!.Single());
         tasks["publish"].Session.Should().Be(tasks["review"].Session);
         tasks["discussion"].Session.Should().Be(tasks["review"].Session);
+        tasks["discussion"].Tools.Should().Equal("review_reply");
         tasks["grade"].Session.Should().NotBe(tasks["review"].Session);
         tasks
             .Where(pair => pair.Value.Tools?.Count > 0)
@@ -96,7 +97,7 @@ public sealed class WorkflowPackageTests
     [Theory]
     [InlineData("retain-review", 0)]
     [InlineData("retain-discussion", 0)]
-    [InlineData("retain-merged", 2)]
+    [InlineData("retain-merged", 1)]
     public void Retention_receives_only_explicit_validated_extraction_bindings(string stepId, int expectedGroups)
     {
         var task = Load().Nodes.OfType<ProceduralNode>().Single(node => node.Id == stepId).TaskList!.Single();
@@ -115,6 +116,20 @@ public sealed class WorkflowPackageTests
                 Inputs = admission,
                 State = new JsonObject
                 {
+                    ["Review"] = new JsonObject { ["Findings"] = new JsonArray(), ["ReviewText"] = "Draft" },
+                    ["Grade"] = new JsonObject { ["Assessments"] = new JsonArray(), ["Description"] = "Grade" },
+                    ["Publication"] = new JsonObject
+                    {
+                        ["Outcome"] = "no_op",
+                        ["Description"] = "None",
+                        ["Actions"] = new JsonArray(),
+                    },
+                    ["KnowledgeSafety"] = new JsonObject
+                    {
+                        ["Verdict"] = "approved",
+                        ["Reviewed"] = extraction.DeepClone(),
+                        ["Description"] = "Reviewed",
+                    },
                     ["Learnings"] = extraction.DeepClone(),
                     ["AdditionalExtraction"] = extraction.DeepClone(),
                 },

@@ -24,7 +24,7 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 public sealed record WorkflowInstanceSnapshot
 {
     /// <summary>The current persistence schema version (bumped when the snapshot shape changes).</summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>The snapshot schema version, stored so a future loader can migrate older shapes.</summary>
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
@@ -79,9 +79,9 @@ public sealed record WorkflowInstanceSnapshot
     /// </summary>
     /// <remarks>
     ///     Deliberately optional and additive: a snapshot written before collaboration existed simply has no
-    ///     such field and still deserializes, which is why <see cref="CurrentSchemaVersion"/> is NOT bumped for
-    ///     it — bumping would make every new snapshot unreadable to an older build for the sake of a field that
-    ///     older build would ignore anyway. On resume the persisted <c>role</c>/<c>description</c> are reused
+    ///     such field and still deserializes. Schema 2 instead protects automatic execution semantics:
+    ///     persisted sessions, deadlines and correlated in-flight invocations cannot safely be ignored by a
+    ///     schema-1 reader. On resume the persisted <c>role</c>/<c>description</c> are reused
     ///     verbatim so trusted metadata stays validated-once, at the original spawn.
     /// </remarks>
     public CollaborationNodeRecord? Collaboration { get; init; }
@@ -101,13 +101,13 @@ public sealed record WorkflowInstanceSnapshot
             JsonSerializer.Deserialize<WorkflowInstanceSnapshot>(json, WorkflowJson.Options)
             ?? throw new JsonException("Workflow snapshot JSON deserialized to a null snapshot.");
 
-        // Forward-safety: refuse a snapshot written by a newer, unknown schema rather than silently
-        // mis-reading it. V1 has no migrations, so a v1 (current-or-older) snapshot is accepted as-is; a
-        // future bump would add the migration ladder here for SchemaVersion < CurrentSchemaVersion.
-        if (snapshot.SchemaVersion > CurrentSchemaVersion)
+        // V1 snapshots predate automatic invocation/session/deadline ownership. Their absent additive
+        // fields keep empty defaults; the next runtime save writes v2. Never relabel a v2 in-flight run
+        // as v1: older readers would discard the execution guarantees needed for safe reconciliation.
+        if (snapshot.SchemaVersion is < 1 or > CurrentSchemaVersion)
         {
             throw new NotSupportedException(
-                $"Workflow snapshot schema version {snapshot.SchemaVersion} is newer than supported "
+                $"Workflow snapshot schema version {snapshot.SchemaVersion} is outside supported versions 1 through "
                     + $"{CurrentSchemaVersion}."
             );
         }

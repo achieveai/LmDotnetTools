@@ -17,6 +17,50 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class ReviewWorkflowInvokerTests
 {
     [Fact]
+    public async Task Legacy_exportable_invocation_record_requires_recovery_without_replay()
+    {
+        using var fixture = new Fixture();
+        var invocation = AgentInvocation("legacy-private");
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(invocation.InvocationId))
+        );
+        System.IO.Directory.CreateDirectory(Path.Combine(fixture.Directory, "artifacts"));
+        await File.WriteAllTextAsync(
+            Path.Combine(fixture.Directory, "artifacts", "invocation-" + hash + ".json"),
+            "{\"private\":\"token-sentinel@example.com\"}"
+        );
+        var result = await fixture.Create().InvokeAsync(invocation);
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        result.Error.Should().NotContain("token-sentinel");
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("[{\"Id\":\"one\"},{\"Id\":\"one\"}]")]
+    [InlineData("[{\"Id\":\"one\"},{\"Id\":\"other\"}]")]
+    public void Grading_rejects_missing_duplicate_and_unknown_finding_ids(string assessments)
+    {
+        var input = JsonNode.Parse("""{"Review":{"Findings":[{"Id":"one"},{"Id":"two"}]}}""")!;
+        var output = new JsonObject { ["Assessments"] = JsonNode.Parse(assessments) };
+        var validate = () => ReviewWorkflowInvoker.ValidateAssessmentIds(input, output);
+        validate.Should().Throw<InvalidOperationException>();
+        output["Assessments"] = JsonNode.Parse("""[{"Id":"two"},{"Id":"one"}]""");
+        ReviewWorkflowInvoker.ValidateAssessmentIds(input, output);
+    }
+
+    [Fact]
+    public async Task Independent_catalog_timeout_stays_retryable_and_does_not_persist_private_diagnostics()
+    {
+        using var fixture = new Fixture();
+        fixture.GatewaySkills.Failure = new OperationCanceledException("secret-sentinel@example.com");
+        var result = await fixture.Create().InvokeAsync(AgentInvocation("timeout"));
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        result.Error.Should().NotContain("secret-sentinel");
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Lost_publication_response_is_adopted_from_provider_evidence_after_restart_without_posting_again()
     {
         using var fixture = new Fixture();
@@ -54,10 +98,12 @@ public sealed class ReviewWorkflowInvokerTests
         );
         var invocation = AgentInvocation("lost-publication");
         (await fixture.Create().InvokeAsync(invocation)).Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        fixture.Scopes.ActiveCount.Should().Be(1);
         fixture.Workspace.Store.GetOutboxForRun(run.Id).Single().Status.Should().Be(OutboxStatus.Sending);
         publisher.ProofVisible = true;
         var resumed = await fixture.Create().ReconcileAsync(invocation);
         resumed.Status.Should().Be(WorkflowInvocationStatus.Completed, resumed.Error);
+        fixture.Scopes.ActiveCount.Should().Be(0);
         fixture.Workspace.Store.GetOutboxForRun(run.Id).Single().Status.Should().Be(OutboxStatus.Posted);
         publisher.PostCount.Should().Be(1);
         fixture
@@ -108,6 +154,7 @@ public sealed class ReviewWorkflowInvokerTests
             .Should()
             .Be(1);
         fixture.ScopeCreations.Should().Be(2);
+        fixture.Scopes.ActiveCount.Should().Be(0);
     }
 
     [Fact]
@@ -138,7 +185,7 @@ public sealed class ReviewWorkflowInvokerTests
             },
         };
         var first = await fixture.Create().InvokeAsync(invocation);
-        first.Status.Should().Be(WorkflowInvocationStatus.Completed);
+        first.Status.Should().Be(WorkflowInvocationStatus.Completed, first.Error);
         var output = JsonNode.Parse(first.Output!)!;
         output["RunId"]!
             .GetValue<string>()
@@ -148,7 +195,7 @@ public sealed class ReviewWorkflowInvokerTests
         var recovered = await fixture.Create().ReconcileAsync(invocation);
         recovered.Should().Be(first);
         (await File.ReadAllTextAsync(Path.Combine(fixture.Directory, "calls.txt"))).Should().Be("x");
-        System.IO.Directory.GetFiles(Path.Combine(fixture.Directory, "artifacts"), "*.json").Should().ContainSingle();
+        System.IO.Directory.GetFiles(Path.Combine(fixture.Directory, "private"), "*.json").Should().ContainSingle();
     }
 
     [Fact]
@@ -293,7 +340,7 @@ public sealed class ReviewWorkflowInvokerTests
         var result = await fixture.Create().InvokeAsync(AgentInvocation("probe-failure"));
 
         result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
-        result.Error.Should().Contain("could not be verified").And.Contain("gateway unavailable");
+        result.Error.Should().Contain("could not be verified").And.NotContain("gateway unavailable");
         fixture.GatewaySkills.Calls.Should().Be(1);
         fixture.Handler.Requests.Should().BeEmpty();
     }
@@ -306,9 +353,11 @@ public sealed class ReviewWorkflowInvokerTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        var result = await fixture.Create().InvokeAsync(AgentInvocation("cancelled-admission"), cancellation.Token);
-
-        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        await fixture
+            .Create()
+            .Invoking(value => value.InvokeAsync(AgentInvocation("cancelled-admission"), cancellation.Token))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
         fixture.GatewaySkills.Calls.Should().Be(1);
         fixture.Handler.Requests.Should().BeEmpty();
     }
@@ -340,7 +389,7 @@ public sealed class ReviewWorkflowInvokerTests
             .Create()
             .InvokeAsync(conflicting with { Task = conflicting.Task with { ModelId = "different-model" } });
         result.Status.Should().Be(WorkflowInvocationStatus.Failed);
-        result.Error.Should().Contain("conflicts");
+        result.Error.Should().Contain("InvalidOperationException");
         fixture.Handler.Requests.Count.Should().Be(before);
     }
 
@@ -566,6 +615,7 @@ public sealed class ReviewWorkflowInvokerTests
         public int ScopeCreations { get; private set; }
         public IReviewCommentPublisher Publisher { get; set; } = new FakeReviewCommentPublisher();
         public FakeGatewaySkillProbe GatewaySkills { get; } = new();
+        public WorkflowPublicationScopes Scopes { get; }
         public bool StatusUnavailable { get; set; }
         public string SubagentsJson { get; set; } = "{\"schemaVersion\":1,\"nodes\":[]}";
         private readonly HttpClient _http;
@@ -613,6 +663,7 @@ public sealed class ReviewWorkflowInvokerTests
                 );
             _http = new HttpClient(Handler) { BaseAddress = new Uri("https://host/") };
             _client = new LmStreamingS2SClient(_http, "secret", "app", "key");
+            Scopes = new WorkflowPublicationScopes(new InMemoryWorkflowStore(), _client);
         }
 
         public async Task PrepareAsync()
@@ -648,7 +699,7 @@ public sealed class ReviewWorkflowInvokerTests
                 Workspace.Workspace,
                 Workspace.Store,
                 options,
-                new WorkflowPublicationScopes(new InMemoryWorkflowStore(), _client),
+                Scopes,
                 (run, instance, _) =>
                 {
                     ScopeCreations++;
@@ -668,7 +719,10 @@ public sealed class ReviewWorkflowInvokerTests
                                     CursorVersion = 1,
                                     CursorPayload = "{}",
                                 }
-                            ),
+                            )
+                            {
+                                CurrentHeadSha = run.HeadSha,
+                            },
                             new DiffManifest("base", "head", []),
                             false,
                             () => true

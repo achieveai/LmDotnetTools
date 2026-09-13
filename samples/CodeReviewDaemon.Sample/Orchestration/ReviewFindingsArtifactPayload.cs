@@ -54,7 +54,11 @@ internal sealed record ReviewFindingRecord(
     int? MatchScore,
     int? MatchTiedCandidates,
     int? ShippedIndex
-);
+)
+{
+    /// <summary>Stable identity supplied by a typed workflow; unknown in historical prose-derived rows.</summary>
+    public string? Id { get; init; }
+}
 
 /// <summary>
 /// Per-reviewer accounting for the round trip: how many finding blocks were extracted from this reviewer's
@@ -128,7 +132,7 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// and this field is how a future reader establishes that rather than inferring it.
     /// </para>
     /// </summary>
-    public string DerivedFrom => "reviewer-transcripts-via-reconciler";
+    public string DerivedFrom { get; init; } = "reviewer-transcripts-via-reconciler";
 
     /// <summary>
     /// Findings extracted but not recorded. Zero is the only healthy value on a compared round; on an

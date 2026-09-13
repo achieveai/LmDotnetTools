@@ -61,12 +61,14 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ReviewParkNotifier> _logger;
+    private readonly IReadOnlyList<IPrProvider> _providers;
 
     public ReviewParkNotifier(
         ReviewStore store,
         IEnumerable<IReviewCommentPublisher> publishers,
         CodeReviewDaemonOptions options,
-        ILoggerFactory loggerFactory
+        ILoggerFactory loggerFactory,
+        IEnumerable<IPrProvider>? providers = null
     )
     {
         ArgumentNullException.ThrowIfNull(publishers);
@@ -76,6 +78,7 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewParkNotifier>();
+        _providers = providers?.ToArray() ?? [];
     }
 
     public async Task NotifyParkedAsync(ReviewRun run, string reason, CancellationToken cancellationToken)
@@ -139,7 +142,20 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
                     // The same gate the review itself posts behind. Unauthorized does not mean "skip": the
                     // poster records the notice as Collected, so a collect-only daemon still leaves proof
                     // that a park happened and was deliberately not published.
-                    LivePostingAuthorized: _options.EnableCommentPosting
+                    LivePostingAuthorized: _options.EnableCommentPosting && run.Mode == "post" && run.VariantId != "b",
+                    VerifyCurrentPr: async token =>
+                    {
+                        var reader =
+                            _providers.SingleOrDefault(value =>
+                                RepoIdentity.ToPublisherNamespace(value.Provider) == provider
+                            ) ?? throw new InvalidOperationException("Park delivery requires a current PR provider.");
+                        var state = await reader.GetPrStateAsync(repo, run.PrId, token).ConfigureAwait(false);
+                        var head = await reader.GetCurrentHeadShaAsync(repo, run.PrId, token).ConfigureAwait(false);
+                        if (state != PrLifecycle.Open || head != run.HeadSha)
+                            throw new InvalidOperationException(
+                                "Park delivery requires the current open PR at the admitted head."
+                            );
+                    }
                 ),
                 cancellationToken
             )

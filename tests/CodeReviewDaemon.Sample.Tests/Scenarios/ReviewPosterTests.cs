@@ -1,4 +1,8 @@
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -17,6 +21,245 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class ReviewPosterTests : LoggingTestBase
 {
+    [Theory]
+    [InlineData("review_publish_summary")]
+    [InlineData("review_publish_inline")]
+    [InlineData("review_reply")]
+    public async Task Gateway_publication_dispatch_preserves_action_receipt_and_authorized_target(string toolName)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var manifest = UnifiedDiffParser.Parse(
+            "diff --git a/file.cs b/file.cs\n--- a/file.cs\n+++ b/file.cs\n@@ -1 +1 @@\n-old\n+new\n",
+            run.BaseSha,
+            run.HeadSha
+        );
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "instance",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            manifest,
+            true,
+            () => true
+        );
+        tools.BindInvocation(
+            new WorkflowInvocation
+            {
+                InstanceId = "instance",
+                InvocationId = "invocation",
+                UnitName = "publish",
+                Input = new JsonObject(),
+                Task = new WorkflowTask { Id = "publish", PromptTemplate = "" },
+            },
+            JsonNode.Parse("""[{"ThreadId":"123","ProviderCommentId":"456","IsActive":true}]""")!.AsArray()
+        );
+        var gateway = new WorkflowPublicationGateway(
+            "secret",
+            (_, _) => Task.FromResult<ReviewPublicationTools?>(tools)
+        );
+        var args = new JsonObject
+        {
+            ["actionId"] = "action",
+            ["body"] = "review body",
+            ["path"] = "file.cs",
+            ["line"] = 1,
+            ["side"] = "RIGHT",
+            ["providerThreadId"] = "123",
+            ["parentCommentId"] = "456",
+        };
+        var receipt = await gateway.InvokeAsync(new("thread", "run", "call", toolName, args), default);
+        await tools.ValidateOutcomeAsync(
+            new JsonObject
+            {
+                ["Outcome"] = toolName == "review_reply" ? "replied" : "published",
+                ["Actions"] = new JsonArray(
+                    new JsonObject { ["ActionId"] = "action", ["ReceiptId"] = receipt["ReceiptId"]!.DeepClone() }
+                ),
+            },
+            default
+        );
+        publisher.PostCount.Should().Be(1);
+        publisher.PostedBodies.Should().ContainSingle().Which.Should().Be("review body");
+        var intent = store
+            .GetArtifacts(run.Id)
+            .Single(value => value.ArtifactKind.StartsWith("workflow-publication-intent:", StringComparison.Ordinal));
+        if (toolName == "review_reply")
+            intent.Payload.Should().Contain("123").And.Contain("456");
+        if (toolName == "review_publish_inline")
+            intent.Payload.Should().Contain("file.cs").And.Contain(run.HeadSha);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Park_notice_checks_current_head_and_lifecycle_immediately_before_delivery(bool changedHead)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var provider = new PublicationStateProvider();
+        var publisher = new FakeReviewCommentPublisher();
+        publisher.OnFind = () =>
+        {
+            if (changedHead)
+                provider.Head = "new-head";
+            else
+                provider.Lifecycle = PrLifecycle.Merged;
+        };
+        var notifier = new ReviewParkNotifier(
+            store,
+            [publisher],
+            new CodeReviewDaemonOptions { EnableCommentPosting = true },
+            Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance,
+            [provider]
+        );
+        await notifier
+            .Invoking(value => value.NotifyParkedAsync(run, "retry limit", default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().ContainSingle().Which.Status.Should().Be(OutboxStatus.Pending);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Publication_outcome_requires_matching_invocation_action_and_run_mode_receipts(bool live)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        ReviewPublicationTools Scope(string invocation, bool authorized)
+        {
+            var scope = new ReviewPublicationTools(
+                run,
+                Repo,
+                "instance",
+                Poster(publisher, store),
+                new PublicationStateProvider(),
+                new DiffManifest(run.BaseSha, run.HeadSha, []),
+                authorized,
+                () => true
+            );
+            scope.BindInvocation(
+                new WorkflowInvocation
+                {
+                    InstanceId = "instance",
+                    InvocationId = invocation,
+                    UnitName = "publish",
+                    Input = new JsonObject(),
+                    Task = new WorkflowTask { Id = "publish", PromptTemplate = "" },
+                },
+                []
+            );
+            return scope;
+        }
+        var tools = Scope("one", live);
+        var receipt = await tools.PublishSummaryAsync("summary", "body", default);
+        var output = new JsonObject
+        {
+            ["Outcome"] = "published",
+            ["Actions"] = new JsonArray(
+                new JsonObject { ["ActionId"] = "summary", ["ReceiptId"] = receipt["ReceiptId"]!.DeepClone() }
+            ),
+        };
+        await tools.ValidateOutcomeAsync(output, default);
+        await Scope("two", live)
+            .Invoking(value => value.ValidateOutcomeAsync(output, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        await Scope("one", !live)
+            .Invoking(value => value.ValidateOutcomeAsync(output, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        output["Outcome"] = "replied";
+        await tools
+            .Invoking(value => value.ValidateOutcomeAsync(output, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        output["Outcome"] = "published";
+        output["Actions"]![0]!["ActionId"] = "other";
+        await tools
+            .Invoking(value => value.ValidateOutcomeAsync(output, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        output["Actions"] = new JsonArray();
+        await tools
+            .Invoking(value => value.ValidateOutcomeAsync(output, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        output["Outcome"] = "no_op";
+        await tools.ValidateOutcomeAsync(output, default);
+    }
+
+    [Fact]
+    public async Task Reply_rejects_valid_but_unadmitted_coordinates_before_provider_access()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "instance",
+            Poster(publisher, store),
+            new PublicationStateProvider(),
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        await tools
+            .Invoking(value => value.ReplyAsync("reply", "body", "123", "456", default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        publisher.FindCallCount.Should().Be(0);
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Reconciliation_rejects_head_or_lifecycle_change_after_provider_lookup(bool changedHead)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var provider = new PublicationStateProvider();
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new IOException("Lost response") };
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "instance",
+            Poster(publisher, store),
+            provider,
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            true,
+            () => true
+        );
+        await tools
+            .Invoking(value => value.PublishSummaryAsync("summary", "body", default))
+            .Should()
+            .ThrowAsync<IOException>();
+        var receipt = store.GetOutboxForRun(run.Id).Single();
+        publisher.SeedExistingComment(receipt.IdempotencyKey, "posted");
+        publisher.OnFind = () =>
+        {
+            if (changedHead)
+                provider.Head = "new";
+            else
+                provider.Lifecycle = PrLifecycle.Merged;
+        };
+        await tools.Invoking(value => value.ReconcileAsync(default)).Should().ThrowAsync<InvalidOperationException>();
+        store.GetOutbox(receipt.Id)!.Status.Should().Be(OutboxStatus.Sending);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

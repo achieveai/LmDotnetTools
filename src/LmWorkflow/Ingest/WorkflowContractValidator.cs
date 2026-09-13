@@ -503,6 +503,30 @@ internal static class WorkflowContractValidator
         }
 
         var type = SchemaType(schema);
+        if (ConditionEvaluator.GetValueBindingPath(condition.Value) is { } valuePath)
+        {
+            var rightType = SchemaType(ResolveSchema(valuePath, inputs, state, types));
+            var numericPair = type is "number" or "integer" && rightType is "number" or "integer";
+            if (condition.Op is ConditionOp.Lt or ConditionOp.Lte or ConditionOp.Gt or ConditionOp.Gte)
+            {
+                if (!numericPair)
+                {
+                    throw Invalid("Ordered comparison requires numeric operand schemas.");
+                }
+            }
+            else if (condition.Op is ConditionOp.Eq or ConditionOp.Ne)
+            {
+                if (type != rightType && !numericPair)
+                {
+                    throw Invalid($"Condition binding '{valuePath}' has type '{rightType}', expected '{type}'.");
+                }
+            }
+            else if (condition.Op == ConditionOp.In && type != "array" && rightType != "array")
+            {
+                throw Invalid("Condition membership requires an array operand schema.");
+            }
+            return;
+        }
         var kind = condition.Value?.GetValueKind();
         if (condition.Op is ConditionOp.Lt or ConditionOp.Lte or ConditionOp.Gt or ConditionOp.Gte)
         {

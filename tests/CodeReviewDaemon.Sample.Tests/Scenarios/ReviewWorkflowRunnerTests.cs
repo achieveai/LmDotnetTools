@@ -19,7 +19,7 @@ public sealed class ReviewWorkflowRunnerTests
     [InlineData("discussion", "prepare-discussion,discussion,retain-discussion")]
     [InlineData(
         "merged",
-        "prepare-history,learnings,process-judge,additional-extraction,collect-statistics,retain-merged,close-artifact-branch"
+        "prepare-history,learnings,process-judge,additional-extraction,knowledge-safety-review,collect-statistics,retain-merged,close-artifact-branch"
     )]
     public async Task Shipped_routes_complete_from_frozen_scope_before_releasing_workspace(
         string route,
@@ -411,6 +411,204 @@ public sealed class ReviewWorkflowRunnerTests
         saved!.Tasks.Should().ContainSingle(value => value.Status == WorkflowTaskStatus.InFlight);
     }
 
+    [Fact]
+    public async Task Shipped_statistics_wrapper_invokes_the_real_daemon_host_and_store()
+    {
+        using var fixture = new Fixture();
+        var runner = fixture.CreateRunner(
+            (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(new RecordingInvoker())
+        );
+        await runner.RunAsync(fixture.Run, null, [], default);
+        var scopePath = Directory
+            .GetFiles(fixture.RunDirectoryRoot, "scope.json", SearchOption.AllDirectories)
+            .Single();
+        var scope = JsonNode.Parse(await File.ReadAllTextAsync(scopePath))!;
+        var scripts = new WorkflowScriptInvoker(
+            environment: new Dictionary<string, string>
+            {
+                ["REVIEW_DAEMON_EXECUTABLE"] = typeof(ReviewWorkflowRunner).Assembly.Location,
+                ["CodeReviewDaemon__DatabasePath"] = fixture.DatabasePath,
+                ["CodeReviewDaemon__WorkflowStateDirectory"] = Path.GetDirectoryName(fixture.RunDirectoryRoot)!,
+                ["CodeReviewDaemon__ReviewBotRepoUrl"] = "https://example.invalid/owner/store.git",
+                ["CodeReviewDaemon__WorkspaceHostRoot"] = Path.Combine(fixture.RunDirectoryRoot, "host"),
+                ["CodeReviewDaemon__EnableCommentPosting"] = "false",
+                ["CodeReviewDaemon__UseS2SReviewAgent"] = "true",
+                ["CodeReviewDaemon__LmStreamingBaseUrl"] = "http://127.0.0.1:1",
+                ["SandboxGateway__WorkspaceBasePath"] = Path.Combine(fixture.RunDirectoryRoot, "gateway"),
+            }
+        );
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        var output = await scripts.InvokeAsync(
+            "scripts/collect-statistics.py",
+            Path.GetDirectoryName(WorkflowPath())!,
+            new JsonObject
+            {
+                ["RunId"] = fixture.Run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["StepId"] = "collect-statistics",
+                ["Attempt"] = 1,
+                ["RunDirectory"] = Path.GetDirectoryName(scopePath)!,
+            },
+            scope["Admission"]!.DeepClone(),
+            timeout.Token
+        );
+        var statistics = JsonNode.Parse(output)!;
+        statistics["RunId"]!
+            .GetValue<string>()
+            .Should()
+            .Be(fixture.Run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        statistics["ArtifactCount"]!.GetValue<int>().Should().Be(fixture.Store.GetArtifacts(fixture.Run.Id).Count);
+        statistics["ReceiptCount"]!.GetValue<int>().Should().Be(fixture.Store.GetOutboxForRun(fixture.Run.Id).Count);
+    }
+
+    [Fact]
+    public async Task Containment_uncertainty_keeps_only_its_owner_while_an_independent_run_completes()
+    {
+        using var fixture = new Fixture();
+        var pool = new ReviewSlotPool(
+            2,
+            Path.Combine(fixture.RunDirectoryRoot, "pool"),
+            "scratch",
+            NullLogger<ReviewSlotPool>.Instance
+        );
+        var workspace = fixture.CreateWorkspace(pool);
+        var runner = fixture.CreateRunner(
+            (run, _, _, _) =>
+                Task.FromResult<IWorkflowTaskInvoker>(
+                    new RecordingInvoker { ContainmentFailure = run.Id == fixture.Run.Id }
+                ),
+            workspace: workspace
+        );
+        await runner
+            .Invoking(value => value.RunAsync(fixture.Run, null, [], default))
+            .Should()
+            .ThrowAsync<WorkflowScriptTerminationException>();
+        workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+        fixture.Store.GetReviewRun(fixture.Run.Id)!.ParkedAt.Should().NotBeNull();
+        var restartedRunner = fixture.CreateRunner(
+            (_, _, _, _) => throw new InvalidOperationException("must not reconcile quarantined work"),
+            workspace: workspace
+        );
+        await restartedRunner
+            .Invoking(value => value.ResumeAsync(fixture.Run, null, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("Parked review runs*");
+        var instanceId = $"review-run-{fixture.Run.Id}";
+        var saved = (await fixture.WorkflowStore.LoadAsync(instanceId))!;
+        await fixture.WorkflowStore.SaveAsync(instanceId, saved with { IsComplete = true, Tasks = [] });
+        var restartPool = new ReviewSlotPool(
+            2,
+            Path.Combine(fixture.RunDirectoryRoot, "pool"),
+            "scratch",
+            NullLogger<ReviewSlotPool>.Instance
+        );
+        var recovery = fixture.CreateRunner(
+            (_, _, _, _) => throw new InvalidOperationException("recovery must not dispatch"),
+            workspace: fixture.CreateWorkspace(restartPool)
+        );
+        await recovery.RecoverActiveWorkspacesAsync(default);
+        workspace
+            .ReadAssignment(fixture.Run)
+            .Active.Should()
+            .BeTrue("a completion receipt cannot clear durable containment quarantine");
+        var independent = fixture.CreateRun("another-pr", "another-head");
+        (await runner.RunAsync(independent, null, [], default)).Should().Be(WorkflowInvocationStatus.Completed);
+        workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+        fixture.Store.ListActiveWorkflowWorkspaceRuns().Select(run => run.Id).Should().Equal(fixture.Run.Id);
+        var available = await pool.TryLeaseAsync(default);
+        available.Should().NotBeNull();
+        (await pool.TryLeaseAsync(default)).Should().BeNull("only the quarantined owner's capacity remains occupied");
+        await pool.ReturnAsync(available!, default);
+    }
+
+    [Fact]
+    public async Task Admitted_package_pins_assets_and_refuses_corrupt_or_unpinned_resume()
+    {
+        using var fixture = new Fixture();
+        var source = Path.Combine(fixture.RunDirectoryRoot, "source");
+        Directory.CreateDirectory(source);
+        var originalRoot = Path.GetDirectoryName(WorkflowPath())!;
+        foreach (var file in Directory.EnumerateFiles(originalRoot, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(source, Path.GetRelativePath(originalRoot, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+        }
+        var liveWorkflow = Path.Combine(source, "workflow.yaml");
+        var runRoot = Path.Combine(fixture.RunDirectoryRoot, "admitted");
+        var admitted = await WorkflowPackageSnapshot.PrepareAsync(liveWorkflow, runRoot, false, default);
+        var originalYaml = await File.ReadAllTextAsync(admitted);
+        var skill = Directory.GetFiles(Path.Combine(source, "skills"), "*", SearchOption.AllDirectories)[0];
+        var script = Directory.GetFiles(Path.Combine(source, "scripts"), "*.py")[0];
+        await File.WriteAllTextAsync(skill, "mutated skill");
+        await File.WriteAllTextAsync(script, "mutated script");
+        await File.WriteAllTextAsync(liveWorkflow, "mutated workflow");
+        (await WorkflowPackageSnapshot.PrepareAsync(liveWorkflow, runRoot, true, default)).Should().Be(admitted);
+        (await File.ReadAllTextAsync(admitted)).Should().Be(originalYaml);
+        (await File.ReadAllTextAsync(Path.Combine(runRoot, "package", Path.GetRelativePath(source, script))))
+            .Should()
+            .NotBe("mutated script");
+        await File.WriteAllTextAsync(admitted, "corrupted admitted bytes");
+        Func<Task> corrupt = () => WorkflowPackageSnapshot.PrepareAsync(liveWorkflow, runRoot, true, default);
+        await corrupt.Should().ThrowAsync<InvalidDataException>();
+        Func<Task> legacy = () =>
+            WorkflowPackageSnapshot.PrepareAsync(
+                liveWorkflow,
+                Path.Combine(fixture.RunDirectoryRoot, "legacy"),
+                true,
+                default
+            );
+        await legacy.Should().ThrowAsync<InvalidDataException>();
+    }
+
+    [Fact]
+    public async Task Coordinator_lease_excludes_a_second_owner_and_can_be_reacquired_after_release()
+    {
+        using var fixture = new Fixture();
+        var database = Path.Combine(fixture.RunDirectoryRoot, "lease.db");
+        using (CodeReviewDaemon.Sample.Hosting.WorkflowCoordinatorLease.Acquire(database))
+        {
+            Action second = () => CodeReviewDaemon.Sample.Hosting.WorkflowCoordinatorLease.Acquire(database).Dispose();
+            second.Should().Throw<InvalidOperationException>().WithMessage("Another workflow coordinator*");
+            (await ProbeOtherProcess())
+                .Should()
+                .Be(23, "the second process must not acquire a live coordinator's lock");
+        }
+        (await ProbeOtherProcess()).Should().Be(0, "process exit or disposal releases ownership for a replacement");
+        using var replacement = CodeReviewDaemon.Sample.Hosting.WorkflowCoordinatorLease.Acquire(database);
+        replacement.CanWrite.Should().BeTrue();
+
+        async Task<int> ProbeOtherProcess()
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("pwsh")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-NonInteractive");
+            start.ArgumentList.Add("-Command");
+            start.ArgumentList.Add(
+                "try { $lease = [System.IO.FileStream]::new($env:WORKFLOW_TEST_LEASE_PATH, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); $lease.Dispose(); exit 0 } catch { exit 23 }"
+            );
+            start.Environment["WORKFLOW_TEST_LEASE_PATH"] = Path.GetFullPath(database) + ".coordinator.lock";
+            using var child = System.Diagnostics.Process.Start(start)!;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                await child.WaitForExitAsync(timeout.Token);
+            }
+            catch
+            {
+                child.Kill(entireProcessTree: true);
+                throw;
+            }
+            return child.ExitCode;
+        }
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _database = new();
@@ -456,6 +654,7 @@ public sealed class ReviewWorkflowRunnerTests
         }
 
         public ReviewStore Store { get; }
+        public string DatabasePath => _database.Path;
         public ReviewRun Run { get; }
         public IWorkflowStore WorkflowStore { get; }
         public string RunDirectoryRoot { get; }
@@ -516,12 +715,12 @@ public sealed class ReviewWorkflowRunnerTests
                 }
             );
 
-        public WorkflowWorkspace CreateWorkspace() =>
+        public WorkflowWorkspace CreateWorkspace(IReviewSlotPool? pool = null) =>
             new(
                 Store,
                 new CodeReviewDaemonOptions(),
                 new ReviewSlotWorkspace(
-                    Pool,
+                    pool ?? Pool,
                     Preparer,
                     (_, _) => Preparer,
                     new FakeSandboxCommandRunner(),
@@ -546,6 +745,7 @@ public sealed class ReviewWorkflowRunnerTests
 
     private sealed class RecordingInvoker : IWorkflowTaskInvoker
     {
+        public bool ContainmentFailure { get; init; }
         public string? UnknownTask { get; init; }
         public string? UnknownReconcileTask { get; set; }
         public string? FailedTask { get; init; }
@@ -554,6 +754,8 @@ public sealed class ReviewWorkflowRunnerTests
 
         public Task<WorkflowInvocationResult> InvokeAsync(WorkflowInvocation invocation, CancellationToken ct = default)
         {
+            if (ContainmentFailure)
+                throw new WorkflowScriptTerminationException("injected containment uncertainty");
             Invoked.Add(invocation);
             return Task.FromResult(Result(invocation));
         }
@@ -588,9 +790,11 @@ public sealed class ReviewWorkflowRunnerTests
                         """{"PrId":"7","HeadSha":"head","WindowId":"window","ContextArtifact":"context.json"}""",
                     "review" => """{"Findings":[],"ReviewText":"review"}""",
                     "grade" => """{"Assessments":[],"Description":"grade"}""",
-                    "publish" => """{"Outcome":"no_op","Description":"nothing to publish"}""",
-                    "discussion" => """{"Outcome":"no_op","Description":"nothing to reply"}""",
+                    "publish" => """{"Outcome":"no_op","Description":"nothing to publish","Actions":[]}""",
+                    "discussion" => """{"Outcome":"no_op","Description":"nothing to reply","Actions":[]}""",
                     "learnings" or "additional-extraction" => """{"Edits":[],"Description":"none"}""",
+                    "knowledge-safety-review" =>
+                        """{"Verdict":"approved","Reviewed":{"Edits":[],"Description":"none"},"Description":"reviewed"}""",
                     "process-judge" => """{"Assessment":"ok","Description":"complete"}""",
                     "collect-statistics" =>
                         """{"RunId":"7","ArtifactCount":0,"ArtifactCountsByKind":{},"ReceiptCount":0,"ReceiptCountsByStatus":{}}""",

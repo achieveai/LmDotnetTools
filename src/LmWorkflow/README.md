@@ -105,6 +105,18 @@ A run can be persisted (pass an `IWorkflowStore` + `instanceId` to `StartAsync`)
 in-flight tasks) and continues driving. The controller's own system prompt lives in
 `ControllerSystemPrompt.Default`.
 
+New runtime snapshots use persistence schema **2**. This version preserves automatic invocation
+identities, parent sessions and absolute deadlines. The current reader accepts schema 1 snapshots;
+resuming and saving them writes schema 2. Schema 1 readers reject schema 2 through their existing
+version gate. Do not downgrade a running deployment or change a snapshot's version number to bypass
+that gate: an older runtime cannot safely reconcile these in-flight effects. Finish active runs before
+downgrading, or keep the schema 2 runtime available to complete them.
+
+Typed YAML workflows require `WorkflowRuntime.RunAutomaticAsync`, an `IWorkflowTaskInvoker`, and a
+durable workflow store. `WorkflowSession` hosts the interactive controller protocol and rejects these
+definitions before dispatch, including on resume and controller authoring. It cannot reconcile hosted
+parent sessions, script execution, or their persisted deadlines.
+
 ## V1 scope & limitations
 
 This is a deliberately focused first version. Being honest about the boundary matters more than implying
@@ -148,3 +160,6 @@ re-enabled in the follow-up that makes the injected publishing path observable.
 
 - Issue [#106](https://github.com/AchieveAi/LmDotnetTools/issues/106) — the originating work item.
 - [LmMultiTurn](../LmMultiTurn/README.md) — the controller loop and sub-agent stack this builds on.
+# Script runtime prerequisites
+
+Automatic script execution supports Windows and Linux. Python is required for both `.py` and `.ps1` steps; the trusted Python bootstrap establishes process containment before launching either interpreter. PowerShell steps also require `pwsh`. Unsupported operating systems fail before starting a script. A containment failure keeps the owning workspace unavailable for operator reconciliation.

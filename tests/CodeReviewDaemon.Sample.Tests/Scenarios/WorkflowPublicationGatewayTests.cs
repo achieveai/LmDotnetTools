@@ -9,6 +9,48 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 public class WorkflowPublicationGatewayTests
 {
+    [Fact]
+    public void Registration_cleanup_is_generation_safe_and_expires_unusable_grants()
+    {
+        using var http = new HttpClient(new StatusHandler("host-run"));
+        var scopes = new WorkflowPublicationScopes(
+            new InMemoryWorkflowStore(),
+            new LmStreamingS2SClient(http, null, null, null)
+        );
+        var tools = new ReviewPublicationTools(null!, null!, "instance", null!, null!, null!, false, () => true);
+        var invocation = new WorkflowInvocation
+        {
+            InstanceId = "instance",
+            InvocationId = "one",
+            UnitName = "publish",
+            Input = new System.Text.Json.Nodes.JsonObject(),
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(1),
+            Task = new WorkflowTask { Id = "publish", PromptTemplate = "" },
+        };
+        var old = scopes.Register("thread", invocation, tools);
+        var replacement = scopes.Register("thread", invocation, tools);
+        old.Dispose();
+        scopes.ActiveCount.Should().Be(1);
+        replacement.Dispose();
+        scopes.ActiveCount.Should().Be(0);
+        for (var index = 0; index < 100; index++)
+        {
+            using var registration = scopes.Register("thread-" + index, invocation, tools);
+            scopes.ActiveCount.Should().Be(1);
+        }
+        scopes.ActiveCount.Should().Be(0);
+        using var expired = scopes.Register(
+            "expired",
+            invocation with
+            {
+                DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            },
+            tools
+        );
+        using var active = scopes.Register("active", invocation, tools);
+        scopes.ActiveCount.Should().Be(1);
+    }
+
     [Theory]
     [InlineData(false, false, false, "host-run", true)]
     [InlineData(true, false, false, "host-run", false)]
@@ -56,7 +98,7 @@ public class WorkflowPublicationGatewayTests
         using var http = new HttpClient(new StatusHandler(hostedRun)) { BaseAddress = new Uri("https://review-host/") };
         var scopes = new WorkflowPublicationScopes(snapshots, new LmStreamingS2SClient(http, null, null, null));
         var tools = new ReviewPublicationTools(null!, null!, "instance", null!, null!, null!, false, () => true);
-        scopes.Register(
+        using var registration = scopes.Register(
             "thread",
             new WorkflowInvocation
             {

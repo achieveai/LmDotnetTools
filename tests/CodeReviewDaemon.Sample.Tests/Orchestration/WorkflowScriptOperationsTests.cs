@@ -230,7 +230,7 @@ public sealed class WorkflowScriptOperationsTests
         await fixture.Operations.RetainArtifactsAsync(fixture.Files, default, "window-1");
         fixture.Operations.ReconcileRetention("window-2").Should().BeNull();
         await fixture.Operations.RetainArtifactsAsync(
-            [new("PRs/widgets-7/discussion.json", "{}")],
+            [new("PRs/widgets-7/summary.json", Summary(fixture.Run.Id))],
             default,
             "window-2"
         );
@@ -258,21 +258,23 @@ public sealed class WorkflowScriptOperationsTests
             branch == "review/widgets-7"
                 ? null
                 : new InvalidOperationException("Knowledge was read from the previous PR branch.");
+        var extractions = new JsonArray(
+            new JsonObject
+            {
+                ["Edits"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["Path"] = "KnowledgeBase/widgets/contract.md",
+                        ["Content"] = "---\ntitle: Contract\nscope: widgets\n---\nEvidence",
+                    }
+                ),
+                ["Description"] = "Lesson",
+            }
+        );
         var files = await fixture.Operations.PrepareKnowledgeFilesAsync(
-            new JsonArray(
-                new JsonObject
-                {
-                    ["Edits"] = new JsonArray(
-                        new JsonObject
-                        {
-                            ["Path"] = "KnowledgeBase/widgets/contract.md",
-                            ["Content"] = "---\ntitle: Contract\nscope: widgets\n---\nEvidence",
-                        }
-                    ),
-                    ["Description"] = "Lesson",
-                }
-            ),
-            default
+            extractions,
+            default,
+            ReviewedKnowledgeTestExtensions.Approved(extractions)
         );
         branch.Should().Be("review/widgets-7");
         files.Should().Contain(file => file.RelativePath == "KnowledgeBase/_index.jsonl");
@@ -327,6 +329,15 @@ public sealed class WorkflowScriptOperationsTests
         fixture.Runner.Commands.Should().HaveCount(count);
     }
 
+    private static string Summary(long runId) =>
+        new JsonObject
+        {
+            ["SchemaVersion"] = 1,
+            ["ReviewRunId"] = runId,
+            ["Route"] = "merged",
+            ["KnowledgeEntryCount"] = 0,
+        }.ToJsonString();
+
     private sealed class Fixture : IDisposable
     {
         public const string Sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -347,7 +358,7 @@ public sealed class WorkflowScriptOperationsTests
         public ReviewRun Run { get; }
         public FakeSandboxCommandRunner Runner { get; } = new();
         public FakeSandboxFileSystem FileSystem { get; } = new();
-        public IReadOnlyList<ReviewArtifactFile> Files { get; } = [new("PRs/widgets-7/review.json", "{}")];
+        public IReadOnlyList<ReviewArtifactFile> Files { get; } = [new("PRs/widgets-7/summary.json", Summary(1))];
         public WorkflowArtifactOperations Operations { get; }
 
         public Fixture()

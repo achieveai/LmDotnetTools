@@ -599,6 +599,22 @@ internal sealed class ReviewStore : IDisposable
         return runs;
     }
 
+    /// <summary>Loads only unresolved workspace owners; journal history is not part of startup recovery.</summary>
+    public IReadOnlyList<ReviewRun> ListActiveWorkflowWorkspaceRuns()
+    {
+        var runs = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT run.* FROM active_workflow_workspace active
+            JOIN review_run run ON run.id = active.review_run_id ORDER BY active.review_run_id;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            runs.Add(MapReviewRun(reader));
+        return runs;
+    }
+
     /// <summary>
     /// Records the prompt-template digest the review was actually DISPATCHED under.
     /// <c>prompt_template_hash</c> has existed since v1 of the schema and, until this method, nothing wrote

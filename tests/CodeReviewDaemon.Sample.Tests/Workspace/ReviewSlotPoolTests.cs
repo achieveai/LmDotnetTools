@@ -66,6 +66,31 @@ public class ReviewSlotPoolTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelled_recovery_returns_its_index_and_unblocks_preferred_waiters()
+    {
+        var pool = CreatePool(2);
+        var first = await pool.LeaseAsync(default);
+        var second = await pool.LeaseAsync(default);
+        var original = CreatePool(3);
+        await original.LeaseAsync(default);
+        await original.LeaseAsync(default);
+        var target = await original.LeaseAsync(default);
+        using var cancellation = new CancellationTokenSource();
+        var recovery = pool.RecoverLeaseAsync(target, cancellation.Token);
+        var preferred = pool.LeasePreferredAsync(target, default);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recovery);
+        await pool.ReturnAsync(first, default);
+        await pool.ReturnAsync(second, default);
+        var acquired = await preferred.WaitAsync(TimeSpan.FromSeconds(5));
+        acquired.Index.Should().Be(target.Index);
+        await pool.ReturnAsync(acquired, default);
+        var reused = await pool.LeaseAsync(default);
+        reused.Index.Should().Be(target.Index);
+        await pool.ReturnAsync(reused, default);
+    }
+
+    [Fact]
     public async Task RecoverLease_rejects_an_address_outside_configured_pool()
     {
         var pool = CreatePool(1);

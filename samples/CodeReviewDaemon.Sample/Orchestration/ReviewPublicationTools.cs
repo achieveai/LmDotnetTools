@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -19,6 +20,14 @@ internal sealed class ReviewPublicationTools(
 {
     private readonly SemaphoreSlim _actions = new(1, 1);
     private DateTimeOffset _deadline = DateTimeOffset.MaxValue;
+    private string? _invocationId;
+    private JsonArray _discussion = [];
+
+    internal void BindInvocation(WorkflowInvocation invocation, JsonArray discussion)
+    {
+        _invocationId = invocation.InvocationId;
+        _discussion = (JsonArray)discussion.DeepClone();
+    }
 
     internal void LimitToDeadline(DateTimeOffset? deadline) => _deadline = deadline ?? DateTimeOffset.MinValue;
 
@@ -26,7 +35,7 @@ internal sealed class ReviewPublicationTools(
 
     /// <summary>Read-only receipt recovery remains allowed after the step's action grant expires.</summary>
     public Task ReconcileAsync(CancellationToken cancellationToken) =>
-        poster.ReconcilePublicationsAsync(run.Id, repo, cancellationToken);
+        poster.ReconcilePublicationsAsync(run.Id, repo, cancellationToken, EnsureCurrentPrAsync);
 
     public Task<JsonObject> PublishSummaryAsync(string actionId, string body, CancellationToken ct) =>
         PublishAsync(actionId, body, new ReviewCommentTarget(repo, run.PrId), ct);
@@ -81,8 +90,17 @@ internal sealed class ReviewPublicationTools(
         string providerThreadId,
         string parentCommentId,
         CancellationToken ct
-    ) =>
-        PublishAsync(
+    )
+    {
+        if (
+            !_discussion.Any(comment =>
+                comment?["ThreadId"]?.GetValue<string>() == providerThreadId
+                && comment?["ProviderCommentId"]?.GetValue<string>() == parentCommentId
+                && comment?["IsActive"]?.GetValue<bool>() == true
+            )
+        )
+            throw new InvalidOperationException("Reply target is outside the admitted discussion window.");
+        return PublishAsync(
             actionId,
             body,
             new ReviewCommentTarget(
@@ -93,6 +111,41 @@ internal sealed class ReviewPublicationTools(
                 ReplyToProviderCommentId: parentCommentId
             ),
             ct
+        );
+    }
+
+    internal async Task ValidateOutcomeAsync(JsonObject output, CancellationToken ct)
+    {
+        var outcome = output["Outcome"]?.GetValue<string>();
+        var actions =
+            output["Actions"] as JsonArray
+            ?? throw new InvalidOperationException("Publication outcome requires action receipts.");
+        if (outcome == "no_op" && actions.Count == 0)
+            return;
+        if (outcome is not ("published" or "replied") || actions.Count == 0 || _invocationId is null)
+            throw new InvalidOperationException("Publication outcome has no matching action receipts.");
+        await EnsureCurrentPrAsync(ct).ConfigureAwait(false);
+        var ids = new HashSet<long>();
+        foreach (var action in actions)
+        {
+            var receiptId = action?["ReceiptId"]?.GetValue<long>() ?? 0;
+            var actionId = action?["ActionId"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(actionId) || !ids.Add(receiptId))
+                throw new InvalidOperationException("Publication action receipts must be unique.");
+            poster.ValidateWorkflowReceipt(
+                run,
+                repo,
+                Subject(actionId),
+                receiptId,
+                outcome == "replied",
+                livePostingAuthorized
+            );
+        }
+    }
+
+    private string Subject(string actionId) =>
+        Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(workflowInstanceId + "\0" + _invocationId + "\0" + actionId))
         );
 
     private async Task<JsonObject> PublishAsync(
@@ -116,9 +169,7 @@ internal sealed class ReviewPublicationTools(
             {
                 throw new InvalidOperationException("This publication scope is no longer active.");
             }
-            var subject = Convert.ToHexString(
-                SHA256.HashData(Encoding.UTF8.GetBytes(workflowInstanceId + "\0" + actionId))
-            );
+            var subject = Subject(actionId);
             var operation = "workflow-publish-" + target.Kind.ToString().ToLowerInvariant();
             var outcome = await poster
                 .PostReviewAsync(

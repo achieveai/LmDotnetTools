@@ -1,14 +1,78 @@
 using System.Reflection;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using Xunit;
 
 namespace LmWorkflow.Tests;
 
 public sealed class TypedWorkflowContractTests
 {
+    [Theory]
+    [InlineData("number", "gte", "10", "9")]
+    [InlineData("boolean", "eq", "true", "true")]
+    [InlineData("object", "eq", "{\"Value\":true}", "{\"Value\":true}")]
+    public void Condition_bindings_use_producer_types_and_fail_when_runtime_operand_is_missing(
+        string type,
+        string op,
+        string left,
+        string right
+    )
+    {
+        var yaml = """
+            version: 1
+            objective: Compare typed operands
+            inputType: Input
+            types:
+              Input:
+                type: object
+                additionalProperties: false
+                required: [Left, Right]
+                properties:
+                  Left: {type: TYPE}
+                  Right: {type: TYPE}
+            steps:
+              - id: choose
+                kind: branch
+                branches:
+                  - when: {op: OP, path: inputs.Left, value: '{{inputs.Right}}'}
+                    goto: yes
+                else: no
+              - id: yes
+                kind: end
+              - id: no
+                kind: end
+            """.Replace("TYPE", type).Replace("OP", op);
+        var definition = Read(yaml).ToDefinition();
+        var branch = definition.Nodes.OfType<ConditionalNode>().Single().Branches[0];
+        var condition = branch.When!.Deserialize<Condition>(WorkflowJson.Options)!;
+        var context = new BindingContext
+        {
+            Inputs = new JsonObject { ["Left"] = JsonNode.Parse(left), ["Right"] = JsonNode.Parse(right) },
+        };
+        Assert.True(ConditionEvaluator.Evaluate(condition, context, ConditionEvaluationPolicy.StrictWorkflow));
+        var runtime = WorkflowRuntime.CreateNew();
+        runtime.LoadDefinition(definition);
+        runtime.MergeInputs(context.Inputs);
+        runtime.AdvanceTo(definition.Nodes.OfType<StartNode>().Single().Id, "choose", null);
+        runtime.AdvanceTo("choose", "yes", null);
+        Assert.True(runtime.IsComplete);
+        Assert.Equal("yes", runtime.CurrentNodeId);
+        context.Inputs.Remove("Right");
+        Assert.Throws<InvalidOperationException>(() =>
+            ConditionEvaluator.Evaluate(condition, context, ConditionEvaluationPolicy.StrictWorkflow)
+        );
+        Assert.Throws<WorkflowValidationException>(() =>
+            Read(yaml.Replace("inputs.Right", "inputs.Missing")).ToDefinition()
+        );
+        Assert.Throws<WorkflowValidationException>(() =>
+            Read(yaml.Replace("Right: {type: " + type + "}", "Right: {type: string}")).ToDefinition()
+        );
+    }
+
     internal const string Definition = """
         version: 1
         objective: Typed script and parent interaction

@@ -17,14 +17,35 @@ public sealed class CodeReviewDaemonOptionsTests
     [InlineData("EnableToolAssistedReview", "true")]
     [InlineData("EnableReviewerWrites", "true")]
     [InlineData("MergeNotesBranchOnClose", "false")]
-    public void Retired_stage_settings_are_rejected_with_migration_guidance(string name, string value)
+    [InlineData("EnableHostSummaryFallback", "true")]
+    [InlineData("EnableReviewFeedbackAgent", "true")]
+    [InlineData("EnableABVariants", "true")]
+    [InlineData("OverflowEscalationModelId", "old-model")]
+    [InlineData("KnowledgeModelId", "old-model")]
+    [InlineData("VariantModelId", "old-model")]
+    [InlineData("VariantReasoningEffort", "high")]
+    [InlineData("ReviewMaxTokens", "500")]
+    [InlineData("ReviewReasoningEffort", "high")]
+    [InlineData("ReviewSubAgentUnknownQuiescenceSeconds", "10")]
+    [InlineData("RequireSkillSupport", "false")]
+    public void Retired_stage_settings_are_ignored_with_migration_warning(string name, string value)
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["CodeReviewDaemon:" + name] = value })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:" + name] = value,
+                    ["CodeReviewDaemon:WorkflowPath"] = "trusted/workflow.yaml",
+                }
+            )
             .Build();
-        var validate = () =>
-            CodeReviewDaemonOptions.ValidateWorkflowConfiguration(config.GetSection("CodeReviewDaemon"));
-        validate.Should().Throw<InvalidOperationException>().WithMessage("*" + name + "*WorkflowPath*");
+        var warnings = new List<string>();
+        var section = config.GetSection("CodeReviewDaemon");
+        CodeReviewDaemonOptions.ValidateWorkflowConfiguration(section, warnings.Add);
+        warnings.Should().ContainSingle().Which.Should().Contain(name).And.Contain("WorkflowPath");
+        var options = section.Get<CodeReviewDaemonOptions>()!;
+        options.WorkflowPath.Should().Be("trusted/workflow.yaml");
+        options.EnableCommentPosting.Should().BeFalse();
     }
 
     [Fact]

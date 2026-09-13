@@ -216,7 +216,7 @@ public static partial class ConditionEvaluator
             _ => "Unsupported",
         };
 
-    private static string? GetValueBindingPath(JsonNode? value)
+    internal static string? GetValueBindingPath(JsonNode? value)
     {
         if (
             value is not null

@@ -100,16 +100,36 @@ internal sealed class WorkflowPublicationGateway(
 /// <summary>Ephemeral lookup only; snapshots and the hosted accepted-input record authorize every call.</summary>
 internal sealed class WorkflowPublicationScopes(IWorkflowStore snapshots, LmStreamingS2SClient client)
 {
-    private readonly ConcurrentDictionary<
-        string,
-        (WorkflowInvocation Invocation, ReviewPublicationTools Tools)
-    > _active = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Scope> _active = new(StringComparer.Ordinal);
 
-    public void Register(string threadId, WorkflowInvocation invocation, ReviewPublicationTools tools)
+    private sealed class Scope(WorkflowInvocation invocation, ReviewPublicationTools tools)
+    {
+        public WorkflowInvocation Invocation { get; } = invocation;
+        public ReviewPublicationTools Tools { get; } = tools;
+    }
+
+    private sealed class RegistrationLease(Action release) : IDisposable
+    {
+        public void Dispose() => release();
+    }
+
+    internal int ActiveCount => _active.Count;
+
+    public IDisposable Register(string threadId, WorkflowInvocation invocation, ReviewPublicationTools tools)
     {
         tools.LimitToDeadline(invocation.DeadlineUtc);
-        _active[threadId] = (invocation, tools);
+        // Expired grants cannot authorize writes. Reconciliation reconstructs its read-only tools from
+        // durable session/receipt state, so these objects need not stay reachable until daemon restart.
+        foreach (var stale in _active)
+            if (stale.Value.Invocation.DeadlineUtc is not { } deadline || deadline <= DateTimeOffset.UtcNow)
+                Remove(stale.Key, stale.Value);
+        var scope = new Scope(invocation, tools);
+        _active[threadId] = scope;
+        return new RegistrationLease(() => Remove(threadId, scope));
     }
+
+    private void Remove(string threadId, Scope scope) =>
+        _ = ((ICollection<KeyValuePair<string, Scope>>)_active).Remove(new(threadId, scope));
 
     public async Task<ReviewPublicationTools?> ResolveAsync(WorkflowPublicationRequest request, CancellationToken ct)
     {
@@ -142,7 +162,9 @@ internal sealed class WorkflowPublicationScopes(IWorkflowStore snapshots, LmStre
         var inputId = IdempotentInputId.Create(WorkflowAgentInvoker.InvocationKey(invocation), false, false);
         var hosted = await client.GetStatusByInputIdAsync(request.ThreadId, inputId, ct).ConfigureAwait(false);
         return
-            deadline > DateTimeOffset.UtcNow
+            _active.TryGetValue(request.ThreadId, out var current)
+            && ReferenceEquals(current, scope)
+            && deadline > DateTimeOffset.UtcNow
             && string.Equals(hosted.RunId, request.RunId, StringComparison.Ordinal)
             && string.Equals(hosted.Status, "InProgress", StringComparison.OrdinalIgnoreCase)
             ? scope.Tools

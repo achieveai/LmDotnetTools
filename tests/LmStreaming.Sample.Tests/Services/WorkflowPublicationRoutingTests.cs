@@ -67,6 +67,25 @@ public sealed class WorkflowPublicationRoutingTests
         options.Invoking(value => value.Validate()).Should().Throw<InvalidOperationException>();
     }
 
+    [Theory]
+    [InlineData("http://example.com/publication", false)]
+    [InlineData("https://example.com/publication", true)]
+    [InlineData("http://localhost:5080/publication", true)]
+    [InlineData("http://127.0.0.1:5080/publication", true)]
+    [InlineData("http://[::1]:5080/publication", true)]
+    public void Credentials_require_https_except_for_loopback(string url, bool allowed)
+    {
+        var options = new WorkflowPublicationOptions { CallbackUrl = url, SharedSecret = "canary-secret" };
+        options.IsConfigured.Should().Be(allowed);
+        if (allowed)
+            options.Validate();
+        else
+        {
+            options.Resolve(null).Should().BeNull();
+            options.Invoking(value => value.Validate()).Should().Throw<InvalidOperationException>();
+        }
+    }
+
     [Fact]
     public void Deployment_configuration_binds_callback_endpoints()
     {
@@ -92,7 +111,7 @@ public sealed class WorkflowPublicationRoutingTests
     private static WorkflowPublicationOptions Configured() =>
         new()
         {
-            CallbackUrl = "http://fallback/publication",
+            CallbackUrl = "https://fallback/publication",
             SharedSecret = "must-not-use",
             Callbacks = new(StringComparer.Ordinal)
             {

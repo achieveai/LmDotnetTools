@@ -4,18 +4,20 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
-using Microsoft.Win32.SafeHandles;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 
 /// <summary>Invokes contained workspace scripts using a typed stdin envelope and bounded redirected streams.</summary>
 public sealed class WorkflowScriptInvoker
 {
+    private const string BootstrapReady = "__LM_WORKFLOW_SCOPE_READY__";
+    private const string BootstrapFailed = "__LM_WORKFLOW_SCOPE_FAILED__";
     private readonly string _pythonExecutable;
     private readonly string _powerShellExecutable;
     private readonly IReadOnlyDictionary<string, string> _environment;
     private readonly int _maximumOutputCharacters;
-    private readonly Func<Process, List<Process>> _captureDescendants;
+    private readonly bool _forceContainmentProbeFailure;
+    private readonly bool _forceFinalContainmentProbeFailure;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceGates = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal
     );
@@ -30,29 +32,37 @@ public sealed class WorkflowScriptInvoker
         IReadOnlyDictionary<string, string>? environment = null,
         int maximumOutputCharacters = 8 * 1024 * 1024
     )
-        : this(pythonExecutable, powerShellExecutable, environment, maximumOutputCharacters, CaptureDescendants) { }
+        : this(pythonExecutable, powerShellExecutable, environment, maximumOutputCharacters, false) { }
 
     private WorkflowScriptInvoker(
         string pythonExecutable,
         string powerShellExecutable,
         IReadOnlyDictionary<string, string>? environment,
         int maximumOutputCharacters,
-        Func<Process, List<Process>> captureDescendants
+        bool forceContainmentProbeFailure,
+        bool forceFinalContainmentProbeFailure = false
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pythonExecutable);
         ArgumentException.ThrowIfNullOrWhiteSpace(powerShellExecutable);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumOutputCharacters);
-        ArgumentNullException.ThrowIfNull(captureDescendants);
         _pythonExecutable = pythonExecutable;
         _powerShellExecutable = powerShellExecutable;
         _environment = environment ?? new Dictionary<string, string>();
         _maximumOutputCharacters = maximumOutputCharacters;
-        _captureDescendants = captureDescendants;
+        _forceContainmentProbeFailure = forceContainmentProbeFailure;
+        _forceFinalContainmentProbeFailure = forceFinalContainmentProbeFailure;
     }
 
-    internal WorkflowScriptInvoker(Func<Process, List<Process>> captureDescendants)
-        : this("python", "pwsh", environment: null, 8 * 1024 * 1024, captureDescendants) { }
+    internal WorkflowScriptInvoker(bool forceContainmentProbeFailure, bool forceFinalContainmentProbeFailure = false)
+        : this(
+            "python",
+            "pwsh",
+            environment: null,
+            8 * 1024 * 1024,
+            forceContainmentProbeFailure,
+            forceFinalContainmentProbeFailure
+        ) { }
 
     /// <summary>
     /// Returns complete stdout on exit zero. One host-owned instance serializes script operations in each workspace;
@@ -105,43 +115,68 @@ public sealed class WorkflowScriptInvoker
         using var process = new Process { StartInfo = start };
         if (!process.Start())
         {
-            throw new InvalidOperationException("Could not start the workflow interpreter.");
+            throw new InvalidOperationException("Could not start the workflow containment bootstrap.");
         }
+
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // Killing at cancellation also closes inherited pipes; merely cancelling WaitForExitAsync leaves the process running.
         Task? termination = null;
-        using var registration = stop.Token.Register(() => termination = TerminateTreeAsync(process));
-        using var descendants = new DescendantTracker(process, _captureDescendants);
-        var stdout = ReadBoundedAsync(process.StandardOutput, "stdout", stop);
+        using var registration = stop.Token.Register(() => termination = TerminateScopeAsync(process));
         var stderr = ReadBoundedAsync(process.StandardError, "stderr", stop);
-        var write = WriteInputAsync(process, envelope, stop.Token);
-        var observe = descendants.ObserveUntilExitAsync(stop);
-        var exit = process.WaitForExitAsync(stop.Token);
+        Task<string>? stdout = null;
+        Task? write = null;
+        Task? exit = null;
         try
         {
+            await ReadBootstrapReadyAsync(process.StandardOutput, stop.Token).ConfigureAwait(false);
+            stdout = ReadBoundedAsync(process.StandardOutput, "stdout", stop);
+            write = WriteInputAsync(process, envelope, stop.Token);
+            exit = process.WaitForExitAsync(stop.Token);
             await Task.WhenAll(stdout, stderr, write, exit).ConfigureAwait(false);
-            await observe.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+
+            var output = await stdout.ConfigureAwait(false);
+            var diagnostic = await stderr.ConfigureAwait(false);
+            if (ContainsContainmentFailure(output) || ContainsContainmentFailure(diagnostic))
+            {
+                throw new WorkflowScriptTerminationException(
+                    "The workflow containment scope could not be settled; the workspace cannot be reused."
+                );
+            }
             if (process.ExitCode != 0)
             {
                 throw new InvalidOperationException(
-                    $"Workflow script exited with code {process.ExitCode}: {await stderr.ConfigureAwait(false)}"
+                    $"Workflow script exited with code {process.ExitCode}: {diagnostic}"
                 );
             }
-            await descendants.EnsureSettledAsync().ConfigureAwait(false);
-            return await stdout.ConfigureAwait(false);
+            return output;
+        }
+        catch (WorkflowScriptTerminationException)
+        {
+            try
+            {
+                await (termination ?? TerminateScopeAsync(process)).ConfigureAwait(false);
+            }
+            catch (WorkflowScriptTerminationException)
+            {
+                // The original containment failure is the more useful diagnosis.
+            }
+            throw;
         }
         catch
         {
-            var exitWasObserved = exit.IsCompletedSuccessfully;
-            await (termination ?? TerminateTreeAsync(process)).ConfigureAwait(false);
-            if (descendants.Failure is { } treeError)
-            {
-                throw treeError;
-            }
+            var exitWasObserved = exit?.IsCompletedSuccessfully == true || process.HasExited;
+            await (termination ?? TerminateScopeAsync(process)).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            // An output-limit failure cancels its sibling reads. Preserve its useful diagnosis instead of a sibling cancellation.
-            if (stdout.Exception?.GetBaseException() is InvalidOperationException outputError)
+            if (
+                ContainsContainmentFailure(await GetCompletedTextAsync(stdout).ConfigureAwait(false))
+                || ContainsContainmentFailure(await GetCompletedTextAsync(stderr).ConfigureAwait(false))
+            )
+            {
+                throw new WorkflowScriptTerminationException(
+                    "The workflow containment scope could not be settled; the workspace cannot be reused."
+                );
+            }
+            if (stdout?.Exception?.GetBaseException() is InvalidOperationException outputError)
             {
                 throw outputError;
             }
@@ -149,16 +184,44 @@ public sealed class WorkflowScriptInvoker
             {
                 throw diagnosticError;
             }
-            // A script that never reads stdin can close the pipe while its input write is in flight. Once its
-            // nonzero exit is established, report its script failure instead of the incidental broken pipe.
             if (exitWasObserved && process.ExitCode != 0)
             {
                 throw new InvalidOperationException(
-                    $"Workflow script exited with code {process.ExitCode}: {await stderr.ConfigureAwait(false)}"
+                    $"Workflow script exited with code {process.ExitCode}: {await GetCompletedTextAsync(stderr).ConfigureAwait(false)}"
                 );
             }
             throw;
         }
+    }
+
+    private static async Task<string> GetCompletedTextAsync(Task<string>? task)
+    {
+        if (task is not { IsCompletedSuccessfully: true })
+        {
+            return string.Empty;
+        }
+        return await task.ConfigureAwait(false);
+    }
+
+    private static bool ContainsContainmentFailure(string text) =>
+        text.Contains(BootstrapFailed, StringComparison.Ordinal);
+
+    private static async Task ReadBootstrapReadyAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+        if (line == BootstrapReady)
+        {
+            return;
+        }
+        if (line?.StartsWith(BootstrapFailed, StringComparison.Ordinal) == true)
+        {
+            throw new WorkflowScriptTerminationException(
+                $"The workflow containment scope could not be established; the workspace cannot be reused ({line})."
+            );
+        }
+        throw new WorkflowScriptTerminationException(
+            "The workflow containment bootstrap did not confirm ownership before running the script."
+        );
     }
 
     private static async Task WriteInputAsync(Process process, string envelope, CancellationToken cancellationToken)
@@ -194,8 +257,67 @@ public sealed class WorkflowScriptInvoker
         }
     }
 
+    private static async Task TerminateScopeAsync(Process process)
+    {
+        var scopeSignalSent = !OperatingSystem.IsLinux() || TryKillProcessGroup(process.Id);
+        TryKill(process);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new WorkflowScriptTerminationException(
+                "Script scope termination could not be confirmed; the workspace cannot be reused."
+            );
+        }
+        if (!scopeSignalSent)
+        {
+            throw new WorkflowScriptTerminationException(
+                "Script scope termination could not be confirmed; the workspace cannot be reused."
+            );
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // The bootstrap exited between the probe and kill. Its job/process group remains the scope owner.
+        }
+        catch (Win32Exception)
+        {
+            // The bounded wait above distinguishes a failed kill from a process that has already exited.
+        }
+    }
+
+    private static bool TryKillProcessGroup(int processGroup)
+    {
+        const int sigKill = 9;
+        if (kill(-processGroup, sigKill) == 0)
+        {
+            return true;
+        }
+        return Marshal.GetLastPInvokeError() == 3; // ESRCH: the group has already ended.
+    }
+
     private ProcessStartInfo CreateStartInfo(string script, string workspace)
     {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException(
+                "Workflow script containment requires Windows or Linux and refuses to start on this operating system."
+            );
+        }
+
         var extension = Path.GetExtension(script);
         var python = extension.Equals(".py", StringComparison.OrdinalIgnoreCase);
         if (!python && !extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
@@ -204,7 +326,7 @@ public sealed class WorkflowScriptInvoker
         }
         var start = new ProcessStartInfo
         {
-            FileName = python ? _pythonExecutable : _powerShellExecutable,
+            FileName = _pythonExecutable,
             WorkingDirectory = workspace,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -215,6 +337,10 @@ public sealed class WorkflowScriptInvoker
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        start.ArgumentList.Add("-u");
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add(ContainmentBootstrap);
+        start.ArgumentList.Add(python ? _pythonExecutable : _powerShellExecutable);
         foreach (
             var argument in python
                 ? new[] { "-u", script }
@@ -226,6 +352,14 @@ public sealed class WorkflowScriptInvoker
         foreach (var (name, value) in _environment)
         {
             start.Environment[name] = value;
+        }
+        if (_forceContainmentProbeFailure)
+        {
+            start.Environment["LM_WORKFLOW_FORCE_SCOPE_PROBE_FAILURE"] = "1";
+        }
+        if (_forceFinalContainmentProbeFailure)
+        {
+            start.Environment["LM_WORKFLOW_FORCE_FINAL_SCOPE_PROBE_FAILURE"] = "1";
         }
         return start;
     }
@@ -259,287 +393,152 @@ public sealed class WorkflowScriptInvoker
         return path;
     }
 
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-            // The process exited between the probe and kill. WaitForExitAsync below still reaps it.
-        }
-        catch (Win32Exception)
-        {
-            // Permission/OS failure is not termination. The bounded exit wait below must still establish exit.
-        }
-    }
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int signal);
 
-    private static async Task TerminateTreeAsync(Process process)
-    {
-        // Capture handles before killing the parent: after reparenting, a living grandchild is no longer discoverable by parent ID.
-        List<Process> descendants;
-        try
-        {
-            descendants = CaptureDescendants(process);
-        }
-        catch (Exception exception) when (exception is Win32Exception or IOException or UnauthorizedAccessException)
-        {
-            TryKill(process);
-            throw new WorkflowScriptTerminationException(
-                "Could not establish the script process tree; the workspace cannot be reused."
-            );
-        }
-        try
-        {
-            foreach (var child in descendants.AsEnumerable().Reverse())
-            {
-                TryKill(child);
-            }
-            TryKill(process);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try
-            {
-                await Task.WhenAll(descendants.Append(process).Select(child => child.WaitForExitAsync(timeout.Token)))
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw new WorkflowScriptTerminationException(
-                    "Script tree termination could not be confirmed; the workspace cannot be reused."
-                );
-            }
-        }
-        finally
-        {
-            foreach (var child in descendants)
-            {
-                child.Dispose();
-            }
-        }
-    }
+    // This trusted bootstrap owns the scope before it starts workflow-controlled code. Windows places itself in a
+    // kill-on-close Job Object, so its descendants inherit the job at creation. Linux becomes a session/process-group
+    // leader before spawning the interpreter. It intentionally does not defend against a trusted script that invokes
+    // platform-specific breakaway/detach APIs; workflow scripts are foreground-contract code.
+    private const string ContainmentBootstrap = """
+import ctypes
+import ctypes.wintypes
+import os
+import subprocess
+import sys
 
-    private static List<Process> CaptureDescendants(Process root)
-    {
-        var parents = OperatingSystem.IsWindows() ? WindowsParents() : LinuxParents();
-        var descendants = new List<Process>();
-        var ids = new HashSet<int> { root.Id };
-        bool added;
-        do
-        {
-            added = false;
-            foreach (var (pid, parent) in parents)
-            {
-                if (!ids.Contains(parent) || !ids.Add(pid))
-                {
-                    continue;
-                }
-                added = true;
-                try
-                {
-                    var child = Process.GetProcessById(pid);
-                    _ = child.Handle;
-                    descendants.Add(child);
-                }
-                catch (ArgumentException) { }
-            }
-        } while (added);
-        return descendants;
-    }
+READY = "__LM_WORKFLOW_SCOPE_READY__"
+FAILED = "__LM_WORKFLOW_SCOPE_FAILED__"
 
-    private static Dictionary<int, int> LinuxParents()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            throw new WorkflowScriptTerminationException(
-                "Process-tree settlement requires a supported operating system."
-            );
-        }
-        var parents = new Dictionary<int, int>();
-        foreach (var directory in Directory.EnumerateDirectories("/proc"))
-        {
-            if (!int.TryParse(Path.GetFileName(directory), out var pid))
-            {
-                continue;
-            }
-            try
-            {
-                var stat = File.ReadAllText(Path.Combine(directory, "stat"));
-                var fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
-                parents[pid] = int.Parse(fields[1], System.Globalization.CultureInfo.InvariantCulture);
-            }
-            catch (FileNotFoundException) { }
-            catch (DirectoryNotFoundException) { }
-        }
-        return parents;
-    }
+def signal(value):
+    print(value, flush=True)
 
-    /// <summary>
-    /// Keeps handles to every descendant observed while the script parent is alive. A successful parent cannot release
-    /// the workspace while one of those handles is still live: the child is terminated and the workspace is quarantined.
-    /// </summary>
-    private sealed class DescendantTracker(Process root, Func<Process, List<Process>> capture) : IDisposable
-    {
-        private readonly Process _root = root;
-        private readonly Dictionary<int, Process> _descendants = [];
-        public WorkflowScriptTerminationException? Failure { get; private set; }
+def fail(value):
+    signal(FAILED + ":" + value)
+    raise SystemExit(252)
 
-        public async Task ObserveUntilExitAsync(CancellationTokenSource stop)
-        {
-            try
-            {
-                while (!_root.HasExited)
-                {
-                    Observe();
-                    await Task.Delay(TimeSpan.FromMilliseconds(5)).ConfigureAwait(false);
-                }
-                // Windows retains a child's recorded parent ID after the parent exits. One final snapshot closes
-                // the race between the last poll and the parent's exit, so the success path cannot reuse a
-                // workspace while that child is still running.
-                Observe();
-            }
-            catch (WorkflowScriptTerminationException exception)
-            {
-                Failure = exception;
-                if (!stop.IsCancellationRequested)
-                {
-                    await stop.CancelAsync().ConfigureAwait(false);
-                }
-                throw;
-            }
-        }
+def linux_scope():
+    try:
+        os.setsid()
+    except OSError as error:
+        fail("setsid-" + str(error.errno))
 
-        public async Task EnsureSettledAsync()
-        {
-            var live = _descendants.Values.Where(process => !process.HasExited).ToArray();
-            if (live.Length == 0)
-            {
-                return;
-            }
+def linux_has_residual(scope):
+    if os.environ.get("LM_WORKFLOW_FORCE_FINAL_SCOPE_PROBE_FAILURE") == "1":
+        fail("probe-injected")
+    try:
+        for name in os.listdir("/proc"):
+            if not name.isdigit() or int(name) == os.getpid():
+                continue
+            try:
+                with open("/proc/" + name + "/stat", encoding="utf-8") as stat:
+                    tail = stat.read().rsplit(")", 1)[1].split()
+                if len(tail) > 2 and int(tail[2]) == scope:
+                    return True
+            except FileNotFoundError:
+                continue
+            except ProcessLookupError:
+                continue
+    except (OSError, ValueError, IndexError):
+        fail("probe-unreadable")
+    return False
 
-            using var gracePeriod = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-            try
-            {
-                await Task.WhenAll(live.Select(process => process.WaitForExitAsync(gracePeriod.Token)))
-                    .ConfigureAwait(false);
-                return;
-            }
-            catch (OperationCanceledException) { }
+def windows_scope():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.AssignProcessToJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.c_void_p]
+    kernel32.QueryInformationJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.wintypes.UINT]
+    kernel32.TerminateJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+    class BasicLimit(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                   ("LimitFlags", ctypes.wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                   ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.wintypes.DWORD),
+                   ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.wintypes.DWORD),
+                   ("SchedulingClass", ctypes.wintypes.DWORD)]
+    class IoCounters(ctypes.Structure):
+        _fields_ = [("ReadOperationCount", ctypes.c_ulonglong), ("WriteOperationCount", ctypes.c_ulonglong),
+                   ("OtherOperationCount", ctypes.c_ulonglong), ("ReadTransferCount", ctypes.c_ulonglong),
+                   ("WriteTransferCount", ctypes.c_ulonglong), ("OtherTransferCount", ctypes.c_ulonglong)]
+    class ExtendedLimit(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimit), ("IoInfo", IoCounters),
+                   ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                   ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+    class Accounting(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                   ("ThisPeriodTotalUserTime", ctypes.c_longlong), ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                   ("TotalPageFaultCount", ctypes.wintypes.DWORD), ("TotalProcesses", ctypes.wintypes.DWORD),
+                   ("ActiveProcesses", ctypes.wintypes.DWORD), ("TotalTerminatedProcesses", ctypes.wintypes.DWORD)]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        fail("job-create-" + str(ctypes.get_last_error()))
+    limits = ExtendedLimit()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        fail("job-configure-" + str(ctypes.get_last_error()))
+    if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+        fail("job-assign-" + str(ctypes.get_last_error()))
+    def residual():
+        if os.environ.get("LM_WORKFLOW_FORCE_FINAL_SCOPE_PROBE_FAILURE") == "1":
+            fail("probe-injected")
+        accounting = Accounting()
+        if not kernel32.QueryInformationJobObject(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+            fail("job-query-" + str(ctypes.get_last_error()))
+        return accounting.ActiveProcesses > 1
+    def clean():
+        limits = ExtendedLimit()
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            fail("job-release-" + str(ctypes.get_last_error()))
+        kernel32.CloseHandle(job)
+    def terminate():
+        signal(FAILED + ":residual")
+        sys.stdout.flush()
+        kernel32.TerminateJobObject(job, 1)
+        os._exit(252)
+    return residual, clean, terminate
 
-            await TerminateAsync().ConfigureAwait(false);
-            throw new WorkflowScriptTerminationException(
-                "A successful workflow script left child processes running; the workspace cannot be reused."
-            );
-        }
+def main():
+    if len(sys.argv) < 2:
+        fail("missing-target")
+    if os.environ.get("LM_WORKFLOW_FORCE_SCOPE_PROBE_FAILURE") == "1":
+        fail("probe-injected")
+    if os.name == "nt":
+        residual, clean, terminate = windows_scope()
+    elif sys.platform.startswith("linux"):
+        linux_scope()
+        scope = os.getpgrp()
+        residual = lambda: linux_has_residual(scope)
+        clean = lambda: None
+        def terminate():
+            signal(FAILED + ":residual")
+            sys.stdout.flush()
+            os.killpg(scope, 9)
+            os._exit(252)
+    else:
+        fail("unsupported-platform")
+    signal(READY)
+    child = subprocess.Popen(sys.argv[1:], stdin=sys.stdin.buffer, stdout=sys.stdout.buffer, stderr=sys.stderr.buffer)
+    status = child.wait()
+    if residual():
+        terminate()
+    clean()
+    raise SystemExit(status)
 
-        public async Task TerminateAsync()
-        {
-            foreach (var process in _descendants.Values.Reverse())
-            {
-                TryKill(process);
-            }
-
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try
-            {
-                await Task.WhenAll(_descendants.Values.Select(process => process.WaitForExitAsync(timeout.Token)))
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw new WorkflowScriptTerminationException(
-                    "Script child termination could not be confirmed; the workspace cannot be reused."
-                );
-            }
-        }
-
-        private void Observe()
-        {
-            List<Process> observed;
-            try
-            {
-                observed = capture(_root);
-            }
-            catch (WorkflowScriptTerminationException)
-            {
-                throw;
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw new WorkflowScriptTerminationException(
-                    "Could not establish the script process tree; the workspace cannot be reused."
-                );
-            }
-            foreach (var process in observed)
-            {
-                if (!_descendants.TryAdd(process.Id, process))
-                {
-                    process.Dispose();
-                }
-            }
-        }
-
-        public void Dispose()
-        {
-            foreach (var process in _descendants.Values)
-            {
-                process.Dispose();
-            }
-        }
-    }
-
-    private static Dictionary<int, int> WindowsParents()
-    {
-        using var snapshot = CreateToolhelp32Snapshot(2, 0);
-        if (snapshot.IsInvalid)
-        {
-            throw new WorkflowScriptTerminationException("Cannot enumerate the script process tree.");
-        }
-        var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
-        var parents = new Dictionary<int, int>();
-        var present = Process32First(snapshot, ref entry);
-        while (present)
-        {
-            parents[(int)entry.ProcessId] = (int)entry.ParentProcessId;
-            present = Process32Next(snapshot, ref entry);
-        }
-        if (Marshal.GetLastWin32Error() != 18)
-        {
-            throw new WorkflowScriptTerminationException("Cannot fully enumerate the script process tree.");
-        }
-        return parents;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct ProcessEntry
-    {
-        public uint Size;
-        public uint Usage;
-        public uint ProcessId;
-        public UIntPtr Heap;
-        public uint Module;
-        public uint Threads;
-        public uint ParentProcessId;
-        public int Priority;
-        public uint Flags;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string Executable;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern SafeFileHandle CreateToolhelp32Snapshot(uint flags, uint processId);
-
-    [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32First(SafeFileHandle snapshot, ref ProcessEntry entry);
-
-    [DllImport("kernel32.dll", EntryPoint = "Process32NextW", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Process32Next(SafeFileHandle snapshot, ref ProcessEntry entry);
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as error:
+    fail("bootstrap-" + type(error).__name__)
+""";
 }
 
 /// <summary>Signals that child exit was not established and the host must preserve the unavailable workspace.</summary>

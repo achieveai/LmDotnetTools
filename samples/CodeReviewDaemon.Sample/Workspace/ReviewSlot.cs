@@ -173,6 +173,8 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             lock (_freeIndexesLock)
             {
                 _activeIndexes.Remove(slot.Index);
+                _freeIndexes.Push(slot.Index);
+                SignalLeaseChanged();
             }
             throw;
         }

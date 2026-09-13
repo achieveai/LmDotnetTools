@@ -12,6 +12,34 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 public sealed class WorkflowAgentInvokerTests : IDisposable
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Caller_cancellation_propagates_while_independent_timeout_is_a_retryable_result(
+        bool callerCancelled
+    )
+    {
+        using var cancellation = new CancellationTokenSource();
+        if (callerCancelled)
+            cancellation.Cancel();
+        var invoker = new WorkflowAgentInvoker(
+            _workspace,
+            (_, _, _) => throw new OperationCanceledException("private-token"),
+            (_, _, _) => Task.FromResult<WorkflowInvocationResult?>(null)
+        );
+        if (callerCancelled)
+            await invoker
+                .Invoking(value => value.InvokeAsync(Invocation(), cancellation.Token))
+                .Should()
+                .ThrowAsync<OperationCanceledException>();
+        else
+        {
+            var result = await invoker.InvokeAsync(Invocation(), cancellation.Token);
+            result.Status.Should().Be(WorkflowInvocationStatus.Failed);
+            result.Error.Should().NotContain("private-token");
+        }
+    }
+
     private readonly string _workspace = Path.Combine(
         Path.GetTempPath(),
         "workflow-agent-" + Guid.NewGuid().ToString("N")

@@ -41,7 +41,7 @@ public class WorkflowPublicationEndpoint
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(SharedSecret)
         && Uri.TryCreate(CallbackUrl, UriKind.Absolute, out var uri)
-        && uri.Scheme is "https" or "http"
+        && (uri.Scheme == "https" || (uri.Scheme == "http" && uri.IsLoopback))
         && string.IsNullOrEmpty(uri.UserInfo)
         && string.IsNullOrEmpty(uri.Fragment);
 }

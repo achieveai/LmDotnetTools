@@ -91,6 +91,10 @@ internal sealed class WorkflowAgentInvoker(
             var unsettled = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
             return unsettled ?? new WorkflowInvocationResult(WorkflowInvocationStatus.Completed, final.Text);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
             when (ex
                     is HttpRequestException
@@ -111,19 +115,26 @@ internal sealed class WorkflowAgentInvoker(
                 {
                     var unsettled = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
                     return unsettled
-                        ?? new WorkflowInvocationResult(WorkflowInvocationStatus.Failed, Error: ex.Message);
+                        ?? new WorkflowInvocationResult(WorkflowInvocationStatus.Failed, Error: Diagnostic(ex));
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception settlementError) when (settlementError is not OutOfMemoryException)
                 {
-                    return new(WorkflowInvocationStatus.Unknown, Error: settlementError.Message);
+                    return new(WorkflowInvocationStatus.Unknown, Error: Diagnostic(settlementError));
                 }
             }
             return new(
                 submitted || reconcile ? WorkflowInvocationStatus.Unknown : WorkflowInvocationStatus.Failed,
-                Error: ex.Message
+                Error: Diagnostic(ex)
             );
         }
     }
+
+    internal static string Diagnostic(Exception error) =>
+        $"Workflow operation could not be confirmed ({error.GetType().Name}).";
 
     private async Task<string> ComposeInstructionAsync(WorkflowInvocation invocation, CancellationToken ct)
     {

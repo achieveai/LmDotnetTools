@@ -4,6 +4,21 @@ $ErrorActionPreference = "Stop"
 $runner = Join-Path $PSScriptRoot "run-priority-tests.ps1"
 function Assert-True { param([bool]$Condition, [string]$Message) if (-not $Condition) { throw $Message } }
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "priority-tests-$([guid]::NewGuid().ToString('N'))"
+function Invoke-FixtureGit {
+    param([string[]]$Arguments)
+    $routing = @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+    $previous = @{}
+    foreach ($name in $routing) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        if ($null -ne $item) { $previous[$name] = $item.Value }
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try { & git -C $fixture @Arguments }
+    finally {
+        foreach ($name in $routing) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $previous.Keys) { Set-Item -LiteralPath "Env:$name" -Value $previous[$name] }
+    }
+}
 function Set-FixtureFile {
     param([string]$Path, [string]$Content)
     $full = Join-Path $fixture $Path
@@ -47,7 +62,7 @@ function Set-TrxPlans {
 }
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try {
-    git -C $fixture init --quiet
+    Invoke-FixtureGit -Arguments @("init", "--quiet")
     if ($LASTEXITCODE -ne 0) { throw "Fixture git init failed." }
     Set-FixtureFile "src/Core/Core.csproj" '<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>'
     $solution = "Microsoft Visual Studio Solution File, Format Version 12.00`n"
@@ -204,7 +219,7 @@ try {
     Assert-True ($repositoryPlan.policyStatus -eq "present") "Checked-in priority manifest must match the actual inventory."
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "unassigned").Count -eq 0) "Every current test surface must have an explicit or kind-default assignment."
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "P0").Count -gt 0) "Component baseline assignments must not become empty."
-    Assert-True ($repositoryPlan.declarationSummary.known -eq 9534 -and $repositoryPlan.declarationSummary.reviewed -eq 9534) "Every known .NET/script declaration must have exactly one reviewed policy row."
+    Assert-True ($repositoryPlan.declarationSummary.known -eq 9566 -and $repositoryPlan.declarationSummary.reviewed -eq 9566) "Every known .NET/script declaration must have exactly one reviewed policy row."
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -220,7 +235,7 @@ try {
         Assert-True ($unsupportedTierSubsets.Count -eq 0) "The current $repositoryTier selection must not contain a dotnet subset that execution preflight rejects."
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
-    foreach ($tier in @(@("P0", 277), @("P1", 7260), @("P2", 1870), @("P3", 127))) {
+    foreach ($tier in @(@("P0", 277), @("P1", 7292), @("P2", 1870), @("P3", 127))) {
         Assert-True (@($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count -eq $tier[1]) "Checked-in declaration count for $($tier[0]) must match the reviewed corpus."
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
@@ -231,7 +246,7 @@ try {
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count -eq 8953) "Manifest integration must preserve every measured coverage classification whose declaration still exists."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count -eq 104) "Manifest integration must preserve approved projects without coverage capture."
-    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count -eq 477) "Manifest integration must preserve declarations absent from the frozen capture."
+    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count -eq 509) "Manifest integration must preserve declarations absent from the frozen capture."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

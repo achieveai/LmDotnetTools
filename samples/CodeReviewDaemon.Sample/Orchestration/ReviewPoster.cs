@@ -214,7 +214,8 @@ internal sealed class ReviewPoster
     public async Task ReconcilePublicationsAsync(
         long runId,
         RepoIdentity expectedRepo,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? verifyCurrentPr = null
     )
     {
         var run = _store.GetReviewRun(runId) ?? throw new InvalidOperationException("Publication run is missing.");
@@ -259,9 +260,52 @@ internal sealed class ReviewPoster
             var responseId = existing.ProviderCommentId ?? existing.ProviderResponseId;
             if (string.IsNullOrWhiteSpace(responseId))
                 throw new ReviewPublicationUncertainException("Provider proof has no comment identity.");
+            if (verifyCurrentPr is null)
+                throw new InvalidOperationException("Receipt adoption requires a current PR verifier.");
+            await verifyCurrentPr(cancellationToken).ConfigureAwait(false);
             _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, OutboxStatus.Posted, responseId);
             RequireReceipt(request, entry.Id, responseId);
         }
+    }
+
+    internal void ValidateWorkflowReceipt(
+        ReviewRun run,
+        RepoIdentity repo,
+        string subject,
+        long receiptId,
+        bool reply,
+        bool live
+    )
+    {
+        var entry = _store.GetOutbox(receiptId);
+        var intent = entry is null ? null : _store.TryGetLatestArtifact(run.Id, IntentKind(entry.IdempotencyKey));
+        var request = intent is null ? null : JsonSerializer.Deserialize<PostReviewRequest>(intent.Payload);
+        if (
+            entry is null
+            || request is null
+            || entry.ReviewRunId != run.Id
+            || entry.ArtifactKind != "workflow-publication"
+            || request.Key.ArtifactSubject != subject
+            || request.ReviewRunId != run.Id
+            || request.Key.HeadSha != run.HeadSha
+            || request.Key.VariantId != run.VariantId
+            || request.Target.PrId != run.PrId
+            || request.Target.Repo.NormalizedKey != repo.NormalizedKey
+            || request.Target.Repo.RepoStableId != repo.RepoStableId
+            || request.LivePostingAuthorized != live
+            || !request.RequireConfirmedOutcome
+            || IdempotencyKey.Build(request.Key) != entry.IdempotencyKey
+            || PayloadHash(request) != entry.BodyHash
+            || (reply ? request.Target.Kind != ReviewCommentKind.Reply : request.Target.Kind == ReviewCommentKind.Reply)
+            || (
+                live
+                    ? entry.Status != OutboxStatus.Posted || string.IsNullOrWhiteSpace(entry.ProviderResponseId)
+                    : entry.Status != OutboxStatus.Collected
+            )
+        )
+            throw new InvalidOperationException(
+                "Publication receipt does not match this invocation, target and run mode."
+            );
     }
 
     private static string IntentKind(string key) =>
