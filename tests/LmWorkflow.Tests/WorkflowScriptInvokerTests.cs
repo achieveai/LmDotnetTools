@@ -48,10 +48,38 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
         );
         var invoker = new WorkflowScriptInvoker();
         await invoker
-            .Invoking(x => x.InvokeAsync("fail.py", _directory, Context(), new JsonObject(), default))
+            .Invoking(x =>
+                x.InvokeAsync(
+                    "fail.py",
+                    _directory,
+                    Context(),
+                    new JsonObject { ["Ignored"] = new string('x', 1024 * 1024) },
+                    default
+                )
+            )
             .Should()
             .ThrowAsync<InvalidOperationException>()
             .WithMessage("*7*operation refused*");
+    }
+
+    [Fact]
+    public async Task Input_pipe_failure_from_a_zero_exit_is_not_reported_as_a_script_failure()
+    {
+        Write("close.py", "import sys, time\nsys.stdin.close()\ntime.sleep(.2)\n");
+        var invoker = new WorkflowScriptInvoker();
+
+        await invoker
+            .Invoking(x =>
+                x.InvokeAsync(
+                    "close.py",
+                    _directory,
+                    Context(),
+                    new JsonObject { ["Ignored"] = new string('x', 1024 * 1024) },
+                    default
+                )
+            )
+            .Should()
+            .ThrowAsync<IOException>();
     }
 
     [Fact]
@@ -69,7 +97,10 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     [Fact]
     public async Task Cancellation_kills_running_process_before_returning()
     {
-        Write("wait.py", "import os, time\nopen('pid.txt','w').write(str(os.getpid()))\ntime.sleep(60)\n");
+        Write(
+            "wait.py",
+            "import os, time\nwith open('pid.txt','w') as f:\n f.write(str(os.getpid()))\ntime.sleep(60)\n"
+        );
         using var cancellation = new CancellationTokenSource();
         var invoker = new WorkflowScriptInvoker();
         var running = invoker.InvokeAsync("wait.py", _directory, Context(), new JsonObject(), cancellation.Token);

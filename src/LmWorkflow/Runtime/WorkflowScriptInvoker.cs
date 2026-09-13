@@ -116,9 +116,10 @@ public sealed class WorkflowScriptInvoker
         var stderr = ReadBoundedAsync(process.StandardError, "stderr", stop);
         var write = WriteInputAsync(process, envelope, stop.Token);
         var observe = descendants.ObserveUntilExitAsync(stop);
+        var exit = process.WaitForExitAsync(stop.Token);
         try
         {
-            await Task.WhenAll(stdout, stderr, write, process.WaitForExitAsync(stop.Token)).ConfigureAwait(false);
+            await Task.WhenAll(stdout, stderr, write, exit).ConfigureAwait(false);
             await observe.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
@@ -132,6 +133,7 @@ public sealed class WorkflowScriptInvoker
         }
         catch
         {
+            var exitWasObserved = exit.IsCompletedSuccessfully;
             await (termination ?? TerminateTreeAsync(process)).ConfigureAwait(false);
             if (descendants.Failure is { } treeError)
             {
@@ -146,6 +148,14 @@ public sealed class WorkflowScriptInvoker
             if (stderr.Exception?.GetBaseException() is InvalidOperationException diagnosticError)
             {
                 throw diagnosticError;
+            }
+            // A script that never reads stdin can close the pipe while its input write is in flight. Once its
+            // nonzero exit is established, report its script failure instead of the incidental broken pipe.
+            if (exitWasObserved && process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Workflow script exited with code {process.ExitCode}: {await stderr.ConfigureAwait(false)}"
+                );
             }
             throw;
         }
