@@ -15,7 +15,7 @@ public sealed class WorkflowScriptInvoker
     private readonly string _powerShellExecutable;
     private readonly IReadOnlyDictionary<string, string> _environment;
     private readonly int _maximumOutputCharacters;
-    private Func<Process, List<Process>> _captureDescendants = CaptureDescendants;
+    private readonly Func<Process, List<Process>> _captureDescendants;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceGates = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal
     );
@@ -30,21 +30,29 @@ public sealed class WorkflowScriptInvoker
         IReadOnlyDictionary<string, string>? environment = null,
         int maximumOutputCharacters = 8 * 1024 * 1024
     )
+        : this(pythonExecutable, powerShellExecutable, environment, maximumOutputCharacters, CaptureDescendants) { }
+
+    private WorkflowScriptInvoker(
+        string pythonExecutable,
+        string powerShellExecutable,
+        IReadOnlyDictionary<string, string>? environment,
+        int maximumOutputCharacters,
+        Func<Process, List<Process>> captureDescendants
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pythonExecutable);
         ArgumentException.ThrowIfNullOrWhiteSpace(powerShellExecutable);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumOutputCharacters);
+        ArgumentNullException.ThrowIfNull(captureDescendants);
         _pythonExecutable = pythonExecutable;
         _powerShellExecutable = powerShellExecutable;
         _environment = environment ?? new Dictionary<string, string>();
         _maximumOutputCharacters = maximumOutputCharacters;
+        _captureDescendants = captureDescendants;
     }
 
     internal WorkflowScriptInvoker(Func<Process, List<Process>> captureDescendants)
-        : this()
-    {
-        _captureDescendants = captureDescendants ?? throw new ArgumentNullException(nameof(captureDescendants));
-    }
+        : this("python", "pwsh", environment: null, 8 * 1024 * 1024, captureDescendants) { }
 
     /// <summary>
     /// Returns complete stdout on exit zero. One host-owned instance serializes script operations in each workspace;
