@@ -11,6 +11,7 @@ using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -28,6 +29,7 @@ internal sealed class ReviewWorkflowInvoker(
     CodeReviewDaemonOptions options,
     WorkflowPublicationScopes publicationScopes,
     Func<ReviewRun, string, CancellationToken, Task<ReviewPublicationTools>> scopeFactory,
+    IGatewaySkillProbe gatewaySkillProbe,
     ILoggerFactory loggerFactory
 ) : IWorkflowTaskInvoker
 {
@@ -83,6 +85,11 @@ internal sealed class ReviewWorkflowInvoker(
             WorkflowInvocationResult result;
             if (invocation.Task.Delegate == DelegateKind.Agent)
             {
+                var admission = await AdmitReviewerCapabilitiesAsync(ct).ConfigureAwait(false);
+                if (admission is not null)
+                {
+                    return admission;
+                }
                 var agent = new WorkflowAgentInvoker(packageRoot, ResolveSessionAsync, SettleAsync);
                 result = reconcile
                     ? await agent.ReconcileAsync(invocation, ct).ConfigureAwait(false)
@@ -151,6 +158,44 @@ internal sealed class ReviewWorkflowInvoker(
             // A missing response/evidence does not authorize replaying a script that may have committed
             // an external effect. Reconciliation must recover its receipt or keep the invocation blocked.
             return new(WorkflowInvocationStatus.Unknown, Error: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Checks the gateway catalog before the host can provision or accept a review turn. The instruction may
+    /// ask the model to load and dispatch reviewers, but only this catalog read proves that those prerequisites
+    /// exist in the exact marketplace set attached to the hosted review workspace.
+    /// </summary>
+    private async Task<WorkflowInvocationResult?> AdmitReviewerCapabilitiesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var marketplaces = string.IsNullOrWhiteSpace(options.LmStreamingReviewMarketplace)
+                ? (IReadOnlyList<string>)[]
+                : [options.LmStreamingReviewMarketplace];
+            var support = await gatewaySkillProbe.ProbeAsync(marketplaces, ct).ConfigureAwait(false);
+            if (support.IsSupported)
+            {
+                return null;
+            }
+
+            return new(
+                WorkflowInvocationStatus.Failed,
+                Error: "The review workflow requires a supported reviewer catalog: " + support.Describe()
+            );
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A probe is read-only, but accepting a turn after it failed would turn an unknown catalog into a
+            // shallow review. Keep the invocation retryable while preventing any provision or host send.
+            return new(
+                WorkflowInvocationStatus.Unknown,
+                Error: "The reviewer capability catalog could not be verified: " + ex.Message
+            );
         }
     }
 

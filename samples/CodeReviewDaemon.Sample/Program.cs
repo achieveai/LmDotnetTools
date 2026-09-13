@@ -1051,6 +1051,7 @@ builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
                     )
                 );
             },
+            sp.GetRequiredService<IGatewaySkillProbe>(),
             sp.GetRequiredService<ILoggerFactory>()
         );
         return Task.FromResult(invoker);

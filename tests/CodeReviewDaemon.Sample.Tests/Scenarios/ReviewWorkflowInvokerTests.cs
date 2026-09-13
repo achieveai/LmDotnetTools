@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Tests.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -222,6 +223,93 @@ public sealed class ReviewWorkflowInvokerTests
             .Create()
             .InvokeAsync(AgentInvocation("expired") with { DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(-1) });
         result.Status.Should().Be(WorkflowInvocationStatus.Failed);
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Supported_reviewer_catalog_is_verified_before_the_host_is_provisioned()
+    {
+        using var fixture = new Fixture();
+        await fixture.PrepareAsync();
+        fixture.GatewaySkills.Support = new(true, 3, []);
+        fixture.GatewaySkills.OnProbe = () => fixture.Handler.Requests.Should().BeEmpty();
+        fixture.Handler.OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}"
+        );
+
+        var result = await fixture
+            .Create(
+                new CodeReviewDaemonOptions
+                {
+                    LmStreamingReviewMarketplace = "review-market",
+                    LmStreamingProviderId = "provider",
+                    ReviewSubAgentBarrierQuietSeconds = 1,
+                }
+            )
+            .InvokeAsync(AgentInvocation("supported"));
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Completed, result.Error);
+        fixture.GatewaySkills.Calls.Should().Be(1);
+        fixture.GatewaySkills.LastMarketplaces.Should().Equal("review-market");
+        fixture.Handler.Requests.Should().Contain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task Missing_required_reviewer_skill_blocks_the_host_before_any_external_effect()
+    {
+        using var fixture = new Fixture();
+        fixture.GatewaySkills.Support = new(false, 3, []);
+
+        var result = await fixture.Create().InvokeAsync(AgentInvocation("missing-skill"));
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Failed);
+        result.Error.Should().Contain("supported reviewer catalog").And.Contain("MISSING");
+        fixture.GatewaySkills.Calls.Should().Be(1);
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Missing_reviewer_specialist_blocks_the_host_before_any_external_effect()
+    {
+        using var fixture = new Fixture();
+        fixture.GatewaySkills.Support = new(true, 0, []);
+
+        var result = await fixture.Create().InvokeAsync(AgentInvocation("missing-specialist"));
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Failed);
+        result.Error.Should().Contain("sub-agents=0");
+        fixture.GatewaySkills.Calls.Should().Be(1);
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Reviewer_catalog_probe_failure_prevents_host_provisioning_and_leaves_the_work_retryable()
+    {
+        using var fixture = new Fixture();
+        fixture.GatewaySkills.Failure = new IOException("gateway unavailable");
+
+        var result = await fixture.Create().InvokeAsync(AgentInvocation("probe-failure"));
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        result.Error.Should().Contain("could not be verified").And.Contain("gateway unavailable");
+        fixture.GatewaySkills.Calls.Should().Be(1);
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Cancellation_during_reviewer_catalog_admission_prevents_host_provisioning()
+    {
+        using var fixture = new Fixture();
+        fixture.GatewaySkills.ObserveCancellation = true;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await fixture.Create().InvokeAsync(AgentInvocation("cancelled-admission"), cancellation.Token);
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        fixture.GatewaySkills.Calls.Should().Be(1);
         fixture.Handler.Requests.Should().BeEmpty();
     }
 
@@ -477,6 +565,7 @@ public sealed class ReviewWorkflowInvokerTests
         public FakeHttpMessageHandler Handler { get; } = new();
         public int ScopeCreations { get; private set; }
         public IReviewCommentPublisher Publisher { get; set; } = new FakeReviewCommentPublisher();
+        public FakeGatewaySkillProbe GatewaySkills { get; } = new();
         public bool StatusUnavailable { get; set; }
         public string SubagentsJson { get; set; } = "{\"schemaVersion\":1,\"nodes\":[]}";
         private readonly HttpClient _http;
@@ -586,6 +675,7 @@ public sealed class ReviewWorkflowInvokerTests
                         )
                     );
                 },
+                GatewaySkills,
                 NullLoggerFactory.Instance
             );
         }
@@ -595,6 +685,31 @@ public sealed class ReviewWorkflowInvokerTests
             _http.Dispose();
             Workspace.Dispose();
             System.IO.Directory.Delete(Directory, true);
+        }
+    }
+
+    private sealed class FakeGatewaySkillProbe : IGatewaySkillProbe
+    {
+        public GatewaySkillSupport Support { get; set; } = new(true, 1, []);
+        public Exception? Failure { get; set; }
+        public bool ObserveCancellation { get; set; }
+        public Action? OnProbe { get; set; }
+        public int Calls { get; private set; }
+        public IReadOnlyList<string> LastMarketplaces { get; private set; } = [];
+
+        public Task<GatewaySkillSupport> ProbeAsync(
+            IReadOnlyList<string> marketplaces,
+            CancellationToken cancellationToken
+        )
+        {
+            Calls++;
+            LastMarketplaces = marketplaces;
+            OnProbe?.Invoke();
+            if (ObserveCancellation)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            return Failure is null ? Task.FromResult(Support) : Task.FromException<GatewaySkillSupport>(Failure);
         }
     }
 
