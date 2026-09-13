@@ -15,6 +15,7 @@ public sealed class WorkflowScriptInvoker
     private readonly string _powerShellExecutable;
     private readonly IReadOnlyDictionary<string, string> _environment;
     private readonly int _maximumOutputCharacters;
+    private Func<Process, List<Process>> _captureDescendants = CaptureDescendants;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceGates = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal
     );
@@ -37,6 +38,12 @@ public sealed class WorkflowScriptInvoker
         _powerShellExecutable = powerShellExecutable;
         _environment = environment ?? new Dictionary<string, string>();
         _maximumOutputCharacters = maximumOutputCharacters;
+    }
+
+    internal WorkflowScriptInvoker(Func<Process, List<Process>> captureDescendants)
+        : this()
+    {
+        _captureDescendants = captureDescendants ?? throw new ArgumentNullException(nameof(captureDescendants));
     }
 
     /// <summary>
@@ -96,12 +103,15 @@ public sealed class WorkflowScriptInvoker
         // Killing at cancellation also closes inherited pipes; merely cancelling WaitForExitAsync leaves the process running.
         Task? termination = null;
         using var registration = stop.Token.Register(() => termination = TerminateTreeAsync(process));
+        using var descendants = new DescendantTracker(process, _captureDescendants);
         var stdout = ReadBoundedAsync(process.StandardOutput, "stdout", stop);
         var stderr = ReadBoundedAsync(process.StandardError, "stderr", stop);
         var write = WriteInputAsync(process, envelope, stop.Token);
+        var observe = descendants.ObserveUntilExitAsync(stop);
         try
         {
             await Task.WhenAll(stdout, stderr, write, process.WaitForExitAsync(stop.Token)).ConfigureAwait(false);
+            await observe.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
             {
@@ -109,11 +119,16 @@ public sealed class WorkflowScriptInvoker
                     $"Workflow script exited with code {process.ExitCode}: {await stderr.ConfigureAwait(false)}"
                 );
             }
+            await descendants.EnsureSettledAsync().ConfigureAwait(false);
             return await stdout.ConfigureAwait(false);
         }
         catch
         {
             await (termination ?? TerminateTreeAsync(process)).ConfigureAwait(false);
+            if (descendants.Failure is { } treeError)
+            {
+                throw treeError;
+            }
             cancellationToken.ThrowIfCancellationRequested();
             // An output-limit failure cancels its sibling reads. Preserve its useful diagnosis instead of a sibling cancellation.
             if (stdout.Exception?.GetBaseException() is InvalidOperationException outputError)
@@ -342,9 +357,120 @@ public sealed class WorkflowScriptInvoker
                 var fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
                 parents[pid] = int.Parse(fields[1], System.Globalization.CultureInfo.InvariantCulture);
             }
-            catch (IOException) { }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
         }
         return parents;
+    }
+
+    /// <summary>
+    /// Keeps handles to every descendant observed while the script parent is alive. A successful parent cannot release
+    /// the workspace while one of those handles is still live: the child is terminated and the workspace is quarantined.
+    /// </summary>
+    private sealed class DescendantTracker(Process root, Func<Process, List<Process>> capture) : IDisposable
+    {
+        private readonly Process _root = root;
+        private readonly Dictionary<int, Process> _descendants = [];
+        public WorkflowScriptTerminationException? Failure { get; private set; }
+
+        public async Task ObserveUntilExitAsync(CancellationTokenSource stop)
+        {
+            try
+            {
+                while (!_root.HasExited)
+                {
+                    Observe();
+                    await Task.Delay(TimeSpan.FromMilliseconds(5)).ConfigureAwait(false);
+                }
+            }
+            catch (WorkflowScriptTerminationException exception)
+            {
+                Failure = exception;
+                if (!stop.IsCancellationRequested)
+                {
+                    await stop.CancelAsync().ConfigureAwait(false);
+                }
+                throw;
+            }
+        }
+
+        public async Task EnsureSettledAsync()
+        {
+            var live = _descendants.Values.Where(process => !process.HasExited).ToArray();
+            if (live.Length == 0)
+            {
+                return;
+            }
+
+            using var gracePeriod = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            try
+            {
+                await Task.WhenAll(live.Select(process => process.WaitForExitAsync(gracePeriod.Token)))
+                    .ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) { }
+
+            await TerminateAsync().ConfigureAwait(false);
+            throw new WorkflowScriptTerminationException(
+                "A successful workflow script left child processes running; the workspace cannot be reused."
+            );
+        }
+
+        public async Task TerminateAsync()
+        {
+            foreach (var process in _descendants.Values.Reverse())
+            {
+                TryKill(process);
+            }
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await Task.WhenAll(_descendants.Values.Select(process => process.WaitForExitAsync(timeout.Token)))
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new WorkflowScriptTerminationException(
+                    "Script child termination could not be confirmed; the workspace cannot be reused."
+                );
+            }
+        }
+
+        private void Observe()
+        {
+            List<Process> observed;
+            try
+            {
+                observed = capture(_root);
+            }
+            catch (WorkflowScriptTerminationException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new WorkflowScriptTerminationException(
+                    "Could not establish the script process tree; the workspace cannot be reused."
+                );
+            }
+            foreach (var process in observed)
+            {
+                if (!_descendants.TryAdd(process.Id, process))
+                {
+                    process.Dispose();
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var process in _descendants.Values)
+            {
+                process.Dispose();
+            }
+        }
     }
 
     private static Dictionary<int, int> WindowsParents()

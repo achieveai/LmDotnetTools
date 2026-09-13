@@ -110,6 +110,53 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_parent_that_leaves_a_child_quarantines_the_workspace()
+    {
+        Write(
+            "detached.py",
+            "import subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nopen('child.txt','w').write(str(child.pid))\ntime.sleep(.2)\n"
+        );
+        Write("ok.py", "print('{}')\n");
+        var invoker = new WorkflowScriptInvoker();
+
+        await invoker
+            .Invoking(x => x.InvokeAsync("detached.py", _directory, Context(), new JsonObject(), default))
+            .Should()
+            .ThrowAsync<WorkflowScriptTerminationException>()
+            .WithMessage("*left child processes running*");
+
+        var childId = int.Parse(await File.ReadAllTextAsync(Path.Combine(_directory, "child.txt")));
+        await WaitForExitAsync(childId);
+        await invoker
+            .Invoking(x => x.InvokeAsync("ok.py", _directory, Context(), new JsonObject(), default))
+            .Should()
+            .ThrowAsync<WorkflowScriptTerminationException>()
+            .WithMessage("*Workspace remains unavailable*");
+    }
+
+    [Fact]
+    public async Task Unreadable_process_tree_enumeration_quarantines_the_workspace()
+    {
+        Write("wait.py", "import time\ntime.sleep(60)\n");
+        Write("ok.py", "print('{}')\n");
+        var invoker = new WorkflowScriptInvoker(_ =>
+            throw new UnauthorizedAccessException("The Linux process table cannot be read.")
+        );
+
+        await invoker
+            .Invoking(x => x.InvokeAsync("wait.py", _directory, Context(), new JsonObject(), default))
+            .Should()
+            .ThrowAsync<WorkflowScriptTerminationException>()
+            .WithMessage("*Could not establish the script process tree*");
+
+        await invoker
+            .Invoking(x => x.InvokeAsync("ok.py", _directory, Context(), new JsonObject(), default))
+            .Should()
+            .ThrowAsync<WorkflowScriptTerminationException>()
+            .WithMessage("*Workspace remains unavailable*");
+    }
+
+    [Fact]
     public async Task Concurrent_scripts_for_one_workspace_do_not_overlap()
     {
         Write(
@@ -152,6 +199,27 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         while (!File.Exists(Path.Combine(_directory, name)))
         {
+            await Task.Delay(25, timeout.Token);
+        }
+    }
+
+    private static async Task WaitForExitAsync(int processId)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                if (process.HasExited)
+                {
+                    return;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return;
+            }
             await Task.Delay(25, timeout.Token);
         }
     }
