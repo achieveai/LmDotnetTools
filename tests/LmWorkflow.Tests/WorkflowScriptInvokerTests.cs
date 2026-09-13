@@ -123,7 +123,7 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     {
         Write(
             "parent.py",
-            "import os, subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\nopen('child.txt','w').write(str(child.pid))\ntime.sleep(60)\n"
+            "import os, subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\ntime.sleep(60)\n"
         );
         using var cancellation = new CancellationTokenSource();
         var invoker = new WorkflowScriptInvoker();
@@ -145,7 +145,7 @@ public sealed class WorkflowScriptInvokerTests : IDisposable
     {
         Write(
             "detached.py",
-            "import subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nopen('child.txt','w').write(str(child.pid))\ntime.sleep(.2)\n"
+            "import subprocess, sys, time\nchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwith open('child.txt','w') as f:\n f.write(str(child.pid))\ntime.sleep(.2)\n"
         );
         Write("ok.py", "print('{}')\n");
         var invoker = new WorkflowScriptInvoker();

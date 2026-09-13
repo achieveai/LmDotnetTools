@@ -324,10 +324,6 @@ public sealed class WorkflowScriptInvoker
 
     private static List<Process> CaptureDescendants(Process root)
     {
-        if (root.HasExited)
-        {
-            return [];
-        }
         var parents = OperatingSystem.IsWindows() ? WindowsParents() : LinuxParents();
         var descendants = new List<Process>();
         var ids = new HashSet<int> { root.Id };
@@ -400,6 +396,10 @@ public sealed class WorkflowScriptInvoker
                     Observe();
                     await Task.Delay(TimeSpan.FromMilliseconds(5)).ConfigureAwait(false);
                 }
+                // Windows retains a child's recorded parent ID after the parent exits. One final snapshot closes
+                // the race between the last poll and the parent's exit, so the success path cannot reuse a
+                // workspace while that child is still running.
+                Observe();
             }
             catch (WorkflowScriptTerminationException exception)
             {
