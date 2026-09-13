@@ -67,12 +67,22 @@ public sealed class RequestResponseDumpWriter
 
     public void AppendResponseChunk<T>(T payload)
     {
+        AppendRawResponseLine(JsonSerializer.Serialize(payload, _jsonOptions));
+    }
+
+    /// <summary>
+    ///     Appends one line to the response dump exactly as given. For transports that hand us the
+    ///     wire payload as text (SSE <c>data:</c> lines, WebSocket frames), this keeps the dump
+    ///     byte-faithful to what the server sent instead of a re-serialization of the parsed event.
+    /// </summary>
+    public void AppendRawResponseLine(string line)
+    {
         if (_disableFurtherChunkWrites)
         {
             return;
         }
 
-        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+        var json = line;
         ExecuteIoBestEffort(
             () =>
             {

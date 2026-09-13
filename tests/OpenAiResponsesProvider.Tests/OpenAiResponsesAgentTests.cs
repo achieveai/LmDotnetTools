@@ -1,3 +1,5 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
@@ -248,6 +250,64 @@ public sealed class OpenAiResponsesAgentTests
             );
         textMessages[0].Role.Should().Be(Role.Assistant);
         textMessages[0].Text.Trim().Split(' ').Should().HaveCount(6);
+    }
+
+    [Fact]
+    public async Task Agent_with_RequestResponseDumpFileName_dumps_request_and_raw_events_verbatim()
+    {
+        // ?record=1 in the sample sets RequestResponseDumpFileName; OpenAgent/AnthropicAgent honour it
+        // and this agent silently did not. The response dump must be the wire payloads as received —
+        // one per line, byte-for-byte — so a tool-call argument seen in the dump is what the server
+        // sent, not what the parser rebuilt.
+        await using var rig = TestRig.Create();
+        var dumpDir = Path.Combine(Path.GetTempPath(), $"responses-dump-{Guid.NewGuid():N}");
+        var dumpBase = Path.Combine(dumpDir, "turn.llm");
+        const string prompt = """
+            <|instruction_start|>
+            {"instruction_chain":[
+                {"messages":[{"tool_call":[{"name":"search","args":{"q":"x"}}]}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        try
+        {
+            var stream = await rig.Agent.GenerateReplyStreamingAsync(
+                [new TextMessage { Role = Role.User, Text = prompt }],
+                new GenerateReplyOptions { RequestResponseDumpFileName = dumpBase }
+            );
+            var calls = new List<ToolsCallMessage>();
+            await foreach (var m in stream)
+            {
+                if (m is ToolsCallMessage tc)
+                {
+                    calls.Add(tc);
+                }
+            }
+
+            var request = JsonDocument.Parse(File.ReadAllText(dumpBase + ".request.txt")).RootElement;
+            request.GetProperty("stream").GetBoolean().Should().BeTrue();
+            request.GetProperty("input").GetArrayLength().Should().Be(1);
+
+            var lines = File.ReadAllLines(dumpBase + ".response.txt");
+            lines.Should().NotBeEmpty();
+            var types = lines.Select(l => JsonDocument.Parse(l).RootElement.GetProperty("type").GetString()).ToList();
+            types.Should().Contain("response.completed");
+
+            var wireArguments = lines
+                .Select(l => JsonDocument.Parse(l).RootElement)
+                .Where(e => e.GetProperty("type").GetString() == "response.function_call_arguments.done")
+                .Select(e => e.GetProperty("arguments").GetString())
+                .Single();
+            calls.Should().ContainSingle().Which.ToolCalls.Single().FunctionArgs.Should().Be(wireArguments);
+        }
+        finally
+        {
+            if (Directory.Exists(dumpDir))
+            {
+                Directory.Delete(dumpDir, recursive: true);
+            }
+        }
     }
 
     private sealed class TestRig : IAsyncDisposable
