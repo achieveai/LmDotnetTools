@@ -44,6 +44,17 @@ function Get-OrdinalPaths {
     return @($sorted)
 }
 
+function Get-DeclarationSourceHash {
+    param([string]$SourceText)
+    # A declaration policy follows the source across Windows and Linux. Roslyn preserves the source's
+    # original newline tokens in ToFullString(), so hash the canonical LF spelling rather than the checkout's
+    # CRLF/LF bytes. Bare CR is normalized too for a deterministic legacy-file result.
+    $canonical = $SourceText -replace "`r`n?", "`n"
+    return [Convert]::ToHexString(
+        [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($canonical))
+    )
+}
+
 $tracked = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 foreach ($path in @(Get-GitPaths -GitArguments @("--cached"))) { [void]$tracked.Add($path) }
 $paths = @(Get-OrdinalPaths -Paths (@($tracked) + @(Get-GitPaths -GitArguments @("--others", "--exclude-standard"))))
@@ -386,7 +397,7 @@ if ($IncludeDeclarations) {
                         schemaVersion = 2; kind = "test-declaration"; containerKind = "dotnet-project"; path = $container.path
                         id = "dotnet|$($container.path)|$methodIdentity"
                         sourcePath = $source; sourceLine = $method.GetLocation().GetLineSpan().StartLinePosition.Line + 1
-                        sourceHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($method.ToFullString())))
+                        sourceHash = Get-DeclarationSourceHash -SourceText $method.ToFullString()
                         testFramework = if ($testAttributes -contains "TestMethod" -or $testAttributes -contains "DataTestMethod") { "mstest" } else { "xunit" }
                         namespace = $namespaceName; declaringType = $typeName; method = $method.Identifier.ValueText
                         fullyQualifiedName = $fullyQualifiedName; executableFullyQualifiedNames = @($executableFullyQualifiedNames)

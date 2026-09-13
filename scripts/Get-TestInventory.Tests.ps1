@@ -193,6 +193,19 @@ public sealed class PartialConcrete : PartialBase {}
     Assert-True ($scriptCase.testFramework -eq "script" -and $scriptCase.parameterization -eq "atomic") "Standalone assertion scripts stay atomic and are parsed, not invoked."
     $declarationRepeat = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     Assert-True (($declarationLines -join "`n") -ceq ($declarationRepeat -join "`n")) "Declaration output is ordinal and deterministic."
+    $baselineHash = ($coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline").sourceHash
+    $checksPath = Join-Path $fixture "tests/Core/Checks.cs"
+    [System.IO.File]::WriteAllText($checksPath, ([System.IO.File]::ReadAllText($checksPath)).Replace("`n", "`r`n"))
+    $crlfDeclarations = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json })
+    $crlfHash = (
+        $crlfDeclarations |
+        Where-Object {
+            $_.kind -eq "test-declaration" -and
+            $_.path -eq "tests/Core/Core.csproj" -and
+            $_.fullyQualifiedName -eq "Contracts.Checks.Baseline"
+        }
+    ).sourceHash
+    Assert-True ($crlfHash -ceq $baselineHash) "Declaration source hashes must be identical for LF and CRLF checkouts."
 
     Remove-Item -LiteralPath (Join-Path $fixture "tests/Core/Core.csproj") -Force
     $deleted = Get-Inventory | Where-Object path -eq "tests/Core/Core.csproj"
