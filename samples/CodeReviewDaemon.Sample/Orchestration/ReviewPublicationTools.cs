@@ -111,17 +111,7 @@ internal sealed class ReviewPublicationTools(
             {
                 throw new InvalidOperationException("This publication scope is no longer active.");
             }
-            if (livePostingAuthorized)
-            {
-                var lifecycle = await provider.GetPrStateAsync(repo, run.PrId, ct).ConfigureAwait(false);
-                var head = await provider.GetCurrentHeadShaAsync(repo, run.PrId, ct).ConfigureAwait(false);
-                if (lifecycle != PrLifecycle.Open || !string.Equals(head, run.HeadSha, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        "Publication requires the current open PR at the admitted head."
-                    );
-                }
-            }
+            await EnsureCurrentPrAsync(ct).ConfigureAwait(false);
             if (!IsActive())
             {
                 throw new InvalidOperationException("This publication scope is no longer active.");
@@ -153,7 +143,8 @@ internal sealed class ReviewPublicationTools(
                         body,
                         livePostingAuthorized,
                         RequireConfirmedOutcome: true,
-                        IsStillAuthorized: IsActive
+                        IsStillAuthorized: IsActive,
+                        VerifyCurrentPr: EnsureCurrentPrAsync
                     ),
                     ct
                 )
@@ -168,6 +159,16 @@ internal sealed class ReviewPublicationTools(
         finally
         {
             _actions.Release();
+        }
+    }
+
+    private async Task EnsureCurrentPrAsync(CancellationToken cancellationToken)
+    {
+        var lifecycle = await provider.GetPrStateAsync(repo, run.PrId, cancellationToken).ConfigureAwait(false);
+        var head = await provider.GetCurrentHeadShaAsync(repo, run.PrId, cancellationToken).ConfigureAwait(false);
+        if (lifecycle != PrLifecycle.Open || !string.Equals(head, run.HeadSha, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Publication requires the current open PR at the admitted head.");
         }
     }
 }

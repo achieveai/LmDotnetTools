@@ -119,6 +119,7 @@ internal sealed class ReviewPoster
         // Safe default: no live authorization → record as collect-only and never touch the provider.
         if (!request.LivePostingAuthorized)
         {
+            await VerifyCurrentPrAsync(request, cancellationToken).ConfigureAwait(false);
             _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Collected);
             _logger.LogInformation(
                 "Outbox {OutboxId} for key {Key} recorded collect-only (no live posting authorized).",
@@ -162,13 +163,30 @@ internal sealed class ReviewPoster
 
         // Hold the lease. Idempotent: a crashed prior attempt may already sit in Sending, and an authorized
         // retry of a previously collect-only run reopens its Collected row from here.
+        var claimed = false;
         if (entry.Status is OutboxStatus.Pending or OutboxStatus.Collected)
         {
-            var claimed = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Sending);
+            claimed = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Sending);
             if (request.RequireConfirmedOutcome && !claimed)
             {
                 throw new ReviewPublicationUncertainException("Another attempt owns this publication action.");
             }
+        }
+
+        // The admission check may have happened before the agent chose this action or before the dedupe scan.
+        // Re-read after taking the lease and immediately before the provider write. If the PR changed in that
+        // window, release only a lease claimed by this invocation; no uncertain send was attempted.
+        try
+        {
+            await VerifyCurrentPrAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (claimed)
+            {
+                _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, entry.Status);
+            }
+            throw;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -272,6 +290,14 @@ internal sealed class ReviewPoster
             );
         }
     }
+
+    private static async Task VerifyCurrentPrAsync(PostReviewRequest request, CancellationToken cancellationToken)
+    {
+        if (request.VerifyCurrentPr is not null)
+        {
+            await request.VerifyCurrentPr(cancellationToken).ConfigureAwait(false);
+        }
+    }
 }
 
 internal sealed class ReviewPublicationUncertainException(string message) : InvalidOperationException(message);
@@ -287,7 +313,8 @@ internal sealed record PostReviewRequest(
     string Body,
     bool LivePostingAuthorized = false,
     bool RequireConfirmedOutcome = false,
-    [property: JsonIgnore] Func<bool>? IsStillAuthorized = null
+    [property: JsonIgnore] Func<bool>? IsStillAuthorized = null,
+    [property: JsonIgnore] Func<CancellationToken, Task>? VerifyCurrentPr = null
 );
 
 /// <summary>How a <see cref="ReviewPoster.PostReviewAsync"/> call resolved.</summary>

@@ -387,6 +387,70 @@ public sealed class ReviewPosterTests : LoggingTestBase
         publisher.PostCount.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ScopedPublication_RechecksAChangedHeadAfterPreflight(bool livePostingAuthorized)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var provider = new PublicationStateProvider();
+        provider.AfterFirstHeadRead = () => provider.Head = "new-head";
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            provider,
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            livePostingAuthorized,
+            () => true
+        );
+
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("summary", "body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*current open PR at the admitted head*");
+
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().ContainSingle().Which.Status.Should().Be(OutboxStatus.Pending);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ScopedPublication_RechecksAClosedPrAfterPreflight(bool livePostingAuthorized)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var publisher = new FakeReviewCommentPublisher();
+        var provider = new PublicationStateProvider();
+        provider.AfterFirstHeadRead = () => provider.Lifecycle = PrLifecycle.Abandoned;
+        var tools = new ReviewPublicationTools(
+            run,
+            Repo,
+            "round-1",
+            Poster(publisher, store),
+            provider,
+            new DiffManifest(run.BaseSha, run.HeadSha, []),
+            livePostingAuthorized,
+            () => true
+        );
+
+        await tools
+            .Invoking(t => t.PublishSummaryAsync("summary", "body", CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*current open PR at the admitted head*");
+
+        publisher.PostCount.Should().Be(0);
+        store.GetOutboxForRun(run.Id).Should().ContainSingle().Which.Status.Should().Be(OutboxStatus.Pending);
+    }
+
     [Fact]
     public async Task ScopedPublication_ExpiredScopeNeverCallsProvider()
     {
@@ -482,7 +546,10 @@ public sealed class ReviewPosterTests : LoggingTestBase
     {
         public string Provider => "github";
         public string Head { get; set; } = "head-sha";
+        public PrLifecycle Lifecycle { get; set; } = PrLifecycle.Open;
+        public Action? AfterFirstHeadRead { get; set; }
         public Action? OnHeadRead { get; set; }
+        private int _headReadCount;
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(
             PrPollRequest request,
@@ -490,12 +557,17 @@ public sealed class ReviewPosterTests : LoggingTestBase
         ) => throw new NotSupportedException();
 
         public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
-            Task.FromResult(PrLifecycle.Open);
+            Task.FromResult(Lifecycle);
 
         public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
         {
+            var head = Head;
+            if (_headReadCount++ == 0)
+            {
+                AfterFirstHeadRead?.Invoke();
+            }
             OnHeadRead?.Invoke();
-            return Task.FromResult<string?>(Head);
+            return Task.FromResult<string?>(head);
         }
     }
 
