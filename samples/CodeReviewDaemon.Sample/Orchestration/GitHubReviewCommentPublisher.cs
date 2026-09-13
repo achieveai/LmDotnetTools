@@ -60,18 +60,19 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     )
     {
         ArgumentNullException.ThrowIfNull(target);
+        target.ValidateFor(Provider);
 
-        // Walked from the LAST page backwards: this scan is the exactly-once backstop, so it must be able to
-        // see the comment a crashed prior attempt posted. That comment is the NEWEST one, and this endpoint
-        // returns oldest-first with no way to ask otherwise, so a forward walk finds it only after paging
-        // through the entire conversation — and under the page cap, never. It would then report "not posted"
-        // for a comment that exists and the daemon would post a duplicate.
-        await foreach (var comment in EnumerateNewestFirstAsync(CommentsUrl(target), cancellationToken))
+        var comments =
+            target.Kind == ReviewCommentKind.Summary
+                ? EnumerateNewestFirstAsync(SummaryCommentsUrl(target), cancellationToken)
+                : EnumeratePagedAsync($"{ReviewCommentsUrl(target)}?sort=created&direction=desc", cancellationToken);
+        await foreach (var comment in comments)
         {
             var body = comment.TryGetProperty("body", out var b) ? b.GetString() : null;
             if (IdempotencyMarker.Matches(body, idempotencyKey))
             {
-                return new PostedComment(comment.GetProperty("id").GetRawText());
+                var id = ProviderIdOf(comment) ?? throw new JsonException("GitHub comment response has no numeric id.");
+                return new PostedComment(id, CanonicalCommentId(target.Kind, id));
             }
         }
 
@@ -86,14 +87,37 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     )
     {
         ArgumentNullException.ThrowIfNull(target);
+        target.ValidateFor(Provider);
+
+        var url = target.Kind switch
+        {
+            ReviewCommentKind.Summary => SummaryCommentsUrl(target),
+            ReviewCommentKind.Inline => ReviewCommentsUrl(target),
+            ReviewCommentKind.Reply => $"{ReviewCommentsUrl(target)}/{target.ProviderThreadId}/replies",
+            _ => throw new ArgumentOutOfRangeException(nameof(target)),
+        };
 
         using var request = await BuildRequestAsync(
             HttpMethod.Post,
-            CommentsUrl(target),
+            url,
             SandboxOperation.PostReviewComment,
             cancellationToken
         );
-        request.Content = JsonContent.Create(new { body = IdempotencyMarker.Embed(body, idempotencyKey) });
+        var markedBody = IdempotencyMarker.Embed(body, idempotencyKey);
+        request.Content = target.Kind switch
+        {
+            ReviewCommentKind.Inline => JsonContent.Create(
+                new
+                {
+                    body = markedBody,
+                    commit_id = target.CommitId,
+                    path = target.Path,
+                    line = target.Line,
+                    side = target.Side == ReviewCommentSide.Left ? "LEFT" : "RIGHT",
+                }
+            ),
+            _ => JsonContent.Create(new { body = markedBody }),
+        };
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -102,11 +126,17 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var id = document.RootElement.GetProperty("id").GetRawText();
         _logger.LogInformation("Posted GitHub review comment {CommentId} on PR {PrId}.", id, target.PrId);
-        return new PostedComment(id);
+        return new PostedComment(id, CanonicalCommentId(target.Kind, id));
     }
 
-    private static string CommentsUrl(ReviewCommentTarget target) =>
-        $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/issues/{target.PrId}/comments";
+    private static string RepoUrl(ReviewCommentTarget target) =>
+        $"{BaseUrl}/repos/{Segment(target.Repo.OrgOrOwner)}/{Segment(target.Repo.RepoName)}";
+
+    private static string SummaryCommentsUrl(ReviewCommentTarget target) =>
+        $"{RepoUrl(target)}/issues/{target.PrId}/comments";
+
+    private static string ReviewCommentsUrl(ReviewCommentTarget target) =>
+        $"{RepoUrl(target)}/pulls/{target.PrId}/comments";
 
     public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
@@ -116,7 +146,7 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         ArgumentNullException.ThrowIfNull(target);
 
         var results = new List<ExistingReviewComment>();
-        var repoBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}";
+        var repoBase = RepoUrl(target);
         var pullsBase = $"{repoBase}/pulls/{target.PrId}";
 
         // Review-level summaries (the top-level "Reviewed PR X…" bodies). Fetched FIRST so we can collect the ids of
@@ -126,7 +156,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // endpoint takes no sort/direction): missing a recent draft would let its inline comments through and
         // suppress the submitted review they belong to, and the recent drafts are the ones that can still do that.
         var pendingReviewIds = new HashSet<long>();
-        await foreach (var review in EnumerateNewestFirstAsync($"{pullsBase}/reviews", cancellationToken))
+        await foreach (
+            var review in EnumerateNewestFirstAsync($"{pullsBase}/reviews", cancellationToken, requireComplete: true)
+        )
         {
             if (IsPendingReview(review))
             {
@@ -148,7 +180,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                         Trim(body),
                         AuthorOf(review),
                         IsActive: true,
-                        PublishedAt: TimeOf(review, "submitted_at")
+                        PublishedAt: TimeOf(review, "submitted_at"),
+                        ProviderCommentId: CanonicalCommentId("review-submission", ProviderIdOf(review)),
+                        ProviderVersion: VersionOf(review, "updated_at", "submitted_at")
                     )
                 );
             }
@@ -163,7 +197,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // per-line comments to the authenticated author, and letting one seed dedup would suppress its valid
         // submitted replacement.
         await foreach (
-            var comment in EnumeratePagedAsync($"{pullsBase}/comments?sort=created&direction=desc", cancellationToken)
+            var comment in EnumeratePagedAsync(
+                $"{pullsBase}/comments?sort=created&direction=desc",
+                cancellationToken,
+                requireComplete: true
+            )
         )
         {
             var body = GetString(comment, "body");
@@ -185,7 +223,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                     AuthorOf(comment),
                     IsActive: true,
                     PublishedAt: TimeOf(comment, "created_at"),
-                    ThreadId: ThreadIdOf(comment)
+                    ThreadId: ThreadIdOf(comment),
+                    ProviderCommentId: CanonicalCommentId("review-comment", ProviderIdOf(comment)),
+                    ProviderVersion: VersionOf(comment, "updated_at", "created_at")
                 )
             );
         }
@@ -198,7 +238,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // keeping the OLDEST window is what makes the daemon repost a resolved finding or leave a question
         // unanswered — precisely the discussion still under argument is what a forward walk drops.
         await foreach (
-            var comment in EnumerateNewestFirstAsync($"{repoBase}/issues/{target.PrId}/comments", cancellationToken)
+            var comment in EnumerateNewestFirstAsync(
+                $"{repoBase}/issues/{target.PrId}/comments",
+                cancellationToken,
+                requireComplete: true
+            )
         )
         {
             var body = GetString(comment, "body");
@@ -212,7 +256,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                         AuthorOf(comment),
                         IsActive: true,
                         PublishedAt: TimeOf(comment, "created_at"),
-                        ThreadId: ThreadIdOf(comment)
+                        ThreadId: ThreadIdOf(comment),
+                        ProviderCommentId: CanonicalCommentId("issue-comment", ProviderIdOf(comment)),
+                        ProviderVersion: VersionOf(comment, "updated_at", "created_at")
                     )
                 );
             }
@@ -247,12 +293,18 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// </summary>
     private async IAsyncEnumerable<JsonElement> EnumeratePagedAsync(
         string url,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
+        bool requireComplete = false
     )
     {
         for (var page = 1; page <= MaxListPages; page++)
         {
             using var pageResult = await FetchPageAsync(url, page, cancellationToken);
+            if (requireComplete && pageResult.LastPage > MaxListPages)
+            {
+                throw new InvalidDataException("GitHub comment listing exceeds the complete-read page limit.");
+            }
+
             var count = 0;
             foreach (var element in pageResult.Document.RootElement.EnumerateArray())
             {
@@ -263,6 +315,13 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             if (count < PageSize)
             {
                 yield break; // a short page is the last page
+            }
+
+            if (requireComplete && page == MaxListPages)
+            {
+                throw new InvalidDataException(
+                    "GitHub comment listing may continue beyond the complete-read page limit."
+                );
             }
         }
     }
@@ -288,11 +347,16 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// </summary>
     private async IAsyncEnumerable<JsonElement> EnumerateNewestFirstAsync(
         string url,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
+        bool requireComplete = false
     )
     {
         using var first = await FetchPageAsync(url, 1, cancellationToken);
         var lastPage = first.LastPage;
+        if (requireComplete && lastPage > MaxListPages)
+        {
+            throw new InvalidDataException("GitHub comment listing exceeds the complete-read page limit.");
+        }
 
         if (lastPage <= 1)
         {
@@ -402,6 +466,14 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     private static string? GetString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String ? v.GetString() : null;
 
+    private static string? ProviderIdOf(JsonElement element) =>
+        element.TryGetProperty("id", out var id) && id.ValueKind is JsonValueKind.Number ? id.GetRawText() : null;
+
+    private static string CanonicalCommentId(ReviewCommentKind kind, string id) =>
+        CanonicalCommentId(kind == ReviewCommentKind.Summary ? "issue-comment" : "review-comment", id)!;
+
+    private static string? CanonicalCommentId(string surface, string? id) => id is null ? null : surface + ":" + id;
+
     /// <summary>Reads a numeric field (e.g. a review's <c>id</c> or a comment's <c>pull_request_review_id</c>) as a
     /// long, so inline comments can be correlated back to the PENDING draft review they belong to.</summary>
     private static long? LongOf(JsonElement element, string name) =>
@@ -432,6 +504,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             ? dt
             : null;
 
+    private static string? VersionOf(JsonElement element, string preferred, string fallback) =>
+        GetString(element, preferred) ?? GetString(element, fallback);
+
     /// <summary>
     /// The thread a review comment belongs to: its reply-root (<c>in_reply_to_id</c>) if it is a reply,
     /// otherwise its own <c>id</c> — so a finding and its replies group under one conversation.
@@ -453,6 +528,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// drift into showing the reviewer different amounts of the same conversation (#225).
     /// </summary>
     private static string Trim(string body) => ExistingCommentBody.Summarize(body);
+
+    private static string Segment(string value) => Uri.EscapeDataString(value);
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method,

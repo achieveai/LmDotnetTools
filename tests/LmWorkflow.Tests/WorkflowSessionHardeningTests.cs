@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using FluentAssertions;
@@ -21,6 +22,41 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 /// </summary>
 public class WorkflowSessionHardeningTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Automatic_yaml_is_rejected_before_controller_start_or_resume(bool resume)
+    {
+        var definition = SimpleWorkflow
+            .DeserializeYaml(global::LmWorkflow.Tests.TypedWorkflowContractTests.Definition)
+            .ToDefinition();
+        var controller = new Mock<IStreamingAgent>(MockBehavior.Strict);
+        var store = new InMemoryWorkflowStore();
+        Func<Task<WorkflowRunHandle>> invoke;
+        if (resume)
+        {
+            await store.SaveAsync(
+                "automatic",
+                new WorkflowInstanceSnapshot { InstanceId = "automatic", Definition = definition }
+            );
+            invoke = () => WorkflowSession.ResumeAsync("automatic", store, EmptyOptions(), controller.Object, "thread");
+        }
+        else
+            invoke = () =>
+                WorkflowSession.StartAsync(
+                    "review",
+                    null,
+                    definition,
+                    EmptyOptions(),
+                    controller.Object,
+                    "thread",
+                    store,
+                    "automatic"
+                );
+        await invoke.Should().ThrowAsync<WorkflowValidationException>().WithMessage("*RunAutomaticAsync*");
+        controller.Invocations.Should().BeEmpty();
+    }
+
     // ---- FIX: thread the ILogger through the session -------------------------------------------
 
     [Fact]

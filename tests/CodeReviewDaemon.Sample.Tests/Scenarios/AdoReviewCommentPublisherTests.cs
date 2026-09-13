@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -54,7 +55,7 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Post,
             "/pullRequests/7/threads",
-            """{"id":555}""",
+            """{"id":555,"comments":[{"id":1}]}""",
             HttpStatusCode.Created
         );
 
@@ -62,6 +63,7 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
             .PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
 
         posted.ProviderResponseId.Should().Be("555");
+        posted.ProviderCommentId.Should().Be("555/1");
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Post);
         request
@@ -78,18 +80,84 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task PostInlineComment_creates_a_thread_with_the_exact_right_side_target()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/pullRequests/7/threads",
+            """{"id":600,"comments":[{"id":1}]}""",
+            HttpStatusCode.OK
+        );
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Inline,
+            Path = "src/Foo.cs",
+            Line = 42,
+            Side = ReviewCommentSide.Right,
+        };
+
+        var posted = await Publisher(handler).PostReviewCommentAsync(target, Key, "Fix this", CancellationToken.None);
+
+        posted.ProviderResponseId.Should().Be("600");
+        posted.ProviderCommentId.Should().Be("600/1");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        var json = JsonDocument.Parse(request.Body!).RootElement;
+        json.GetProperty("comments")[0]
+            .GetProperty("content")
+            .GetString()
+            .Should()
+            .Contain($"<!-- idempotency-key:{Key} -->");
+        var context = json.GetProperty("threadContext");
+        context.GetProperty("filePath").GetString().Should().Be("/src/Foo.cs");
+        context.GetProperty("rightFileStart").GetProperty("line").GetInt32().Should().Be(42);
+        context.GetProperty("rightFileEnd").GetProperty("line").GetInt32().Should().Be(42);
+        context.TryGetProperty("leftFileStart", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PostReply_uses_the_exact_thread_and_parent_comment()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/pullRequests/7/threads/600/comments",
+            """{"id":2}""",
+            HttpStatusCode.OK
+        );
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Reply,
+            ProviderThreadId = "600",
+            ReplyToProviderCommentId = "1",
+        };
+
+        var posted = await Publisher(handler).PostReviewCommentAsync(target, Key, "Addressed", CancellationToken.None);
+
+        posted.ProviderResponseId.Should().Be("2");
+        posted.ProviderCommentId.Should().Be("600/2");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.AbsolutePath.Should().EndWith("/pullRequests/7/threads/600/comments");
+        var json = JsonDocument.Parse(request.Body!).RootElement;
+        json.GetProperty("content").GetString().Should().Contain($"<!-- idempotency-key:{Key} -->");
+        json.GetProperty("parentCommentId").GetInt32().Should().Be(1);
+        json.GetProperty("commentType").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
     public async Task FindPostedComment_returns_the_thread_carrying_the_marker()
     {
         var listJson = JsonSerializer.Serialize(
             new
             {
-                value = new[]
+                value = new object[]
                 {
                     new { id = 100, comments = new[] { new { content = "unrelated thread" } } },
                     new
                     {
                         id = 200,
-                        comments = new[] { new { content = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" } },
+                        comments = new[]
+                        {
+                            new { id = 3, content = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" },
+                        },
                     },
                 },
             }
@@ -100,6 +168,54 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
 
         found.Should().NotBeNull();
         found!.ProviderResponseId.Should().Be("200");
+        found.ProviderCommentId.Should().Be("200/3");
+    }
+
+    [Fact]
+    public async Task FindPostedReply_scans_only_the_exact_thread_comments()
+    {
+        var listJson = JsonSerializer.Serialize(
+            new { value = new[] { new { id = 2, content = $"Addressed\n\n<!-- idempotency-key:{Key} -->" } } }
+        );
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullRequests/7/threads/600/comments",
+            listJson
+        );
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Reply,
+            ProviderThreadId = "600",
+            ReplyToProviderCommentId = "1",
+        };
+
+        var found = await Publisher(handler).FindPostedCommentAsync(target, Key, CancellationToken.None);
+
+        found.Should().Be(new PostedComment("2", "600/2"));
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(null, "1")]
+    [InlineData("", "1")]
+    [InlineData("0", "1")]
+    [InlineData("600/comments/2", "1")]
+    [InlineData("600", null)]
+    [InlineData("600", "0")]
+    public async Task Reply_rejects_unsafe_provider_ids_before_HTTP(string? threadId, string? commentId)
+    {
+        var handler = new FakeHttpMessageHandler();
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Reply,
+            ProviderThreadId = threadId,
+            ReplyToProviderCommentId = commentId,
+        };
+
+        var act = () => Publisher(handler).PostReviewCommentAsync(target, Key, "body", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
@@ -140,19 +256,36 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
                 {
                     new
                     {
+                        id = 10,
                         threadContext = new { filePath = "/src/Foo.cs", rightFileStart = new { line = 42 } },
                         comments = new object[]
                         {
-                            new { content = "Must — null deref here", author = new { displayName = "Revobot" } },
+                            new
+                            {
+                                id = 4,
+                                content = "Must — null deref here",
+                                author = new { displayName = "Revobot" },
+                            },
                         },
                     },
                     new
                     {
+                        id = 11,
                         // no thread context (PR-level) + one blank comment that must be skipped
                         comments = new object[]
                         {
-                            new { content = "General note", author = new { displayName = "Alice" } },
-                            new { content = "   ", author = new { displayName = "Revobot" } },
+                            new
+                            {
+                                id = 1,
+                                content = "General note",
+                                author = new { displayName = "Alice" },
+                            },
+                            new
+                            {
+                                id = 2,
+                                content = "   ",
+                                author = new { displayName = "Revobot" },
+                            },
                         },
                     },
                 },
@@ -166,9 +299,55 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         existing
             .Should()
             .ContainSingle(e =>
-                e.Path == "/src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "Revobot"
+                e.Path == "/src/Foo.cs"
+                && e.Line == "42"
+                && e.Body.Contains("null deref")
+                && e.Author == "Revobot"
+                && e.ProviderCommentId == "10/4"
             );
-        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("General note") && e.Author == "Alice");
+        existing
+            .Should()
+            .ContainSingle(e =>
+                e.Path == null
+                && e.Body.Contains("General note")
+                && e.Author == "Alice"
+                && e.ProviderCommentId == "11/1"
+            );
+    }
+
+    [Fact]
+    public async Task ListExisting_carries_exact_provider_content_version()
+    {
+        var json =
+            """{"value":[{"id":10,"status":"active","comments":[{"id":4,"content":"note","commentType":"text","publishedDate":"2026-07-20T10:00:00Z","lastContentUpdatedDate":"2026-07-21T11:12:13Z"}]}]}""";
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", json);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle().Which.ProviderVersion.Should().Be("2026-07-21T11:12:13Z");
+    }
+
+    [Fact]
+    public async Task ListExisting_fails_when_ado_reports_a_continuation_token()
+    {
+        var handler = new FakeHttpMessageHandler().On(
+            request =>
+                request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.Contains("/threads", StringComparison.Ordinal),
+            _ =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"value\":[]}", Encoding.UTF8, "application/json"),
+                };
+                response.Headers.TryAddWithoutValidation("x-ms-continuationtoken", "next-page");
+                return response;
+            }
+        );
+
+        var act = () => Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidDataException>();
     }
 
     [Fact]

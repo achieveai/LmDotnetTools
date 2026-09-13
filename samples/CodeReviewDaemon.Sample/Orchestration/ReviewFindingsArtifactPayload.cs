@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>One specialist finding, as a row a query can count and group rather than a line a human reads.</summary>
@@ -12,7 +10,7 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <param name="Outcome">
 /// What the shipped review did with it, in the same wire spelling the reconciliation table prints
 /// (<c>kept</c>, <c>severity-changed</c>, <c>reframed</c>, <c>merged-into</c>, <c>dropped</c>). Taken from
-/// <see cref="ReviewFindingReconciler.Wire"/> rather than from a second name for the same enum, so the
+/// the historical reconciliation writer rather than from a second name for the same enum, so the
 /// artifact and the rendered table can never disagree about what an outcome is called.
 /// </param>
 /// <param name="ShippedSeverity">The severity the shipped review assigned, or null when nothing cited it.</param>
@@ -20,7 +18,7 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <param name="SynthesisNote">The shipped review's own stated reason for the change, never a generated one.</param>
 /// <param name="MatchScore">
 /// The shared-citation count that decided <paramref name="ShippedTitle"/>, copied from
-/// <see cref="ReconciledFinding.MatchScore"/>. Zero on a <c>dropped</c> row, where nothing was scored — a
+/// the recorded match evidence. Zero on a <c>dropped</c> row, where nothing was scored — a
 /// MEASURED zero, not an absent one. <see langword="null"/> means the opposite: this row was hydrated from
 /// an artifact written before match tracing existed (schema-v1 JSON, with no <c>MatchScore</c> property at
 /// all) and <see cref="System.Text.Json"/> left the field unset rather than guessing. A row this old is
@@ -28,14 +26,14 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </param>
 /// <param name="MatchTiedCandidates">
 /// How many shipped items tied at <paramref name="MatchScore"/>, copied from
-/// <see cref="ReconciledFinding.MatchTiedCandidates"/>. Above 1 means the join broke a tie arbitrarily —
+/// the recorded match evidence. Above 1 means the join broke a tie arbitrarily —
 /// this is what <see cref="ReviewFindingsArtifactPayload.AmbiguousMatches"/> counts across the round.
 /// <see langword="null"/> for the same pre-match-tracing rows as <paramref name="MatchScore"/>, and for the
 /// same reason: a legacy row was never scored, so it cannot be reported as unambiguous either.
 /// </param>
 /// <param name="ShippedIndex">
 /// The winning shipped item's position in <c>ParseFindings(shippedReviewBody)</c>, copied from
-/// <see cref="ReconciledFinding.ShippedIndex"/> — a collision-safe identity that survives duplicate shipped
+/// the recorded shipped position — a collision-safe identity that survives duplicate shipped
 /// titles, where a title-keyed lookup would silently merge two distinct shipped items into one. <c>-1</c> is
 /// a MEASURED "no shipped item won this join" (a <c>dropped</c> row), not an absent value.
 /// <see langword="null"/> means the opposite: this row was hydrated from an artifact written before this
@@ -56,7 +54,11 @@ internal sealed record ReviewFindingRecord(
     int? MatchScore,
     int? MatchTiedCandidates,
     int? ShippedIndex
-);
+)
+{
+    /// <summary>Stable identity supplied by a typed workflow; unknown in historical prose-derived rows.</summary>
+    public string? Id { get; init; }
+}
 
 /// <summary>
 /// Per-reviewer accounting for the round trip: how many finding blocks were extracted from this reviewer's
@@ -66,7 +68,7 @@ internal sealed record ReviewFindingRecord(
 internal sealed record ReviewFindingSourceTotal(string Label, string Template, int Parsed, int Recorded);
 
 /// <summary>
-/// The round's findings as structured data — the payload of the <c>review-findings</c> artifact.
+/// Compatibility contract for historical structured findings — the payload of the <c>review-findings</c> artifact.
 /// <para>
 /// <b>Why this exists.</b> Reviews were stored as prose only. Every question about review quality —
 /// how many findings did this round produce, at what severities, how many survived to the shipped review —
@@ -75,7 +77,7 @@ internal sealed record ReviewFindingSourceTotal(string Label, string Template, i
 /// is no before to compare an after against. This is that before.
 /// </para>
 /// <para>
-/// <b>It invents no representation.</b> Every field is copied from the <see cref="ReconciledFinding"/> list
+/// <b>It invents no representation.</b> Every field is copied from the historical reconciled findings list
 /// the reconciliation artifact already builds, on the same call, from the same extraction. The artifact and
 /// the rendered <c>PR_Reconciliation_NN.md</c> are two serialisations of one list, so they cannot drift.
 /// </para>
@@ -130,7 +132,7 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// and this field is how a future reader establishes that rather than inferring it.
     /// </para>
     /// </summary>
-    public string DerivedFrom => "reviewer-transcripts-via-reconciler";
+    public string DerivedFrom { get; init; } = "reviewer-transcripts-via-reconciler";
 
     /// <summary>
     /// Findings extracted but not recorded. Zero is the only healthy value on a compared round; on an
@@ -151,76 +153,4 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// </para>
     /// </summary>
     public int AmbiguousMatches => Findings.Count(f => f.MatchTiedCandidates > 1);
-
-    /// <summary>
-    /// Projects the reconciled list the notes builder already holds. Takes both the sources and the
-    /// reconciled rows so the parsed count comes off a separate pass over the source text — a count derived
-    /// from <paramref name="reconciled"/> would agree with itself no matter what the loop dropped.
-    /// <para>
-    /// Every row this produces carries a non-null <see cref="ReviewFindingRecord.MatchScore"/>,
-    /// <see cref="ReviewFindingRecord.MatchTiedCandidates"/>, and <see cref="ReviewFindingRecord.ShippedIndex"/>
-    /// — <see langword="null"/> is reserved for rows hydrated from an artifact written before these fields
-    /// existed, and this method never reads one back in; it only ever builds from a fresh
-    /// <see cref="ReconciledFinding"/> list, whose own fields are non-nullable ints.
-    /// </para>
-    /// </summary>
-    public static ReviewFindingsArtifactPayload Build(
-        int round,
-        IReadOnlyList<ReviewFindingSource> sources,
-        IReadOnlyList<ReconciledFinding> reconciled,
-        bool compared,
-        string? promptTemplateHash
-    )
-    {
-        ArgumentNullException.ThrowIfNull(sources);
-        ArgumentNullException.ThrowIfNull(reconciled);
-
-        var parsed = ReviewFindingReconciler.CountParsed(sources);
-
-        // Grouped by the reviewer's POSITION, never by its label. The label is `node.Name ?? node.Template`
-        // and Name comes off the wire chosen by the model, so two specialists running one template with no
-        // name of their own share it. A join on the label fans out and credits each colliding reviewer with
-        // the whole group's rows — the per-reviewer counts then sum past RecordedCount and can exceed the
-        // reviewer's own Parsed, while the global totals stay right and the shortfall warning never fires.
-        // Silent, and permanent: the transcripts these rows came from are not kept.
-        var recordedBySource = reconciled.GroupBy(r => r.SourceIndex).ToDictionary(g => g.Key, g => g.Count());
-
-        var totals = parsed
-            .Select(p => new ReviewFindingSourceTotal(
-                p.Label,
-                p.Template,
-                p.Parsed,
-                recordedBySource.TryGetValue(p.Index, out var recorded) ? recorded : 0
-            ))
-            .ToArray();
-
-        var rows = reconciled
-            .Select(r => new ReviewFindingRecord(
-                r.Source,
-                r.Template,
-                r.Title,
-                r.Location,
-                r.SpecialistSeverity,
-                r.SpecialistSeverityTokens,
-                ReviewFindingReconciler.Wire(r.Outcome),
-                r.ShippedSeverity,
-                r.ShippedTitle,
-                r.SynthesisNote,
-                r.MatchScore,
-                r.MatchTiedCandidates,
-                r.ShippedIndex
-            ))
-            .ToArray();
-
-        return new ReviewFindingsArtifactPayload(
-            round,
-            DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
-            promptTemplateHash,
-            compared,
-            parsed.Sum(p => p.Parsed),
-            rows.Length,
-            totals,
-            rows
-        );
-    }
 }

@@ -8,7 +8,7 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// cursor it was handed on each poll, so a test can assert resync-from-null and cursor advancement (§12)
 /// without a real GitHub/ADO host. The real providers land in P4.4.
 /// </summary>
-internal sealed class MockPrProvider : IPrProvider
+internal sealed class MockPrProvider : IPrProvider, IReviewCommentReader
 {
     private readonly IReadOnlyList<PullRequestDescriptor> _pullRequests;
     private readonly OpaqueCursor _nextCursor;
@@ -55,6 +55,8 @@ internal sealed class MockPrProvider : IPrProvider
     /// </summary>
     public string? CurrentHeadSha { get; set; }
 
+    public IReadOnlyList<ExistingReviewComment> ExistingComments { get; set; } = [];
+
     public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         CallCount++;
@@ -78,4 +80,9 @@ internal sealed class MockPrProvider : IPrProvider
         HeadShaCalls++;
         return Task.FromResult(CurrentHeadSha);
     }
+
+    public Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken
+    ) => Task.FromResult(ExistingComments);
 }

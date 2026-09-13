@@ -4,42 +4,8 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// Per-run context that turns a diff-only review loop into a tool-assisted one. Non-null only on the
-/// non-S2S <c>EnableToolAssistedReview</c> path; when null the factory builds today's empty-registry loop.
-/// <para>
-/// <see cref="ReadOnlyToolAllowList"/> is DATA carried on this record, not an enforcement point.
-/// <see cref="ReadOnlyToolFilter"/> is the only thing that would apply it, and it has no production caller:
-/// the sole <c>IReviewAgentLoopFactory</c> implementation, <c>S2SReviewAgentLoopFactory</c>, never reads this
-/// context. Nothing in this process bounds the hosted agent's tool set today — the tools it gets come from
-/// the gateway session the LmStreaming review host provisions.
-/// </para>
-/// <para>
-/// Write-scoping is NOT enforced here, and it is NOT enforced by a sandbox mount either. The pooled-review
-/// design settled that: a per-path read-only bind mount is unavailable (the gateway exposes one
-/// whole-workspace <c>read_only</c> flag), so <c>repos/&lt;Repo&gt;</c> stays writable to the agent —
-/// see the R1–R3 resolution in
-/// <c>docs/superpowers/specs/2026-07-05-daemon-pooled-review-workspace-design.md</c>. What bounds the
-/// reviewer is that writes outside the notes dir are INEFFECTIVE rather than blocked:
-/// </para>
-/// <list type="number">
-/// <item>the COMMIT GATE — <c>DaemonReviewStageExecutor.CommitPooledNotesAsync</c> commits with
-/// <c>stagePaths: [lease.NotesRelPath]</c>, so only <c>PRs/&lt;pr&gt;/…</c> is ever staged;</item>
-/// <item>no write credential in the agent session;</item>
-/// <item><c>SlotHygiene</c>'s CLEAN-ON-ENTRY — <c>ReviewSlotPreparer.PrepareAsync</c> calls
-/// <c>SlotHygiene.EnsureCleanAsync</c> unconditionally, so anything else left in the slot is erased before
-/// the next lease uses it. (Not the clean-on-EXIT strip: <c>StripAsync</c>'s only call site is guarded by
-/// <c>if (!_options.UseS2SReviewAgent)</c>, and the daemon refuses to boot with S2S off, so the strip does
-/// not run in production at all.)</item>
-/// </list>
-/// <para>
-/// A reader looking for the write-scope enforcement point should look at the commit gate and
-/// <c>SlotHygiene</c> — not at a mount, and not at any tool allow-list. This matches what
-/// <c>appsettings.s2s.json</c> records under <c>_EnableReviewerWrites_comment</c>.
-/// </para>
-/// <para>
-/// Sub-agent orchestration (templates, discovery, model selection) is ALWAYS handled by the LmStreaming
-/// review host on the S2S path — the daemon never builds SubAgentOptions locally.
-/// </para>
+/// Compatibility input for the shared review-loop factory contract. The S2S transport does not consume
+/// this in-process tool context; production workflow grants are applied by the hosted session adapter.
 /// </summary>
 internal sealed record ReviewToolContext(
     string GatewayBaseUrl,

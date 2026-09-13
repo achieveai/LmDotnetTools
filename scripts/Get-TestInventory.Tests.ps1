@@ -28,9 +28,24 @@ foreach ($scriptName in @("Get-TestInventory.ps1", "Get-TestInventory.Tests.ps1"
 }
 
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "test-inventory-$([guid]::NewGuid().ToString('N'))"
+function Invoke-FixtureGit {
+    param([string[]]$Arguments)
+    $routing = @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+    $previous = @{}
+    foreach ($name in $routing) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        if ($null -ne $item) { $previous[$name] = $item.Value }
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try { & git -C $fixture @Arguments }
+    finally {
+        foreach ($name in $routing) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $previous.Keys) { Set-Item -LiteralPath "Env:$name" -Value $previous[$name] }
+    }
+}
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try {
-    git -C $fixture init --quiet
+    Invoke-FixtureGit -Arguments @("init", "--quiet")
     if ($LASTEXITCODE -ne 0) { throw "Could not initialize inventory fixture." }
     Set-FixtureFile ".gitignore" "ignored/`n"
     Set-FixtureFile "tests/Core/Core.csproj" '<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
@@ -59,7 +74,7 @@ EndProject
     Set-FixtureFile "evals/sample/tests/score.tests.ps1" 'throw "Do not execute"'
     Set-FixtureFile "tests/python/test_protocol.py" 'raise Exception("Do not execute")'
     Set-FixtureFile "ignored/Hidden.csproj" '<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
-    git -C $fixture -c core.autocrlf=false add -- .
+    Invoke-FixtureGit -Arguments @("-c", "core.autocrlf=false", "add", "--", ".")
     if ($LASTEXITCODE -ne 0) { throw "Could not stage inventory fixture." }
     Set-FixtureFile "tests/New/New.csproj" '<Project><PropertyGroup><TargetFramework>$(InheritedFramework)</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
     Set-FixtureFile "tests/Unknown/Unknown.csproj" '<Project><broken>'
@@ -193,6 +208,19 @@ public sealed class PartialConcrete : PartialBase {}
     Assert-True ($scriptCase.testFramework -eq "script" -and $scriptCase.parameterization -eq "atomic") "Standalone assertion scripts stay atomic and are parsed, not invoked."
     $declarationRepeat = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     Assert-True (($declarationLines -join "`n") -ceq ($declarationRepeat -join "`n")) "Declaration output is ordinal and deterministic."
+    $baselineHash = ($coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline").sourceHash
+    $checksPath = Join-Path $fixture "tests/Core/Checks.cs"
+    [System.IO.File]::WriteAllText($checksPath, ([System.IO.File]::ReadAllText($checksPath)).Replace("`n", "`r`n"))
+    $crlfDeclarations = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json })
+    $crlfHash = (
+        $crlfDeclarations |
+        Where-Object {
+            $_.kind -eq "test-declaration" -and
+            $_.path -eq "tests/Core/Core.csproj" -and
+            $_.fullyQualifiedName -eq "Contracts.Checks.Baseline"
+        }
+    ).sourceHash
+    Assert-True ($crlfHash -ceq $baselineHash) "Declaration source hashes must be identical for LF and CRLF checkouts."
 
     Remove-Item -LiteralPath (Join-Path $fixture "tests/Core/Core.csproj") -Force
     $deleted = Get-Inventory | Where-Object path -eq "tests/Core/Core.csproj"

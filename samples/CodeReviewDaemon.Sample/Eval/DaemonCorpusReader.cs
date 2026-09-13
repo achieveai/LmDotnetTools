@@ -18,7 +18,7 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// </para>
 /// <para>
 /// The daemon supplies exactly one implementation, <see cref="ModelFamilies.Of"/>, which is also what
-/// <see cref="JudgeAgent"/> derives a ballot's judge family with. The seam stays a delegate so a test
+/// <see cref="JudgeArtifactPayload"/> derives a ballot's judge family with. The seam stays a delegate so a test
 /// can state a family directly instead of encoding one in a model id, not so a second policy can be
 /// wired in: two family rules in one daemon is the defect #456 closed.
 /// </para>
@@ -128,7 +128,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
 
             var artifacts = _store.GetArtifacts(run.Id);
 
-            var context = Latest<ContextArtifactPayload>(artifacts, DaemonReviewStageExecutor.ContextArtifactKind);
+            var context = Latest<ContextArtifactPayload>(artifacts, ReviewArtifactKinds.ContextArtifactKind);
 
             if (context is null || string.IsNullOrWhiteSpace(context.Diff))
             {
@@ -138,12 +138,12 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 _logger?.LogDebug(
                     "Review run {ReviewRunId} has no usable {ArtifactKind} artifact; it forms no corpus pair.",
                     run.Id,
-                    DaemonReviewStageExecutor.ContextArtifactKind
+                    ReviewArtifactKinds.ContextArtifactKind
                 );
                 continue;
             }
 
-            var review = Latest<ReviewArtifactPayload>(artifacts, DaemonReviewStageExecutor.ReviewArtifactKind);
+            var review = Latest<ReviewArtifactPayload>(artifacts, ReviewArtifactKinds.ReviewArtifactKind);
 
             if (review is not null && !string.IsNullOrWhiteSpace(review.ReviewText))
             {
@@ -161,7 +161,10 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 );
             }
 
-            var variant = Latest<VariantReviewArtifactPayload>(artifacts, VariantReviewer.VariantReviewArtifactKind);
+            var variant = Latest<VariantReviewArtifactPayload>(
+                artifacts,
+                ReviewArtifactKinds.VariantReviewArtifactKind
+            );
 
             if (variant is not null && !string.IsNullOrWhiteSpace(variant.ReviewText))
             {
@@ -239,7 +242,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     // is passed in rather than read off `run` because the run row holds ONE hash and the run can yield two
     // candidates from two different prompts: the primary arm runs the `review` and `synthesis` templates that
     // DaemonAgentFactory.ReviewPromptTemplateHash digests, while the B arm runs
-    // DaemonReviewStageExecutor.ComparisonVariantPrompt — a C# constant that is not in daemon-prompts.yaml
+    // ReviewArtifactKinds.ComparisonVariantPrompt — a C# constant that is not in daemon-prompts.yaml
     // and has no synthesis turn at all. Stamping the run's hash on the B candidate would file it under a
     // prompt it never ran, and would move its provenance whenever the primary templates were edited and its
     // own prompt was not.
@@ -365,17 +368,14 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// </para>
     /// <para>
     /// Scoped to the primary arm on purpose. The checkpoint describes that arm's conversation, and
-    /// only that arm has an escalation ladder to escalate along; <see cref="VariantReviewer"/> runs
+    /// only that arm has an escalation ladder to escalate along; <see cref="VariantReviewArtifactPayload"/> runs
     /// one collect-only turn, writes no checkpoint, and records its own model on its own
     /// <c>b-variant-review</c> artifact, which is where the B candidate above reads it from.
     /// </para>
     /// </summary>
     private string? EffectiveGeneratorModelId(IReadOnlyList<ReviewArtifact> artifacts, ReviewRun run)
     {
-        var provisional = Latest<ReviewArtifactPayload>(
-            artifacts,
-            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind
-        );
+        var provisional = Latest<ReviewArtifactPayload>(artifacts, ReviewArtifactKinds.ProvisionalReviewArtifactKind);
 
         return Blank(provisional?.Lifecycle?.ModelId) ?? run.ModelId;
     }

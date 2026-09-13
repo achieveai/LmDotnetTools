@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
@@ -236,6 +237,269 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapReviewRun(reader) : null;
     }
 
+    // ── supplementary workflow admission ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Admits one same-head discussion window or merged-close event. The existing <c>review_run</c>
+    /// remains the new-head code-review identity; these supplementary events have a separate immutable
+    /// identity and frozen workflow input. Repeating an event returns the first row unchanged.
+    /// </summary>
+    public WorkflowRound CreateOrGetWorkflowRound(WorkflowRoundSeed seed)
+    {
+        ArgumentNullException.ThrowIfNull(seed);
+        ValidateWorkflowRoundSeed(seed);
+
+        using var gate = _gate.EnterScope();
+        var existing = FindWorkflowRoundByIdentity(seed);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var now = UtcNow();
+        using var insert = _connection.CreateCommand();
+        insert.CommandText = """
+            INSERT OR IGNORE INTO workflow_round (
+                repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+                workflow_instance_id, outcome, completed_at, created_at, updated_at)
+            VALUES (
+                $repoId, $prId, $headSha, $kind, $eventKey, $frozenInput,
+                NULL, $outcome, NULL, $now, $now);
+            """;
+        _ = insert.Parameters.AddWithValue("$repoId", seed.RepoId);
+        _ = insert.Parameters.AddWithValue("$prId", seed.PrId);
+        _ = insert.Parameters.AddWithValue("$headSha", seed.HeadSha);
+        _ = insert.Parameters.AddWithValue("$kind", seed.Kind.ToString());
+        _ = insert.Parameters.AddWithValue("$eventKey", seed.EventKey);
+        _ = insert.Parameters.AddWithValue("$frozenInput", seed.FrozenInputJson);
+        _ = insert.Parameters.AddWithValue("$outcome", WorkflowRoundOutcome.Pending.ToString());
+        _ = insert.Parameters.AddWithValue("$now", now);
+        _ = insert.ExecuteNonQuery();
+
+        return FindWorkflowRoundByIdentity(seed)!;
+    }
+
+    /// <summary>Returns one supplementary workflow round, or <c>null</c> when it does not exist.</summary>
+    public WorkflowRound? GetWorkflowRound(long id)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT * FROM workflow_round WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    /// <summary>Returns the latest admitted round for one PR head and route, including completed rounds.</summary>
+    public WorkflowRound? GetLatestWorkflowRound(long repoId, string prId, string headSha, WorkflowRoundKind kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM workflow_round
+            WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $headSha AND kind = $kind
+            ORDER BY id DESC LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$headSha", headSha);
+        _ = command.Parameters.AddWithValue("$kind", kind.ToString());
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    /// <summary>
+    /// Lists every supplementary round that has not completed successfully, oldest first. Supplying a
+    /// repository id restricts restart recovery to that pool's repository.
+    /// </summary>
+    public IReadOnlyList<WorkflowRound> GetPendingWorkflowRounds(long? repoId = null)
+    {
+        var rounds = new List<WorkflowRound>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = repoId is null
+            ? "SELECT * FROM workflow_round WHERE completed_at IS NULL ORDER BY id;"
+            : "SELECT * FROM workflow_round WHERE completed_at IS NULL AND repo_id = $repoId ORDER BY id;";
+        if (repoId is not null)
+        {
+            _ = command.Parameters.AddWithValue("$repoId", repoId.Value);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rounds.Add(MapWorkflowRound(reader));
+        }
+
+        return rounds;
+    }
+
+    /// <summary>
+    /// Binds the durable workflow snapshot that owns a round. The first binding wins; replaying that same
+    /// binding succeeds, while a different workflow instance cannot take over the round.
+    /// </summary>
+    public bool TryBindWorkflowInstance(long roundId, string workflowInstanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowInstanceId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE workflow_round
+            SET workflow_instance_id = COALESCE(workflow_instance_id, $workflowInstanceId),
+                updated_at = $now
+            WHERE id = $id
+              AND completed_at IS NULL
+              AND (workflow_instance_id IS NULL OR workflow_instance_id = $workflowInstanceId);
+            """;
+        _ = command.Parameters.AddWithValue("$workflowInstanceId", workflowInstanceId);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", roundId);
+        return command.ExecuteNonQuery() == 1;
+    }
+
+    /// <summary>
+    /// Records the workflow's latest explicit outcome. Failed and Unknown rounds remain pending. Only a
+    /// Succeeded outcome sets the durable completion timestamp. Replaying success is idempotent; a completed
+    /// round rejects a contradictory later outcome.
+    /// </summary>
+    public bool RecordWorkflowOutcome(long roundId, string workflowInstanceId, WorkflowRoundOutcome outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowInstanceId);
+        if (outcome is WorkflowRoundOutcome.Pending || !Enum.IsDefined(outcome))
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "A workflow result must be explicit.");
+        }
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE workflow_round
+            SET outcome = $outcome,
+                completed_at = CASE WHEN $outcome = 'Succeeded' THEN $now ELSE NULL END,
+                updated_at = $now
+            WHERE id = $id
+              AND workflow_instance_id = $workflowInstanceId
+              AND completed_at IS NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$outcome", outcome.ToString());
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", roundId);
+        _ = command.Parameters.AddWithValue("$workflowInstanceId", workflowInstanceId);
+        if (command.ExecuteNonQuery() == 1)
+        {
+            return true;
+        }
+
+        return outcome == WorkflowRoundOutcome.Succeeded
+            && GetWorkflowRound(roundId)
+                is {
+                    WorkflowInstanceId: var existingWorkflow,
+                    Outcome: WorkflowRoundOutcome.Succeeded,
+                    CompletedAt: not null,
+                }
+            && string.Equals(existingWorkflow, workflowInstanceId, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns exact provider object ids from confirmed effect receipts for the specified publication
+    /// operations on one PR. The caller supplies the operation allow-list so Git/artifact receipts cannot be
+    /// mistaken for daemon-authored discussion messages.
+    /// </summary>
+    public IReadOnlySet<string> GetConfirmedProviderResponseIds(
+        long repoId,
+        string prId,
+        IReadOnlyCollection<string> operations
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentNullException.ThrowIfNull(operations);
+        if (operations.Count == 0)
+        {
+            throw new ArgumentException("At least one publication operation is required.", nameof(operations));
+        }
+
+        var allowed = new HashSet<string>(operations, StringComparer.Ordinal);
+        if (allowed.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("Publication operation names cannot be blank.", nameof(operations));
+        }
+
+        var responseIds = new HashSet<string>(StringComparer.Ordinal);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT o.operation, o.status, o.provider_response_id
+            FROM review_outbox o
+            INNER JOIN review_run r ON r.id = o.review_run_id
+            WHERE r.repo_id = $repoId
+              AND r.pr_id = $prId
+              AND o.provider_response_id IS NOT NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var operation = reader.GetString(reader.GetOrdinal("operation"));
+            var status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status")));
+            if (allowed.Contains(operation) && status is OutboxStatus.Posted or OutboxStatus.Sent)
+            {
+                _ = responseIds.Add(reader.GetString(reader.GetOrdinal("provider_response_id")));
+            }
+        }
+
+        return responseIds;
+    }
+
+    private WorkflowRound? FindWorkflowRoundByIdentity(WorkflowRoundSeed seed)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM workflow_round
+            WHERE repo_id = $repoId
+              AND pr_id = $prId
+              AND head_sha = $headSha
+              AND kind = $kind
+              AND event_key = $eventKey
+            LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", seed.RepoId);
+        _ = command.Parameters.AddWithValue("$prId", seed.PrId);
+        _ = command.Parameters.AddWithValue("$headSha", seed.HeadSha);
+        _ = command.Parameters.AddWithValue("$kind", seed.Kind.ToString());
+        _ = command.Parameters.AddWithValue("$eventKey", seed.EventKey);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    private static void ValidateWorkflowRoundSeed(WorkflowRoundSeed seed)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.PrId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.HeadSha);
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.EventKey);
+        if (seed.Kind is not WorkflowRoundKind.Discussion and not WorkflowRoundKind.Merged)
+        {
+            throw new ArgumentOutOfRangeException(nameof(seed), seed.Kind, "Unsupported workflow round kind.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(seed.FrozenInputJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new ArgumentException("Workflow round frozen input must be a JSON object.", nameof(seed));
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new ArgumentException("Workflow round frozen input must be a JSON object.", nameof(seed), exception);
+        }
+    }
+
     /// <summary>
     /// Lists review runs that reached at least <paramref name="minimumStage"/>, oldest first, for
     /// corpus assembly by the eval runner.
@@ -294,6 +558,61 @@ internal sealed class ReviewStore : IDisposable
         }
 
         return results;
+    }
+
+    /// <summary>Returns the newest review identity observed for one pull request.</summary>
+    public ReviewRun? GetLatestReviewRun(long repoId, string prId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM review_run WHERE repo_id = $repoId AND pr_id = $prId
+            ORDER BY id DESC LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapReviewRun(reader) : null;
+    }
+
+    /// <summary>Lists runs that own at least one artifact of the requested kind, oldest first.</summary>
+    public IReadOnlyList<ReviewRun> ListReviewRunsWithArtifact(string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+        var runs = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT run.* FROM review_run AS run
+            WHERE EXISTS (
+                SELECT 1 FROM review_artifact AS artifact
+                WHERE artifact.review_run_id = run.id AND artifact.artifact_kind = $kind)
+            ORDER BY run.id;
+            """;
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            runs.Add(MapReviewRun(reader));
+        }
+        return runs;
+    }
+
+    /// <summary>Loads only unresolved workspace owners; journal history is not part of startup recovery.</summary>
+    public IReadOnlyList<ReviewRun> ListActiveWorkflowWorkspaceRuns()
+    {
+        var runs = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT run.* FROM active_workflow_workspace active
+            JOIN review_run run ON run.id = active.review_run_id ORDER BY active.review_run_id;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            runs.Add(MapReviewRun(reader));
+        return runs;
     }
 
     /// <summary>
@@ -1413,6 +1732,26 @@ internal sealed class ReviewStore : IDisposable
             ProviderResponseId = GetNullableString(reader, "provider_response_id"),
         };
 
+    private static WorkflowRound MapWorkflowRound(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
+            PrId = reader.GetString(reader.GetOrdinal("pr_id")),
+            HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
+            Kind = Enum.Parse<WorkflowRoundKind>(reader.GetString(reader.GetOrdinal("kind"))),
+            EventKey = reader.GetString(reader.GetOrdinal("event_key")),
+            FrozenInputJson = reader.GetString(reader.GetOrdinal("frozen_input_json")),
+            WorkflowInstanceId = GetNullableString(reader, "workflow_instance_id"),
+            Outcome = Enum.Parse<WorkflowRoundOutcome>(reader.GetString(reader.GetOrdinal("outcome"))),
+            CompletedAt = GetNullableTimestamp(reader, "completed_at"),
+            CreatedAt = DateTimeOffset.Parse(
+                reader.GetString(reader.GetOrdinal("created_at")),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind
+            ),
+        };
+
     private static string? GetNullableString(SqliteDataReader reader, string column)
     {
         var ordinal = reader.GetOrdinal(column);
@@ -1471,3 +1810,63 @@ internal sealed record PriorReviewSummary(string? PrevHeadSha, int PriorReviewCo
 /// conversation was provisioned — the start of its retention window, not when the review finished.
 /// </summary>
 internal sealed record DeepLinkConversationRow(string ThreadId, string? Title, DateTimeOffset MintedAt);
+
+/// <summary>The supplementary workflow routes that require identities separate from a code-review run.</summary>
+internal enum WorkflowRoundKind
+{
+    Discussion,
+    Merged,
+}
+
+/// <summary>The last durable execution outcome for a supplementary workflow round.</summary>
+internal enum WorkflowRoundOutcome
+{
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+/// <summary>Immutable identity and input used to admit a supplementary workflow round.</summary>
+internal sealed record WorkflowRoundSeed
+{
+    public required long RepoId { get; init; }
+
+    public required string PrId { get; init; }
+
+    public required string HeadSha { get; init; }
+
+    public required WorkflowRoundKind Kind { get; init; }
+
+    /// <summary>Window id for Discussion; stable merge identity for Merged.</summary>
+    public required string EventKey { get; init; }
+
+    public required string FrozenInputJson { get; init; }
+}
+
+/// <summary>A durable supplementary workflow admission owned by <see cref="ReviewStore"/>.</summary>
+internal sealed record WorkflowRound
+{
+    public required long Id { get; init; }
+
+    public required long RepoId { get; init; }
+
+    public required string PrId { get; init; }
+
+    public required string HeadSha { get; init; }
+
+    public required WorkflowRoundKind Kind { get; init; }
+
+    public required string EventKey { get; init; }
+
+    public required string FrozenInputJson { get; init; }
+
+    public string? WorkflowInstanceId { get; init; }
+
+    public required WorkflowRoundOutcome Outcome { get; init; }
+
+    public DateTimeOffset? CompletedAt { get; init; }
+
+    public required DateTimeOffset CreatedAt { get; init; }
+}

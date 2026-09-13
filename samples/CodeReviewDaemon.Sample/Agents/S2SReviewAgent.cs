@@ -137,6 +137,9 @@ internal sealed class S2SReviewAgent
     /// <summary>The server-minted run id from the last polled status (null before the first run completes).</summary>
     public string? CurrentRunId => _currentRunId;
 
+    /// <summary>Terminal status for the current accepted input, reset before every invocation.</summary>
+    public string? CurrentRunStatus { get; private set; }
+
     /// <summary>
     /// The server-minted conversation id (<c>thread-{Guid:N}</c>) once provisioned. Before the first run it is
     /// an empty string (the agent has not yet talked to the review host); the collector reads it only after the
@@ -155,6 +158,13 @@ internal sealed class S2SReviewAgent
     /// configuration can raise, and the first symptom is a real review abandoned mid-flight.
     /// </summary>
     internal TimeSpan OverallTimeout => _overallTimeout;
+
+    /// <summary>Read-only preflight before any workflow turn that may require a tool-free correction.</summary>
+    public Task EnsureActionToolSuppressionAsync(CancellationToken ct) =>
+        _client.EnsureHostContractAsync(ct, requireActionToolSuppression: true);
+
+    /// <summary>Fail before sending when the host cannot forward scoped workflow publication tools.</summary>
+    public Task EnsureWorkflowPublicationAsync(CancellationToken ct) => _client.EnsureWorkflowPublicationAsync(ct);
 
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
@@ -201,6 +211,7 @@ internal sealed class S2SReviewAgent
     )
     {
         ArgumentNullException.ThrowIfNull(userInput);
+        CurrentRunStatus = null;
 
         var input = ExtractUserText(userInput);
         if (string.IsNullOrWhiteSpace(input))
@@ -212,6 +223,8 @@ internal sealed class S2SReviewAgent
         // carries the SDK's per-turn flag. The host acknowledges or refuses — it is never a hint.
         var suppressSpawning = Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
 
+        if (userInput.SuppressActionTools)
+            await EnsureActionToolSuppressionAsync(ct).ConfigureAwait(false);
         var threadId = await EnsureProvisionedAsync(ct).ConfigureAwait(false);
 
         // Consume the arming BEFORE the turn runs: it applies to this turn only, so a later turn on the same
@@ -241,7 +254,7 @@ internal sealed class S2SReviewAgent
         else
         {
             inputId = await _client
-                .SendMessageAsync(threadId, input, suppressSpawning, idempotencyKey, ct)
+                .SendMessageAsync(threadId, input, suppressSpawning, idempotencyKey, ct, userInput.SuppressActionTools)
                 .ConfigureAwait(false);
             // Reported before the first poll so the caller's checkpoint covers the whole wait, not just a wait
             // that happened to finish. When the send carried a key this is a confirmation rather than the only
@@ -258,8 +271,19 @@ internal sealed class S2SReviewAgent
             );
         }
 
-        var status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
+        S2SStatusResult status;
+        if (rejoinInputId is not null && _deadlineUtc is { } expired && expired <= DateTimeOffset.UtcNow)
+        {
+            // An expired invocation may still acquire terminal proof. It gets one read, never a new
+            // send or a refreshed polling budget; ambiguous/interrupted status remains unresolved.
+            status = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
+            if (!TerminalStatuses.Contains(status.Status) || IsInterrupted(status))
+                throw new TimeoutException("Expired invocation has no confirmed terminal hosted result.");
+        }
+        else
+            status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
         _currentRunId = status.RunId;
+        CurrentRunStatus = status.Status;
 
         if (!string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase))
         {

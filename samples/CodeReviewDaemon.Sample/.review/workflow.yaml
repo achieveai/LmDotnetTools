@@ -1,0 +1,380 @@
+version: 1
+objective: Review new code, respond to a frozen discussion window, or retain merged-PR learnings.
+inputType: Admission
+
+types:
+  Admission:
+    type: object
+    additionalProperties: false
+    required: [Route, PrId, HeadSha, WindowId]
+    properties:
+      Route: {type: string, enum: [new_head, discussion, merged]}
+      PrId: {type: string, minLength: 1}
+      HeadSha: {type: string, minLength: 1}
+      WindowId: {type: string}
+  Prepared:
+    type: object
+    additionalProperties: false
+    required: [PrId, HeadSha, WindowId, ContextArtifact]
+    properties:
+      PrId: {type: string}
+      HeadSha: {type: string}
+      WindowId: {type: string}
+      ContextArtifact: {type: string, minLength: 1}
+  Finding:
+    type: object
+    additionalProperties: false
+    required: [Id, Severity, Path, Line, Description]
+    properties:
+      Id: {type: string, minLength: 1}
+      Severity: {type: string, enum: [Must, Should, Consider]}
+      Path: {type: string}
+      Line: {type: integer, minimum: 1}
+      Description: {type: string}
+  Review:
+    type: object
+    additionalProperties: false
+    required: [Findings, ReviewText]
+    properties:
+      Findings: {type: array, items: {$ref: '#/$defs/Finding'}}
+      ReviewText: {type: string}
+  GradeInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, Review]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Review: {$ref: '#/$defs/Review'}
+  Grade:
+    type: object
+    additionalProperties: false
+    required: [Assessments, Description]
+    properties:
+      Assessments:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [Id, Supported, Description]
+          properties:
+            Id: {type: string}
+            Supported: {type: boolean}
+            Description: {type: string}
+      Description: {type: string}
+  PublicationInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, Review, Grade]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Review: {$ref: '#/$defs/Review'}
+      Grade: {$ref: '#/$defs/Grade'}
+  Publication:
+    type: object
+    additionalProperties: false
+    required: [Outcome, Description, Actions]
+    properties:
+      Outcome: {type: string, enum: [published, replied, no_op]}
+      Description: {type: string}
+      Actions: {type: array, items: {$ref: '#/$defs/PublicationAction'}}
+  PublicationAction:
+    type: object
+    additionalProperties: false
+    required: [ActionId, ReceiptId]
+    properties:
+      ActionId: {type: string, minLength: 1}
+      ReceiptId: {type: integer, minimum: 1}
+  Discussion:
+    type: object
+    additionalProperties: false
+    required: [Outcome, Description, Actions]
+    properties:
+      Outcome: {type: string, enum: [replied, no_op]}
+      Description: {type: string}
+      Actions: {type: array, items: {$ref: '#/$defs/PublicationAction'}}
+  Extraction:
+    type: object
+    additionalProperties: false
+    required: [Edits, Description]
+    properties:
+      Edits:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [Path, Content]
+          properties:
+            Path: {type: string, minLength: 1}
+            Content: {type: string}
+      Description: {type: string}
+  KnowledgeReviewInput:
+    type: object
+    additionalProperties: false
+    required: [Extractions]
+    properties:
+      Extractions: {type: array, items: {$ref: '#/$defs/Extraction'}}
+  KnowledgeReview:
+    type: object
+    additionalProperties: false
+    required: [Verdict, Reviewed, Description]
+    properties:
+      Verdict: {type: string, enum: [approved, rejected]}
+      Reviewed: {$ref: '#/$defs/Extraction'}
+      Description: {type: string}
+  CanonicalReview:
+    type: object
+    additionalProperties: false
+    required: [Review, Grade, Publication]
+    properties:
+      Review: {$ref: '#/$defs/Review'}
+      Grade: {$ref: '#/$defs/Grade'}
+      Publication: {$ref: '#/$defs/Publication'}
+  ProcessInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, Learnings]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Learnings: {$ref: '#/$defs/Extraction'}
+  ProcessAssessment:
+    type: object
+    additionalProperties: false
+    required: [Assessment, Description]
+    properties:
+      Assessment: {type: string}
+      Description: {type: string}
+  AdditionalInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, Learnings, Process]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Learnings: {$ref: '#/$defs/Extraction'}
+      Process: {$ref: '#/$defs/ProcessAssessment'}
+  Statistics:
+    type: object
+    additionalProperties: false
+    required: [RunId, ArtifactCount, ArtifactCountsByKind, ReceiptCount, ReceiptCountsByStatus]
+    properties:
+      RunId: {type: string}
+      ArtifactCount: {type: integer, minimum: 0}
+      ArtifactCountsByKind: {type: object, additionalProperties: {type: integer, minimum: 0}}
+      ReceiptCount: {type: integer, minimum: 0}
+      ReceiptCountsByStatus: {type: object, additionalProperties: {type: integer, minimum: 0}}
+  RetentionInput:
+    type: object
+    additionalProperties: false
+    required: [Admission, Extractions]
+    properties:
+      Admission: {$ref: '#/$defs/Admission'}
+      Extractions: {type: array, items: {$ref: '#/$defs/Extraction'}}
+      KnowledgeReview: {$ref: '#/$defs/KnowledgeReview'}
+      Canonical: {$ref: '#/$defs/CanonicalReview'}
+  Retention:
+    type: object
+    additionalProperties: false
+    required: [ArtifactBranch, RetainedSha]
+    properties:
+      ArtifactBranch: {type: string, minLength: 1}
+      RetainedSha: {type: string, minLength: 1}
+  Closure:
+    type: object
+    additionalProperties: false
+    required: [ArtifactBranch, Closed]
+    properties:
+      ArtifactBranch: {type: string, minLength: 1}
+      Closed: {type: boolean, const: true}
+
+steps:
+  - id: start
+    kind: start
+    next: route
+  - id: route
+    kind: branch
+    branches:
+      - when: inputs.Route == "new_head"
+        goto: prepare-review
+      - when: inputs.Route == "discussion"
+        goto: prepare-discussion
+    else: prepare-history
+
+  - id: prepare-review
+    kind: script
+    script: scripts/prepare-review.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: Prepared
+    saveAs: PreparedReview
+    next: review
+  - id: review
+    kind: agent
+    session: review-parent
+    skills: [skills/review.md]
+    prompt: Review the exact prepared change, settle all specialists, and return structured draft findings.
+    inputType: Prepared
+    input: {from: state.PreparedReview}
+    outputType: Review
+    saveAs: Review
+    maxValidationRetries: 1
+    next: grade
+  - id: grade
+    kind: agent
+    session: review-grader
+    skills: [skills/grade.md]
+    prompt: Independently assess every candidate finding and preserve its stable identity.
+    inputType: GradeInput
+    input:
+      Prepared: {from: state.PreparedReview}
+      Review: {from: state.Review}
+    outputType: Grade
+    saveAs: Grade
+    maxValidationRetries: 1
+    next: publish
+  - id: publish
+    kind: agent
+    session: review-parent
+    skills: [skills/publication.md]
+    tools: [review_publish_summary, review_publish_inline, review_reply]
+    prompt: Decide what to publish or reply, use scoped action tools, verify receipts, and record your result.
+    inputType: PublicationInput
+    input:
+      Prepared: {from: state.PreparedReview}
+      Review: {from: state.Review}
+      Grade: {from: state.Grade}
+    outputType: Publication
+    saveAs: Publication
+    maxValidationRetries: 1
+    next: retain-review
+  - id: retain-review
+    kind: script
+    script: scripts/retain-artifacts.py
+    inputType: RetentionInput
+    input:
+      Admission: {from: inputs}
+      Extractions: []
+      Canonical:
+        Review: {from: state.Review}
+        Grade: {from: state.Grade}
+        Publication: {from: state.Publication}
+    outputType: Retention
+    saveAs: ReviewRetention
+    next: complete
+
+  - id: prepare-discussion
+    kind: script
+    script: scripts/prepare-discussion.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: Prepared
+    saveAs: PreparedDiscussion
+    next: discussion
+  - id: discussion
+    kind: agent
+    session: review-parent
+    skills: [skills/discussion.md]
+    tools: [review_reply]
+    prompt: Address the frozen message window through scoped reply tools, or explicitly choose no_op.
+    inputType: Prepared
+    input: {from: state.PreparedDiscussion}
+    outputType: Discussion
+    saveAs: Discussion
+    maxValidationRetries: 1
+    next: retain-discussion
+  - id: retain-discussion
+    kind: script
+    script: scripts/retain-artifacts.py
+    inputType: RetentionInput
+    input:
+      Admission: {from: inputs}
+      Extractions: []
+    outputType: Retention
+    saveAs: DiscussionRetention
+    next: complete
+
+  - id: prepare-history
+    kind: script
+    script: scripts/prepare-history.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: Prepared
+    saveAs: PreparedHistory
+    next: learnings
+  - id: learnings
+    kind: agent
+    session: merged-learnings
+    skills: [skills/learnings.md]
+    prompt: Propose structured durable knowledge edits for the retention script, or explain why none are warranted.
+    inputType: Prepared
+    input: {from: state.PreparedHistory}
+    outputType: Extraction
+    saveAs: Learnings
+    maxValidationRetries: 1
+    next: process-judge
+  - id: process-judge
+    kind: agent
+    session: merged-process-judge
+    skills: [skills/process-judge.md]
+    prompt: Independently assess the review process against the complete PR history and evidence.
+    inputType: ProcessInput
+    input:
+      Prepared: {from: state.PreparedHistory}
+      Learnings: {from: state.Learnings}
+    outputType: ProcessAssessment
+    saveAs: ProcessAssessment
+    maxValidationRetries: 1
+    next: additional-extraction
+  - id: additional-extraction
+    kind: agent
+    session: merged-additional-extraction
+    skills: [skills/additional-extraction.md]
+    prompt: Propose an additional structured knowledge edit for the retention script when evidence supports it.
+    inputType: AdditionalInput
+    input:
+      Prepared: {from: state.PreparedHistory}
+      Learnings: {from: state.Learnings}
+      Process: {from: state.ProcessAssessment}
+    outputType: Extraction
+    saveAs: AdditionalExtraction
+    maxValidationRetries: 1
+    next: knowledge-safety-review
+  - id: knowledge-safety-review
+    kind: agent
+    session: merged-knowledge-safety
+    skills: [skills/knowledge-safety.md]
+    prompt: Independently review and redact candidate knowledge for durable retention; reject if safe evidence cannot be preserved.
+    inputType: KnowledgeReviewInput
+    input:
+      Extractions: [{from: state.Learnings}, {from: state.AdditionalExtraction}]
+    outputType: KnowledgeReview
+    saveAs: KnowledgeSafety
+    maxValidationRetries: 1
+    next: collect-statistics
+  - id: collect-statistics
+    kind: script
+    script: scripts/collect-statistics.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: Statistics
+    saveAs: Statistics
+    next: retain-merged
+  - id: retain-merged
+    kind: script
+    script: scripts/retain-artifacts.py
+    inputType: RetentionInput
+    input:
+      Admission: {from: inputs}
+      Extractions: [{from: state.KnowledgeSafety.Reviewed}]
+      KnowledgeReview: {from: state.KnowledgeSafety}
+    outputType: Retention
+    saveAs: MergedRetention
+    next: close-artifact-branch
+  - id: close-artifact-branch
+    kind: script
+    script: scripts/close-artifact-branch.py
+    inputType: Retention
+    input: {from: state.MergedRetention}
+    outputType: Closure
+    saveAs: Closure
+    next: complete
+  - id: complete
+    kind: end

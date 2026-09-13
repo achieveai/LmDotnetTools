@@ -10,6 +10,20 @@ internal interface IReviewSlotPool
 {
     Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken);
 
+    Task<ReviewSlot?> TryLeaseAsync(CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This pool cannot try a workspace lease.");
+
+    /// <summary>Waits for and leases an exact previously returned address without changing its contents.</summary>
+    Task<ReviewSlot> LeasePreferredAsync(ReviewSlot slot, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This pool cannot lease a preferred workspace address.");
+
+    Task<ReviewSlot?> TryLeasePreferredAsync(ReviewSlot slot, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This pool cannot try a preferred workspace address.");
+
+    /// <summary>Reserves the exact persisted address after restart, without preparing, cleaning, or changing its contents.</summary>
+    Task<ReviewSlot> RecoverLeaseAsync(ReviewSlot slot, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This pool cannot restore persisted workspace assignments.");
+
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
 
     /// <summary>
@@ -41,6 +55,9 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private readonly SemaphoreSlim _gate;
     private readonly Lock _freeIndexesLock = new();
     private readonly Stack<int> _freeIndexes = new();
+    private readonly HashSet<int> _activeIndexes = [];
+    private readonly HashSet<int> _preferredIndexes = [];
+    private TaskCompletionSource<bool> _leaseChanged = NewLeaseSignal();
     private int _nextIndex;
 
     public ReviewSlotPool(
@@ -93,6 +110,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         {
             lock (_freeIndexesLock)
             {
+                _activeIndexes.Remove(index);
                 _freeIndexes.Push(index);
             }
 
@@ -101,12 +119,147 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         }
     }
 
+    public async Task<ReviewSlot?> TryLeaseAsync(CancellationToken cancellationToken)
+    {
+        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        var index = TakeIndex();
+        var slot = BuildSlot(index);
+        try
+        {
+            GuardSlotPaths(slot);
+            Directory.CreateDirectory(slot.HostPath);
+            Directory.CreateDirectory(slot.ScratchPath);
+            return slot;
+        }
+        catch (SlotAddressUnusableException)
+        {
+            Retire(slot);
+            throw;
+        }
+        catch
+        {
+            lock (_freeIndexesLock)
+            {
+                _activeIndexes.Remove(index);
+                _freeIndexes.Push(index);
+            }
+            _gate.Release();
+            throw;
+        }
+    }
+
+    public async Task<ReviewSlot> RecoverLeaseAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ValidatePersistedSlot(slot);
+        lock (_freeIndexesLock)
+        {
+            if (_preferredIndexes.Contains(slot.Index) || !_activeIndexes.Add(slot.Index))
+            {
+                throw new InvalidOperationException("Persisted slot is already leased or being recovered.");
+            }
+            _nextIndex = Math.Max(_nextIndex, slot.Index + 1);
+            RemoveFreeIndex(slot.Index);
+        }
+        try
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return slot;
+        }
+        catch
+        {
+            lock (_freeIndexesLock)
+            {
+                _activeIndexes.Remove(slot.Index);
+                _freeIndexes.Push(slot.Index);
+                SignalLeaseChanged();
+            }
+            throw;
+        }
+    }
+
+    public async Task<ReviewSlot> LeasePreferredAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ValidatePersistedSlot(slot);
+        lock (_freeIndexesLock)
+        {
+            if (!_preferredIndexes.Add(slot.Index))
+            {
+                throw new InvalidOperationException("Persisted slot already has a preferred lease waiter.");
+            }
+        }
+
+        var permitHeld = false;
+        try
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            permitHeld = true;
+            while (true)
+            {
+                Task changed;
+                lock (_freeIndexesLock)
+                {
+                    if (!_activeIndexes.Contains(slot.Index))
+                    {
+                        _activeIndexes.Add(slot.Index);
+                        _preferredIndexes.Remove(slot.Index);
+                        _nextIndex = Math.Max(_nextIndex, slot.Index + 1);
+                        RemoveFreeIndex(slot.Index);
+                        permitHeld = false;
+                        return slot;
+                    }
+                    changed = _leaseChanged.Task;
+                }
+                await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            lock (_freeIndexesLock)
+            {
+                _preferredIndexes.Remove(slot.Index);
+            }
+            if (permitHeld)
+            {
+                _gate.Release();
+            }
+        }
+    }
+
+    public async Task<ReviewSlot?> TryLeasePreferredAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ValidatePersistedSlot(slot);
+        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        lock (_freeIndexesLock)
+        {
+            if (_activeIndexes.Contains(slot.Index) || _preferredIndexes.Contains(slot.Index))
+            {
+                _gate.Release();
+                return null;
+            }
+            _activeIndexes.Add(slot.Index);
+            _nextIndex = Math.Max(_nextIndex, slot.Index + 1);
+            RemoveFreeIndex(slot.Index);
+            return slot;
+        }
+    }
+
     public Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(slot);
         lock (_freeIndexesLock)
         {
+            if (!_activeIndexes.Remove(slot.Index))
+            {
+                throw new InvalidOperationException("Cannot return a slot that this pool does not hold.");
+            }
             _freeIndexes.Push(slot.Index);
+            SignalLeaseChanged();
         }
 
         _gate.Release();
@@ -122,6 +275,14 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
     private void Retire(ReviewSlot slot)
     {
+        lock (_freeIndexesLock)
+        {
+            if (!_activeIndexes.Remove(slot.Index))
+            {
+                throw new InvalidOperationException("Cannot retire a slot that this pool does not hold.");
+            }
+            SignalLeaseChanged();
+        }
         _logger.LogError(
             "Retiring slot index {SlotIndex} at {HostPath}: its host paths could not be established as contained. "
                 + "The address is not returned to the pool; concurrency is unaffected and the next lease allocates a "
@@ -181,9 +342,60 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     {
         lock (_freeIndexesLock)
         {
-            return _freeIndexes.Count > 0 ? _freeIndexes.Pop() : _nextIndex++;
+            var reserved = new Stack<int>();
+            while (_freeIndexes.TryPeek(out var free) && _preferredIndexes.Contains(free))
+            {
+                reserved.Push(_freeIndexes.Pop());
+            }
+            var index = _freeIndexes.Count > 0 ? _freeIndexes.Pop() : _nextIndex++;
+            while (reserved.TryPop(out var value))
+            {
+                _freeIndexes.Push(value);
+            }
+            _activeIndexes.Add(index);
+            return index;
         }
     }
+
+    private void ValidatePersistedSlot(ReviewSlot slot)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+        if (slot.Index < 0 || slot.Index == int.MaxValue)
+        {
+            throw new SlotAddressUnusableException("Persisted slot index is invalid.");
+        }
+        var expected = BuildSlot(slot.Index);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (
+            !string.Equals(Path.GetFullPath(slot.HostPath), Path.GetFullPath(expected.HostPath), comparison)
+            || !string.Equals(Path.GetFullPath(slot.StorePath), Path.GetFullPath(expected.StorePath), comparison)
+            || !string.Equals(Path.GetFullPath(slot.ScratchPath), Path.GetFullPath(expected.ScratchPath), comparison)
+        )
+        {
+            throw new SlotAddressUnusableException("Persisted slot does not belong to the configured pool.");
+        }
+        GuardSlotPaths(slot);
+    }
+
+    private void RemoveFreeIndex(int index)
+    {
+        var remaining = _freeIndexes.Where(value => value != index).Reverse().ToArray();
+        _freeIndexes.Clear();
+        foreach (var value in remaining)
+        {
+            _freeIndexes.Push(value);
+        }
+    }
+
+    private void SignalLeaseChanged()
+    {
+        var signal = _leaseChanged;
+        _leaseChanged = NewLeaseSignal();
+        signal.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> NewLeaseSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private ReviewSlot BuildSlot(int index)
     {

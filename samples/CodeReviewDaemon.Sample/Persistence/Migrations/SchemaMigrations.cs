@@ -22,6 +22,8 @@ internal static class SchemaMigrations
         new Migration(6, V6Sql),
         new Migration(7, V7Sql),
         new Migration(8, V8Sql),
+        new Migration(9, V9Sql),
+        new Migration(10, V10Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -285,5 +287,68 @@ internal static class SchemaMigrations
         ALTER TABLE review_run ADD COLUMN governed_failure_count INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE review_run ADD COLUMN parked_at              TEXT NULL;
         ALTER TABLE review_run ADD COLUMN park_reason            TEXT NULL;
+        """;
+
+    // ── v9: supplementary workflow admission ────────────────────────────────────────────────────
+    // review_run remains the identity of one code review at one head. Same-head discussion and
+    // merged-close work need their own durable event identities, but not a second workflow-step journal:
+    // LmWorkflow snapshots still own step progress and the outbox still owns external-effect receipts.
+    // The first INSERT freezes the admitted JSON window. Repeated observations hit the UNIQUE identity and
+    // read that original row back. completed_at is set only for a Succeeded workflow outcome; Failed and
+    // Unknown remain visible to the restart drain.
+    private const string V9Sql = """
+        CREATE TABLE workflow_round (
+            id                   INTEGER PRIMARY KEY,
+            repo_id              INTEGER NOT NULL REFERENCES repo (id),
+            pr_id                TEXT NOT NULL,
+            head_sha             TEXT NOT NULL,
+            kind                 TEXT NOT NULL,
+            event_key            TEXT NOT NULL,
+            frozen_input_json    TEXT NOT NULL,
+            workflow_instance_id TEXT NULL,
+            outcome              TEXT NOT NULL,
+            completed_at         TEXT NULL,
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT NOT NULL,
+            UNIQUE (repo_id, pr_id, head_sha, kind, event_key)
+        );
+
+        CREATE INDEX ix_workflow_round_pending
+            ON workflow_round (repo_id, id)
+            WHERE completed_at IS NULL;
+        """;
+
+    // Legacy stages do not describe authored workflow progress. Preserve evidence, but never replay
+    // their external effects as a fresh workflow. Active leases get a small transactionally maintained
+    // index so startup does not load every historical run or parse its assignment journal.
+    private const string V10Sql = """
+        UPDATE review_run
+        SET parked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            park_reason = 'Legacy stage run requires operator reconciliation before authored workflow admission.',
+            workflow_status = 'Failed'
+        WHERE workflow_status <> 'Completed' AND parked_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM review_artifact a
+                          WHERE a.review_run_id = review_run.id
+                            AND a.artifact_kind = 'workflow-workspace-assignment');
+
+        CREATE INDEX ix_review_artifact_latest ON review_artifact (review_run_id, artifact_kind, id DESC);
+        CREATE TABLE active_workflow_workspace (
+            review_run_id INTEGER PRIMARY KEY REFERENCES review_run(id),
+            artifact_id INTEGER NOT NULL REFERENCES review_artifact(id)
+        );
+        INSERT INTO active_workflow_workspace
+        SELECT a.review_run_id, a.id FROM review_artifact a
+        WHERE a.artifact_kind = 'workflow-workspace-assignment'
+          AND a.id = (SELECT MAX(b.id) FROM review_artifact b
+                      WHERE b.review_run_id = a.review_run_id AND b.artifact_kind = a.artifact_kind)
+          AND json_extract(a.payload, '$.Active') = 1;
+
+        CREATE TRIGGER maintain_active_workflow_workspace AFTER INSERT ON review_artifact
+        WHEN NEW.artifact_kind = 'workflow-workspace-assignment'
+        BEGIN
+            DELETE FROM active_workflow_workspace WHERE review_run_id = NEW.review_run_id;
+            INSERT INTO active_workflow_workspace (review_run_id, artifact_id)
+            SELECT NEW.review_run_id, NEW.id WHERE json_extract(NEW.payload, '$.Active') = 1;
+        END;
         """;
 }

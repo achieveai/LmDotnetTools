@@ -84,8 +84,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         SqliteSchemaInitializer
             .LatestSchemaVersion.Should()
             .Be(
-                5,
-                "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
+                6,
+                "tool-free workflow corrections add durable acceptance grant (6); slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
                     + "slice 1's two steps, and #680 adds the messages seq column and index (5)"
             );
     }

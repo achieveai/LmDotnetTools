@@ -288,7 +288,9 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
 /// the controller gates on, and <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a
 /// test can prove the flag actually reached the agent rather than merely being echoed back.
 /// </summary>
-internal sealed class SpawnSuppressingFakeAgent(string threadId) : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
+internal sealed class SpawnSuppressingFakeAgent(string threadId)
+    : FakeMultiTurnAgent(threadId),
+        IActionToolSuppressingAgent
 {
     /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
     public UserInput? LastInput { get; private set; }
@@ -299,6 +301,8 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId) : FakeMultiTurn
     /// case the controller must refuse before it enqueues anything.
     /// </remarks>
     public bool EnforcesSpawnSuppression { get; set; } = true;
+    public bool EnforcesActionToolSuppression { get; set; } = true;
+    public bool ConfirmsActionToolSuppression { get; set; } = true;
 
     /// <summary>
     /// When false the agent claims the capability but its receipt does not confirm enforcement for the
@@ -316,6 +320,7 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId) : FakeMultiTurn
             : receipt with
             {
                 SpawningSuppressed = input.SuppressSubAgentSpawning && ConfirmsSuppressionOnReceipt,
+                ActionToolsSuppressed = input.SuppressActionTools && ConfirmsActionToolSuppression,
             };
     }
 }

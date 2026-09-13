@@ -91,6 +91,36 @@ internal sealed class ReviewBranchManager
         _rebuildDerivedKnowledgeAsync = rebuildDerivedKnowledgeAsync;
     }
 
+    /// <summary>Checks out this PR's existing notes branch, or creates it from the trusted default branch.</summary>
+    public async Task CheckoutReviewBranchAsync(
+        string repoRoot,
+        RepoIdentity repo,
+        int prNumber,
+        string defaultBranch,
+        CancellationToken cancellationToken
+    )
+    {
+        var reviewBranch = BuildReviewBranchName(repo, prNumber);
+        // 1. Create-or-reuse the branch. Recreating from the default every time would wipe notes
+        // accumulated by prior reviews, so only branch from the default when it doesn't exist yet.
+        var probe = await RunGitAsync(
+                ["rev-parse", "--verify", reviewBranch],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        if (probe.Succeeded)
+        {
+            await RunGitAsync(["checkout", reviewBranch], repoRoot, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await RunGitAsync(["checkout", "-B", reviewBranch, defaultBranch], repoRoot, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
     /// <summary>
     /// Commits <paramref name="request"/>'s artifacts onto its review branch inside
     /// <paramref name="repoRoot"/> (an existing ReviewBot checkout) and pushes it, creating the branch
@@ -118,24 +148,14 @@ internal sealed class ReviewBranchManager
 
         var reviewBranch = BuildReviewBranchName(request);
 
-        // 1. Create-or-reuse the branch. Recreating from the default every time would wipe notes
-        // accumulated by prior reviews, so only branch from the default when it doesn't exist yet.
-        var probe = await RunGitAsync(
-                ["rev-parse", "--verify", reviewBranch],
+        await CheckoutReviewBranchAsync(
                 repoRoot,
-                cancellationToken,
-                allowFailure: true
+                request.TargetRepo,
+                request.PrNumber,
+                request.DefaultBranch,
+                cancellationToken
             )
             .ConfigureAwait(false);
-        if (probe.Succeeded)
-        {
-            await RunGitAsync(["checkout", reviewBranch], repoRoot, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await RunGitAsync(["checkout", "-B", reviewBranch, request.DefaultBranch], repoRoot, cancellationToken)
-                .ConfigureAwait(false);
-        }
 
         // 2. Write the PRs/... + KnowledgeBase/... artifacts (this commit's content).
         foreach (var file in request.Files)
@@ -382,6 +402,57 @@ internal sealed class ReviewBranchManager
     }
 
     /// <summary>
+    /// Proves closure against origin: the retained content reached the default branch and the review ref is absent.
+    /// The scoped content comparison also covers a push retry that rebased the retained commit onto a newer default.
+    /// </summary>
+    public async Task<bool> VerifyClosureAsync(
+        string repoRoot,
+        string branch,
+        string defaultBranch,
+        string retainedSha,
+        IReadOnlyList<string> retainedPaths,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(retainedSha);
+        if (retainedPaths.Count == 0)
+        {
+            throw new ArgumentException("Closure verification requires retained paths.", nameof(retainedPaths));
+        }
+        await RunGitAsync(["fetch", "origin", "--prune"], repoRoot, cancellationToken).ConfigureAwait(false);
+        var ancestor = await RunGitAsync(
+                ["merge-base", "--is-ancestor", retainedSha, $"origin/{defaultBranch}"],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        if (!ancestor.Succeeded)
+        {
+            var content = await RunGitAsync(
+                    ["diff", "--quiet", retainedSha, $"origin/{defaultBranch}", "--", .. retainedPaths],
+                    repoRoot,
+                    cancellationToken,
+                    allowFailure: true
+                )
+                .ConfigureAwait(false);
+            if (!content.Succeeded)
+            {
+                return false;
+            }
+        }
+        var remote = await RunGitAsync(
+                ["ls-remote", "--exit-code", "--heads", "origin", $"refs/heads/{branch}"],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        // ls-remote exit 2 means no matching ref. Authentication/transport failures are not absence.
+        return remote.ExitCode == 2;
+    }
+
+    /// <summary>
     /// Pushes <paramref name="branch"/> to <c>origin</c>, rebasing onto the remote and retrying up to
     /// <see cref="MaxPushAttempts"/> times when it advanced underneath us (concurrent review or external
     /// push). Returns <c>true</c> on the first successful push.
@@ -441,7 +512,7 @@ internal sealed class ReviewBranchManager
     /// justify — a fast-forward resolves nothing, so on its own it loses nothing. Excluding it was an
     /// induction on "the notes branch's own listings describe its tree", and the base case fails: when this
     /// rebuild throws, the failure is swallowed below on the promise that the next extraction's regen repairs
-    /// it, and that regen runs only after a successful entry WRITE (<see cref="Agents.KnowledgeAgent"/>). A
+    /// it, and that regen runs only after a successful entry write by the knowledge workflow. A
     /// run of declined extractions writes none, so the default branch keeps broken listings indefinitely and
     /// every later fast-forward propagated them forward untouched — the one path with no way back. Including
     /// the fast-forward closes that by construction rather than by argument, and costs nothing: the `!changed`

@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
+using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
@@ -29,6 +30,33 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow;
 /// </summary>
 public static class WorkflowSession
 {
+    internal static void EnsureControllerCompatible(WorkflowDefinition? definition)
+    {
+        if (definition is null)
+        {
+            return;
+        }
+        if (
+            definition.StrictContracts
+            || definition
+                .Nodes.OfType<ProceduralNode>()
+                .SelectMany(node => node.TaskList ?? [])
+                .Any(task =>
+                    task.Delegate == DelegateKind.Script
+                    || task.Session is not null
+                    || task.Skills?.Count > 0
+                    || task.Tools?.Count > 0
+                    || task.ModelId is not null
+                    || task.Input is not null
+                )
+        )
+        {
+            throw new WorkflowValidationException([
+                "This definition requires RunAutomaticAsync with an IWorkflowTaskInvoker and durable store; WorkflowSession only hosts controller-driven workflows.",
+            ]);
+        }
+    }
+
     /// <summary>
     ///     The nudge handed to a resumed controller as the initial user message: its full prior conversation
     ///     is restored from the conversation store first, so it only needs to re-read the workflow and continue.
@@ -116,6 +144,7 @@ public static class WorkflowSession
         ArgumentNullException.ThrowIfNull(subAgentOptions);
         ArgumentNullException.ThrowIfNull(controllerAgent);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
+        EnsureControllerCompatible(definition);
 
         var runtime = new WorkflowRuntime(schemaValidator, logger);
         if (definition is not null)
@@ -243,6 +272,13 @@ public static class WorkflowSession
             ?? throw new InvalidOperationException(
                 $"Cannot resume: no persisted workflow snapshot found for instance '{instanceId}'."
             );
+        EnsureControllerCompatible(snapshot.Definition);
+        if (snapshot.Sessions.Count > 0 || snapshot.Deadlines.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "This snapshot requires RunAutomaticAsync and its durable invocation host."
+            );
+        }
 
         // Rebuild the runtime (orphaned in-flight tasks reset) and keep persisting under the same id.
         var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
@@ -318,7 +354,12 @@ public static class WorkflowSession
     )
     {
         var registry = new FunctionRegistry();
-        _ = registry.AddProvider(new WorkflowToolProvider(runtime, includeSetWorkflow: includeAuthoringTool));
+        _ = registry.AddProvider(
+            new WorkflowToolProvider(runtime, includeSetWorkflow: includeAuthoringTool)
+            {
+                RequireControllerCompatibleDefinition = true,
+            }
+        );
 
         // Wire the self-correcting spawn-name gate (Option A). The controller correlates delegate results to
         // workflow units by EXACT name only, so a mis-named Agent spawn would run and be silently discarded,

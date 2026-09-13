@@ -31,7 +31,8 @@ public class ConversationsControllerTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null
+        ConversationStatusResolver? statusResolver = null,
+        LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
     )
     {
         return new ConversationsController(
@@ -48,7 +49,8 @@ public class ConversationsControllerTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
+            workflowPublication
         );
     }
 
@@ -926,6 +928,7 @@ public class ConversationsControllerTests
         response.SchemaVersion.Should().Be(1);
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
+        response.ActionToolSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
     }
 

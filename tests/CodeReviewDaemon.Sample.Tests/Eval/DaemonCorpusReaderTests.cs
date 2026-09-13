@@ -2,15 +2,12 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
-using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Eval;
 
@@ -94,16 +91,12 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     private void AddContext(long runId, string diff) =>
         AddArtifact(
             runId,
-            DaemonReviewStageExecutor.ContextArtifactKind,
+            ReviewArtifactKinds.ContextArtifactKind,
             new ContextArtifactPayload("118", "base", "head", diff)
         );
 
     private void AddReview(long runId, string text, string variantId = "primary") =>
-        AddArtifact(
-            runId,
-            DaemonReviewStageExecutor.ReviewArtifactKind,
-            new ReviewArtifactPayload(text, "run-1", variantId)
-        );
+        AddArtifact(runId, ReviewArtifactKinds.ReviewArtifactKind, new ReviewArtifactPayload(text, "run-1", variantId));
 
     private static Task<CorpusPage> LoadAsync(
         DaemonCorpusReader reader,
@@ -149,7 +142,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
     /// <summary>
     /// End-to-end for the provenance column: a real review DISPATCH through
-    /// <see cref="DaemonReviewStageExecutor"/> writes <c>prompt_template_hash</c>, the store's row mapper
+    /// The historical dispatcher writes <c>prompt_template_hash</c>, the store's row mapper
     /// reads it back, and it reaches the candidate metadata this corpus ships to an eval run. Every hop is the
     /// production one — the only fakes are the sandbox and the agent loop, neither of which touches the
     /// column. Before this producer existed the assertion below read <c>string.Empty</c> on every candidate
@@ -162,29 +155,9 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         var run = _store.GetReviewRun(runId)!;
         run.PromptTemplateHash.Should().BeNull("the poller's INSERT cannot know a prompt that is not rendered yet");
 
-        var sandbox = new FakeSandboxCommandRunner()
-            .OnArgvContains(
-                "rev-parse --is-inside-work-tree",
-                new SandboxCommandResult(1, string.Empty, "not a git repo")
-            )
-            .OnArgvContains(
-                "diff",
-                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
-            );
-        var executor = new DaemonReviewStageExecutor(
-            _store,
-            new FakeReviewAgentLoopFactory(),
-            sandbox,
-            new FakeSandboxFileSystem(),
-            new CodeReviewDaemonOptions(),
-            [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance
-        );
-
-        // The executor writes both artifacts the corpus pairs, so this run reaches the reader the same way a
-        // live one does rather than through hand-seeded rows.
-        await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        _store.RecordRunProvenance(runId, "historical-template-digest");
+        AddContext(runId, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;");
+        AddReview(runId, "[Blocker] src/Foo.cs:1 is wrong.");
 
         var snapshot = await SnapshotAsync(Reader());
 
@@ -193,7 +166,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
             .Should()
             .Be(
-                DaemonAgentFactory.ReviewPromptTemplateHash,
+                "historical-template-digest",
                 "the corpus consumer reads this column, so the value the dispatch recorded has to survive the "
                     + "store round-trip and the candidate projection"
             );
@@ -220,8 +193,8 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     /// <summary>
     /// The A/B arms run DIFFERENT prompts, so one run row's hash cannot describe both candidates. The primary
     /// arm runs the <c>review</c> and <c>synthesis</c> templates that
-    /// <see cref="DaemonAgentFactory.ReviewPromptTemplateHash"/> digests; the B arm runs
-    /// <c>DaemonReviewStageExecutor.ComparisonVariantPrompt</c>, a C# constant that is not in
+    /// <c>historical template digest</c> digests; the B arm runs
+    /// <c>ReviewArtifactKinds.ComparisonVariantPrompt</c>, a C# constant that is not in
     /// <c>daemon-prompts.yaml</c> and has no synthesis turn, and nothing digests it.
     /// <para>
     /// Stamping the run's hash on the B candidate would be wrong in both directions: editing the comparison
@@ -234,12 +207,12 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     public async Task The_b_arm_candidate_does_not_borrow_the_primary_arms_prompt_template_hash()
     {
         var runId = CreateRun("118");
-        _store.RecordRunProvenance(runId, DaemonAgentFactory.ReviewPromptTemplateHash);
+        _store.RecordRunProvenance(runId, "historical-template-digest");
         AddContext(runId, "the shared diff");
         AddReview(runId, "the A review");
         AddArtifact(
             runId,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
 
@@ -250,10 +223,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         // Non-vacuity: the same run row backs both candidates, so the primary arm proves the value was
         // available to be copied onto the B one and was withheld rather than merely missing.
-        primary
-            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
-            .Should()
-            .Be(DaemonAgentFactory.ReviewPromptTemplateHash);
+        primary.Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey].Should().Be("historical-template-digest");
 
         comparison
             .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
@@ -272,7 +242,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "the A review");
         AddArtifact(
             runId,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
 
@@ -361,7 +331,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     private void AddLifecycleCheckpoint(long runId, string? modelId) =>
         AddArtifact(
             runId,
-            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            ReviewArtifactKinds.ProvisionalReviewArtifactKind,
             new ReviewArtifactPayload(
                 string.Empty,
                 "run-1",
@@ -449,7 +419,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "a review");
         AddArtifact(
             runId,
-            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            ReviewArtifactKinds.ProvisionalReviewArtifactKind,
             new ReviewArtifactPayload(string.Empty, "run-1", "primary")
         );
 
@@ -499,7 +469,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "the A review");
         AddArtifact(
             runId,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "claude-haiku-4.5", "the B review", "run-2")
         );
         AddLifecycleCheckpoint(runId, "gpt-5.6-terra");
@@ -548,7 +518,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             {
                 ReviewRunId = broken,
                 ArtifactSchemaVersion = 1,
-                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                ArtifactKind = ReviewArtifactKinds.ReviewArtifactKind,
                 Provider = "github",
                 Payload = "{ this is not json",
             }

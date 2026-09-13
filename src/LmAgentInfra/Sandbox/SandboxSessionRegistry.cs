@@ -55,7 +55,11 @@ public sealed record SandboxSession(
     string HostPath,
     SandboxPluginResolution? PluginResolution = null,
     IReadOnlyList<string>? Marketplaces = null
-);
+)
+{
+    /// <summary>Whether provider egress was denied in this session's creation network policy.</summary>
+    public bool BlockProviderEgress { get; init; }
+}
 
 /// <summary>
 /// Identifies the workspace a sandbox session is being requested for: the logical
@@ -79,7 +83,11 @@ public sealed record WorkspaceRef(
     string? DirectoryRelPath = null,
     IReadOnlyList<string>? Marketplaces = null,
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null
-);
+)
+{
+    /// <summary>Host-owned isolation for review sessions whose provider operations use native callbacks.</summary>
+    public bool BlockProviderEgress { get; init; }
+}
 
 /// <summary>
 /// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
@@ -905,7 +913,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// whose <c>AppId</c> partitions the session cache. <c>null</c> resolves to the process-wide
     /// default credential (unchanged behavior for interactive/daemon callers, which never pass
     /// one).</param>
-    public Task<SandboxSession> GetOrCreateSessionAsync(
+    public async Task<SandboxSession> GetOrCreateSessionAsync(
         WorkspaceRef workspaceRef,
         CancellationToken ct = default,
         SandboxCredential? credential = null
@@ -930,7 +938,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             )
         );
 
-        return AwaitAndEvictOnFailureAsync(key, lazy);
+        var session = await AwaitAndEvictOnFailureAsync(key, lazy).ConfigureAwait(false);
+        if (session.BlockProviderEgress != effectiveRef.BlockProviderEgress)
+            throw new InvalidOperationException(
+                "Existing sandbox session has a different provider network policy; it cannot be reused for this conversation."
+            );
+        return session;
     }
 
     /// <summary>
@@ -1153,7 +1166,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
         // invalidated, whatever id the store happens to echo back.
-        var refreshedRef = reloaded is null ? effectiveRef : reloaded with { Id = workspaceId };
+        var refreshedRef = reloaded is null
+            ? effectiveRef
+            : reloaded with
+            {
+                Id = workspaceId,
+                BlockProviderEgress = effectiveRef.BlockProviderEgress,
+            };
 
         return await GetOrCreateSessionAsync(refreshedRef, ct, effectiveCredential).ConfigureAwait(false);
     }
@@ -1392,6 +1411,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // known) and so two sessions' secrets can never be cross-validated against each other.
         var sessionSecret = RandomNumberGenerator.GetHexString(64);
         var (authProviders, network) = BuildAuthProviders(sessionSecret);
+        if (workspaceRef.BlockProviderEgress)
+        {
+            // Deny before every token-injecting allow rule. This policy is enforced by the gateway
+            // for shell, plugin and descendant traffic alike; cached OAuth headers cannot bypass it.
+            network =
+            [
+                new SandboxNetworkRule(
+                    "workflow-deny-github",
+                    "deny",
+                    hosts: OAuthProviderHosts.For("github"),
+                    priority: 0
+                ),
+                new SandboxNetworkRule("workflow-deny-ado", "deny", hosts: OAuthProviderHosts.For("ado"), priority: 0),
+                .. network ?? [],
+            ];
+        }
         var discovery = BuildDiscovery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
@@ -1539,7 +1574,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // The EFFECTIVE list resolved above, so a replacement session can be created with the
                 // same marketplace scope without re-reading the global default.
                 marketplaces
-            );
+            )
+            {
+                BlockProviderEgress = workspaceRef.BlockProviderEgress,
+            };
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
             // unit: if ANY step fails (e.g. SaveAsync throws or is cancelled), the remote session and

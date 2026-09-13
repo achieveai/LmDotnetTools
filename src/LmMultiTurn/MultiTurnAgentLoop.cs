@@ -51,9 +51,13 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// - MessageUpdateJoinerMiddleware (joins update messages into full messages for history)
 /// - ToolCallInjectionMiddleware (injects function contracts for tool calling)
 /// </remarks>
-public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink, ISpawnSuppressingAgent
+public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink, IActionToolSuppressingAgent
 {
     private readonly IStreamingAgent _agent;
+    private readonly IStreamingAgent _agentWithoutTools;
+    private bool _actionToolsSuppressed;
+    private string? _actionSuppressedRunId;
+    private const string ActionSuppressedRunIdProperty = "action_suppressed_run_id";
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
 
     // Per-generation context observation (#681). The ordinal is loop-local and monotonic across restarts:
@@ -89,6 +93,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
     /// <inheritdoc />
     public override bool EnforcesSpawnSuppression => true;
+
+    /// <inheritdoc />
+    public override bool EnforcesActionToolSuppression => true;
 
     /// <summary>
     /// This loop's handle on the hierarchy-wide collaboration, or null when the host did not enable
@@ -680,7 +687,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         // Build the complete middleware stack (loop owns the pipeline)
         // Response path order: Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall
-        _agent = providerAgent
+        _agentWithoutTools = providerAgent
             .WithMessageTransformation(loggerFactory?.CreateLogger<MessageTransformationMiddleware>())
             .WithMiddleware(new JsonFragmentUpdateMiddleware())
             .WithMiddleware(publishingMiddleware)
@@ -689,8 +696,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     name: "MessageJoiner",
                     logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()
                 )
-            )
-            .WithMiddleware(toolCallMiddleware);
+            );
+        _agent = _agentWithoutTools.WithMiddleware(toolCallMiddleware);
     }
 
     /// <summary>
@@ -1196,6 +1203,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // A delayed continuation may run after a host restart. Persist before acknowledging the
         // pause so a no-spawn guarantee already returned to the caller cannot silently disappear.
         await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
+        _actionSuppressedRunId = _actionToolsSuppressed ? runId : null;
+        await PersistSuppressedRunMarkerAsync(_actionSuppressedRunId, ct, ActionSuppressedRunIdProperty);
         CarryRecoveryBudgetForward(runId, recoverySpent);
 
         // Same reasoning as the suppression marker above, for the same restart: a budget that lives
@@ -1525,7 +1534,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             IAsyncEnumerable<IMessage> stream;
             try
             {
-                stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+                stream = await GenerateTurnStreamAsync(messagesToSend, options, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1659,6 +1668,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private async Task<bool> TryAppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
     {
         var parkRunId = _delayed.LastParkedRunId;
+        var requestsActionSuppression = realInputs.Any(i => i.Input.SuppressActionTools);
+        if (requestsActionSuppression)
+        {
+            if (parkRunId is null)
+            {
+                return false;
+            }
+            _actionSuppressedRunId = parkRunId;
+            await PersistSuppressedRunMarkerAsync(parkRunId, ct, ActionSuppressedRunIdProperty);
+        }
         var requestsSuppression = realInputs.Any(i => i.Input.SuppressSubAgentSpawning);
         if (requestsSuppression)
         {
@@ -1694,7 +1713,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         return true;
     }
 
-    private Task PersistSuppressedRunMarkerAsync(string? suppressedRunId, CancellationToken ct)
+    private Task PersistSuppressedRunMarkerAsync(
+        string? suppressedRunId,
+        CancellationToken ct,
+        string propertyName = SpawnSuppressedRunIdProperty
+    )
     {
         var store = Store;
         if (store == null)
@@ -1711,11 +1734,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
                 if (suppressedRunId == null)
                 {
-                    _ = properties.Remove(SpawnSuppressedRunIdProperty);
+                    _ = properties.Remove(propertyName);
                 }
                 else
                 {
-                    properties[SpawnSuppressedRunIdProperty] = suppressedRunId;
+                    properties[propertyName] = suppressedRunId;
                 }
 
                 return (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 }) with
@@ -1728,7 +1751,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         );
     }
 
-    private async Task<string?> LoadSuppressedRunMarkerAsync(CancellationToken ct)
+    private async Task<string?> LoadSuppressedRunMarkerAsync(
+        CancellationToken ct,
+        string propertyName = SpawnSuppressedRunIdProperty
+    )
     {
         var store = Store;
         if (store == null)
@@ -1737,9 +1763,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         var metadata = await store.LoadMetadataAsync(ThreadId, ct);
-        return metadata?.Properties?.TryGetValue(SpawnSuppressedRunIdProperty, out var marker) == true
-            ? marker?.ToString()
-            : null;
+        return metadata?.Properties?.TryGetValue(propertyName, out var marker) == true ? marker?.ToString() : null;
     }
 
     /// <summary>
@@ -1849,6 +1873,30 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             _restoredParkRecoveryBudget = 0;
             return spent;
         }
+    }
+
+    /// <summary>Applies the same tool-free guarantee to ordinary, recovery and budget wrap-up turns.</summary>
+    private Task<IAsyncEnumerable<IMessage>> GenerateTurnStreamAsync(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions options,
+        CancellationToken ct
+    )
+    {
+        if (!_actionToolsSuppressed)
+        {
+            return _agent.GenerateReplyStreamingAsync(messages, options, ct);
+        }
+        // Suppressing local contracts alone would leave provider-hosted action tools enabled.
+        return _agentWithoutTools.GenerateReplyStreamingAsync(
+            messages,
+            options with
+            {
+                Functions = null,
+                BuiltInTools = null,
+                ToolChoice = null,
+            },
+            ct
+        );
     }
 
     /// <summary>
@@ -1977,7 +2025,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         try
         {
-            var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+            var stream = await GenerateTurnStreamAsync(messagesToSend, options, ct);
 
             await foreach (var msg in stream.WithCancellation(ct))
             {
@@ -2486,6 +2534,19 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 $"ToolCallMessage.FunctionName is required but was null or empty. ToolCallId: {toolCall.ToolCallId}",
                 nameof(toolCall)
             );
+        }
+
+        if (_actionToolsSuppressed)
+        {
+            return new ToolCallResultMessage
+            {
+                ToolCallId = toolCall.ToolCallId,
+                ToolName = toolCall.FunctionName,
+                Result = "Action tools are suppressed for this format-correction run.",
+                IsError = true,
+                ErrorCode = ApprovalOutcomes.HostPolicyDenied,
+                Role = Role.Tool,
+            };
         }
 
         // FunctionArgs can be null for parameterless functions - treat as empty object
@@ -3579,6 +3640,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         var suppressedRunId = await LoadSuppressedRunMarkerAsync(ct);
+        _actionSuppressedRunId = await LoadSuppressedRunMarkerAsync(ct, ActionSuppressedRunIdProperty);
         lock (_spawnSuppressionLock)
         {
             _spawnSuppressedRunId = suppressedRunId;
@@ -3961,11 +4023,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         internal bool IsLatched { get; private set; }
 
-        internal bool LatchIfContinuing(string? requestingRunId) =>
-            Latch(requestingRunId is not null && owner.ContinuesSuppressedRun(requestingRunId));
+        internal bool LatchIfContinuing(string? requestingRunId)
+        {
+            owner._actionToolsSuppressed =
+                requestingRunId is not null && requestingRunId == owner._actionSuppressedRunId;
+            return Latch(requestingRunId is not null && owner.ContinuesSuppressedRun(requestingRunId));
+        }
 
-        internal bool LatchIfRequested(IReadOnlyList<QueuedInput> inputs) =>
-            Latch(inputs.Any(i => i.Input.SuppressSubAgentSpawning));
+        internal bool LatchIfRequested(IReadOnlyList<QueuedInput> inputs)
+        {
+            owner._actionToolsSuppressed |= inputs.Any(i => i.Input.SuppressActionTools);
+            return Latch(inputs.Any(i => i.Input.SuppressSubAgentSpawning));
+        }
 
         private bool Latch(bool requested)
         {
@@ -3987,6 +4056,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
 
             _disposed = true;
+            owner._actionToolsSuppressed = false;
             _scope?.Dispose();
             _scope = null;
         }

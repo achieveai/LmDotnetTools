@@ -101,13 +101,13 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddArtifact(
             runId,
             1,
-            DaemonReviewStageExecutor.ContextArtifactKind,
+            ReviewArtifactKinds.ContextArtifactKind,
             new ContextArtifactPayload(prId, "base", "head", $"diff for {prId}")
         );
         AddArtifact(
             runId,
             1,
-            DaemonReviewStageExecutor.ReviewArtifactKind,
+            ReviewArtifactKinds.ReviewArtifactKind,
             new ReviewArtifactPayload(reviewText, "run-1", "primary")
         );
         return runId;
@@ -117,8 +117,8 @@ public sealed class EvalCorpusSweepTests : IDisposable
     private void AddV2Judge(long runId, int? score, string variantId = "primary") =>
         AddArtifact(
             runId,
-            JudgeAgent.JudgeArtifactSchemaVersion,
-            JudgeAgent.JudgeArtifactKind,
+            ReviewArtifactKinds.JudgeArtifactSchemaVersion,
+            ReviewArtifactKinds.JudgeArtifactKind,
             new JudgeArtifactPayload(
                 score,
                 "because",
@@ -140,7 +140,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddArtifact(
             runId,
             1,
-            JudgeAgent.JudgeArtifactKind,
+            ReviewArtifactKinds.JudgeArtifactKind,
             new JudgeArtifactPayload(
                 score,
                 "because",
@@ -373,8 +373,8 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
         AddArtifact(
             runId,
-            JudgeAgent.JudgeArtifactSchemaVersion + 1,
-            JudgeAgent.JudgeArtifactKind,
+            ReviewArtifactKinds.JudgeArtifactSchemaVersion + 1,
+            ReviewArtifactKinds.JudgeArtifactKind,
             new JudgeArtifactPayload(
                 7,
                 "because",
@@ -407,7 +407,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddArtifact(
             runId,
             1,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
 
@@ -449,8 +449,8 @@ public sealed class EvalCorpusSweepTests : IDisposable
         // Re-judged, and the newer row is corrupt.
         AddRawArtifact(
             runId,
-            JudgeAgent.JudgeArtifactSchemaVersion,
-            JudgeAgent.JudgeArtifactKind,
+            ReviewArtifactKinds.JudgeArtifactSchemaVersion,
+            ReviewArtifactKinds.JudgeArtifactKind,
             "{ this is not a judge payload"
         );
 
@@ -480,7 +480,12 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
 
         AddV2Judge(runId, score: 8);
-        AddRawArtifact(runId, JudgeAgent.JudgeArtifactSchemaVersion, JudgeAgent.JudgeArtifactKind, "null");
+        AddRawArtifact(
+            runId,
+            ReviewArtifactKinds.JudgeArtifactSchemaVersion,
+            ReviewArtifactKinds.JudgeArtifactKind,
+            "null"
+        );
 
         var logger = new CapturingLogger<EvalCorpusSweep>();
         var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
@@ -530,7 +535,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddArtifact(
             runId,
             1,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
         AddV2Judge(runId, score: 9, variantId: "primary");
@@ -570,7 +575,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddArtifact(
             runId,
             1,
-            VariantReviewer.VariantReviewArtifactKind,
+            ReviewArtifactKinds.VariantReviewArtifactKind,
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
         AddV2Judge(runId, score: 7);
@@ -590,7 +595,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         seen.Select(a => a.ArtifactKind)
             .Should()
             .AllBe(
-                JudgeAgent.JudgeArtifactKind,
+                ReviewArtifactKinds.JudgeArtifactKind,
                 "the sweep grades judge rows; the diff it would discard stays in SQLite"
             );
 
@@ -600,7 +605,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
             .GetArtifacts(runId)
             .Select(a => a.ArtifactKind)
             .Should()
-            .Contain(DaemonReviewStageExecutor.ContextArtifactKind);
+            .Contain(ReviewArtifactKinds.ContextArtifactKind);
 
         report.ScoredCandidates.Should().Be(1, "filtering must not cost the sweep its grade");
     }
