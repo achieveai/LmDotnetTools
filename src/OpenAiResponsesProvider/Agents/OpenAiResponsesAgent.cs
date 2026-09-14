@@ -150,12 +150,9 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
     {
         await foreach (var ev in source.ConfigureAwait(false))
         {
-            if (dumpWriter is not null)
-            {
-                // Events built in code (tests, scripted clients) carry no wire text; fall back to a
-                // re-serialization so the dump still records that the event happened.
-                dumpWriter.AppendRawResponseLine(ev.RawJson ?? ResponseEventParser.ToJsonObject(ev).ToJsonString());
-            }
+            // Events built in code (tests, scripted clients) carry no wire text; fall back to a
+            // re-serialization so the dump still records that the event happened.
+            dumpWriter?.AppendRawResponseLine(ev.RawJson ?? ResponseEventParser.ToJsonObject(ev).ToJsonString());
 
             yield return ev;
         }

@@ -310,6 +310,73 @@ public sealed class OpenAiResponsesAgentTests
         }
     }
 
+    [Fact]
+    public async Task Agent_dump_keeps_a_noncanonical_wire_event_byte_for_byte()
+    {
+        // The mock handler above emits canonical JSON, so a regression that ignored RawJson and
+        // re-serialized the parsed event would still pass it. This stream is deliberately not what
+        // System.Text.Json would produce: odd spacing, an unexpected property order, a redundant
+        // unicode escape, and an extra field no record models. The dump line must be that text exactly.
+        const string wireEvent =
+            """{ "sequence_number":3 ,"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\"q\":\"café  x\"}","extra_unmodeled":true }""";
+        var sse =
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_raw\"}}\n\n"
+            + "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"search\",\"arguments\":\"\"}}\n\n"
+            + "data: "
+            + wireEvent
+            + "\n\n"
+            + "data: {\"type\":\"response.completed\",\"sequence_number\":4,\"response\":{\"id\":\"resp_raw\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+            + "data: [DONE]\n\n";
+        using var http = new HttpClient(new FixedSseHandler(sse)) { BaseAddress = new Uri("http://mock.local/") };
+        using var agent = new OpenAiResponsesAgent("test-agent", new OpenAiResponsesClient(http));
+        var dumpDir = Path.Combine(Path.GetTempPath(), $"responses-dump-{Guid.NewGuid():N}");
+        var dumpBase = Path.Combine(dumpDir, "turn.llm");
+
+        try
+        {
+            var stream = await agent.GenerateReplyStreamingAsync(
+                [new TextMessage { Role = Role.User, Text = "go" }],
+                new GenerateReplyOptions { RequestResponseDumpFileName = dumpBase }
+            );
+            var calls = new List<ToolsCallMessage>();
+            await foreach (var m in stream)
+            {
+                if (m is ToolsCallMessage tc)
+                {
+                    calls.Add(tc);
+                }
+            }
+
+            var lines = File.ReadAllLines(dumpBase + ".response.txt");
+            lines.Should().HaveCount(4, "every payload before [DONE] is dumped, [DONE] itself is not");
+            lines[2].Should().Be(wireEvent, "the dump is the wire text, not a re-serialization of the parsed event");
+            calls.Single().ToolCalls.Single().FunctionArgs.Should().Be("{\"q\":\"café  x\"}");
+        }
+        finally
+        {
+            if (Directory.Exists(dumpDir))
+            {
+                Directory.Delete(dumpDir, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>Serves one fixed SSE body for every request — the wire text is the test's input.</summary>
+    private sealed class FixedSseHandler(string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "text/event-stream"),
+            };
+            return Task.FromResult(response);
+        }
+    }
+
     private sealed class TestRig : IAsyncDisposable
     {
         public required OpenAiResponsesAgent Agent { get; init; }
