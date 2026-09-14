@@ -178,3 +178,154 @@ describe('ArtifactPreviewModal — chrome', () => {
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
 });
+
+
+describe('ArtifactPreviewModal — chat file links (target resolved on the server)', () => {
+  function mountTarget(responses: Response[], target = 'B:\\ws\\docs\\report.md') {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    for (const r of responses) fetchSpy.mockResolvedValueOnce(r);
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', target },
+      attachTo: document.body,
+    });
+    return { wrapper, fetchSpy };
+  }
+
+  it('resolves the raw target for THIS conversation, then previews the resolved path', async () => {
+    const { wrapper, fetchSpy } = mountTarget([
+      jsonResponse({ path: 'docs/report.md', type: 'file', size: 20 }),
+      jsonResponse({ previewable: true, text: '# Report', lineCount: 1 }),
+    ]);
+    await flushPromises();
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      '/api/conversations/thread-1/files/resolve?target=B%3A%5Cws%5Cdocs%5Creport.md'
+    );
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      '/api/conversations/thread-1/files/preview?path=docs%2Freport.md'
+    );
+    expect(wrapper.get('[data-testid="artifact-preview-markdown"]').find('h1').text()).toBe('Report');
+    expect(wrapper.get('[data-testid="artifact-preview-modal"]').text()).toContain('docs/report.md');
+  });
+
+  it.each([
+    [400, 'outside_workspace', 'outside the workspace'],
+    [400, 'invalid_path', 'not a valid workspace path'],
+    [404, 'not_found', 'not found in the workspace'],
+  ])('explains a %i %s resolve failure', async (status, code, message) => {
+    const { wrapper, fetchSpy } = mountTarget([jsonResponse({ code }, status)]);
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="artifact-preview-error"]').text()).toContain(message);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(false);
+  });
+
+  it('says a folder link is a folder and fetches nothing else', async () => {
+    const { wrapper, fetchSpy } = mountTarget(
+      [jsonResponse({ path: 'docs', type: 'directory', size: null })],
+      'docs/'
+    );
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('folder');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ArtifactPreviewModal — viewers', () => {
+  it('renders a CSV as a table with a header row', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({ previewable: true, text: 'name,qty\n"Widget, large",3\nBolt,10', lineCount: 3 }),
+      'data/items.csv'
+    );
+
+    const table = wrapper.get('[data-testid="artifact-preview-table"]');
+    expect(table.findAll('th').map((th) => th.text())).toEqual(['name', 'qty']);
+    expect(table.findAll('tbody tr').map((tr) => tr.findAll('td').map((td) => td.text()))).toEqual([
+      ['Widget, large', '3'],
+      ['Bolt', '10'],
+    ]);
+  });
+
+  it('renders a TSV as a table', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({ previewable: true, text: 'a\tb\n1\t2', lineCount: 2 }),
+      'out.tsv'
+    );
+    expect(wrapper.get('[data-testid="artifact-preview-table"]').findAll('th')).toHaveLength(2);
+  });
+
+  it('shows an image from the download bytes as a typed object URL, and revokes it on close', async () => {
+    const createObjectURL = vi.fn((_: Blob) => 'blob:preview-1');
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 }));
+
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'img/chart.png' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      '/api/conversations/thread-1/files/download?path=img%2Fchart.png'
+    );
+    // The server answers application/octet-stream + nosniff, so the blob is re-typed from the extension.
+    expect(createObjectURL.mock.calls[0][0].type).toBe('image/png');
+    expect(wrapper.get('[data-testid="artifact-preview-image"]').attributes('src')).toBe('blob:preview-1');
+
+    wrapper.unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview-1');
+  });
+
+  it('does not fetch an image above the in-page size cap; offers the download instead', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ path: 'big.jpg', type: 'file', size: 64 * 1024 * 1024 }));
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', target: 'big.jpg' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('too large');
+    expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(true);
+  });
+
+  it('offers a download for a non-previewable file', async () => {
+    const { wrapper } = await mountModal(jsonResponse(binaryPreview), 'bin/tool.zip');
+    expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(true);
+  });
+
+  it('the download button saves the file through the download endpoint', async () => {
+    const { wrapper, fetchSpy } = await mountModal(jsonResponse(textPreview), 'docs/spec.md');
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:dl'), revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    fetchSpy.mockResolvedValueOnce(new Response('bytes', { status: 200 }));
+
+    await wrapper.get('[data-testid="artifact-preview-download"]').trigger('click');
+    await flushPromises();
+
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      '/api/conversations/thread-1/files/download?path=docs%2Fspec.md'
+    );
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a file over the download cap', 413, 'file_too_large', 'This file is too large to download.'],
+    ['any other download failure', 502, 'gateway_error', 'Could not download the file.'],
+  ])('explains %s inside the modal', async (_, status, code, message) => {
+    const { wrapper, fetchSpy } = await mountModal(jsonResponse(binaryPreview), 'bin/tool.zip');
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: code, code }, status));
+
+    await wrapper.get('[data-testid="artifact-preview-download"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="artifact-preview-error"]').text()).toBe(message);
+  });
+});

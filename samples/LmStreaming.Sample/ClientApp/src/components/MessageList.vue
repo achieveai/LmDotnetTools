@@ -2,6 +2,7 @@
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { DisplayItem } from '@/types';
 import TextMessage from './TextMessage.vue';
+import CopyMessageButton from './CopyMessageButton.vue';
 import MetadataPill from './MetadataPill.vue';
 import NotificationPill from './NotificationPill.vue';
 import PendingMessage from './PendingMessage.vue';
@@ -266,17 +267,28 @@ watch(
               />
 
               <!-- Assistant text message -->
-              <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
-                <!-- `is-complete` is bound here too, not just in the active section below: an
-                     assistant-only transcript (SubAgentTranscript) has no user group, so every
-                     group lands in `history` and the growing child bubble renders through THIS
-                     branch. It cannot mis-fire for the main chat -- an assistant item only reaches
-                     `history` when a later user message exists, and `streamingItemId`'s scan stops
-                     at that user message before it could ever reach the older bubble. -->
-                <TextMessage
-                  :message="item.content"
-                  :is-streaming="false"
-                  :is-complete="item.id !== streamingItemId"
+              <!-- The copy button is a SIBLING of the bubble, not a child: `assistant-text` is read by
+                   innerText in the browser E2E suite, and a "Copy" label inside it would change every
+                   answer's text. -->
+              <div v-else-if="item.type === 'assistant-message'" class="text-bubble-row">
+                <div class="text-bubble" data-testid="assistant-text">
+                  <!-- `is-complete` is bound here too, not just in the active section below: an
+                       assistant-only transcript (SubAgentTranscript) has no user group, so every
+                       group lands in `history` and the growing child bubble renders through THIS
+                       branch. It cannot mis-fire for the main chat -- an assistant item only reaches
+                       `history` when a later user message exists, and `streamingItemId`'s scan stops
+                       at that user message before it could ever reach the older bubble. -->
+                  <TextMessage
+                    :message="item.content"
+                    :is-streaming="false"
+                    :is-complete="item.id !== streamingItemId"
+                    workspace-links
+                  />
+                </div>
+                <CopyMessageButton
+                  v-if="item.id !== streamingItemId"
+                  class="bubble-copy"
+                  :text="item.content.text"
                 />
               </div>
             </template>
@@ -327,11 +339,19 @@ watch(
                 />
 
                 <!-- Assistant text message -->
-                <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
-                  <TextMessage
-                    :message="item.content"
-                    :is-streaming="false"
-                    :is-complete="item.id !== streamingItemId"
+                <div v-else-if="item.type === 'assistant-message'" class="text-bubble-row">
+                  <div class="text-bubble" data-testid="assistant-text">
+                    <TextMessage
+                      :message="item.content"
+                      :is-streaming="false"
+                      :is-complete="item.id !== streamingItemId"
+                      workspace-links
+                    />
+                  </div>
+                  <CopyMessageButton
+                    v-if="item.id !== streamingItemId"
+                    class="bubble-copy"
+                    :text="item.content.text"
                   />
                 </div>
               </template>
@@ -432,6 +452,39 @@ watch(
   border: 1px solid #e0e0e0;
   border-radius: 16px 16px 16px 4px;
   padding: 12px 16px;
+}
+
+/* The row is exactly the bubble's box (a block wrapper around one block child), so the button can be
+   pinned to the bubble's corner while staying outside `assistant-text`. */
+.text-bubble-row {
+  position: relative;
+  min-width: 0;
+}
+
+/* Copy button: pinned to the bubble's top-right corner, revealed on hover or keyboard focus. It stays
+   in the DOM (opacity, not v-show) so Tab can reach it and :focus-within can reveal it. */
+.bubble-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  opacity: 0;
+  /* While invisible it must not swallow clicks or text selection on the bubble's first line. */
+  pointer-events: none;
+  transition: opacity 0.12s ease-in-out;
+}
+
+.text-bubble-row:hover .bubble-copy,
+.text-bubble-row:focus-within .bubble-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch screens have no hover: keep it visible there. */
+@media (hover: none) {
+  .bubble-copy {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* User message styling handled in PendingMessage and TextMessage components */
