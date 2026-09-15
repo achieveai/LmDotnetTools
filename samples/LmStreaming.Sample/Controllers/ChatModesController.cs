@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -36,7 +37,7 @@ namespace LmStreaming.Sample.Controllers;
 [ApiController]
 [Route("api/chat-modes")]
 [InboundS2SAuth]
-public class ChatModesController(IChatModeStore modeStore) : ControllerBase
+public class ChatModesController(IChatModeStore modeStore, Services.SandboxEnvApplier envApplier) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct = default)
@@ -60,8 +61,23 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
             return invalid;
         }
 
-        var mode = await modeStore.CreateModeAsync(createData, ct);
-        return Created($"/api/chat-modes/{mode.Id}", mode);
+        try
+        {
+            var mode = await modeStore.CreateModeAsync(createData, ct);
+            return Created($"/api/chat-modes/{mode.Id}", mode);
+        }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
+        }
     }
 
     [HttpPut("{modeId}")]
@@ -79,7 +95,25 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
         try
         {
             var mode = await modeStore.UpdateModeAsync(modeId, updateData, ct);
+
+            if (updateData.EnvIsSet)
+            {
+                await envApplier.ReapplyForModeAsync(modeId, ct);
+            }
+
             return Ok(mode);
+        }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
         }
         catch (InvalidOperationException ex)
         {

@@ -88,6 +88,8 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
             throw new InvalidOperationException($"Could not derive a valid workspace directory from '{rawDir}'.");
         }
 
+        SandboxEnvRules.Validate(dto.Env, "workspace");
+
         await _lock.WaitAsync(ct);
         try
         {
@@ -113,6 +115,9 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 // Tri-state seeding: a null selection stays null ("no preference"), it is not
                 // collapsed to [] the way Marketplaces is. Revision starts at the default 0.
                 PluginSelection = dto.PluginSelection,
+                Env = dto.Env is null
+                    ? new Dictionary<string, string>(StringComparer.Ordinal)
+                    : new Dictionary<string, string>(dto.Env, StringComparer.Ordinal),
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -158,11 +163,22 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 WorkspaceRevisionConflictException.ThrowIfMismatch(id, dto.PluginsRevision, existing.PluginsRevision);
             }
 
+            if (dto.Env.IsSet)
+            {
+                SandboxEnvRules.Validate(dto.Env.Value, "workspace");
+            }
+
             var updatedWorkspace = existing with
             {
                 Marketplaces = dto.Marketplaces ?? [],
                 PluginSelection = dto.PluginSelection.IsSet ? dto.PluginSelection.Value : existing.PluginSelection,
                 PluginsRevision = dto.PluginSelection.IsSet ? existing.PluginsRevision + 1 : existing.PluginsRevision,
+                Env = dto.Env.IsSet
+                    ? new Dictionary<string, string>(
+                        dto.Env.Value ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                        StringComparer.Ordinal
+                    )
+                    : existing.Env,
                 UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
 
@@ -236,7 +252,19 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
             // normalize with `?? []`; without the same normalization on the way back in, one such
             // entry made EVERY reader throw — including the catalog listing, so the UI could not load
             // and no API call could repair the file that broke it.
-            return [.. loaded.Select(static w => w.Marketplaces is null ? w with { Marketplaces = [] } : w)];
+            return
+            [
+                .. loaded.Select(static w =>
+                    w.Marketplaces is null
+                        ? w with
+                        {
+                            Marketplaces = [],
+                            Env = w.Env ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                        }
+                    : w.Env is null ? w with { Env = new Dictionary<string, string>(StringComparer.Ordinal) }
+                    : w
+                ),
+            ];
         }
         catch (JsonException ex)
         {

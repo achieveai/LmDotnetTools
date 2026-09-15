@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -13,7 +14,8 @@ public sealed class WorkspacesController(
     IWorkspaceStore store,
     WorkspaceCatalogCompatibilityService compatibility,
     GatewayWorkspaceCatalogIdentity identity,
-    IWorkspacePluginSelectionService pluginSelection
+    IWorkspacePluginSelectionService pluginSelection,
+    SandboxEnvApplier envApplier
 ) : ControllerBase
 {
     [HttpGet]
@@ -146,6 +148,18 @@ public sealed class WorkspacesController(
         {
             return CatalogUnavailable(ex);
         }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
+        }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { error = ex.Message });
@@ -171,6 +185,11 @@ public sealed class WorkspacesController(
             var workspace = updateData.PluginSelection.IsSet
                 ? await pluginSelection.ApplyPluginSelectionUpdateAsync(id, updateData, ct)
                 : await store.UpdateAsync(id, updateData, ct);
+
+            if (updateData.Env.IsSet)
+            {
+                await envApplier.ReapplyForWorkspaceAsync(id, ct);
+            }
 
             return Ok(workspace.ToView(await compatibility.EvaluateAsync(workspace, ct)));
         }
@@ -268,6 +287,33 @@ public sealed class WorkspacesController(
             // broader clause would otherwise swallow a corrupt catalog into a 400 that blames the
             // caller for a server-side storage fault. List/Get/Create already answer 503 here.
             return CatalogUnavailable(ex);
+        }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.InvalidEnv)
+        {
+            // The workspace write already succeeded by the time reapply runs; the gateway, not the
+            // store, is what rejected the merged env. Say so, so the caller does not assume nothing
+            // was persisted.
+            return BadRequest(
+                new
+                {
+                    error = $"Workspace '{id}' was saved, but the sandbox gateway rejected its environment: {ex.Message}",
+                    code = "invalid_env",
+                    layer = "workspace",
+                    keys = ex.InvalidKeys ?? [],
+                }
+            );
         }
         catch (InvalidOperationException ex)
         {

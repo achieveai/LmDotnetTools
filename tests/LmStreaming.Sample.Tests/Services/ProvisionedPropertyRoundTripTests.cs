@@ -123,6 +123,39 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task SandboxEnv_survives_the_production_stores_json_round_trip()
+    {
+        var env = new Dictionary<string, string> { ["FOO"] = "bar", ["BAZ"] = "qux" };
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        var store = new FileConversationStore(_root);
+
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                var builder = existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+                builder[ConversationSandboxEnv.PropertyKey] = env;
+                return new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = builder.ToImmutable(),
+                };
+            }
+        );
+
+        var read = await ConversationSandboxEnv.ReadAsync(store, threadId);
+
+        read.Should()
+            .BeEquivalentTo(
+                env,
+                "the provisioned env is written at provision and read back as a JsonElement object; "
+                    + "a reader that misses that hands every session the workspace/mode env only, and "
+                    + "the whole field is inert in production"
+            );
+    }
+
+    [Fact]
     public async Task Absent_properties_still_read_as_null_after_a_round_trip()
     {
         var threadId = $"thread-{Guid.NewGuid():N}";
@@ -132,5 +165,6 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
         (await SystemPromptAugmenter.ComposeAsync(store, threadId, "MODE PROMPT")).Should().Be("MODE PROMPT");
         (await ConversationSubAgentModel.ReadAsync(store, threadId)).Should().BeNull();
         (await ConversationRootReasoningEffort.ReadAsync(store, threadId)).Should().BeNull();
+        (await ConversationSandboxEnv.ReadAsync(store, threadId)).Should().BeNull();
     }
 }

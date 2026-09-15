@@ -230,6 +230,15 @@ public record ProvisionConversationRequest
     /// the field. Non-empty values are capability-shaped before reaching the provider.
     /// </summary>
     public string? ReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Optional provision-layer sandbox environment variables for THIS conversation (spec §5): wins
+    /// over the workspace's <see cref="Workspace.Env"/> and the mode's <see cref="ChatMode.Env"/>.
+    /// Not changeable after provision. Sandbox sessions are shared per (workspace, app id), so when
+    /// more than one thread activates the same session, the most recently activated thread's map is
+    /// the one in effect. Never logged.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
 }
 
 /// <summary>
@@ -281,6 +290,14 @@ public record ConversationCapabilitiesResponse
     /// older host cannot mint an unusable orphan conversation merely to reveal that it ignored the field.
     /// </summary>
     public required bool RootReasoningEffort { get; init; }
+
+    /// <summary>
+    /// True when <see cref="ProvisionConversationRequest.Env"/> is understood and persisted before the
+    /// hosted root agent is built, and applied as the provision-layer sandbox env (spec §5). Callers
+    /// check this side-effect-free capability before provisioning so an older host cannot mint an
+    /// unusable orphan conversation merely to reveal that it ignored the field.
+    /// </summary>
+    public required bool SandboxEnv { get; init; }
 }
 
 /// <summary>

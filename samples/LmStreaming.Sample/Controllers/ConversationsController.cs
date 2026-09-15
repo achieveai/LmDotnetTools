@@ -287,6 +287,25 @@ public class ConversationsController(
             );
         }
 
+        try
+        {
+            SandboxEnvRules.Validate(request.Env, "provision");
+        }
+        catch (SandboxEnvValidationException ex)
+        {
+            // Validated BEFORE any store write, so a rejected provision never leaves a half-created
+            // thread behind — nothing is stored.
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
+        }
+
         var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
         if (workspace == null)
         {
@@ -351,6 +370,14 @@ public class ConversationsController(
                 if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
                 {
                     propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
+                }
+
+                if (request.Env is { Count: > 0 })
+                {
+                    propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(
+                        request.Env,
+                        StringComparer.Ordinal
+                    );
                 }
 
                 // Null means no caller override. Empty is intentionally persisted: it is the explicit
@@ -1035,6 +1062,7 @@ public class ConversationsController(
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
                 RootReasoningEffort = true,
+                SandboxEnv = true,
             }
         );
 

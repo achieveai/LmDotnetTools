@@ -2383,6 +2383,10 @@ try
         logger: sp.GetRequiredService<ILogger<WorkspacePluginSelectionService>>()
     ));
 
+    // Sandbox env reapply (Task 4 fills in the real logic): STUB registered here so
+    // WorkspacesController/ChatModesController can depend on it today.
+    _ = builder.Services.AddSingleton<SandboxEnvApplier>();
+
     // Register the ChatWebSocketManager and the live-connection registry that lets backend
     // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
     _ = builder.Services.AddSingleton<WebSocketConnectionRegistry>();

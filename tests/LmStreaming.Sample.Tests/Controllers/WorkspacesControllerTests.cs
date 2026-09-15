@@ -20,7 +20,8 @@ public class WorkspacesControllerTests
     private static (WorkspacesController Controller, FileWorkspaceStore Store) Build(
         string? defaultLeaf = null,
         IWorkspacePluginSelectionService? pluginSelection = null,
-        IMarketplaceCatalogClient? catalog = null
+        IMarketplaceCatalogClient? catalog = null,
+        SandboxEnvApplier? envApplier = null
     )
     {
         var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
@@ -38,7 +39,8 @@ public class WorkspacesControllerTests
                 // Unless a test supplies its own, the migration service is one that FAILS LOUDLY when
                 // touched. A no-op stub would let "an ordinary update silently migrated" pass as green;
                 // NotSupportedException maps to no catch in the controller, so it escapes the action.
-                pluginSelection ?? new StubPluginSelection(new NotSupportedException("migration must not run"))
+                pluginSelection ?? new StubPluginSelection(new NotSupportedException("migration must not run")),
+                envApplier ?? new SandboxEnvApplier()
             ),
             store
         );
@@ -221,6 +223,27 @@ public class WorkspacesControllerTests
     }
 
     [Fact]
+    public async Task Create_WithEnv_PersistsAndViewEchoesIt()
+    {
+        var (controller, store) = Build();
+
+        var result = await controller.Create(
+            new WorkspaceCreate
+            {
+                Name = "Envd",
+                Env = new Dictionary<string, string> { ["FOO"] = "bar" },
+            }
+        );
+
+        var created = result.Should().BeOfType<CreatedResult>().Subject;
+        var view = created.Value.Should().BeOfType<WorkspaceView>().Subject;
+        view.Env.Should().Equal(new Dictionary<string, string> { ["FOO"] = "bar" });
+
+        var stored = await store.GetAsync(view.Id);
+        stored!.Env.Should().Equal(new Dictionary<string, string> { ["FOO"] = "bar" });
+    }
+
+    [Fact]
     public async Task Update_ReplacesMarketplaces_Returns200()
     {
         var (controller, store) = Build();
@@ -246,6 +269,90 @@ public class WorkspacesControllerTests
 
         _ = result.Should().BeOfType<OkObjectResult>();
         migration.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Update_EnvOmitted_LeavesExistingEnvUnchanged()
+    {
+        var (controller, store) = Build();
+        var created = await store.CreateAsync(
+            new WorkspaceCreate
+            {
+                Name = "Proj",
+                Env = new Dictionary<string, string> { ["FOO"] = "bar" },
+            }
+        );
+
+        var result = await controller.Update(created.Id, new WorkspaceUpdate { Marketplaces = ["x"] });
+
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var view = ok.Value.Should().BeOfType<WorkspaceView>().Subject;
+        view.Env.Should().Equal(new Dictionary<string, string> { ["FOO"] = "bar" });
+    }
+
+    [Fact]
+    public async Task Update_EnvPresent_ReplacesWholeMap()
+    {
+        var (controller, store) = Build();
+        var created = await store.CreateAsync(
+            new WorkspaceCreate
+            {
+                Name = "Proj",
+                Env = new Dictionary<string, string> { ["FOO"] = "bar" },
+            }
+        );
+
+        var result = await controller.Update(
+            created.Id,
+            new WorkspaceUpdate
+            {
+                Marketplaces = [],
+                Env = new Optional<IReadOnlyDictionary<string, string>>(
+                    new Dictionary<string, string> { ["BAZ"] = "qux" }
+                ),
+            }
+        );
+
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var view = ok.Value.Should().BeOfType<WorkspaceView>().Subject;
+        view.Env.Should().Equal(new Dictionary<string, string> { ["BAZ"] = "qux" });
+    }
+
+    [Fact]
+    public async Task Update_WithProtectedEnvKey_Returns400AndNothingStored()
+    {
+        var (controller, store) = Build();
+        var created = await store.CreateAsync(
+            new WorkspaceCreate
+            {
+                Name = "Proj",
+                Env = new Dictionary<string, string> { ["FOO"] = "bar" },
+            }
+        );
+
+        var result = await controller.Update(
+            created.Id,
+            new WorkspaceUpdate
+            {
+                Marketplaces = [],
+                Env = new Optional<IReadOnlyDictionary<string, string>>(
+                    new Dictionary<string, string> { ["HTTP_PROXY"] = "http://evil:8080" }
+                ),
+            }
+        );
+
+        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        ErrorField(bad.Value, "code").Should().Be("invalid_env");
+        var payload = JsonSerializer.Serialize(bad.Value);
+        payload.Should().Contain("HTTP_PROXY").And.NotContain("evil");
+
+        var stored = await store.GetAsync(created.Id);
+        stored!
+            .Env.Should()
+            .Equal(
+                new Dictionary<string, string> { ["FOO"] = "bar" },
+                "the rejected update must leave the stored env untouched"
+            );
     }
 
     [Fact]
@@ -560,6 +667,29 @@ public class WorkspacesControllerTests
     }
 
     /// <summary>
+    /// A <c>workspaces.json</c> written before <c>Env</c> existed has no <c>"env"</c> property at
+    /// all. <see cref="Workspace.Env"/> is non-nullable with an <c>= []</c>-equivalent initializer,
+    /// but that is a compile-time annotation only — an ABSENT property leaves the field defaulted by
+    /// the type's own initializer during deserialization, which is already an empty map; this pins
+    /// that reading such a file does not throw and reads back as empty, matching the Marketplaces
+    /// legacy-load guarantee above.
+    /// </summary>
+    [Fact]
+    public async Task Get_LegacyJsonWithoutEnvProperty_ReadsBackAsEmptyMap()
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+        await app.CorruptCatalogAsync(json =>
+            System.Text.RegularExpressions.Regex.Replace(json, ",\\s*\"env\":\\s*\\{\\s*\\}", string.Empty)
+        );
+
+        var response = await app.Client.GetAsync($"/api/workspaces/{created.Id}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadViewAsync(response)).Env.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// A null ENTRY is a different kind of damage and gets a different answer. There is no workspace
     /// there to normalize, so it is reported as a corrupt catalog (503) rather than dropped: silently
     /// skipping it would make a truncated or half-written file look like a successful deletion.
@@ -647,6 +777,7 @@ public class WorkspacesControllerTests
                         _ = services.AddSingleton<IWorkspacePluginSelectionService>(
                             new StubPluginSelection(new NotSupportedException("migration must not run"))
                         );
+                        _ = services.AddSingleton(new SandboxEnvApplier());
                     });
                     webBuilder.Configure(appBuilder =>
                     {

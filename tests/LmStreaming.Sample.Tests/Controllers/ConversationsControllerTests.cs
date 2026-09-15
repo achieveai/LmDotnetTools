@@ -927,6 +927,7 @@ public class ConversationsControllerTests
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
+        response.SandboxEnv.Should().BeTrue();
     }
 
     [Fact]

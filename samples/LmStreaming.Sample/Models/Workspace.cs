@@ -57,6 +57,14 @@ public record Workspace
     /// Unix timestamp (milliseconds) when the workspace was last updated.
     /// </summary>
     public long UpdatedAt { get; init; }
+
+    /// <summary>
+    /// Base-layer sandbox environment variables for every session under this workspace. Overridden
+    /// by a chat mode's env and, last, by a conversation's own provisioned env (spec §5 layer order:
+    /// workspace &lt; mode &lt; provision). Values are plain text and never logged.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Env { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -85,6 +93,12 @@ public record WorkspaceCreate
     /// (legacy all-plugins) and is never collapsed to an empty list.
     /// </summary>
     public IReadOnlyList<PluginRef>? PluginSelection { get; init; }
+
+    /// <summary>
+    /// Optional base-layer sandbox environment variables to seed the workspace with. Null is treated
+    /// as an empty map. See <see cref="Workspace.Env"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
 }
 
 /// <summary>
@@ -121,6 +135,17 @@ public record WorkspaceUpdate
     /// whenever <see cref="PluginSelection"/> is set; ignored otherwise.
     /// </summary>
     public int? PluginsRevision { get; init; }
+
+    /// <summary>
+    /// Replacement base-layer sandbox environment variables. Four-state via <see cref="Optional{T}"/>:
+    /// omitted leaves the stored map unchanged; present REPLACES the whole map (an empty map clears
+    /// it). Same mechanism as <see cref="PluginSelection"/>, but unlike it there is no separate "no
+    /// preference" state here — the wrapped value itself is never null once present, only empty or
+    /// non-empty.
+    /// </summary>
+    [JsonConverter(typeof(OptionalJsonConverterFactory))]
+    public Optional<IReadOnlyDictionary<string, string>> Env { get; init; } =
+        Optional<IReadOnlyDictionary<string, string>>.Unset;
 }
 
 public sealed record WorkspaceView(
@@ -134,7 +159,8 @@ public sealed record WorkspaceView(
     string Compatibility,
     IReadOnlyList<string> UnsupportedMarketplaces,
     IReadOnlyList<PluginRef>? PluginSelection,
-    int PluginsRevision
+    int PluginsRevision,
+    IReadOnlyDictionary<string, string> Env
 );
 
 public sealed record WorkspaceGatewayView(string CanonicalBaseUrl, string AppId, bool Available, string? Error);
@@ -158,7 +184,8 @@ public static class WorkspaceViewMapping
             compatibility.Compatibility.ToString().ToLowerInvariant(),
             compatibility.UnsupportedMarketplaces,
             workspace.PluginSelection,
-            workspace.PluginsRevision
+            workspace.PluginsRevision,
+            workspace.Env
         );
     }
 }

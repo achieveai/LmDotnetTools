@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -155,6 +156,7 @@ public static class SystemChatModes
                 SubAgentReasoningEffort = m.SubAgentReasoningEffort,
                 SubAgentModelIntelligenceByType = m.SubAgentModelIntelligenceByType,
                 DefaultSubAgentModelIntelligence = m.DefaultSubAgentModelIntelligence,
+                Env = m.Env,
                 IsSystemDefined = true,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -166,6 +168,17 @@ public static class SystemChatModes
             if (Services.ModeSubAgentPolicy.Validate(mode.ToAgentProfile()) is { } policyError)
             {
                 throw new InvalidOperationException($"{PromptsFileName} mode '{mode.Id}': {policyError}");
+            }
+
+            try
+            {
+                SandboxEnvRules.Validate(mode.Env, "mode");
+            }
+            catch (SandboxEnvValidationException ex)
+            {
+                throw new InvalidOperationException(
+                    $"{PromptsFileName} mode '{mode.Id}': invalid env keys: {string.Join(", ", ex.Keys)}"
+                );
             }
         }
 
@@ -282,5 +295,7 @@ public static class SystemChatModes
         public Dictionary<string, int>? SubAgentModelIntelligenceByType { get; init; }
 
         public int? DefaultSubAgentModelIntelligence { get; init; }
+
+        public Dictionary<string, string>? Env { get; init; }
     }
 }
