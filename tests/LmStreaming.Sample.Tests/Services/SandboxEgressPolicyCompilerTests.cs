@@ -490,18 +490,29 @@ public class SandboxEgressPolicyCompilerTests
     }
 
     [Fact]
-    public void Authenticated_rule_must_stay_on_443_and_inside_its_providers_host_scope()
+    public void Authenticated_rule_may_use_any_port_because_the_proxy_enforces_tls()
     {
+        // The egress proxy refuses plain-HTTP proxying outright, so every port is TLS; pinning an
+        // authenticated rule to 443 would only block services on a non-standard TLS port
+        // (e.g. host.docker.internal:8443).
         var offPort = HeadersProviderConfig();
         offPort["Network:Rules:partner-api:Hosts"] = "api.example.com";
         offPort["Network:Rules:partner-api:Ports"] = "8443";
         offPort["Network:Rules:partner-api:Methods"] = "GET";
         offPort["Network:Rules:partner-api:AuthProvider"] = "partner-headers";
-        string.Join(" | ", SandboxEgressPolicyCompiler.Validate(Bind(offPort)))
-            .Should()
-            .Contain("partner-api")
-            .And.Contain("Ports");
 
+        SandboxEgressPolicyCompiler.Validate(Bind(offPort)).Should().BeEmpty();
+        SandboxEgressPolicyCompiler
+            .CompileRules(Bind(offPort))
+            .Should()
+            .ContainSingle()
+            .Which.Ports.Should()
+            .Equal(8443);
+    }
+
+    [Fact]
+    public void Authenticated_rule_must_stay_inside_its_providers_host_scope()
+    {
         var offHost = HeadersProviderConfig();
         offHost["Network:Rules:partner-api:Hosts"] = "other.example.org";
         offHost["Network:Rules:partner-api:Ports"] = "443";

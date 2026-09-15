@@ -380,14 +380,10 @@ internal static partial class SandboxEgressPolicyCompiler
             return;
         }
 
-        // An authenticated rule is a credential-injection scope. It must stay on HTTPS/443 (so the
-        // secret never egresses in cleartext) and inside its provider's declared host scope (so a
-        // rule can never widen where the credential goes beyond what the provider declares).
-        if (ports.Exists(p => p != 443))
-        {
-            errors.Add($"{RuleSection}:{key}:Ports — an authenticated rule is HTTPS/443 only.");
-        }
-
+        // An authenticated rule is a credential-injection scope. It must stay inside its provider's
+        // declared host scope (so a rule can never widen where the credential goes beyond what the
+        // provider declares). Any port is acceptable: the egress proxy refuses plain-HTTP proxying
+        // outright, so every port is TLS and the credential never egresses in cleartext.
         var providerHosts = ParseList(provider.Hosts);
         for (var i = 0; i < hosts.Count; i++)
         {
