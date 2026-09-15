@@ -102,6 +102,36 @@ describe('CopyMessageButton', () => {
     expect(button.text()).not.toContain('Copied');
   });
 
+  it('announces the result through a polite live region outside the button, and keeps attrs on the button', async () => {
+    stubClipboard(vi.fn().mockResolvedValue(undefined));
+    setSecureContext(true);
+    const wrapper = mount(CopyMessageButton, { props: { text: 'x' }, attrs: { class: 'bubble-copy' } });
+
+    const status = wrapper.get('[data-testid="copy-message-status"]');
+    const button = wrapper.get('[data-testid="copy-message-button"]');
+    expect(status.attributes('role')).toBe('status');
+    expect(status.attributes('aria-live')).toBe('polite');
+    // Rendered, empty, before the click: a region inserted together with its text is often not read.
+    expect(status.text()).toBe('');
+    expect(button.element.contains(status.element)).toBe(false);
+    expect(button.classes()).toContain('bubble-copy');
+
+    await button.trigger('click');
+    await flushPromises();
+    expect(status.text()).toBe('Message copied');
+  });
+
+  it('announces a failed copy', async () => {
+    setSecureContext(false);
+    Object.defineProperty(document, 'execCommand', { value: () => false, configurable: true });
+    const wrapper = mount(CopyMessageButton, { props: { text: 'x' } });
+
+    await wrapper.get('[data-testid="copy-message-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="copy-message-status"]').text()).toBe('Copy failed');
+  });
+
   it('says so when copying fails', async () => {
     setSecureContext(false);
     Object.defineProperty(document, 'execCommand', { value: () => false, configurable: true });

@@ -35,6 +35,13 @@ public class WorkspaceLinkResolverTests
     [InlineData("docs/a.md#L10", WindowsHost, "docs/a.md")]
     [InlineData("docs/a.md?x=1", WindowsHost, "docs/a.md")]
     [InlineData("docs/my%20file.md", WindowsHost, "docs/my file.md")]
+    // Whitespace around an href is not part of the URL (a browser strips it too), but a name's own leading or
+    // trailing space reaches the resolver percent-encoded, and the trim runs before decoding, so it survives.
+    [InlineData(" docs/a.md\t", WindowsHost, "docs/a.md")]
+    [InlineData(@" B:\ws\docs\a.md ", WindowsHost, "docs/a.md")]
+    [InlineData("docs/%20a.md%20", WindowsHost, "docs/ a.md ")]
+    [InlineData(" %20docs/a.md ", PosixHost, " docs/a.md")]
+    [InlineData("file:///B:/ws/docs/a.md%20", WindowsHost, "docs/a.md ")]
     [InlineData("docs/a.md", PosixHost, "docs/a.md")]
     [InlineData("a", PosixHost, "a")]
     // A colon after a slash is part of a POSIX name, not a URI scheme.

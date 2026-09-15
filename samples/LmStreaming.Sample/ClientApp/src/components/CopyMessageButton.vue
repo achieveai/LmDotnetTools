@@ -22,6 +22,20 @@ const LABELS: Record<CopyState, string> = {
   failed: 'Copy failed',
 };
 
+/**
+ * What the live region says. The button's fixed aria-label hides its visible label from screen readers, so
+ * the result is announced separately; the region is always rendered so the change, not its insertion, is read.
+ */
+const ANNOUNCEMENTS: Record<CopyState, string> = {
+  idle: '',
+  copied: 'Message copied',
+  failed: 'Copy failed',
+};
+
+// The live region is a sibling, not a child: a button's children are presentational. MessageList's class
+// and styling still belong on the button itself.
+defineOptions({ inheritAttrs: false });
+
 async function copy(): Promise<void> {
   try {
     await copyTextToClipboard(props.text);
@@ -41,6 +55,7 @@ onBeforeUnmount(() => clearTimeout(resetTimer));
 
 <template>
   <button
+    v-bind="$attrs"
     type="button"
     class="copy-message-button"
     :class="`copy-message-button--${state}`"
@@ -57,9 +72,24 @@ onBeforeUnmount(() => clearTimeout(resetTimer));
     </svg>
     <span>{{ LABELS[state] }}</span>
   </button>
+  <span class="copy-message-status" role="status" aria-live="polite" data-testid="copy-message-status">{{
+    ANNOUNCEMENTS[state]
+  }}</span>
 </template>
 
 <style scoped>
+.copy-message-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .copy-message-button {
   display: inline-flex;
   align-items: center;

@@ -6,10 +6,11 @@ import {
   NoSessionError,
   downloadFile,
   fetchFileBlob,
+  listFiles,
   previewFile,
   resolveWorkspaceLink,
 } from '@/api/fileBrowserApi';
-import type { PreviewResult } from '@/types/fileBrowser';
+import { isNoSession, type PreviewResult } from '@/types/fileBrowser';
 import { parseMarkdown } from '@/utils/markdown';
 import { isMarkdownArtifact } from '@/utils/todoBoard';
 import { delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
@@ -126,17 +127,32 @@ function describeFailure(e: unknown): string {
   return 'Could not load the preview.';
 }
 
+/**
+ * The size of the file at a workspace-relative `path`, read from its parent's listing: the artifact chip
+ * passes a bare path, so nothing has reported the size yet. Null when the listing cannot say (the entry is
+ * past the server's row cap, or has no size).
+ */
+async function sizeFromListing(path: string): Promise<number | null> {
+  const slash = path.lastIndexOf('/');
+  const listing = await listFiles(props.threadId, slash < 0 ? '' : path.slice(0, slash), abort.signal);
+  if (isNoSession(listing)) throw new NoSessionError();
+  const name = path.slice(slash + 1);
+  const entry = listing.entries.find((e) => e.name === name);
+  if (entry) return entry.size;
+  if (listing.moreCount > 0) return null;
+  throw new FileBrowserError('File not found', 404, 'not_found');
+}
+
 async function load(): Promise<void> {
+  // undefined: not reported yet (the artifact chip's bare path); null: reported as unknown.
+  let size: number | null | undefined;
   if (resolvedPath.value === null && props.target !== undefined) {
     const resolved = await resolveWorkspaceLink(props.threadId, props.target, abort.signal);
     resolvedPath.value = resolved.path;
+    size = resolved.size;
     if (resolved.type === 'directory') {
       isFolder.value = true;
       unavailableText.value = 'This link points to a folder, not a file.';
-      return;
-    }
-    if (imageType.value && resolved.size !== null && resolved.size > MAX_INLINE_IMAGE_BYTES) {
-      unavailableText.value = 'This image is too large to show here.';
       return;
     }
   }
@@ -145,6 +161,16 @@ async function load(): Promise<void> {
   if (path === null) return;
 
   if (imageType.value) {
+    // Checked before any bytes move: the download endpoint would otherwise pull up to 64 MiB into the page.
+    if (size === undefined) size = await sizeFromListing(path);
+    if (size === null) {
+      unavailableText.value = "This image's size could not be checked, so it is not shown here.";
+      return;
+    }
+    if (size > MAX_INLINE_IMAGE_BYTES) {
+      unavailableText.value = 'This image is too large to show here.';
+      return;
+    }
     const blob = await fetchFileBlob(props.threadId, path, abort.signal);
     // The download endpoint answers application/octet-stream + nosniff; an <img> needs the real type.
     imageUrl.value = URL.createObjectURL(new Blob([blob], { type: imageType.value }));

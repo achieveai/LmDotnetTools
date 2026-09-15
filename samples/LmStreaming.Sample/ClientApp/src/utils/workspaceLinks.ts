@@ -50,12 +50,16 @@ export function parseWorkspaceLinkHref(href: string): WorkspaceLinkRef | null {
   return threadId && target ? { threadId, target } : null;
 }
 
-const WEB_URL = /^https?:/i;
-const LEFT_IN_PLACE = /^(?:https?:|mailto:|tel:)/i;
+// A protocol-relative `//host/...` is a web link too: the browser resolves it against the page's scheme.
+const WEB_URL = /^(?:https?:|\/\/)/i;
+const OTHER_SCHEME_LEFT_IN_PLACE = /^(?:mailto:|tel:)/i;
 
-/** True for http(s) links, which open in a new tab. */
+/**
+ * True for http(s) and protocol-relative links, which open in a new tab. Leading and trailing whitespace
+ * is ignored, as the browser ignores it when it follows the href.
+ */
 export function isWebUrl(href: string): boolean {
-  return WEB_URL.test(href);
+  return WEB_URL.test(href.trim());
 }
 
 /**
@@ -65,7 +69,7 @@ export function isWebUrl(href: string): boolean {
  */
 export function isWorkspaceLinkCandidate(href: string): boolean {
   const trimmed = href.trim();
-  if (trimmed.length === 0 || LEFT_IN_PLACE.test(trimmed)) return false;
+  if (trimmed.length === 0 || isWebUrl(trimmed) || OTHER_SCHEME_LEFT_IN_PLACE.test(trimmed)) return false;
   if (trimmed.startsWith('#')) return trimmed.startsWith(WORKSPACE_LINK_PREFIX);
   return true;
 }

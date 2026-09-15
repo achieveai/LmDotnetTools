@@ -152,6 +152,18 @@ const streamingItemId = computed<string | null>(() => {
   return null;
 });
 
+/**
+ * Copy and workspace file links belong to the model's answers. A thinking bubble keeps neither, and Copy
+ * waits until the bubble has finished streaming. Both template branches (history and active) use these.
+ */
+function isThinkingBubble(item: DisplayItem): boolean {
+  return item.type === 'assistant-message' && item.content.isThinking === true;
+}
+
+function offersCopy(item: DisplayItem): boolean {
+  return !isThinkingBubble(item) && item.id !== streamingItemId.value;
+}
+
 // Track the last user message to scroll to it when it is added (pending or active)
 const lastScrolledMessageId = ref<string | null>(null);
 
@@ -282,11 +294,11 @@ watch(
                     :message="item.content"
                     :is-streaming="false"
                     :is-complete="item.id !== streamingItemId"
-                    workspace-links
+                    :workspace-links="!isThinkingBubble(item)"
                   />
                 </div>
                 <CopyMessageButton
-                  v-if="item.id !== streamingItemId"
+                  v-if="offersCopy(item)"
                   class="bubble-copy"
                   :text="item.content.text"
                 />
@@ -345,11 +357,11 @@ watch(
                       :message="item.content"
                       :is-streaming="false"
                       :is-complete="item.id !== streamingItemId"
-                      workspace-links
+                      :workspace-links="!isThinkingBubble(item)"
                     />
                   </div>
                   <CopyMessageButton
-                    v-if="item.id !== streamingItemId"
+                    v-if="offersCopy(item)"
                     class="bubble-copy"
                     :text="item.content.text"
                   />

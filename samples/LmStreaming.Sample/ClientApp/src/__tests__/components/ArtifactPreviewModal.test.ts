@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import ArtifactPreviewModal from '@/components/ArtifactPreviewModal.vue';
 import { jsonResponse, textPreview, binaryPreview } from '../fixtures/fileBrowser';
 import { ComponentLogger } from '@/utils/logger';
+import type { DirectoryListing, FileEntry } from '@/types/fileBrowser';
 
 /**
  * The artifact preview popup (#583, PR 5). It rides the EXISTING file-browser preview endpoint, so
@@ -11,6 +12,15 @@ import { ComponentLogger } from '@/utils/logger';
  */
 
 afterEach(() => vi.restoreAllMocks());
+
+const imageEntry = (name: string, size: number | null): FileEntry => ({ name, type: 'file', size, nameLossy: false });
+
+const listing = (path: string, entries: FileEntry[], moreCount = 0): DirectoryListing => ({
+  workspaceId: 'ws-1',
+  path,
+  entries,
+  moreCount,
+});
 
 async function mountModal(response: Response | Error, path = 'docs/spec.md') {
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -262,6 +272,7 @@ describe('ArtifactPreviewModal — viewers', () => {
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(listing('img', [imageEntry('chart.png', 4)])))
       .mockResolvedValueOnce(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 }));
 
     const wrapper = mount(ArtifactPreviewModal, {
@@ -270,7 +281,9 @@ describe('ArtifactPreviewModal — viewers', () => {
     });
     await flushPromises();
 
-    expect(fetchSpy.mock.calls[0][0]).toBe(
+    // The chip's bare path carries no size, so the parent listing is read before any bytes.
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/conversations/thread-1/files?path=img');
+    expect(fetchSpy.mock.calls[1][0]).toBe(
       '/api/conversations/thread-1/files/download?path=img%2Fchart.png'
     );
     // The server answers application/octet-stream + nosniff, so the blob is re-typed from the extension.
@@ -294,6 +307,66 @@ describe('ArtifactPreviewModal — viewers', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('too large');
     expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(true);
+  });
+
+  function mountImagePath(responses: Response[], path: string) {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    for (const r of responses) fetchSpy.mockResolvedValueOnce(r);
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path },
+      attachTo: document.body,
+    });
+    return { wrapper, fetchSpy };
+  }
+
+  it('applies the same cap to an artifact chip path, reading the size from the parent listing', async () => {
+    const { wrapper, fetchSpy } = mountImagePath(
+      [jsonResponse(listing('', [imageEntry('big.png', 64 * 1024 * 1024)]))],
+      'big.png'
+    );
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/conversations/thread-1/files');
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('too large');
+    expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(true);
+  });
+
+  it.each([
+    ['the listing is past its row cap', listing('img', [], 5)],
+    ['the entry has no size', listing('img', [imageEntry('chart.png', null)])],
+  ])('does not fetch an image whose size is unknown because %s', async (_, body) => {
+    const { wrapper, fetchSpy } = mountImagePath([jsonResponse(body)], 'img/chart.png');
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('could not be checked');
+    expect(wrapper.find('[data-testid="artifact-preview-download"]').exists()).toBe(true);
+  });
+
+  it('does not fetch a resolved link image whose size the server could not report', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ path: 'a.png', type: 'symlink', size: null }));
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', target: 'a.png' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('could not be checked');
+  });
+
+  it.each([
+    ['missing from a complete listing', listing('img', [imageEntry('other.png', 4)]), 'not found in the workspace'],
+    ['in a conversation with no session', { state: 'no_session_yet', workspaceId: null }, 'no workspace session'],
+  ])('explains an artifact chip image %s, fetching no bytes', async (_, body, message) => {
+    const { wrapper, fetchSpy } = mountImagePath([jsonResponse(body)], 'img/chart.png');
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="artifact-preview-error"]').text()).toContain(message);
   });
 
   it('offers a download for a non-previewable file', async () => {

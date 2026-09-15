@@ -33,6 +33,8 @@ describe('isWorkspaceLinkCandidate', () => {
     ['#workspace-file?thread=x&target=y', true],
     ['https://example.com', false],
     ['HTTP://example.com', false],
+    ['//example.com/a.md', false],
+    ['  https://example.com  ', false],
     ['mailto:a@b.example', false],
     ['tel:1', false],
     ['#top', false],

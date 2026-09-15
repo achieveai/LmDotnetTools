@@ -211,6 +211,18 @@ describe('parseMarkdown web links open in a new tab', () => {
     }
   );
 
+  it.each([
+    ['a protocol-relative link', '[x](//x.example/a)', '//x.example/a'],
+    ['a raw-HTML href padded with whitespace', '<a href="  https://x.example/a ">x</a>', '  https://x.example/a '],
+  ])('%s stays a web link in a new tab, never a workspace link', (_, source, href) => {
+    const [a] = anchors(parseMarkdown(source, { workspaceLinks: { threadId: 't1' } }));
+    // The sanitizer may trim the attribute; the destination itself is unchanged.
+    expect(a.href?.trim()).toBe(href.trim());
+    expect(a.cls).toBeNull();
+    expect(a.target).toBe('_blank');
+    expect(a.rel).toBe('noopener noreferrer');
+  });
+
   it('applies with and without workspace links and on the un-highlighted path', () => {
     for (const html of [
       parseMarkdown('[x](https://x.example)', { highlight: false }),

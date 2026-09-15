@@ -284,10 +284,10 @@ describe('MessageList copy button and workspace links', () => {
     status: 'active' as const,
     timestamp: Date.now(),
   });
-  const assistantItem = (id: string, text: string) => ({
+  const assistantItem = (id: string, text: string, isThinking = false) => ({
     id,
     type: 'assistant-message' as const,
-    content: { $type: MessageType.Text, role: 'assistant' as const, text, isThinking: false },
+    content: { $type: MessageType.Text, role: 'assistant' as const, text, isThinking },
   });
   const mountList = (displayItems: any[], isLoading = false) =>
     mount(MessageList, {
@@ -335,5 +335,33 @@ describe('MessageList copy button and workspace links', () => {
         .map((c) => [c.props('message').role, c.props('workspaceLinks')])
     );
     expect(byRole).toEqual({ user: false, assistant: true });
+  });
+
+  it('gives a thinking bubble neither copy nor workspace links, in history or active, while answers keep both', () => {
+    const wrapper = mountList([
+      userItem('u-1'),
+      assistantItem('t-1', 'old reasoning [x](docs/a.md)', true),
+      assistantItem('a-1', 'old answer'),
+      userItem('u-2'),
+      assistantItem('t-2', 'new reasoning', true),
+      assistantItem('a-2', 'new answer'),
+    ]);
+
+    expect(wrapper.findAllComponents(CopyMessageButton).map((c) => c.props('text'))).toEqual([
+      'old answer',
+      'new answer',
+    ]);
+    const linksByText = Object.fromEntries(
+      wrapper
+        .findAllComponents(TextMessage)
+        .filter((c) => c.props('message').role === 'assistant')
+        .map((c) => [c.props('message').text, c.props('workspaceLinks')])
+    );
+    expect(linksByText).toEqual({
+      'old reasoning [x](docs/a.md)': false,
+      'old answer': true,
+      'new reasoning': false,
+      'new answer': true,
+    });
   });
 });
