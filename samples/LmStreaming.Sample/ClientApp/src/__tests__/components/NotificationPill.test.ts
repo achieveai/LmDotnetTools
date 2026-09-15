@@ -4,6 +4,7 @@ import NotificationPill from '@/components/NotificationPill.vue';
 import { type NotificationDisplayData } from '@/types';
 import { GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import { GET_AGENT_COLOR } from '@/utils/agentColors';
+import { COMPACTION_NOTIFY_KIND, GET_CHECKPOINT_STATE } from '@/composables/messageDisplay';
 
 describe('NotificationPill.vue', () => {
   it('renders a sub-agent completion notification with kind, source tool and label', () => {
@@ -218,5 +219,39 @@ describe('NotificationPill.vue', () => {
 
     expect(goToAgentTab).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="notification-body"]').exists()).toBe(true);
+  });
+
+  // #721 / spec 679 §7.2-7.3: a compaction checkpoint renders as a full-width divider through this
+  // same pill, expands to the manifest, and carries a badge when the context report says it rolled back.
+  it('renders a compaction checkpoint as a full-width divider that expands to the manifest', async () => {
+    const notification: NotificationDisplayData = {
+      notifyKind: COMPACTION_NOTIFY_KIND,
+      checkpointId: 'cp-x-1',
+      label: '12 rows · ~16,000 tokens saved',
+      detail: '## What happened\nTurn one gathered the data.',
+    };
+    const wrapper = mount(NotificationPill, { props: { notification } });
+
+    const pill = wrapper.get('[data-testid="notification-pill"]');
+    expect(pill.attributes('data-notify-kind')).toBe('compaction');
+    expect(pill.attributes('data-checkpoint-id')).toBe('cp-x-1');
+    expect(pill.classes()).toContain('compaction-divider');
+    expect(wrapper.find('.notification-kind').text()).toBe('Context compacted');
+    expect(wrapper.find('[data-testid="notification-label"]').text()).toBe('12 rows · ~16,000 tokens saved');
+    expect(wrapper.find('[data-testid="compaction-badge"]').exists()).toBe(false);
+
+    await wrapper.find('.notification-header').trigger('click');
+    expect(wrapper.get('[data-testid="notification-body"]').text()).toContain('Turn one gathered the data.');
+  });
+
+  it('badges a compaction divider whose checkpoint the context report says rolled back', () => {
+    const wrapper = mount(NotificationPill, {
+      props: { notification: { notifyKind: COMPACTION_NOTIFY_KIND, checkpointId: 'cp-x-1' } },
+      global: {
+        provide: { [GET_CHECKPOINT_STATE]: (id: string) => (id === 'cp-x-1' ? 'RolledBack' : null) },
+      },
+    });
+
+    expect(wrapper.get('[data-testid="compaction-badge"]').text()).toBe('rolled back');
   });
 });

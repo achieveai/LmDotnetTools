@@ -30,8 +30,9 @@ public sealed record CompactionSetup
 
     /// <summary>
     ///     Decides whether a provider failure is a context-window overflow (the reactive path). Null uses
-    ///     the built-in verdict: an <see cref="HttpRequestException"/> with status 400 or 413 while the
-    ///     request was already at or above the usable window. A transport abort never qualifies (spec Q1).
+    ///     the built-in verdict: the provider said so (a 413, or an overflow error body such as "prompt is too
+    ///     long" or <c>context_length_exceeded</c> anywhere in the exception chain), whatever the estimate. A
+    ///     transport abort never qualifies (spec Q1).
     /// </summary>
     public Func<Exception, bool>? IsContextOverflow { get; init; }
 

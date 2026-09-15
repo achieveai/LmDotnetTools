@@ -100,6 +100,43 @@ public sealed class SubAgentProvenanceTests
     }
 
     [Fact]
+    public void RoundTrip_BuildThenTryProject_PreservesTheFailureCodeOfAnErroredChild()
+    {
+        // The recursive listing reads only persisted metadata, so the code has to survive the stamp.
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = ChildThreadId,
+            LastUpdated = 1,
+            Properties = SubAgentProvenance.Build(
+                ParentThreadId,
+                MakeSnapshot(SubAgentStatus.Error, DateTimeOffset.UnixEpoch) with
+                {
+                    FailureCode = "view_exceeds_window",
+                }
+            ),
+        };
+
+        var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
+
+        summary!.FailureCode.Should().Be("view_exceeds_window");
+        summary.TerminalAtUtc.Should().Be(DateTimeOffset.UnixEpoch);
+    }
+
+    [Theory]
+    [InlineData(SubAgentStatus.Running)]
+    [InlineData(SubAgentStatus.Completed)]
+    public void Build_MarksTheFailureCodeForRemoval_WhenTheSnapshotHasNone(SubAgentStatus status)
+    {
+        // A child that errored, was continued and is running (or finished cleanly) again must not keep the
+        // previous run's code: the additive metadata merge would otherwise preserve it.
+        var properties = SubAgentProvenance.Build(ParentThreadId, MakeSnapshot(status, DateTimeOffset.UnixEpoch));
+
+        ReferenceEquals(properties[SubAgentProvenance.FailureCodeKey], SubAgentProvenance.RemovalMarker)
+            .Should()
+            .BeTrue();
+    }
+
+    [Fact]
     public void TryProject_FallsBackToLastUpdated_WhenStatusIsRunning()
     {
         var metadata = new ThreadMetadata

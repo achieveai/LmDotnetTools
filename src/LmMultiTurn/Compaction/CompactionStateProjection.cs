@@ -108,6 +108,7 @@ public static class CompactionStateProjection
                             WatermarkAtPrepare = watermarkAtPrepare,
                             Trigger = trigger,
                             At = stamp,
+                            PreparedAt = stamp,
                         }
                     )
                     .ToList();
@@ -121,12 +122,16 @@ public static class CompactionStateProjection
         );
     }
 
-    /// <summary>Moves a Prepared entry to Validated. Any other status is left as it is.</summary>
+    /// <summary>
+    ///     Moves a Prepared entry to Validated, recording <paramref name="summaryFallback" /> when the checkpoint was
+    ///     built without its summary. Any other status is left as it is.
+    /// </summary>
     public static Task<CompactionState?> MarkValidatedAsync(
         IConversationStore store,
         string threadId,
         string checkpointId,
         DateTimeOffset? at = null,
+        string? summaryFallback = null,
         CancellationToken ct = default
     ) =>
         Transition(
@@ -138,6 +143,7 @@ public static class CompactionStateProjection
                     ? entry with
                     {
                         Status = CheckpointStatus.Validated,
+                        SummaryFallback = summaryFallback,
                         At = at ?? DateTimeOffset.UtcNow,
                     }
                     : entry,

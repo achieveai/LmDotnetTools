@@ -51,7 +51,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// - MessageUpdateJoinerMiddleware (joins update messages into full messages for history)
 /// - ToolCallInjectionMiddleware (injects function contracts for tool calling)
 /// </remarks>
-public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink, ISpawnSuppressingAgent
+public sealed class MultiTurnAgentLoop
+    : MultiTurnAgentBase,
+        ISubAgentContextSink,
+        ISpawnSuppressingAgent,
+        IManualCompactionAgent
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
@@ -145,6 +149,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
     // no CompactionSetup, in which case nothing on the request path changes.
     private readonly CompactionRuntime? _compaction;
+
+    /// <summary>Estimated tokens of the tool definitions every request carries (compaction's fixed prefix).</summary>
+    internal long ToolSchemaTokens { get; }
 
     internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
@@ -410,8 +417,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             threadId,
             // The identity block has to be composed HERE, in the base-call argument list: SystemPrompt
             // is assigned by the base constructor, which runs before `Collaboration` is set in this
-            // constructor's body. Composing it in the body would leave the prompt already stored.
-            AgentIdentityPreamble.Prepend(systemPrompt, collaboration),
+            // constructor's body. Composing it in the body would leave the prompt already stored. The
+            // compaction note goes on the same way.
+            CompactionRuntime.WithSystemNote(
+                AgentIdentityPreamble.Prepend(systemPrompt, collaboration),
+                compaction,
+                defaultOptions?.ModelId
+            ),
             defaultOptions,
             maxTurnsPerRun,
             inputChannelCapacity,
@@ -482,7 +494,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     LiveDeferredCount = () => _delayed.IsEmpty ? 0 : 1,
                     Roster = RosterForCompaction,
                     AppendInMemory = message => RestoreHistory([message]),
+                    // RestoreHistory publishes nothing; the row goes to default subscribers here. Joined
+                    // subscribers never receive user-role rows, and a checkpoint row is user-role.
+                    PublishLive = PublishToAllAsync,
                     RecordSummaryUsage = RecordCompactionUsage,
+                    ToolSchemaTokens = () => ToolSchemaTokens,
                     Lifecycle = Lifecycle,
                     Logger = Logger,
                 },
@@ -654,7 +670,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     threadId,
                     store,
                     () => _compaction.ActiveBoundarySeq,
-                    _compaction.Options.Recall
+                    _compaction.Options.Recall,
+                    // A recall answer is itself a tool result: it must fit the view cap it was asked around.
+                    () => _compaction.ViewCapChars
                 )
             );
         }
@@ -673,6 +691,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             registeredContracts.Where(c => c.Parameters?.Any(p => p.IsRequired) == true).Select(c => c.Name),
             StringComparer.Ordinal
         );
+        ToolSchemaTokens = CompactionTokenEstimate.EstimateToolSchemas(registeredContracts);
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -790,6 +809,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 if (_delayed.TryDequeueCause(out var cause) && cause != null)
                 {
                     await RunDelayedChildAsync(cause, ct);
+                    continue;
+                }
+
+                // An operator's compaction request that no run picked up: compact now, with no model turn.
+                if (_compaction is { HasPendingManual: true })
+                {
+                    await RunPendingManualCompactionAsync(ct);
                     continue;
                 }
 
@@ -995,6 +1021,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 pendingMessageCount: PendingInputCount,
                 isError: true,
                 errorMessage: errorMessage,
+                // A size refusal (the fit check's or the reactive path's) names its reason for machines too.
+                errorCode: (ex as ContextOverflowException)?.Reason,
                 ct: ct
             );
         }
@@ -1335,9 +1363,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             if (turn.Overflow is { } overflow)
             {
                 // The provider refused the request as too large. The generation produced nothing: report
-                // it and drop its partials exactly as an interruption is handled, then compact once and
-                // retry the same input once (spec 679 §5.1). A second overflow — or a compaction that
-                // could not activate — fails the run with the typed reason (§5.6).
+                // it and drop its partials exactly as an interruption is handled, then run the fit check's
+                // ladder and retry the same input (spec 679 §5.1). Each retry needs a pass that moved the
+                // view forward; one that moves nothing fails the run with the typed reason (§5.6). That
+                // progress rule is the bound: no separate reactive count exists.
                 await CompleteTurnAsync(runId, turnGenerationId, LifecycleTurnOutcomes.Interrupted, ct);
                 await PublishToAllAsync(new GenerationAbandonedMessage(ThreadId, runId, turnGenerationId), ct);
 
@@ -1345,7 +1374,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     Logger.LogWarning(
                         overflow,
-                        "Run {RunId} overflowed the context window at generation {GenerationId}; compacted, retrying once",
+                        "Run {RunId} overflowed the context window at generation {GenerationId}; shrank the view, retrying",
                         runId,
                         turnGenerationId
                     );
@@ -1933,6 +1962,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // request that is about to go out (spec 679 §5.1). A compaction replaces the request with the
         // view over the new checkpoint; a refusal is the harness declining to knowingly send beyond the
         // reserve after compaction failed (#678 AC 7).
+        var continuationInstruction = continuation is { HadCanonicalOutput: true }
+            ? new TextMessage { Text = InterruptedTurnContinuationInstruction, Role = Role.User }
+            : null;
         if (_compaction is { IsEnabled: true })
         {
             var pass = await _compaction.EvaluateAsync(
@@ -1940,7 +1972,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 generationId,
                 messagesToSend,
                 continuation is not null,
-                ct
+                ct,
+                continuationInstruction is null ? null : [continuationInstruction]
             );
             if (pass.Refusal is { } refusal)
             {
@@ -1959,9 +1992,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // discipline ExecuteWrapUpTurnAsync uses, so neither the persisted transcript nor the client
         // ever shows a synthetic user bubble. A fragment-only interruption gets no instruction at all:
         // nothing survived, so the correct request is the original one, byte for byte.
-        if (continuation is { HadCanonicalOutput: true })
+        if (continuationInstruction is not null)
         {
-            messagesToSend.Add(new TextMessage { Text = InterruptedTurnContinuationInstruction, Role = Role.User });
+            messagesToSend.Add(continuationInstruction);
         }
 
         // Report the discovered context this request carries, read back out of the snapshot that is
@@ -2006,6 +2039,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 if (msg is UsageMessage usageMessage)
                 {
                     await ObserveContextAsync(runId, generationId, messagesToSend, usageMessage, ct);
+                    _compaction?.ObserveMeasuredUsage(messagesToSend, MeasuredInputTokens(usageMessage.Usage));
                 }
 
                 // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
@@ -2051,7 +2085,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         catch (Exception ex)
             when (!ct.IsCancellationRequested
                 && _compaction is { Mode: CompactionMode.Compact }
-                && _compaction.IsContextOverflow(ex, CompactionRuntime.EstimateTokens(messagesToSend))
+                && _compaction.IsContextOverflow(ex, _compaction.EstimateRequestTokens(messagesToSend))
             )
         {
             // The request itself was refused as too large. Nothing streamed, but the same settling
@@ -2143,7 +2177,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             var previous = Volatile.Read(ref _latestContextObservation);
             var sameGeneration =
                 previous is not null && string.Equals(previous.GenerationId, generationId, StringComparison.Ordinal);
-            var ordinal = sameGeneration ? previous!.GenerationOrdinal : await NextGenerationOrdinalAsync(ct);
+            var ordinal = sameGeneration
+                ? previous!.GenerationOrdinal
+                : AdoptEvaluatedOrdinal(generationId) ?? await NextGenerationOrdinalAsync(ct);
 
             var modelId = LifecycleServices.ModelId ?? DefaultOptions.ModelId;
             if (string.IsNullOrEmpty(modelId))
@@ -2152,9 +2188,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
 
             var capacity = LifecycleServices.CapacityResolver?.Resolve(modelId);
-            var estimated = sameGeneration
-                ? previous!.EstimatedInputTokens
-                : (LifecycleServices.ContextTokenEstimator ?? DefaultContextTokenEstimator.Instance).Estimate(request);
+            var estimated = sameGeneration ? previous!.EstimatedInputTokens : EstimateObservedTokens(request);
             long? measured = usage is null ? null : MeasuredInputTokens(usage.Usage);
 
             var observation = new ContextObservation
@@ -2210,6 +2244,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     }
 
     /// <summary>
+    /// The ordinal the compaction policy already gave this generation, when it evaluated it. Allocating a second
+    /// one would put the measurement one generation ahead of the decision stamped on the same record.
+    /// </summary>
+    private long? AdoptEvaluatedOrdinal(string generationId)
+    {
+        if (_compaction?.OrdinalOf(generationId) is not { } ordinal)
+        {
+            return null;
+        }
+
+        _generationOrdinal = Math.Max(_generationOrdinal, ordinal);
+        _generationOrdinalSeeded = true;
+        return ordinal;
+    }
+
+    /// <summary>
     /// The next loop-local generation ordinal, continuing from the persisted latest observation the first
     /// time it is asked after construction so cooldown arithmetic (§5.4) survives a restart.
     /// </summary>
@@ -2231,6 +2281,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         return ++_generationOrdinal;
     }
+
+    /// <summary>
+    /// The pre-send estimate an observation shows. With compaction on it is the policy's own number for the request
+    /// (tool definitions counted, encrypted reasoning skipped, calibrated to the last measurement), so the display
+    /// and the fit check never disagree about one request. Otherwise the host's estimator, or the default heuristic
+    /// plus the tool definitions it cannot see.
+    /// </summary>
+    private long EstimateObservedTokens(IReadOnlyList<IMessage> request) =>
+        _compaction is { IsEnabled: true } compaction
+            ? compaction.EstimateRequestTokens(request)
+            : LifecycleServices.ContextTokenEstimator?.Estimate(request)
+                ?? (DefaultContextTokenEstimator.Instance.Estimate(request) + ToolSchemaTokens);
 
     /// <summary>
     /// <c>root</c>, or the sub-agent id — from lineage when the host wired lifecycle, else from the thread
@@ -3787,6 +3849,47 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         if (_triggerRuntime != null)
         {
             await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
+        }
+    }
+
+    /// <summary>True when this loop accepts <see cref="RequestCompactionAsync"/>: compaction mode is Compact and it has a store.</summary>
+    public bool SupportsManualCompaction => _compaction is { AcceptsManual: true };
+
+    /// <summary>
+    /// Asks the loop to compact the conversation now, optionally steered by <paramref name="focus"/>. An idle loop
+    /// compacts without a model turn; an active run compacts before its next provider call. Thresholds, the
+    /// cooldown and the minimum-gain gate do not apply; Off mode, the kill switch, a provider-owned session,
+    /// unsafe loop state and one compaction at a time still do. The request is persisted and runs once.
+    /// </summary>
+    public async Task<ManualCompactionResult> RequestCompactionAsync(
+        string? focus = null,
+        CancellationToken ct = default
+    )
+    {
+        if (_compaction is null)
+        {
+            return ManualCompactionResult.Refused(ManualCompactionRefusals.CompactionOff);
+        }
+
+        var result = await _compaction.RequestManualAsync(focus, CurrentRunId is not null, ct);
+        if (result.Accepted)
+        {
+            // Harmless while a run is active (the wake is drained and ignored); it is what stirs an idle loop.
+            ScheduleLoopWake();
+        }
+
+        return result;
+    }
+
+    private async Task RunPendingManualCompactionAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _compaction!.RunPendingManualAsync(LatestRunId ?? "manual-compaction", ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Logger.LogWarning(ex, "Manual compaction for thread {ThreadId} failed on the idle loop", ThreadId);
         }
     }
 

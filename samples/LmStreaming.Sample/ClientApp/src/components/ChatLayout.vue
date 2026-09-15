@@ -24,6 +24,7 @@ import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useTodoBoard } from '@/composables/useTodoBoard';
 import { useContextReport } from '@/composables/useContextReport';
+import { useManualCompaction } from '@/composables/useManualCompaction';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -33,6 +34,7 @@ import {
 } from '@/utils/agentColors';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
 import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
+import { GET_CHECKPOINT_STATE, type CheckpointStateLookup } from '@/composables/messageDisplay';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -110,6 +112,8 @@ const {
   cumulativeCost,
   conversationTodo,
   contextPressure,
+  compactionStatus,
+  connectionEpoch,
   pendingMessages,
   pendingAuthRequests,
   dismissAuthRequest,
@@ -246,10 +250,20 @@ const {
   total: contextTotal,
   status: contextStatus,
   generatedAtUtc: contextGeneratedAtUtc,
+  hydrate: hydrateContextReport,
 } = useContextReport(
   () => subAgentParentThreadId.value,
   () => contextPressure.value,
   () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
+);
+
+// Compact now (manual compaction) for the same conversation the panel shows. A committed compaction,
+// manual or automatic, re-reads the report so the panel's compaction state catches up at once.
+const { view: compactionControl, request: requestManualCompaction } = useManualCompaction(
+  () => subAgentParentThreadId.value,
+  () => compactionStatus.value,
+  () => void hydrateContextReport(),
+  { getConnectionEpoch: () => connectionEpoch.value }
 );
 
 // File preview (#583, PR 5; chat file links): two openers bubble a file up here, because the modal
@@ -313,6 +327,11 @@ provide(GET_AGENT_COLOR, getAgentColor);
 const getAgentRouting: AgentRoutingLookup = (parsedArgs, resultText) =>
   resolveAgentRoutingFromCall(parsedArgs, resultText, subAgentChildren.value);
 provide(GET_AGENT_ROUTING, getAgentRouting);
+// Provide checkpointId → compaction state (#721) so a compaction divider can badge a checkpoint the
+// context report says was rolled back; the persisted row itself never learns that.
+const getCheckpointState: CheckpointStateLookup = (checkpointId) =>
+  contextRows.value.find((row) => row.compaction.checkpointId === checkpointId)?.compaction.state ?? null;
+provide(GET_CHECKPOINT_STATE, getCheckpointState);
 
 const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
@@ -962,6 +981,8 @@ onBeforeUnmount(() => {
             :total="contextTotal"
             :status="contextStatus"
             :generated-at-utc="contextGeneratedAtUtc"
+            :compaction="compactionControl"
+            @compact="requestManualCompaction"
           />
 
           <div

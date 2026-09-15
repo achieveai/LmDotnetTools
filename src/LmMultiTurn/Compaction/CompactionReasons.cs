@@ -26,6 +26,24 @@ public static class CompactionReasons
     /// <summary>The checkpoint row could not be appended.</summary>
     public const string PersistFailed = "persist_failed";
 
+    /// <summary>
+    ///     Compaction acted (cleared tool results, cut, or both) and every escalation still left the request
+    ///     over the usable window, so the harness refuses to send it.
+    /// </summary>
+    public const string ViewExceedsWindow = "view_exceeds_window";
+
+    /// <summary>The pass was cancelled (the run was stopped or the loop disposed) before the compaction finished.</summary>
+    public const string Cancelled = "cancelled";
+
+    /// <summary>Clearing older tool results from the view brought the request under the target; no summary ran.</summary>
+    public const string ToolResultsCleared = "tool_results_cleared";
+
+    /// <summary>
+    ///     The fit check's re-cut activated a checkpoint built without the model (§3.4): its summary failed, and the
+    ///     only other way out was refusing the turn. The checkpoint's <c>summary_fallback</c> names the failure.
+    /// </summary>
+    public const string SummaryFallback = "summary_fallback";
+
     /// <summary>Prefix of every validation failure; the suffix names the rule, e.g. <c>validation_failed:V3</c>.</summary>
     public const string ValidationFailedPrefix = "validation_failed:";
 

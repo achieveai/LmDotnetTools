@@ -102,3 +102,76 @@ describe('useChat — context_pressure frames (#685)', () => {
     expect(chat.contextPressure.value).toBeNull();
   });
 });
+
+describe('useChat — compaction_status frames (manual + automatic compaction progress)', () => {
+  let captured: any[];
+
+  beforeEach(() => {
+    captured = [];
+    wsMocks.createWebSocketConnection.mockReset();
+    convMocks.loadConversationMessages.mockReset();
+    convMocks.getConversationUsage.mockReset();
+    convMocks.getConversationUsage.mockResolvedValue(null);
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => {
+      captured.push(options);
+      return {
+        socket: { readyState: WebSocket.OPEN },
+        connectionId: `ws-${captured.length}`,
+        threadId: options.threadId,
+        isConnected: true,
+      };
+    });
+    convMocks.loadConversationMessages.mockResolvedValue([]);
+  });
+
+  function statusFrame(phase: string) {
+    return {
+      $type: MessageType.CompactionStatus,
+      threadId: 'thread-1',
+      agentId: 'root',
+      requestId: 'req-1',
+      trigger: 'manual',
+      phase,
+    };
+  }
+
+  it('holds the newest frame in compactionStatus and renders nothing for it', async () => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    expect(chat.compactionStatus.value).toBeNull();
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('hi');
+    const itemsBefore = chat.displayItems.value.length;
+
+    captured[0].onMessage(statusFrame('requested'));
+    captured[0].onMessage(statusFrame('running'));
+
+    expect(chat.compactionStatus.value?.phase).toBe('running');
+    expect(chat.displayItems.value.length).toBe(itemsBefore);
+  });
+
+  it('bumps connectionEpoch each time a socket is installed, so a frame gap can be detected', async () => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    expect(chat.connectionEpoch.value).toBe(0);
+
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('hi');
+    expect(chat.connectionEpoch.value).toBe(1);
+
+    await chat.clearMessages();
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('again');
+    expect(captured.length).toBe(2);
+    expect(chat.connectionEpoch.value).toBe(2);
+  });
+
+  it('drops the frame on clearMessages (conversation switch / new chat)', async () => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('hi');
+    captured[0].onMessage(statusFrame('running'));
+
+    await chat.clearMessages();
+
+    expect(chat.compactionStatus.value).toBeNull();
+  });
+});

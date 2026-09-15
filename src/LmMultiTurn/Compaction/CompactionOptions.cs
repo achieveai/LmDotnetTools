@@ -87,9 +87,9 @@ public sealed record RecallLimits
 ///     band with several tool turns of room left before the hard band; the hard band leaves exactly one
 ///     reserve of headroom.</item>
 ///     <item><see cref="CooldownGenerations"/> / <see cref="CooldownNewTokens"/> = 3 / 10k and
-///     <see cref="MaxCompactionsPerRun"/> = 2 (one pre-emptive, one reactive) bound the number of summary
-///     calls a single run can make, the same shape of guard the review daemon's retry budget uses (#616,
-///     #470) — a precedent, not shared code.</item>
+///     <see cref="MaxCompactionsPerRun"/> = 2 (the policy's own attempts; fit and reactive re-cuts are bounded by
+///     progress instead) bound the number of summary calls a single run's policy can make, the same shape of
+///     guard the review daemon's retry budget uses (#616, #470) — a precedent, not shared code.</item>
 ///     <item><see cref="CacheTtl"/> = 5 minutes matches the 5-minute cache-write rate <c>ModelPricing</c>
 ///     prices (#682) and the sample host's <c>PromptCachingMode.Auto</c>.</item>
 ///     <item><see cref="ExpectedFutureGenerations"/> = 3 is the economic guess the spec names; #686 could
@@ -150,7 +150,10 @@ public sealed record CompactionOptions
     /// <summary>New tail tokens required after a checkpoint before another economic compaction.</summary>
     public long CooldownNewTokens { get; init; } = 10_000;
 
-    /// <summary>Upper bound on compactions (pre-emptive plus reactive) in one run.</summary>
+    /// <summary>
+    ///     Upper bound on the policy's compaction attempts (pre-emptive and economic) in one run. Fit-check and reactive
+    ///     re-cuts count toward it but are not gated by it (spec 679 §5.1).
+    /// </summary>
     public int MaxCompactionsPerRun { get; init; } = 2;
 
     /// <summary>Generations the predicted-savings formula assumes will reuse the compacted view.</summary>
@@ -173,6 +176,237 @@ public sealed record CompactionOptions
 
     /// <summary>Bounds for the recall tool.</summary>
     public RecallLimits Recall { get; init; } = new();
+
+    /// <summary>
+    ///     Fraction of the usable window one tool result may occupy in the execution view (Compact only). A
+    ///     longer result is shown as head + marker + tail; the persisted row stays whole and the marker
+    ///     tells the model how to read the rest with <c>RecallConversation</c>.
+    /// </summary>
+    public double ToolResultViewCapRatio { get; init; } = 0.20;
+
+    /// <summary>Smallest per-result view cap, in characters, however small the window.</summary>
+    public int ToolResultViewCapMinChars { get; init; } = 4_000;
+
+    /// <summary>Largest per-result view cap, in characters; also the cap when the window is unknown.</summary>
+    public int ToolResultViewCapMaxChars { get; init; } = 100_000;
+
+    /// <summary>
+    ///     Tool turns whose results stay whole when compaction clears older results from the view before
+    ///     it summarizes (Compact only). Null turns clearing off.
+    /// </summary>
+    public int? ClearToolResultsKeepTurns { get; init; } = 3;
+
+    /// <summary><see cref="MinTailTokens"/> never exceeds this fraction of the usable window.</summary>
+    public double MinTailRatio { get; init; } = 0.15;
+
+    /// <summary><see cref="MaxTailTokens"/> never exceeds this fraction of the usable window.</summary>
+    public double MaxTailRatio { get; init; } = 0.60;
+
+    /// <summary>
+    ///     <see cref="CheckpointTokenCap"/> never exceeds this fraction of the usable window, nor falls below
+    ///     <see cref="ScaledCheckpointTokenCapFloor"/> through scaling.
+    /// </summary>
+    public double CheckpointTokenCapRatio { get; init; } = 0.15;
+
+    /// <summary>The least envelope cap window scaling produces; a smaller envelope cannot hold a manifest.</summary>
+    public const long ScaledCheckpointTokenCapFloor = 1_000;
+
+    /// <summary>
+    ///     An automatic cut must newly cover at least this fraction of the usable window, or it is skipped with
+    ///     <c>insufficient_gain</c> before any summary call. 0 turns the gate off. The fit check's re-cut, the
+    ///     reactive path and a manual request are exempt.
+    /// </summary>
+    public double MinCompactionGainRatio { get; init; } = 0.10;
+
+    /// <summary>
+    ///     Most automatic compaction attempts (activated or failed) one thread may make within
+    ///     <see cref="ThreadCompactionWindow"/>, across runs; further ones skip with <c>rate_limited</c>. 0 turns
+    ///     the limit off.
+    /// </summary>
+    public int MaxCompactionsPerThreadWindow { get; init; } = 6;
+
+    /// <summary>The sliding window <see cref="MaxCompactionsPerThreadWindow"/> counts over.</summary>
+    public TimeSpan ThreadCompactionWindow { get; init; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    ///     Generations skipped with <c>failure_backoff</c> after a failed compaction; doubles with each consecutive
+    ///     failure up to <see cref="MaxFailureBackoffGenerations"/> and resets when a checkpoint activates. 0 turns
+    ///     backoff off.
+    /// </summary>
+    public int FailureBackoffGenerations { get; init; } = 2;
+
+    /// <summary>The longest failure backoff, in generations.</summary>
+    public const int MaxFailureBackoffGenerations = 32;
+
+    /// <summary>How long one summary call may take before it counts as failed.</summary>
+    public TimeSpan SummaryTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>Summary calls per checkpoint: a failed or timed-out call is retried until this many were made.</summary>
+    public int SummaryAttempts { get; init; } = 2;
+
+    /// <summary>The output-token limit the summary call is sent with.</summary>
+    public int SummaryMaxOutputTokens { get; init; } = 8_000;
+
+    /// <summary>Longest text one non-human row contributes to the summary prompt; longer rows are truncated.</summary>
+    public int SummaryRowCharCap { get; init; } = 4_000;
+
+    /// <summary>Upper bound on the summary prompt's row text, however large the summary model's window.</summary>
+    public int SummaryPromptMaxChars { get; init; } = 400_000;
+
+    /// <summary>The least summary prompt budget window scaling produces.</summary>
+    public const int SummaryPromptMinChars = 20_000;
+
+    /// <summary>
+    ///     Generations to back off after <paramref name="consecutiveFailures"/> failures in a row:
+    ///     <c>FailureBackoffGenerations × 2^(failures − 1)</c>, capped at <see cref="MaxFailureBackoffGenerations"/>.
+    /// </summary>
+    public int FailureBackoff(int consecutiveFailures) =>
+        FailureBackoffGenerations <= 0 || consecutiveFailures <= 0
+            ? 0
+            : (int)
+                Math.Min(
+                    MaxFailureBackoffGenerations,
+                    (long)FailureBackoffGenerations << Math.Min(consecutiveFailures - 1, 20)
+                );
+
+    /// <summary>
+    ///     Characters of row text the summary prompt may carry for a summary model window of
+    ///     <paramref name="summaryWindowTokens"/>: three quarters of what is left after the output limit, within
+    ///     <see cref="SummaryPromptMinChars"/> and <see cref="SummaryPromptMaxChars"/>.
+    /// </summary>
+    public int SummaryPromptCharBudget(long? summaryWindowTokens)
+    {
+        if (summaryWindowTokens is not { } window)
+        {
+            return SummaryPromptMaxChars;
+        }
+
+        var chars = (long)((window - SummaryMaxOutputTokens) * DefaultCharsPerToken * 0.75);
+        return (int)Math.Clamp(chars, Math.Min(SummaryPromptMinChars, SummaryPromptMaxChars), SummaryPromptMaxChars);
+    }
+
+    /// <summary>The per-result view cap in characters for a usable window of <paramref name="usableTokens"/>.</summary>
+    public int ToolResultViewCapChars(long? usableTokens)
+    {
+        if (usableTokens is not { } usable)
+        {
+            return ToolResultViewCapMaxChars;
+        }
+
+        var chars = (long)(ToolResultViewCapRatio * usable * DefaultCharsPerToken);
+        return (int)Math.Clamp(chars, ToolResultViewCapMinChars, ToolResultViewCapMaxChars);
+    }
+
+    /// <summary>R3's floor for a usable window: <c>min(MinTailTokens, MinTailRatio × usable)</c>.</summary>
+    public long EffectiveMinTailTokens(long? usableTokens) => Scaled(MinTailTokens, MinTailRatio, usableTokens);
+
+    /// <summary>R7's preference for a usable window: <c>min(MaxTailTokens, MaxTailRatio × usable)</c>.</summary>
+    public long EffectiveMaxTailTokens(long? usableTokens) => Scaled(MaxTailTokens, MaxTailRatio, usableTokens);
+
+    /// <summary>V9's envelope cap for a usable window, never scaled below <see cref="ScaledCheckpointTokenCapFloor"/>.</summary>
+    public long EffectiveCheckpointTokenCap(long? usableTokens) =>
+        usableTokens is null
+            ? CheckpointTokenCap
+            : Math.Min(
+                CheckpointTokenCap,
+                Math.Max(ScaledCheckpointTokenCapFloor, (long)(CheckpointTokenCapRatio * usableTokens.Value))
+            );
+
+    /// <summary>Throws <see cref="ArgumentOutOfRangeException"/> naming the first out-of-range fit knob.</summary>
+    public void Validate()
+    {
+        RequireRatio(ToolResultViewCapRatio, nameof(ToolResultViewCapRatio));
+        if (ToolResultViewCapMaxChars < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ToolResultViewCapMaxChars),
+                ToolResultViewCapMaxChars,
+                "must be positive"
+            );
+        }
+
+        if (ToolResultViewCapMinChars < 1 || ToolResultViewCapMinChars > ToolResultViewCapMaxChars)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ToolResultViewCapMinChars),
+                ToolResultViewCapMinChars,
+                $"must be between 1 and {nameof(ToolResultViewCapMaxChars)}"
+            );
+        }
+
+        if (ClearToolResultsKeepTurns is < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ClearToolResultsKeepTurns),
+                ClearToolResultsKeepTurns,
+                "must be at least 1, or null to turn clearing off"
+            );
+        }
+
+        RequireRatio(MinTailRatio, nameof(MinTailRatio));
+        RequireRatio(MaxTailRatio, nameof(MaxTailRatio));
+        RequireRatio(CheckpointTokenCapRatio, nameof(CheckpointTokenCapRatio));
+        Require(
+            MinCompactionGainRatio is >= 0 and < 1,
+            MinCompactionGainRatio,
+            nameof(MinCompactionGainRatio),
+            "must be in [0, 1)"
+        );
+        Require(
+            MaxCompactionsPerThreadWindow >= 0,
+            MaxCompactionsPerThreadWindow,
+            nameof(MaxCompactionsPerThreadWindow),
+            "must not be negative"
+        );
+        Require(
+            MaxCompactionsPerThreadWindow == 0 || ThreadCompactionWindow > TimeSpan.Zero,
+            ThreadCompactionWindow,
+            nameof(ThreadCompactionWindow),
+            "must be positive while the thread limit is on"
+        );
+        Require(
+            FailureBackoffGenerations >= 0,
+            FailureBackoffGenerations,
+            nameof(FailureBackoffGenerations),
+            "must not be negative"
+        );
+        Require(SummaryTimeout > TimeSpan.Zero, SummaryTimeout, nameof(SummaryTimeout), "must be positive");
+        Require(SummaryAttempts is >= 1 and <= 5, SummaryAttempts, nameof(SummaryAttempts), "must be between 1 and 5");
+        Require(
+            SummaryMaxOutputTokens >= 1,
+            SummaryMaxOutputTokens,
+            nameof(SummaryMaxOutputTokens),
+            "must be positive"
+        );
+        Require(SummaryRowCharCap >= 200, SummaryRowCharCap, nameof(SummaryRowCharCap), "must be at least 200");
+        Require(
+            SummaryPromptMaxChars >= SummaryRowCharCap,
+            SummaryPromptMaxChars,
+            nameof(SummaryPromptMaxChars),
+            $"must be at least {nameof(SummaryRowCharCap)}"
+        );
+    }
+
+    private static void Require(bool valid, object value, string name, string message)
+    {
+        if (!valid)
+        {
+            throw new ArgumentOutOfRangeException(name, value, message);
+        }
+    }
+
+    private const int DefaultCharsPerToken = 4;
+
+    private static long Scaled(long absolute, double ratio, long? usableTokens) =>
+        usableTokens is { } usable ? Math.Min(absolute, (long)(ratio * usable)) : absolute;
+
+    private static void RequireRatio(double value, string name)
+    {
+        if (value is not (> 0 and <= 1))
+        {
+            throw new ArgumentOutOfRangeException(name, value, "must be in (0, 1]");
+        }
+    }
 
     /// <summary>Mode for one route: the exact <c>"{providerId}/{modelId}"</c> key, then the model id alone, then <see cref="Mode"/>.</summary>
     public CompactionMode ResolveMode(string? providerId, string? modelId)

@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getConversationContext } from '@/api/contextApi';
+import {
+  getConversationContext,
+  MAX_COMPACTION_FOCUS_LENGTH,
+  requestCompaction,
+  supportsManualCompaction,
+} from '@/api/contextApi';
 
 function mockFetchOnce(status: number, body: unknown, contentType = 'application/json') {
   const original = globalThis.fetch;
@@ -99,5 +104,120 @@ describe('contextApi.getConversationContext (#685)', () => {
     restore = mock.restore;
 
     await expect(getConversationContext('thread-1')).rejects.toThrow(/Failed to fetch context/);
+  });
+});
+
+// Manual compaction: the user (never the model) asks the host to compact a conversation now,
+// optionally steering the summary with a focus prompt.
+describe('contextApi.requestCompaction (manual compaction)', () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => restore?.());
+
+  function sentBody(fetchSpy: ReturnType<typeof vi.fn>): unknown {
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    return JSON.parse(String(init?.body));
+  }
+
+  it('POSTs to the per-conversation compaction route and maps 202 to accepted', async () => {
+    const mock = mockFetchOnce(202, { requestId: 'req-1', status: 'queued' });
+    restore = mock.restore;
+
+    const result = await requestCompaction('thread/1', 'keep the API decisions');
+
+    expect(result).toEqual({ kind: 'accepted', requestId: 'req-1', status: 'queued' });
+    const [url, init] = mock.fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/conversations/thread%2F1/compaction');
+    expect(init.method).toBe('POST');
+    expect(sentBody(mock.fetchSpy)).toEqual({ focus: 'keep the API decisions' });
+  });
+
+  it('maps a running 202 status through unchanged', async () => {
+    const mock = mockFetchOnce(202, { requestId: 'req-2', status: 'running' });
+    restore = mock.restore;
+
+    expect(await requestCompaction('thread-1')).toEqual({ kind: 'accepted', requestId: 'req-2', status: 'running' });
+  });
+
+  it('trims the focus and sends no focus field when it is blank', async () => {
+    const mock = mockFetchOnce(202, { requestId: 'req-3', status: 'queued' });
+    restore = mock.restore;
+
+    await requestCompaction('thread-1', '   ');
+
+    expect(sentBody(mock.fetchSpy)).toEqual({});
+  });
+
+  it('caps the focus at the server maximum', async () => {
+    const mock = mockFetchOnce(202, { requestId: 'req-4', status: 'queued' });
+    restore = mock.restore;
+
+    await requestCompaction('thread-1', `  ${'x'.repeat(MAX_COMPACTION_FOCUS_LENGTH + 50)}  `);
+
+    expect((sentBody(mock.fetchSpy) as { focus: string }).focus).toHaveLength(MAX_COMPACTION_FOCUS_LENGTH);
+  });
+
+  it.each(['compaction_off', 'provider_owned_session', 'already_pending', 'in_progress', 'nothing_to_compact', 'no_safe_boundary'])(
+    'maps 409 %s to a refusal carrying the reason',
+    async (reason) => {
+      const mock = mockFetchOnce(409, { reason });
+      restore = mock.restore;
+
+      expect(await requestCompaction('thread-1')).toEqual({ kind: 'refused', reason });
+    }
+  );
+
+  it('maps a 409 with an unreadable body to an unknown refusal', async () => {
+    const mock = mockFetchOnce(409, 'nope', 'text/plain');
+    restore = mock.restore;
+
+    expect(await requestCompaction('thread-1')).toEqual({ kind: 'refused', reason: 'unknown' });
+  });
+
+  it('maps 403 to forbidden and 404 to not-found', async () => {
+    let mock = mockFetchOnce(403, { error: 'forbidden' });
+    expect(await requestCompaction('thread-1')).toEqual({ kind: 'forbidden' });
+    mock.restore();
+
+    mock = mockFetchOnce(404, { error: 'unknown_thread', code: 'unknown_thread' });
+    restore = mock.restore;
+    expect(await requestCompaction('thread-1')).toEqual({ kind: 'not-found' });
+  });
+
+  it('throws for any other failure', async () => {
+    const mock = mockFetchOnce(500, { error: 'boom' });
+    restore = mock.restore;
+
+    await expect(requestCompaction('thread-1')).rejects.toThrow(/Failed to request compaction/);
+  });
+});
+
+describe('contextApi.supportsManualCompaction', () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => restore?.());
+
+  it('reads manualCompaction from the host capabilities', async () => {
+    const mock = mockFetchOnce(200, { schemaVersion: 1, manualCompaction: true });
+    restore = mock.restore;
+
+    expect(await supportsManualCompaction()).toBe(true);
+    expect(mock.fetchSpy).toHaveBeenCalledWith('/api/conversations/capabilities');
+  });
+
+  it('is false when the flag is absent, false, or the read fails', async () => {
+    let mock = mockFetchOnce(200, { schemaVersion: 1 });
+    expect(await supportsManualCompaction()).toBe(false);
+    mock.restore();
+
+    mock = mockFetchOnce(200, { manualCompaction: false });
+    expect(await supportsManualCompaction()).toBe(false);
+    mock.restore();
+
+    mock = mockFetchOnce(500, { error: 'boom' });
+    expect(await supportsManualCompaction()).toBe(false);
+    mock.restore();
+
+    mock = mockFetchOnce(200, '<!doctype html>', 'text/html');
+    restore = mock.restore;
+    expect(await supportsManualCompaction()).toBe(false);
   });
 });

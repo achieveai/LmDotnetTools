@@ -4,10 +4,13 @@ let nextUid = 0;
 </script>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { ContextReportStatus } from '@/composables/useContextReport';
+import type { CompactionControlView } from '@/composables/useManualCompaction';
+import { MAX_COMPACTION_FOCUS_LENGTH } from '@/api/contextApi';
 import {
   capacityLabel,
+  capacityScopeNote,
   compactionLabel,
   costLabel,
   decisionLabel,
@@ -34,16 +37,28 @@ import {
  * It renders NO prompt or message content by design: everything on screen is a number, an id, a
  * model name, or a state word. The endpoint answers 403 and 404 with the same `null`, and this
  * component shows both as the same "unavailable" line, so a refused thread leaks nothing.
+ *
+ * The one control that is not read-only is Compact now (manual compaction), in the header so it is
+ * reachable while the panel is collapsed. The panel only renders `compaction` and emits `compact`
+ * with the trimmed focus; `useManualCompaction` owns the request and the progress frames.
  */
 const props = defineProps<{
   rows: ContextRowView[];
   total: ContextTotalView | null;
   status: ContextReportStatus;
   generatedAtUtc: string | null;
+  /** Compact now state; absent (or `supported: false`) hides the button. */
+  compaction?: CompactionControlView;
+}>();
+
+const emit = defineEmits<{
+  compact: [focus: string];
 }>();
 
 const uid = ++nextUid;
 const bodyId = `context-panel-body-${uid}`;
+const compactFormId = `context-compact-form-${uid}`;
+const compactFocusId = `context-compact-focus-${uid}`;
 
 /** Collapsed by default: the summary line carries the two numbers most people want. */
 const expanded = ref(false);
@@ -64,13 +79,63 @@ const summary = computed(() => {
   if (root) {
     parts.push(
       root.capacity.kind === 'known'
-        ? `${formatPercent(root.capacity.utilization)} of ${formatTokens(root.capacity.window)}`
+        ? `${formatPercent(root.capacity.utilization)} of ${formatTokens(root.capacity.window)}${root.capacity.afterCompaction ? ' after compaction' : ''}`
         : capacityLabel(root.capacity)
     );
   }
   if (props.total) parts.push(`total ${costLabel(props.total.cost)}`);
   if (props.rows.length > 1) parts.push(`${props.rows.length} agents`);
   return parts.join(' · ');
+});
+
+/** The summary's percentage is the policy's full request when it can be; the tooltip says so. */
+const summaryTitle = computed(() => (rootRow.value ? (capacityScopeNote(rootRow.value.capacity) ?? undefined) : undefined));
+
+// ---- Compact now ------------------------------------------------------------------------------
+
+const canShowCompact = computed(() => props.compaction?.supported === true);
+
+/**
+ * Why the button is disabled, or null when it is not. The report's own compaction state counts too:
+ * a compaction another client started shows `InFlight` before any frame reaches this socket.
+ */
+const compactBlockedReason = computed<string | null>(() => {
+  if (props.compaction?.busy) return 'A compaction is already in progress.';
+  const state = rootRow.value?.compaction.state;
+  if (state === 'InFlight') return 'A compaction is already in flight.';
+  if (state === 'Unsupported') return 'This provider manages its own context, so it cannot be compacted here.';
+  return null;
+});
+
+const compactStatusText = computed(() => props.compaction?.statusText ?? '');
+
+const compactFormOpen = ref(false);
+const compactFocus = ref('');
+const compactFocusInput = ref<HTMLInputElement | null>(null);
+
+async function toggleCompactForm(): Promise<void> {
+  compactFormOpen.value = !compactFormOpen.value;
+  if (compactFormOpen.value) {
+    await nextTick();
+    compactFocusInput.value?.focus();
+  }
+}
+
+function closeCompactForm(): void {
+  compactFormOpen.value = false;
+  compactFocus.value = '';
+}
+
+function submitCompact(): void {
+  if (compactBlockedReason.value !== null) return;
+  emit('compact', compactFocus.value.trim());
+  closeCompactForm();
+}
+
+// A compaction that starts (from this form, another tab, or a threshold) closes a half-typed form:
+// submitting it would only earn an `already_pending` refusal.
+watch(compactBlockedReason, (reason) => {
+  if (reason !== null) closeCompactForm();
 });
 
 function agentName(row: ContextRowView): string {
@@ -151,18 +216,81 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
     aria-label="Context and cost"
     :data-status="status"
   >
-    <button
-      type="button"
-      class="context-toggle"
-      data-testid="context-panel-toggle"
-      :aria-expanded="expanded ? 'true' : 'false'"
-      :aria-controls="bodyId"
-      @click="toggle"
+    <div class="context-header">
+      <button
+        type="button"
+        class="context-toggle"
+        data-testid="context-panel-toggle"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="bodyId"
+        @click="toggle"
+      >
+        <span class="context-toggle-caret" aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
+        <span class="context-toggle-title">Context</span>
+        <span class="context-toggle-summary" data-testid="context-panel-summary" :title="summaryTitle">{{ summary }}</span>
+      </button>
+      <button
+        v-if="canShowCompact"
+        type="button"
+        class="context-compact-button"
+        data-testid="compact-now-button"
+        :disabled="compactBlockedReason !== null"
+        :title="compactBlockedReason ?? 'Summarize older messages to free context space'"
+        :aria-expanded="compactFormOpen ? 'true' : 'false'"
+        :aria-controls="compactFormId"
+        @click="toggleCompactForm"
+      >
+        Compact now
+      </button>
+    </div>
+
+    <form
+      v-if="canShowCompact && compactFormOpen"
+      :id="compactFormId"
+      class="context-compact-form"
+      data-testid="compact-form"
+      @submit.prevent="submitCompact"
     >
-      <span class="context-toggle-caret" aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
-      <span class="context-toggle-title">Context</span>
-      <span class="context-toggle-summary" data-testid="context-panel-summary">{{ summary }}</span>
-    </button>
+      <label :for="compactFocusId" class="context-compact-label">Focus for the summary (optional)</label>
+      <div class="context-compact-row">
+        <input
+          :id="compactFocusId"
+          ref="compactFocusInput"
+          v-model="compactFocus"
+          type="text"
+          class="context-compact-input"
+          data-testid="compact-focus-input"
+          placeholder="e.g. keep the API design decisions"
+          :maxlength="MAX_COMPACTION_FOCUS_LENGTH"
+          autocomplete="off"
+          @keydown.enter.prevent="submitCompact"
+          @keydown.esc.prevent="closeCompactForm"
+        />
+        <button
+          type="submit"
+          class="context-compact-submit"
+          data-testid="compact-submit-button"
+          :disabled="compactBlockedReason !== null"
+        >
+          Compact
+        </button>
+        <button type="button" class="context-compact-cancel" data-testid="compact-cancel-button" @click="closeCompactForm">
+          Cancel
+        </button>
+      </div>
+    </form>
+
+    <p
+      v-if="compaction && compaction.phase !== 'idle' && compactStatusText"
+      class="context-compact-status"
+      data-testid="compact-status"
+      role="status"
+      aria-live="polite"
+      :data-phase="compaction.phase"
+    >
+      <span v-if="compaction.busy" class="context-compact-spinner" data-testid="compact-spinner" aria-hidden="true"></span>
+      {{ compactStatusText }}
+    </p>
 
     <div v-show="expanded" :id="bodyId" class="context-body">
       <p
@@ -229,8 +357,21 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
                     :style="{ width: `${percentOf(row)}%` }"
                   ></div>
                 </div>
-                <span data-testid="context-capacity" :data-kind="capacityKind(row)" class="context-capacity">
+                <span
+                  data-testid="context-capacity"
+                  :data-kind="capacityKind(row)"
+                  class="context-capacity"
+                  :title="capacityScopeNote(row.capacity) ?? undefined"
+                >
                   {{ capacityLabel(row.capacity) }}
+                </span>
+                <span
+                  v-if="row.compaction.summaryFallback"
+                  data-testid="context-summary-fallback"
+                  class="context-summary-fallback"
+                  :title="row.compaction.summaryFallback"
+                >
+                  Last compaction kept the turns without a summary. Earlier details can be recalled.
                 </span>
               </td>
               <td data-label="Usage" data-testid="context-tokens" :data-kind="row.tokens.kind">
@@ -279,9 +420,11 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
                   <dd>{{ row.modelId ?? 'unknown' }}</dd>
                   <template v-if="row.capacity.kind === 'known'">
                     <dt>Window</dt>
-                    <dd>
+                    <dd data-testid="context-window-detail">
                       {{ formatTokens(row.capacity.window) }} tokens, {{ formatTokens(row.capacity.reserve) }}
-                      reserved, {{ formatTokens(row.capacity.used) }} in use ({{ row.capacity.provenance.toLowerCase() }})
+                      reserved, {{ formatTokens(row.capacity.used) }} in use ({{ row.capacity.provenance.toLowerCase()
+                      }}{{ row.capacity.afterCompaction ? ', after compaction' : ''
+                      }}{{ row.capacity.scope === 'request' ? ', including tool definitions and the system prompt' : '' }})
                     </dd>
                   </template>
                   <dt>Generation</dt>
@@ -336,11 +479,19 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
   color: #212529;
 }
 
+.context-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 16px;
+}
+
 .context-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 6px 16px;
   border: none;
   background: transparent;
@@ -374,6 +525,106 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
 .context-body {
   padding: 0 16px 8px;
   overflow-x: auto;
+}
+
+.context-compact-button,
+.context-compact-submit,
+.context-compact-cancel {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.context-compact-submit {
+  border-color: #0d6efd;
+  background: #0d6efd;
+  color: #fff;
+}
+
+.context-compact-button:disabled,
+.context-compact-submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.context-compact-button:focus-visible,
+.context-compact-submit:focus-visible,
+.context-compact-cancel:focus-visible,
+.context-compact-input:focus-visible {
+  outline: 2px solid #0d6efd;
+  outline-offset: 1px;
+}
+
+.context-compact-form {
+  padding: 0 16px 6px;
+}
+
+.context-compact-label {
+  display: block;
+  margin-bottom: 2px;
+  color: #495057;
+}
+
+.context-compact-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-compact-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.context-compact-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 16px 6px;
+  color: #495057;
+  overflow-wrap: anywhere;
+}
+
+.context-compact-status[data-phase='refused'],
+.context-compact-status[data-phase='failed'] {
+  color: #842029;
+}
+
+.context-compact-status[data-phase='applied'] {
+  color: #155724;
+}
+
+.context-compact-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #adb5bd;
+  border-top-color: #0d6efd;
+  border-radius: 50%;
+  animation: context-compact-spin 0.8s linear infinite;
+}
+
+@keyframes context-compact-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-compact-spinner {
+    animation: none;
+  }
 }
 
 .context-note,
@@ -416,6 +667,13 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
 
 .context-capacity-cell {
   min-width: 180px;
+}
+
+.context-summary-fallback {
+  display: block;
+  margin-top: 2px;
+  color: #6c757d;
+  font-size: 12px;
 }
 
 .context-gauge {

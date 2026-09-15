@@ -2940,6 +2940,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
     /// <param name="isError">Whether the run completed due to an error</param>
     /// <param name="errorMessage">Error message when isError is true</param>
+    /// <param name="errorCode">
+    /// Machine-readable reason when isError is true and the failure has one, carried on both the lifecycle error
+    /// and <see cref="RunCompletedMessage.ErrorCode"/>. Null leaves the failure unclassified.
+    /// </param>
     /// <param name="outcome">
     /// The lifecycle outcome to report, overriding the completed/error default. Used by a
     /// delayed-result child that deliberately took no turn, which is a success the plain
@@ -2955,6 +2959,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         int pendingMessageCount = 0,
         bool isError = false,
         string? errorMessage = null,
+        string? errorCode = null,
         string? outcome = null,
         CancellationToken ct = default
     )
@@ -2990,7 +2995,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             runId,
             generationId,
             outcome ?? (isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed),
-            isError ? new LifecycleError { Message = errorMessage ?? "The run failed." } : null,
+            isError
+                ? new LifecycleError { Code = errorCode ?? string.Empty, Message = errorMessage ?? "The run failed." }
+                : null,
             ct: ct
         );
 
@@ -3006,6 +3013,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 PendingMessageCount = pendingMessageCount,
                 IsError = isError,
                 ErrorMessage = errorMessage,
+                ErrorCode = isError ? errorCode : null,
             },
             ct
         );

@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import type { AgentContextRow, ConversationContextReport, ContextObservation } from '@/types/context';
+import type {
+  AgentContextRow,
+  CompactionDecisionSummary,
+  ConversationContextReport,
+  ContextObservation,
+} from '@/types/context';
 import type { ContextPressureMessage } from '@/types/messages';
 import {
   applyPressureFrame,
   capacityLabel,
+  capacityScopeNote,
   compactionLabel,
   costLabel,
   decisionLabel,
@@ -127,6 +133,7 @@ describe('rowFromWire — one agent row', () => {
       reserve: 8_000,
       utilization: 5_000 / 192_000,
       provenance: 'Measured',
+      scope: 'history',
     });
     expect(view.modelId).toBe('model-x');
     expect(view.generationOrdinal).toBe(2);
@@ -177,7 +184,7 @@ describe('rowFromWire — one agent row', () => {
   it('carries the policy decision and the compaction reason when present', () => {
     const view = rowFromWire(
       row({
-        observation: observation({ decision: { decision: 'Skipped', reason: 'cooldown_active' } }),
+        observation: observation({ decision: { decision: 'skipped', reason: 'cooldown' } }),
         compaction: { state: 'Rejected', checkpointId: 'cp-1', reason: 'validation_failed' },
       })
     );
@@ -185,8 +192,183 @@ describe('rowFromWire — one agent row', () => {
       state: 'Rejected',
       checkpointId: 'cp-1',
       reason: 'validation_failed',
-      decision: { decision: 'Skipped', reason: 'cooldown_active' },
+      decision: { decision: 'skipped', reason: 'cooldown' },
+      summaryFallback: null,
     });
+  });
+});
+
+describe('capacity — the full request the compaction policy measures', () => {
+  // The 18k test profile: ~10k of the policy's 12,880 tokens are the tool schemas and system prompt,
+  // which the observation's own estimate (190) leaves out.
+  const policy = { decision: 'warn', tokens: 12_880, utilization: 12_880 / 16_976, window: 18_000, reserve: 1_024 };
+  const small = observation({
+    estimated_input_tokens: 190,
+    measured_input_tokens: null,
+    provenance: 'Estimated',
+    window_tokens: 18_000,
+    reserve_tokens: 1_024,
+  });
+
+  it("uses the decision's tokens and utilization, marked as the full request", () => {
+    const view = rowFromWire(row({ observation: { ...small, decision: policy } }));
+    expect(view.capacity).toEqual({
+      kind: 'known',
+      used: 12_880,
+      window: 18_000,
+      reserve: 1_024,
+      utilization: 12_880 / 16_976,
+      provenance: 'Estimated',
+      scope: 'request',
+    });
+  });
+
+  it('prefers lastDecision, which the compaction state rests on', () => {
+    const view = rowFromWire(
+      row({
+        observation: small,
+        compaction: {
+          state: 'Active',
+          lastDecision: {
+            decision: { ...policy, decision: 'compact', reason: 'hard', tokens: 15_576, utilization: 15_576 / 16_976 },
+            generationOrdinal: 5,
+            generationId: 'gen-5',
+            decidedAtUtc: '2026-09-15T04:00:00Z',
+            ageSeconds: 3,
+          },
+        },
+      })
+    );
+    expect(view.capacity).toMatchObject({ kind: 'known', used: 15_576, scope: 'request' });
+  });
+
+  it("computes the utilization from the decision's window when the decision omits it", () => {
+    const view = rowFromWire(
+      row({ observation: { ...small, decision: { decision: 'warn', tokens: 12_880, window: 18_000, reserve: 1_024 } } })
+    );
+    expect(view.capacity).toMatchObject({ kind: 'known', used: 12_880, utilization: 12_880 / 16_976, scope: 'request' });
+  });
+
+  it('falls back to the observation estimate when there is no decision, or it carries no tokens', () => {
+    expect(rowFromWire(row({ observation: small })).capacity).toMatchObject({ used: 190, scope: 'history' });
+    expect(
+      rowFromWire(row({ observation: { ...small, decision: { decision: 'no_action' } } })).capacity
+    ).toMatchObject({ used: 190, scope: 'history' });
+  });
+
+  it('keeps a full-request figure when a live frame (history only) arrives, but takes its freshness', () => {
+    const rows = viewFromReport(report([row({ observation: { ...small, decision: policy } })])).rows;
+    const next = applyPressureFrame(rows, frame({ estimatedInputTokens: 300, windowTokens: 18_000, reserveTokens: 1_024, utilization: 300 / 16_976 }));
+    expect(next[0].capacity).toEqual(rows[0].capacity);
+    expect(next[0].generationOrdinal).toBe(3);
+    expect(next[0].freshness).toBe('Fresh');
+  });
+
+  describe('after a compaction — the active checkpoint outranks the decision that caused it', () => {
+    const checkpoint = { checkpointId: 'cp-1', estimatedTokensBefore: 15_576, estimatedTokensAfter: 10_300, generationOrdinal: 5 };
+    const hard = { ...policy, decision: 'compact', reason: 'hard', tokens: 15_576, utilization: 15_576 / 16_976, cut_seq: 12 };
+    const decided = (ordinal: number, decision: CompactionDecisionSummary = hard) => ({
+      decision,
+      generationOrdinal: ordinal,
+      generationId: `gen-${ordinal}`,
+      decidedAtUtc: '2026-09-15T04:00:00Z',
+      ageSeconds: 1,
+    });
+
+    it("shows the checkpoint's after figure while the newest decision is the cut's own", () => {
+      const view = rowFromWire(
+        row({
+          observation: { ...small, decision: hard, generation_ordinal: 5 },
+          compaction: { state: 'Active', checkpointId: 'cp-1', lastDecision: decided(5), activeCheckpoint: checkpoint },
+        })
+      );
+      expect(view.capacity).toEqual({
+        kind: 'known',
+        used: 10_300,
+        window: 18_000,
+        reserve: 1_024,
+        utilization: 10_300 / 16_976,
+        provenance: 'Estimated',
+        scope: 'request',
+        afterCompaction: true,
+      });
+    });
+
+    it('shows the after figure when no decision was recorded, and for an older decision', () => {
+      expect(
+        rowFromWire(row({ observation: small, compaction: { state: 'Active', activeCheckpoint: checkpoint } })).capacity
+      ).toMatchObject({ used: 10_300, window: 18_000, reserve: 1_024, afterCompaction: true });
+      expect(
+        rowFromWire(row({ observation: small, compaction: { state: 'Active', lastDecision: decided(4), activeCheckpoint: checkpoint } }))
+          .capacity
+      ).toMatchObject({ used: 10_300, afterCompaction: true });
+    });
+
+    it('goes back to the decision once a later turn has been decided', () => {
+      const view = rowFromWire(
+        row({
+          observation: small,
+          compaction: { state: 'Active', lastDecision: decided(6, policy), activeCheckpoint: checkpoint },
+        })
+      );
+      expect(view.capacity).toMatchObject({ used: 12_880, scope: 'request' });
+      expect(view.capacity).not.toHaveProperty('afterCompaction');
+    });
+
+    it("orders by the observation's generation when the report has no lastDecision", () => {
+      const at = (ordinal: number) =>
+        rowFromWire(
+          row({
+            observation: { ...small, decision: policy, generation_ordinal: ordinal },
+            compaction: { state: 'Active', activeCheckpoint: checkpoint },
+          })
+        ).capacity;
+      expect(at(5)).toMatchObject({ used: 10_300, afterCompaction: true });
+      expect(at(6)).toMatchObject({ used: 12_880 });
+    });
+
+    it("keeps today's figure when the field is absent or null", () => {
+      const base = { observation: small, compaction: { state: 'Active' as const, lastDecision: decided(5) } };
+      expect(rowFromWire(row(base)).capacity).toMatchObject({ used: 15_576 });
+      expect(
+        rowFromWire(row({ ...base, compaction: { ...base.compaction, activeCheckpoint: null } })).capacity
+      ).toMatchObject({ used: 15_576 });
+    });
+
+    it('carries the failure a summary fallback replaced, and null for a checkpoint with a model summary', () => {
+      const fallback = rowFromWire(
+        row({
+          observation: small,
+          compaction: { state: 'Active', activeCheckpoint: { ...checkpoint, summaryFallback: 'validation_failed:V3' } },
+        })
+      );
+      expect(fallback.compaction.summaryFallback).toBe('validation_failed:V3');
+      // The after figure is still the checkpoint's: a fallback cut is a real cut.
+      expect(fallback.capacity).toMatchObject({ used: 10_300, afterCompaction: true });
+
+      const summarized = (activeCheckpoint: typeof checkpoint | null | undefined, extra: object = {}) =>
+        rowFromWire(row({ observation: small, compaction: { state: 'Active', activeCheckpoint: activeCheckpoint && { ...activeCheckpoint, ...extra } } }))
+          .compaction.summaryFallback;
+      expect(summarized(checkpoint)).toBeNull();
+      expect(summarized(checkpoint, { summaryFallback: null })).toBeNull();
+      expect(summarized(null)).toBeNull();
+      expect(summarized(undefined)).toBeNull();
+    });
+
+    it('says the figure is after compaction in the label and the note', () => {
+      const capacity = rowFromWire(
+        row({ observation: small, compaction: { state: 'Active', activeCheckpoint: checkpoint } })
+      ).capacity;
+      expect(capacityLabel(capacity)).toBe('61% of 18,000 tokens (estimated, after compaction)');
+      expect(capacityScopeNote(capacity)).toBe('After compaction. Includes tool definitions and the system prompt');
+    });
+  });
+
+  it('notes that the full-request figure includes tool definitions and the system prompt', () => {
+    const request = rowFromWire(row({ observation: { ...small, decision: policy } })).capacity;
+    expect(capacityScopeNote(request)).toBe('Includes tool definitions and the system prompt');
+    expect(capacityScopeNote(rowFromWire(row({ observation: small })).capacity)).toBeNull();
+    expect(capacityScopeNote({ kind: 'unknown', reason: 'no-window' })).toBeNull();
   });
 });
 
@@ -247,6 +429,7 @@ describe('applyPressureFrame — live enrichment, never a downgrade', () => {
       reserve: 8_000,
       utilization: 6_000 / 192_000,
       provenance: 'Estimated',
+      scope: 'history',
     });
     expect(next[0].freshness).toBe('Fresh');
     expect(next[0].generationOrdinal).toBe(3);
@@ -301,6 +484,7 @@ describe('labels — zero is never spelled like unknown, partial, stale, unavail
       reserve: 8_000,
       utilization: 0,
       provenance: 'Measured',
+      scope: 'history',
     });
     expect(known).toBe('0% of 200,000 tokens (measured)');
     expect(capacityLabel({ kind: 'unknown', reason: 'no-window' })).toBe('Unknown window');
@@ -346,11 +530,71 @@ describe('labels — zero is never spelled like unknown, partial, stale, unavail
       'Compaction rejected: validation_failed'
     );
 
-    expect(decisionLabel({ decision: 'Skipped', reason: 'cooldown_active' })).toBe('Skipped: cooldown_active');
-    expect(decisionLabel({ decision: 'Failed', reason: 'summary_model_error' })).toBe('Failed: summary_model_error');
-    expect(decisionLabel({ decision: 'Compact', reason: null })).toBe('Compaction recommended');
-    expect(decisionLabel({ decision: 'Warn', reason: null })).toBe('Warning: nearing the window');
-    expect(decisionLabel({ decision: 'NoAction', reason: null })).toBe('No action');
+    // The wire values are CompactionDecisionKinds (CompactionPolicy.cs): snake_case strings, not enum names.
+    expect(decisionLabel({ decision: 'skipped', reason: 'cooldown' })).toBe('Skipped: cooldown');
+    expect(decisionLabel({ decision: 'failed', reason: 'summary_call_failed' })).toBe('Failed: summary_call_failed');
+    expect(decisionLabel({ decision: 'compact', reason: null })).toBe('Compaction recommended');
+    expect(decisionLabel({ decision: 'compact', reason: 'summary_fallback' })).toBe('Compacted (no summary)');
+    expect(decisionLabel({ decision: 'compact', reason: 'summary_fallback', ageSeconds: 45 })).toBe('Compacted (no summary) · 45s ago');
+    expect(decisionLabel({ decision: 'shadow', reason: null })).toBe('Shadow compaction');
+    expect(decisionLabel({ decision: 'warn', reason: null })).toBe('Warning: nearing the window');
+    expect(decisionLabel({ decision: 'no_action', reason: null })).toBe('No action');
     expect(decisionLabel(null)).toBe('No decision yet');
+  });
+});
+
+// The report's `compaction.lastDecision` is the newest generation the policy actually decided on. The latest
+// observation often carries no decision (a wrap-up turn, or a live measurement ahead of the policy's stamp),
+// so reading only the observation showed "No decision yet" for a loop that had decided a minute earlier.
+describe('lastDecision — the decision the compaction state rests on, with its age', () => {
+  function lastDecision(decision: string, reason: string | null, ageSeconds: number) {
+    return {
+      decision: { decision, reason },
+      generationOrdinal: 1,
+      generationId: 'gen-1',
+      decidedAtUtc: '2026-09-02T09:58:00Z',
+      ageSeconds,
+    };
+  }
+
+  it('uses lastDecision when the shown observation has no decision', () => {
+    const view = rowFromWire(
+      row({
+        observation: observation({ decision: null }),
+        compaction: { state: 'Active', checkpointId: 'cp-1', lastDecision: lastDecision('compact', 'hard', 125) },
+      })
+    );
+    expect(view.compaction.decision).toEqual({ decision: 'compact', reason: 'hard', ageSeconds: 125 });
+  });
+
+  it('prefers lastDecision over the observation decision', () => {
+    const view = rowFromWire(
+      row({
+        observation: observation({ decision: { decision: 'no_action', reason: null } }),
+        compaction: { state: 'None', lastDecision: lastDecision('skipped', 'cooldown', 30) },
+      })
+    );
+    expect(view.compaction.decision).toEqual({ decision: 'skipped', reason: 'cooldown', ageSeconds: 30 });
+  });
+
+  it('has no decision when neither lastDecision nor the observation carries one', () => {
+    const view = rowFromWire(row({ observation: observation({ decision: null }), compaction: { state: 'None', lastDecision: null } }));
+    expect(view.compaction.decision).toBeNull();
+    expect(decisionLabel(view.compaction.decision)).toBe('No decision yet');
+  });
+
+  it('labels the decision with a compact age', () => {
+    expect(decisionLabel({ decision: 'compact', reason: null, ageSeconds: 125 })).toBe('Compaction recommended · 2m ago');
+    expect(decisionLabel({ decision: 'skipped', reason: 'cooldown', ageSeconds: 45 })).toBe('Skipped: cooldown · 45s ago');
+    expect(decisionLabel({ decision: 'no_action', reason: null, ageSeconds: 0 })).toBe('No action · just now');
+    expect(decisionLabel({ decision: 'warn', reason: null, ageSeconds: 7_260 })).toBe('Warning: nearing the window · 2h ago');
+    expect(decisionLabel({ decision: 'failed', reason: 'summary_call_failed', ageSeconds: 200_000 })).toBe(
+      'Failed: summary_call_failed · 2d ago'
+    );
+  });
+
+  it('omits the age when it is unknown (a decision read from the observation alone)', () => {
+    expect(decisionLabel({ decision: 'compact', reason: null, ageSeconds: null })).toBe('Compaction recommended');
+    expect(decisionLabel({ decision: 'compact', reason: null })).toBe('Compaction recommended');
   });
 });

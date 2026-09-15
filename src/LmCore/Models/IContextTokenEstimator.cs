@@ -19,10 +19,17 @@ public interface IContextTokenEstimator
 ///     names, arguments and results counted as text and an image counted at a fixed budget.
 /// </summary>
 /// <remarks>
-///     Deliberately simple and provider-neutral: the number is a pressure signal, not a bill. The measured
-///     count that follows the response (input + cache read + cache write of the generation's usage) replaces
-///     it on the same observation, and the two are never confused because the observation carries its
-///     <see cref="MeasurementProvenance" />.
+///     <para>
+///         Deliberately simple and provider-neutral: the number is a pressure signal, not a bill. The measured
+///         count that follows the response (input + cache read + cache write of the generation's usage) replaces
+///         it on the same observation, and the two are never confused because the observation carries its
+///         <see cref="MeasurementProvenance" />.
+///     </para>
+///     <para>
+///         It sees only the messages, never the tool definitions sent beside them; a caller that knows those
+///         adds them (the multi-turn loop does). Encrypted reasoning counts only its framing: a provider that
+///         bills a re-sent signed blob is corrected by the measured count, not by guessing here.
+///     </para>
 /// </remarks>
 public sealed class DefaultContextTokenEstimator : IContextTokenEstimator
 {
@@ -69,7 +76,9 @@ public sealed class DefaultContextTokenEstimator : IContextTokenEstimator
         return message switch
         {
             TextMessage text => text.Text?.Length ?? 0,
-            ReasoningMessage reasoning => reasoning.Reasoning?.Length ?? 0,
+            // GetText() is null for an encrypted blob: its ciphertext is not the model-visible size, and the
+            // compaction estimate skips it the same way.
+            ReasoningMessage reasoning => reasoning.GetText()?.Length ?? 0,
             ToolsCallMessage calls => calls.ToolCalls.Sum(c =>
                 (c.FunctionName?.Length ?? 0) + (c.FunctionArgs?.Length ?? 0)
             ),
