@@ -40,7 +40,7 @@ public class WorkspacesControllerTests
                 // touched. A no-op stub would let "an ordinary update silently migrated" pass as green;
                 // NotSupportedException maps to no catch in the controller, so it escapes the action.
                 pluginSelection ?? new StubPluginSelection(new NotSupportedException("migration must not run")),
-                envApplier ?? new SandboxEnvApplier()
+                envApplier ?? new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
             ),
             store
         );
@@ -777,7 +777,9 @@ public class WorkspacesControllerTests
                         _ = services.AddSingleton<IWorkspacePluginSelectionService>(
                             new StubPluginSelection(new NotSupportedException("migration must not run"))
                         );
-                        _ = services.AddSingleton(new SandboxEnvApplier());
+                        _ = services.AddSingleton<SandboxEnvApplier>(
+                            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+                        );
                     });
                     webBuilder.Configure(appBuilder =>
                     {

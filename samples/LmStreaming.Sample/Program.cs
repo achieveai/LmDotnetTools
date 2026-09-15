@@ -974,6 +974,17 @@ try
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
                     var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
+                    var envApplier = sp.GetRequiredService<SandboxEnvApplier>();
+                    var effectiveEnv = envApplier
+                        .ComputeEffectiveAsync(threadId, effectiveWorkspaceId, mode.Id, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    // First create carries the full merged map; a gateway-404 recreate only knows the
+                    // workspace layer, which the Ensure call after the session resolves tops up.
+                    workspaceRef = workspaceRef with
+                    {
+                        Env = effectiveEnv,
+                    };
                     if (workspace is not null)
                     {
                         try
@@ -1032,6 +1043,16 @@ try
                     // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
                     // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
                     sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
+                    envApplier
+                        .ApplyForThreadAsync(
+                            threadId,
+                            sandboxSession.SessionId,
+                            effectiveWorkspaceId,
+                            mode.Id,
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult();
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a

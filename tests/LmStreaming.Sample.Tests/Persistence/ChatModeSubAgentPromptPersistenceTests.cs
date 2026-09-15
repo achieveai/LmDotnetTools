@@ -176,7 +176,7 @@ public sealed class ChatModeSubAgentPromptPersistenceTests : IDisposable
     {
         var controller = new ChatModesController(
             CreateStoreWithFile(null),
-            new LmStreaming.Sample.Services.SandboxEnvApplier()
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
         );
 
         var result = await controller.Create(
@@ -197,7 +197,7 @@ public sealed class ChatModeSubAgentPromptPersistenceTests : IDisposable
     {
         var store = CreateStoreWithFile(null);
         var created = await store.CreateModeAsync(new ChatModeCreateUpdate { Name = "Ok", SystemPrompt = "p" });
-        var controller = new ChatModesController(store, new LmStreaming.Sample.Services.SandboxEnvApplier());
+        var controller = new ChatModesController(store, new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier());
 
         var result = await controller.Update(
             created.Id,
@@ -217,7 +217,7 @@ public sealed class ChatModeSubAgentPromptPersistenceTests : IDisposable
     public async Task Controller_Create_AcceptsBothValidPlacementsAndAbsent()
     {
         var store = CreateStoreWithFile(null);
-        var controller = new ChatModesController(store, new LmStreaming.Sample.Services.SandboxEnvApplier());
+        var controller = new ChatModesController(store, new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier());
 
         foreach (var placement in new[] { "prepend", "append", null })
         {

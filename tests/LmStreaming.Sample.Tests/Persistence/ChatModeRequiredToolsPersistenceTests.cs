@@ -361,7 +361,7 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     {
         var controller = new ChatModesController(
             CreateStoreWithFile(null),
-            new LmStreaming.Sample.Services.SandboxEnvApplier()
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
         );
 
         var result = await controller.Create(
@@ -383,7 +383,7 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     {
         var controller = new ChatModesController(
             CreateStoreWithFile(null),
-            new LmStreaming.Sample.Services.SandboxEnvApplier()
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
         );
 
         var result = await controller.Create(
@@ -408,7 +408,7 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     {
         var controller = new ChatModesController(
             CreateStoreWithFile(null),
-            new LmStreaming.Sample.Services.SandboxEnvApplier()
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
         );
 
         var result = await controller.Create(
@@ -428,7 +428,7 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     {
         var controller = new ChatModesController(
             CreateStoreWithFile(null),
-            new LmStreaming.Sample.Services.SandboxEnvApplier()
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
         );
 
         var result = await controller.Create(

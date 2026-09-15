@@ -92,7 +92,9 @@ public sealed class ChatModesControllerS2SPipelineTests
                     .ConfigureServices(services =>
                     {
                         _ = services.AddSingleton<IChatModeStore>(_store);
-                        _ = services.AddSingleton(new LmStreaming.Sample.Services.SandboxEnvApplier());
+                        _ = services.AddSingleton<LmStreaming.Sample.Services.SandboxEnvApplier>(
+                            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+                        );
                         _ = services.AddControllers().AddApplicationPart(typeof(ChatModesController).Assembly);
                     })
                     .Configure(app =>

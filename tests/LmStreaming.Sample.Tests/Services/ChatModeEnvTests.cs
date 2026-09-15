@@ -230,7 +230,7 @@ public sealed class ChatModeEnvTests : IDisposable
     [InlineData("NO_PROXY")]
     public async Task Controller_Create_InvalidEnv_Returns400WithCodeAndKeyNotValue(string key)
     {
-        var controller = new ChatModesController(CreateStore(), new LmStreaming.Sample.Services.SandboxEnvApplier());
+        var controller = new ChatModesController(CreateStore(), new NoOpSandboxEnvApplier());
 
         var result = await controller.Create(
             new ChatModeCreateUpdate

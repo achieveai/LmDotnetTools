@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
+using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -96,6 +97,14 @@ internal static class SandboxEnvTestSupport
 
             if (request.Method == HttpMethod.Patch)
             {
+                if (captured.ThrowTransportErrorOnPatchEnv)
+                {
+                    // SandboxClient.Transport.cs maps an HttpRequestException thrown by the inner handler
+                    // to SandboxException(TransportTimeout) ("could not reach the sandbox gateway") — the
+                    // simplest deterministic way to provoke that kind without a real timing budget.
+                    throw new HttpRequestException("Simulated transport failure for PATCH .../env.");
+                }
+
                 var bodyJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 captured.LastPatchBody = JsonDocument.Parse(bodyJson).RootElement.Clone();
                 captured.PatchedSessionIds.Add(sessionId);
@@ -138,6 +147,10 @@ internal static class SandboxEnvTestSupport
 
         /// <summary>Body the next PATCH .../env response returns — the resulting full env map.</summary>
         public string PatchEnvJson { get; set; } = """{"env":{}}""";
+
+        /// <summary>When true, the next PATCH .../env request throws <see cref="HttpRequestException"/>
+        /// instead of responding — the SDK maps that to <c>SandboxErrorKind.TransportTimeout</c>.</summary>
+        public bool ThrowTransportErrorOnPatchEnv { get; set; }
     }
 
     // Local mirrors of the registry's private snake_case JSON contract — same probes
@@ -191,4 +204,89 @@ internal static class SandboxEnvTestSupport
             }
         }
     }
+}
+
+/// <summary>
+/// Minimal in-memory <see cref="IWorkspaceStore"/> fake for <see cref="SandboxEnvApplier"/> tests and
+/// <see cref="NoOpSandboxEnvApplier"/> construction. Supports only what those callers need — seeding
+/// and lookup by id — so the mutation members throw rather than silently no-op.
+/// </summary>
+internal sealed class InMemoryWorkspaceStoreFake : IWorkspaceStore
+{
+    private readonly Dictionary<string, Workspace> _workspaces = new(StringComparer.Ordinal);
+
+    public void Seed(Workspace workspace) => _workspaces[workspace.Id] = workspace;
+
+    public Task<IReadOnlyList<Workspace>> GetAllAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Workspace>>([.. _workspaces.Values]);
+
+    public Task<Workspace?> GetAsync(string id, CancellationToken ct = default) =>
+        Task.FromResult(_workspaces.TryGetValue(id, out var workspace) ? workspace : null);
+
+    public Task<Workspace> CreateAsync(WorkspaceCreate dto, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryWorkspaceStoreFake supports only Seed/GetAsync.");
+
+    public Task<Workspace> UpdateAsync(string id, WorkspaceUpdate dto, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryWorkspaceStoreFake supports only Seed/GetAsync.");
+}
+
+/// <summary>Minimal in-memory <see cref="IChatModeStore"/> fake — see <see cref="InMemoryWorkspaceStoreFake"/>.</summary>
+internal sealed class InMemoryChatModeStoreFake : IChatModeStore
+{
+    private readonly Dictionary<string, ChatMode> _modes = new(StringComparer.Ordinal);
+
+    public void Seed(ChatMode mode) => _modes[mode.Id] = mode;
+
+    public Task<IReadOnlyList<ChatMode>> GetAllModesAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<ChatMode>>([.. _modes.Values]);
+
+    public Task<ChatMode?> GetModeAsync(string modeId, CancellationToken ct = default) =>
+        Task.FromResult(_modes.TryGetValue(modeId, out var mode) ? mode : null);
+
+    public Task<ChatMode> CreateModeAsync(ChatModeCreateUpdate mode, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task<ChatMode> UpdateModeAsync(string modeId, ChatModeCreateUpdate mode, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task DeleteModeAsync(string modeId, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task<ChatMode> CopyModeAsync(string modeId, string newName, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+}
+
+/// <summary>
+/// No-op <see cref="SandboxEnvApplier"/> double for controller/persistence tests that need a valid
+/// applier instance to satisfy DI but exercise no env-reapply behavior at all. Both public reapply
+/// hooks are overridden to a no-op, so the base class's real dependencies (wired here to harmless
+/// throwaway fakes and one shared, never-invoked registry) are never actually exercised.
+/// </summary>
+internal sealed class NoOpSandboxEnvApplier : SandboxEnvApplier
+{
+    // Shared across every instance: the underlying registry is never invoked (both reapply methods are
+    // overridden below), so one lazily-built throwaway instance is enough for the whole test run rather
+    // than standing up a gateway/HttpClient/temp-dir per controller test.
+    private static readonly Lazy<SandboxSessionRegistry> SharedRegistry = new(() =>
+    {
+        var dir = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "sandbox-env-noop-" + Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(dir);
+        return SandboxEnvTestSupport.CreateRegistry(dir, out _);
+    });
+
+    public NoOpSandboxEnvApplier()
+        : base(
+            new InMemoryWorkspaceStoreFake(),
+            new InMemoryChatModeStoreFake(),
+            new InMemoryConversationStore(),
+            SharedRegistry.Value,
+            NullLogger<SandboxEnvApplier>.Instance
+        ) { }
+
+    public override Task ReapplyForWorkspaceAsync(string workspaceId, CancellationToken ct) => Task.CompletedTask;
+
+    public override Task ReapplyForModeAsync(string modeId, CancellationToken ct) => Task.CompletedTask;
 }
