@@ -74,11 +74,21 @@ public sealed record SandboxSession(
 /// gateway loads all plugins" (every legacy workspace), an EMPTY list means "explicitly none", and a
 /// non-empty list means exactly that subset. Never collapse null to empty on the way to the wire —
 /// doing so silently disables every plugin for every workspace that never opted in.</param>
+/// <param name="Env">
+/// Per-sandbox environment variables for this workspace, already merged by the caller (see
+/// <see cref="SandboxEnvRules.Merge"/>) — this record does not itself layer anything. <see langword="null"/>
+/// or empty sends nothing on create. Only the workspace layer is known here: the 404-recreate path
+/// (<see cref="SandboxSessionRegistry.GetOrCreateSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>'s
+/// replacement-on-eviction branch) has no visibility into any later app-level layer, so a caller that
+/// also wants an app layer applied must top the recreated session up itself via
+/// <c>EnsureSessionEnvAsync</c> after acquiring it.
+/// </param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
     IReadOnlyList<string>? Marketplaces = null,
-    IReadOnlyList<SandboxPluginRef>? PluginSelection = null
+    IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
+    IReadOnlyDictionary<string, string>? Env = null
 );
 
 /// <summary>
@@ -1326,6 +1336,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             DecrementSessionRefAndMaybeDispose(credential);
         }
+        ForgetSessionEnvState(session.SessionId);
         // The in-memory eviction above is COMMITTED: the session is now unreachable through every
         // per-session collection. The persisted webhook secret is the last authenticator that could
         // still validate a callback for this dead session, so its removal MUST run to completion under
@@ -1415,8 +1426,19 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // Tri-state passthrough — NOT `?? []`. Null must stay null so the field is omitted and the
             // gateway applies its legacy "all plugins" default; an empty list is a deliberate
             // "load none" that has to reach the wire as an explicit empty array.
-            workspaceRef.PluginSelection
+            workspaceRef.PluginSelection,
+            workspaceRef.Env
         );
+
+        if (createRequest.Env.Count > 0)
+        {
+            // Keys only — never values, which may carry secrets.
+            _logger.LogInformation(
+                "Sandbox session env: {KeyCount} key(s): {Keys}",
+                createRequest.Env.Count,
+                string.Join(", ", createRequest.Env.Keys)
+            );
+        }
 
         _logger.LogInformation(
             "Sandbox session marketplace selection: {Marketplaces}",
@@ -1557,6 +1579,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
                 // default (relevant once M2 lets callers create under a per-caller credential).
                 _sessionCredentials[session.SessionId] = effectiveCredential;
+                // Seed the env-state cache with exactly what was just sent on create, so the first
+                // EnsureSessionEnvAsync call for this session diffs against reality instead of issuing a
+                // redundant GET.
+                SeedSessionEnvState(session.SessionId, createRequest.Env);
                 // Deliberately NOT stamped as verified here (#93). A successful create says the gateway
                 // minted the session; it does not say a GET for that id under this credential will find
                 // it — the scoping/ownership drift the probe's 404 branch logs is exactly a case where
@@ -1588,6 +1614,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 _ = ((ICollection<KeyValuePair<string, SandboxCredential>>)_sessionCredentials).Remove(
                     new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential)
                 );
+                ForgetSessionEnvState(session.SessionId);
                 throw;
             }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),
@@ -1743,6 +1770,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _sessionThreads.Clear();
             _discoverySeen.Clear();
             _sessionCredentials.Clear();
+            _sessionEnv.Clear();
             _unreportedCreations.Clear();
             _replacedSessions.Clear();
         }
