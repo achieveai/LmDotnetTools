@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectScope, nextTick, ref } from 'vue';
-import { useManualCompaction, compactionRefusalMessage } from '@/composables/useManualCompaction';
+import { useManualCompaction, compactionRefusalMessage, describeError } from '@/composables/useManualCompaction';
 import { MessageType, type CompactionStatusMessage } from '@/types/messages';
+import { logger } from '@/utils';
 
 const mocks = vi.hoisted(() => ({
   requestCompaction: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('@/api/contextApi', () => ({
  * A context report whose root row carries this compaction state. `pending` omitted leaves the field
  * out, as a host that predates it sends.
  */
-function report(state: string, pending?: { requestId: string; focus?: string; requestedAtUtc: string } | null) {
+function report(state: string, pending?: { requestId: string; requestedAtUtc: string } | null) {
   const compaction = pending === undefined ? { state } : { state, pendingManualCompaction: pending };
   return { agents: [{ agentId: 'root', threadId: 't1', compaction }] };
 }
@@ -43,7 +44,10 @@ async function flush(): Promise<void> {
 }
 
 function setup(opts: { threadId?: string | null; supported?: boolean } = {}) {
-  mocks.supportsManualCompaction.mockResolvedValue(opts.supported ?? true);
+  // A test that scripted the capability probe itself keeps its script.
+  if (opts.supported !== undefined || !mocks.supportsManualCompaction.getMockImplementation()) {
+    mocks.supportsManualCompaction.mockResolvedValue(opts.supported === false ? 'unsupported' : 'supported');
+  }
   const threadId = ref<string | null>(opts.threadId === undefined ? 't1' : opts.threadId);
   const latest = ref<CompactionStatusMessage | null>(null);
   const epoch = ref(0);
@@ -88,6 +92,60 @@ describe('useManualCompaction', () => {
       expect(off.store.supported.value).toBe(false);
     });
 
+    // #774 F-008: a failed or malformed probe is transient; the control must come back without a reload.
+    it('retries an unavailable probe and shows the control once the host answers', async () => {
+      vi.useFakeTimers();
+      mocks.supportsManualCompaction.mockResolvedValueOnce('unavailable').mockResolvedValue('supported');
+      const { store } = setup();
+      await flush();
+      expect(store.supported.value).toBe(false);
+      expect(store.view.value.supported).toBe(false);
+
+      vi.advanceTimersByTime(2000);
+      await flush();
+
+      expect(mocks.supportsManualCompaction).toHaveBeenCalledTimes(2);
+      expect(store.view.value.supported).toBe(true);
+    });
+
+    it('stops retrying after the bounded attempts, and a reconnect probes again', async () => {
+      vi.useFakeTimers();
+      mocks.supportsManualCompaction.mockResolvedValue('unavailable');
+      const { store, epoch } = setup();
+      await flush();
+      for (const delay of [2000, 10000, 30000, 60000]) {
+        vi.advanceTimersByTime(delay);
+        await flush();
+      }
+      expect(mocks.supportsManualCompaction).toHaveBeenCalledTimes(4); // the first read and three retries
+      expect(store.supported.value).toBe(false);
+
+      mocks.supportsManualCompaction.mockResolvedValue('supported');
+      epoch.value++;
+      await flush();
+
+      expect(mocks.supportsManualCompaction).toHaveBeenCalledTimes(5);
+      expect(store.view.value.supported).toBe(true);
+    });
+
+    it('does not retry an unsupported answer, and does not probe again once supported', async () => {
+      vi.useFakeTimers();
+      const off = setup({ supported: false });
+      await flush();
+      vi.advanceTimersByTime(60000);
+      await flush();
+      expect(mocks.supportsManualCompaction).toHaveBeenCalledTimes(1);
+      off.scope.stop();
+
+      mocks.supportsManualCompaction.mockClear();
+      const on = setup({ supported: true });
+      await flush();
+      on.epoch.value++;
+      await flush();
+      expect(mocks.supportsManualCompaction).toHaveBeenCalledTimes(1);
+      expect(on.store.supported.value).toBe(true);
+    });
+
     it('does not request when unsupported', async () => {
       const { store } = setup({ supported: false });
       await flush();
@@ -96,6 +154,33 @@ describe('useManualCompaction', () => {
 
       expect(mocks.requestCompaction).not.toHaveBeenCalled();
       expect(store.phase.value).toBe('idle');
+    });
+  });
+
+  describe('diagnostics', () => {
+    // #774 F-007: the logger serializes with JSON.stringify, which turns a native Error into `{}`.
+    it('logs a failed request as a bounded name and message, not a bare Error', async () => {
+      const logSpy = vi.spyOn(
+        logger as unknown as { _logWithComponent: (...a: unknown[]) => void },
+        '_logWithComponent'
+      );
+      const { store } = setup();
+      await flush();
+      mocks.requestCompaction.mockRejectedValue(new TypeError(`Failed to fetch ${'x'.repeat(500)}`));
+
+      await store.request();
+
+      const entry = logSpy.mock.calls.find((c) => c[1] === 'Manual compaction request failed');
+      expect(entry).toBeTruthy();
+      const error = (JSON.parse(JSON.stringify(entry![2])) as { error: { name: string; message: string } }).error;
+      expect(error.name).toBe('TypeError');
+      expect(error.message.startsWith('Failed to fetch')).toBe(true);
+      expect(error.message.length).toBe(200);
+      logSpy.mockRestore();
+    });
+
+    it('describes a non-Error throw by its type', () => {
+      expect(describeError('nope')).toEqual({ name: 'string', message: 'nope' });
     });
   });
 
@@ -431,17 +516,21 @@ describe('useManualCompaction', () => {
       const { store, onApplied } = setup();
       await flush();
       await queued(store);
-      mocks.getConversationContext.mockResolvedValue(report('Active'));
+      const active = report('Active');
+      mocks.getConversationContext.mockResolvedValue(active);
 
       vi.advanceTimersByTime(29999);
       expect(mocks.getConversationContext).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
       await flush();
 
+      expect(mocks.getConversationContext).toHaveBeenCalledTimes(1);
       expect(mocks.getConversationContext).toHaveBeenCalledWith('t1');
       expect(store.phase.value).toBe('idle');
       expect(store.isBusy.value).toBe(false);
+      // #774 F-014: the report it just read is handed over, so the panel does not fetch it a second time.
       expect(onApplied).toHaveBeenCalledTimes(1);
+      expect(onApplied).toHaveBeenCalledWith(active);
     });
 
     it('stays busy and checks again while the report says InFlight', async () => {
@@ -468,7 +557,7 @@ describe('useManualCompaction', () => {
       await queued(store);
       mocks.getConversationContext
         .mockResolvedValueOnce(
-          report('Active', { requestId: 'req-1', focus: 'keep decisions', requestedAtUtc: '2026-09-15T04:00:00Z' })
+          report('Active', { requestId: 'req-1', requestedAtUtc: '2026-09-15T04:00:00Z' })
         )
         .mockResolvedValueOnce(report('Active', null));
 

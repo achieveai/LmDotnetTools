@@ -262,7 +262,7 @@ const {
 const { view: compactionControl, request: requestManualCompaction } = useManualCompaction(
   () => subAgentParentThreadId.value,
   () => compactionStatus.value,
-  () => void hydrateContextReport(),
+  (report) => void hydrateContextReport(report),
   { getConnectionEpoch: () => connectionEpoch.value }
 );
 

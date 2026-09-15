@@ -95,17 +95,31 @@ export async function requestCompaction(threadId: string, focus?: string | null)
 }
 
 /**
- * Whether the host accepts manual compaction requests (`manualCompaction` on
- * `GET /api/conversations/capabilities`). Absent, false, unreadable or failed all mean "no": the
- * control stays hidden rather than offering a button the server would refuse.
+ * What `GET /api/conversations/capabilities` says about manual compaction:
+ *  - `supported` — `manualCompaction: true`.
+ *  - `unsupported` — the host answered and the flag is absent or false, or the route is refused (4xx).
+ *  - `unavailable` — no answer to trust: a network error, a 5xx, 408/429, or a body that is not JSON.
+ *    Transient, so the caller asks again.
  */
-export async function supportsManualCompaction(): Promise<boolean> {
+export type ManualCompactionCapability = 'supported' | 'unsupported' | 'unavailable';
+
+/**
+ * Whether the host accepts manual compaction requests. The control stays hidden unless this says
+ * `supported`, rather than offering a button the server would refuse.
+ */
+export async function supportsManualCompaction(): Promise<ManualCompactionCapability> {
+  let response: Response;
   try {
-    const response = await apiFetch('/api/conversations/capabilities');
-    if (!response.ok) return false;
-    const body = await response.json();
-    return body?.manualCompaction === true;
+    response = await apiFetch('/api/conversations/capabilities');
   } catch {
-    return false;
+    return 'unavailable';
+  }
+  if (response.status >= 500 || response.status === 408 || response.status === 429) return 'unavailable';
+  if (!response.ok) return 'unsupported';
+  try {
+    const body = await response.json();
+    return body?.manualCompaction === true ? 'supported' : 'unsupported';
+  } catch {
+    return 'unavailable';
   }
 }

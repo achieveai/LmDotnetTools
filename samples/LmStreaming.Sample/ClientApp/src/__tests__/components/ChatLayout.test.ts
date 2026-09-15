@@ -329,7 +329,7 @@ vi.mock('@/api/conversationsApi', () => ({
 vi.mock('@/api/contextApi', () => ({
   getConversationContext: vi.fn(async () => null),
   requestCompaction: vi.fn(),
-  supportsManualCompaction: vi.fn(async () => false),
+  supportsManualCompaction: vi.fn(async () => 'unsupported'),
   MAX_COMPACTION_FOCUS_LENGTH: 2000,
 }));
 

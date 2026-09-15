@@ -1,5 +1,6 @@
 import { computed, onScopeDispose, ref, watch } from 'vue';
 import { getConversationContext, requestCompaction, supportsManualCompaction } from '@/api/contextApi';
+import type { ConversationContextReport } from '@/types/context';
 import type { CompactionStatusMessage, CompactionStatusPhase, CompactionStatusTrigger } from '@/types/messages';
 import { logger } from '@/utils';
 
@@ -48,6 +49,18 @@ function compactionFailureMessage(reason: string | null | undefined): string {
   return `Compaction failed${reason ? ` (${reason.replace(/_/g, ' ')})` : ''}.`;
 }
 
+/** The longest error message a log line keeps. */
+const MAX_LOGGED_ERROR_CHARS = 200;
+
+/**
+ * A caught value as log fields. The logger serializes with JSON.stringify, which turns a native Error into `{}`,
+ * so the name and a bounded message are copied out.
+ */
+export function describeError(e: unknown): { name: string; message: string } {
+  if (e instanceof Error) return { name: e.name, message: e.message.slice(0, MAX_LOGGED_ERROR_CHARS) };
+  return { name: typeof e, message: String(e).slice(0, MAX_LOGGED_ERROR_CHARS) };
+}
+
 const BUSY: ReadonlySet<ManualCompactionPhase> = new Set(['requesting', 'queued', 'running']);
 
 /** How far one request has got. A frame or answer ranked at or below what was seen is stale. */
@@ -68,8 +81,10 @@ const RANK: Record<CompactionStatusPhase, number> = {
  *    response or frame for the previous thread must not paint the new one (the switch bug family).
  *  - `getLatestStatus` — the newest `compaction_status` frame `useChat` saw.
  *  - `refreshReport` — called when a compaction commits, or when the control stops waiting, so the
- *    report re-reads the new state.
- *  - `options.getConnectionEpoch` — changes whenever a WebSocket is (re)installed.
+ *    report re-reads the new state. When the control stops waiting it passes the report it just read, so
+ *    the panel need not fetch it again.
+ *  - `options.getConnectionEpoch` — changes whenever a WebSocket is (re)installed. A reconnect also
+ *    re-reads the host capability while the control is hidden.
  *
  * Frames are authoritative for progress and only move forward per request id, with one exception: a
  * `requested` frame after that request's `running` frame is a requeue (the host's loop was disposed
@@ -87,11 +102,17 @@ const RANK: Record<CompactionStatusPhase, number> = {
 export function useManualCompaction(
   getThreadId: () => string | null,
   getLatestStatus: () => CompactionStatusMessage | null,
-  refreshReport: () => void,
-  options: { successMs?: number; watchdogMs?: number; getConnectionEpoch?: () => unknown } = {}
+  refreshReport: (report?: ConversationContextReport) => void,
+  options: {
+    successMs?: number;
+    watchdogMs?: number;
+    probeRetryMs?: readonly number[];
+    getConnectionEpoch?: () => unknown;
+  } = {}
 ) {
   const successMs = options.successMs ?? 4000;
   const watchdogMs = options.watchdogMs ?? 30000;
+  const probeRetryMs = options.probeRetryMs ?? [2000, 10000, 30000];
 
   const supported = ref(false);
   const phase = ref<ManualCompactionPhase>('idle');
@@ -124,6 +145,16 @@ export function useManualCompaction(
   let seen: { requestId: string; rank: number; runningFrame?: boolean } | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped on every capability probe and on dispose; an older probe's answer is dropped. */
+  let probeSeq = 0;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearProbeTimer(): void {
+    if (probeTimer !== null) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+    }
+  }
 
   function clearSettleTimer(): void {
     if (settleTimer !== null) {
@@ -205,10 +236,13 @@ export function useManualCompaction(
       }
       log.debug('No compaction in flight after a frame gap; releasing the Compact now control', { threadId });
       setPhase('idle', null);
-      refreshReport();
+      refreshReport(report);
     } catch (e) {
       if (gen !== generation || seq !== phaseSeq) return;
-      log.debug('Could not re-read the context report after a frame gap; still waiting', { threadId, error: e });
+      log.debug('Could not re-read the context report after a frame gap; still waiting', {
+        threadId,
+        error: describeError(e),
+      });
       armWatchdog();
     }
   }
@@ -241,7 +275,7 @@ export function useManualCompaction(
       }
     } catch (e) {
       if (gen !== generation) return;
-      log.debug('Manual compaction request failed', { threadId, error: e });
+      log.debug('Manual compaction request failed', { threadId, error: describeError(e) });
       setPhase('failed', 'manual', 'The compaction request failed. Try again.');
     }
   }
@@ -309,9 +343,25 @@ export function useManualCompaction(
     }
   }
 
-  void supportsManualCompaction().then((value) => {
-    supported.value = value;
-  });
+  /**
+   * Reads the host capability. An `unavailable` answer (network, 5xx, malformed body) is retried after each
+   * of `probeRetryMs`, then again on the next reconnect, so a blip never hides the control for the session.
+   */
+  async function probe(attempt: number): Promise<void> {
+    clearProbeTimer();
+    const seq = ++probeSeq;
+    const capability = await supportsManualCompaction();
+    if (seq !== probeSeq) return; // disposed, or a newer probe started
+    supported.value = capability === 'supported';
+    if (capability === 'unavailable' && attempt < probeRetryMs.length) {
+      probeTimer = setTimeout(() => {
+        probeTimer = null;
+        void probe(attempt + 1);
+      }, probeRetryMs[attempt]);
+    }
+  }
+
+  void probe(0);
 
   const stopThreadWatch = watch(() => getThreadId(), reset);
   const stopFrameWatch = watch(
@@ -324,6 +374,7 @@ export function useManualCompaction(
   const stopConnectionWatch = options.getConnectionEpoch
     ? watch(options.getConnectionEpoch, () => {
         if (isBusy.value) void reconcile();
+        if (!supported.value) void probe(0);
       })
     : () => {};
 
@@ -333,7 +384,9 @@ export function useManualCompaction(
     stopConnectionWatch();
     clearSettleTimer();
     clearWatchdog();
+    clearProbeTimer();
     generation++;
+    probeSeq++;
   }, true);
 
   const view = computed<CompactionControlView>(() => ({

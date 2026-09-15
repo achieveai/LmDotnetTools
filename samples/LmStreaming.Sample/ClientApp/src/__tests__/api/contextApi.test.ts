@@ -199,25 +199,43 @@ describe('contextApi.supportsManualCompaction', () => {
     const mock = mockFetchOnce(200, { schemaVersion: 1, manualCompaction: true });
     restore = mock.restore;
 
-    expect(await supportsManualCompaction()).toBe(true);
+    expect(await supportsManualCompaction()).toBe('supported');
     expect(mock.fetchSpy).toHaveBeenCalledWith('/api/conversations/capabilities');
   });
 
-  it('is false when the flag is absent, false, or the read fails', async () => {
+  it('is unsupported when the host answers without the flag, with it false, or refuses the route', async () => {
     let mock = mockFetchOnce(200, { schemaVersion: 1 });
-    expect(await supportsManualCompaction()).toBe(false);
+    expect(await supportsManualCompaction()).toBe('unsupported');
     mock.restore();
 
     mock = mockFetchOnce(200, { manualCompaction: false });
-    expect(await supportsManualCompaction()).toBe(false);
+    expect(await supportsManualCompaction()).toBe('unsupported');
     mock.restore();
 
-    mock = mockFetchOnce(500, { error: 'boom' });
-    expect(await supportsManualCompaction()).toBe(false);
+    mock = mockFetchOnce(404, { error: 'not found' });
+    restore = mock.restore;
+    expect(await supportsManualCompaction()).toBe('unsupported');
+  });
+
+  // #774 F-008: a blip must not read as "this host cannot compact", or the control hides for the session.
+  it('is unavailable, not unsupported, when the read fails, the host errors, or the body is malformed', async () => {
+    let mock = mockFetchOnce(500, { error: 'boom' });
+    expect(await supportsManualCompaction()).toBe('unavailable');
+    mock.restore();
+
+    mock = mockFetchOnce(429, { error: 'slow down' });
+    expect(await supportsManualCompaction()).toBe('unavailable');
     mock.restore();
 
     mock = mockFetchOnce(200, '<!doctype html>', 'text/html');
-    restore = mock.restore;
-    expect(await supportsManualCompaction()).toBe(false);
+    expect(await supportsManualCompaction()).toBe('unavailable');
+    mock.restore();
+
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    restore = () => (globalThis.fetch = original);
+    expect(await supportsManualCompaction()).toBe('unavailable');
   });
 });

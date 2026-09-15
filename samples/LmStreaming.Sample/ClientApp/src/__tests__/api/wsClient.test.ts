@@ -12,6 +12,7 @@ import {
   WS_CREDENTIAL_SUBPROTOCOL_PREFIX,
 } from '@/api/wsClient';
 import { setAccessToken } from '@/api/http';
+import { isRunCompletedMessage, type Message } from '@/types/messages';
 import { logger } from '@/utils';
 
 // BLOCKER 3: tool-call wire JSON uses snake_case identity fields (e.g. `generation_id`). The merge
@@ -247,6 +248,35 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
     });
 
     expect(onError).toHaveBeenCalledWith("Sub-agent 'a1' is not available.", 'subagent_unavailable');
+  });
+
+  it('types a run_completed ErrorCode as errorCode, and leaves an unclassified failure without one (#774 F-005)', async () => {
+    const received: Message[] = [];
+    const { socket } = await open({ onMessage: (m) => received.push(m as Message) });
+
+    // Server-shaped frames: PascalCase keys and nulls omitted, as recordings/*.ws.jsonl carry run_completed.
+    const frame = (runId: string, extra: Record<string, unknown>) =>
+      JSON.stringify({
+        $type: 'run_completed',
+        CompletedRunId: runId,
+        WasForked: false,
+        HasPendingMessages: false,
+        PendingMessageCount: 0,
+        IsError: true,
+        Role: 'system',
+        RunId: runId,
+        ...extra,
+      });
+    socket.onmessage?.({
+      data: frame('run-1', { ErrorMessage: 'view_exceeds_window: the request does not fit', ErrorCode: 'view_exceeds_window' }),
+    });
+    socket.onmessage?.({ data: frame('run-2', { ErrorMessage: 'provider unavailable' }) });
+
+    const completed = received.filter(isRunCompletedMessage);
+    expect(completed.map((m) => [m.completedRunId, m.isError, m.errorCode ?? null])).toEqual([
+      ['run-1', true, 'view_exceeds_window'],
+      ['run-2', true, null],
+    ]);
   });
 
   it('passes undefined code for an error frame without a code (backward compatible)', async () => {

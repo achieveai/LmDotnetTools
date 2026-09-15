@@ -121,10 +121,12 @@ export interface ActiveCheckpointStatus {
   summaryFallback?: string | null;
 }
 
-/** A queued manual compaction request (`agents[].compaction.pendingManualCompaction`). */
+/**
+ * A queued manual compaction request (`agents[].compaction.pendingManualCompaction`). Content-free like the
+ * rest of the report: the focus text is not sent.
+ */
 export interface PendingManualCompaction {
   requestId: string;
-  focus?: string | null;
   requestedAtUtc: string;
 }
 

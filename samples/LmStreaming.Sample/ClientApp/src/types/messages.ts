@@ -271,6 +271,11 @@ export interface RunCompletedMessage extends IMessage {
   pendingMessageCount: number;
   isError?: boolean;
   errorMessage?: string | null;
+  /**
+   * Stable machine reason when `isError` and the failure is classified (e.g. `view_exceeds_window`); absent or
+   * null for an unclassified failure. The server sends `ErrorCode`; `normalizeKeys` aliases it.
+   */
+  errorCode?: string | null;
 }
 
 /**

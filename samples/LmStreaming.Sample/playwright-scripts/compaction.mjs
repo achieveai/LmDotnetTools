@@ -5,7 +5,7 @@
 //
 //   browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/compaction.mjs" })
 //
-// Returns { pass, failures, steps, shots, threads }. Asserts only deterministic, browser-observable state
+// Returns { pass, failures, steps, shots, threads, diagnostics }. Asserts only deterministic, browser-observable state
 // (data-testid + /api reads). Prompts and the host profile: PromptExamples.md "Compaction (#721) UI tests".
 //
 // The host must run the test profile from PromptExamples.md (window 18,000, output 1,024). One host mode per
@@ -24,7 +24,9 @@ async (page) => {
   // The first turn at the hard band on the 18,000-token profile. Turn n ≈ 10,138 + (n − 1) × 1,346 estimated
   // tokens (the fixed prefix includes the tool schemas); hard fires at tokens + 1,024 ≥ 16,200. See PromptExamples.md.
   const HARD_TURN = 5;
-  const SHOT_DIR = 'B:/sources/LmDotnetTools/.worktrees/WT3/.logs/manual'; // absolute: the MCP server's cwd is not the repo
+  // Relative, under the gitignored `.logs/`: Playwright resolves it against the MCP server's cwd (normally the
+  // repo or worktree root). Where that cwd is elsewhere, a failed write shows up in `diagnostics` with its path.
+  const SHOT_DIR = '.logs/compaction';
   const shots = {};
   const steps = [];
   const record = (name, pass, detail) => steps.push({ name, pass, detail });
@@ -157,10 +159,17 @@ async (page) => {
     await tid('send-button').waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
     return id;
   };
+  // A failed screenshot goes to `diagnostics`, not `steps`: it is reported, never swallowed, but a missing
+  // directory is not a product defect, so it cannot turn `pass` red.
+  const diagnostics = [];
   const shot = async (name, prefix = 'pw721') => {
     const path = `${SHOT_DIR}/${prefix}-${name}.png`;
-    await page.screenshot({ path, fullPage: false }).catch(() => {});
-    shots[name] = path;
+    try {
+      await page.screenshot({ path, fullPage: false });
+      shots[name] = path;
+    } catch (e) {
+      diagnostics.push({ name: `screenshot ${name}`, path, error: String((e && e.message) || e) });
+    }
   };
   const openChat = async (threadId) => {
     await page.goto(`${BASE}/?threadId=${threadId}`);
@@ -583,5 +592,5 @@ async (page) => {
   page.off('response', onCompactResponse);
   await page.evaluate(() => window.__compactObsStop?.()).catch(() => {});
   const failures = steps.filter((s) => !s.pass).map((s) => s.name);
-  return { pass: failures.length === 0, failures, steps, shots, threads }
+  return { pass: failures.length === 0, failures, steps, shots, threads, diagnostics }
 }
