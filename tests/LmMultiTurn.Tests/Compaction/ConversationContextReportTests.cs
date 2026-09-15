@@ -347,18 +347,12 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
         root.State.Should().Be(CompactionStates.Active, "a queued request does not change the checkpoint state");
         root.PendingManualCompaction.Should()
             .BeEquivalentTo(
-                new PendingManualCompactionStatus
-                {
-                    RequestId = "cmp-1",
-                    Focus = "keep the API decisions",
-                    RequestedAtUtc = T0.AddSeconds(30),
-                }
+                new PendingManualCompactionStatus { RequestId = "cmp-1", RequestedAtUtc = T0.AddSeconds(30) }
             );
         report.Agents[1].Compaction.PendingManualCompaction.Should().BeNull("nothing is queued for that loop");
         var fresh = report.Agents[2].Compaction;
         fresh.State.Should().Be(CompactionStates.None);
         fresh.PendingManualCompaction!.RequestId.Should().Be("cmp-2");
-        fresh.PendingManualCompaction.Focus.Should().BeNull();
 
         using var json = System.Text.Json.JsonDocument.Parse(
             System.Text.Json.JsonSerializer.Serialize(
@@ -371,8 +365,13 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
             .GetProperty("compaction")
             .GetProperty("pendingManualCompaction");
         wire.GetProperty("requestId").GetString().Should().Be("cmp-1");
-        wire.GetProperty("focus").GetString().Should().Be("keep the API decisions");
         wire.GetProperty("requestedAtUtc").GetDateTimeOffset().Should().Be(T0.AddSeconds(30));
+        wire.TryGetProperty("focus", out _)
+            .Should()
+            .BeFalse("the report is content-free: a Read principal never sees the operator's focus (#774 F-010)");
+        json.RootElement.GetRawText()
+            .Should()
+            .NotContain("keep the API decisions", "the focus stays on the persisted request");
 
         // Claimed by a loop: the field goes away.
         _ = await CompactionStateProjection.UpdateAsync(store, Root, s => s with { PendingManual = null });

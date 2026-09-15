@@ -190,6 +190,19 @@ internal static partial class ProviderErrorClassifier
         };
     }
 
+    /// <summary>
+    /// The HTTP status of the first exception in the chain that carries one, or null. It is what a log may keep of a
+    /// provider failure: the message often embeds the response body, which can quote the prompt or the conversation.
+    /// </summary>
+    internal static int? HttpStatusOf(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return Unwrap(exception)
+            .OfType<HttpRequestException>()
+            .Select(e => (int?)e.StatusCode)
+            .FirstOrDefault(status => status is not null);
+    }
+
     private static bool ContainsAny(string? message, string[] signatures)
     {
         if (string.IsNullOrEmpty(message))

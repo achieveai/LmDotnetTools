@@ -23,7 +23,7 @@ public static class CompactionReasons
     /// <summary>The boundary row's persisted id is unknown or does not match the cut.</summary>
     public const string BoundaryMismatch = "boundary_mismatch";
 
-    /// <summary>The checkpoint row could not be appended.</summary>
+    /// <summary>The checkpoint row could not be appended, or a store fault ended the attempt before it activated.</summary>
     public const string PersistFailed = "persist_failed";
 
     /// <summary>

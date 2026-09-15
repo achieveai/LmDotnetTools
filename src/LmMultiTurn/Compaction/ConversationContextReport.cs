@@ -102,13 +102,13 @@ public sealed record ActiveCheckpointStatus
     public string? SummaryFallback { get; init; }
 }
 
-/// <summary>A queued manual compaction as the report shows it.</summary>
+/// <summary>
+///     A queued manual compaction as the report shows it. Ids and a time only: the report is content-free, so the
+///     operator's focus text stays on the persisted request.
+/// </summary>
 public sealed record PendingManualCompactionStatus
 {
     public required string RequestId { get; init; }
-
-    /// <summary>The operator's focus text, when the request carried one.</summary>
-    public string? Focus { get; init; }
 
     public DateTimeOffset RequestedAtUtc { get; init; }
 }
@@ -390,7 +390,6 @@ public sealed record ConversationContextReport
                     ? new PendingManualCompactionStatus
                     {
                         RequestId = pending.RequestId,
-                        Focus = pending.Focus,
                         RequestedAtUtc = pending.RequestedAt,
                     }
                     : null,

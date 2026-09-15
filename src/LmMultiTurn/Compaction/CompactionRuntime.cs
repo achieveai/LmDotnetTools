@@ -988,9 +988,10 @@ internal sealed class CompactionRuntime
         if (killed && store is not null && state?.ActiveCheckpointId is not null)
         {
             // §8.4: kill = Skipped(disabled) for new decisions and Active → RolledBack on the next
-            // request. The request handed in was built on the view; the raw history goes out instead.
+            // request. The request handed in was built on the view; the raw history goes out instead. No older
+            // checkpoint takes its place: re-enabling must not re-activate one.
             _ = await CompactionStateProjection
-                .RollBackAsync(store, _host.ThreadId, CompactionFailureReasons.Killed, _clock.GetUtcNow(), ct)
+                .DeactivateAsync(store, _host.ThreadId, CompactionFailureReasons.Killed, _clock.GetUtcNow(), ct)
                 .ConfigureAwait(false);
             state = state with { ActiveCheckpointId = null, ActiveBoundarySeq = null };
             Active = null;
@@ -2025,9 +2026,9 @@ internal sealed class CompactionRuntime
 
             return outcome;
         }
-        catch (OperationCanceledException) when (report is { Announced: true, Ended: false })
+        catch (Exception ex) when (report is { Announced: true, Ended: false })
         {
-            // A stop or a disposal mid-summary: the client saw "running" and must see the attempt end.
+            // A stop, a disposal or a fault mid-attempt: the client saw "running" and must see the attempt end.
             if (report.ActivatedCheckpointId is { } activated)
             {
                 await PublishStatusAsync(
@@ -2040,12 +2041,34 @@ internal sealed class CompactionRuntime
                     )
                     .ConfigureAwait(false);
             }
+            else if (ex is not OperationCanceledException)
+            {
+                // A store fault before the checkpoint activated. A manual request was cleared by its claim and is not
+                // queued again (the fault would likely repeat), so it ends here: failed, never left running.
+                _host.Logger.LogWarning(
+                    "Compaction for thread {ThreadId} run {RunId} (trigger {CompactionTrigger}, request {RequestId}) faulted before it activated: {ExceptionType}",
+                    _host.ThreadId,
+                    runId,
+                    trigger,
+                    manual?.RequestId,
+                    ex.GetType().Name
+                );
+                await PublishStatusAsync(
+                        trigger,
+                        CompactionStatusMessage.Phases.Failed,
+                        CompactionReasons.PersistFailed,
+                        null,
+                        manual,
+                        CancellationToken.None
+                    )
+                    .ConfigureAwait(false);
+            }
             else if (manual is null)
             {
                 await PublishCancelledAsync(trigger, manual).ConfigureAwait(false);
             }
 
-            // A manual pass that did not activate is queued again or ended by TryRunManualAsync, which says which.
+            // A manual pass cancelled before it activated is queued again or ended by ExecuteManualAsync, which says which.
             throw;
         }
     }

@@ -1372,11 +1372,13 @@ public sealed class MultiTurnAgentLoop
 
                 if (_compaction is not null && await _compaction.TryReactiveAsync(runId, turnGenerationId, ct))
                 {
+                    // The type and status only: the provider's message can carry its response body.
                     Logger.LogWarning(
-                        overflow,
-                        "Run {RunId} overflowed the context window at generation {GenerationId}; shrank the view, retrying",
+                        "Run {RunId} overflowed the context window at generation {GenerationId} ({ExceptionType}, HTTP {HttpStatus}); shrank the view, retrying",
                         runId,
-                        turnGenerationId
+                        turnGenerationId,
+                        overflow.GetType().Name,
+                        ProviderErrorClassifier.HttpStatusOf(overflow)
                     );
                     continue;
                 }

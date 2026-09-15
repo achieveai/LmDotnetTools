@@ -98,7 +98,8 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
         public List<(
             LogLevel Level,
             string Message,
-            IReadOnlyDictionary<string, object?> Properties
+            IReadOnlyDictionary<string, object?> Properties,
+            Exception? Exception
         )> Entries { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state)
@@ -117,7 +118,8 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
                 (
                     logLevel,
                     formatter(state, exception),
-                    (state as IEnumerable<KeyValuePair<string, object?>> ?? []).ToDictionary(p => p.Key, p => p.Value)
+                    (state as IEnumerable<KeyValuePair<string, object?>> ?? []).ToDictionary(p => p.Key, p => p.Value),
+                    exception
                 )
             );
     }
@@ -1223,6 +1225,59 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
             .Should()
             .Match<CheckpointSummaryRequest>(r =>
                 r.MaxOutputTokens == 1_234 && r.RowCharCap == 500 && r.PromptCharBudget == 9_000
+            );
+    }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task Run_SummaryCallThatFails_LogsTheFailureTypeAndStatus_NeverTheProviderBody(string kind)
+    {
+        // HttpRetryHelper puts the provider's response body in the message, and a body can quote the rows being
+        // summarised (#774 F-004). The log keeps the category only.
+        const string secret = "SECRET-CONVERSATION-TEXT";
+        var store = _harness.Open(kind);
+        await SeedAsync(store);
+        var rows = await RowsAsync(store);
+        var summarizer = new ScriptedSummarizer(_ =>
+            throw new HttpRequestException(
+                $"HTTP request failed with status BadRequest. Response body: {{\"error\":\"{secret}\"}}",
+                new InvalidOperationException(secret),
+                System.Net.HttpStatusCode.BadRequest
+            )
+        );
+        var logger = new ListLogger();
+        var pipeline = new CheckpointPipeline(
+            summarizer,
+            new CheckpointPipelineOptions
+            {
+                Estimator = ThreadFixture.RowTokens,
+                SummaryAttempts = 2,
+                Logger = logger,
+            },
+            new FixedClock(T0)
+        );
+
+        var result = await pipeline.RunAsync(store, Request(rows, CutAt(rows, ThreadFixture.TurnEnd(3))));
+
+        result.Reason.Should().Be(CompactionReasons.SummaryCallFailed);
+        var failures = logger.Entries.Where(e => e.Properties.ContainsKey("Attempt")).ToList();
+        failures.Should().HaveCount(2, "one warning per failed attempt");
+        failures
+            .Should()
+            .OnlyContain(e =>
+                Equals(e.Properties["ExceptionType"], nameof(HttpRequestException))
+                && Equals(e.Properties["HttpStatus"], 400)
+            );
+        logger
+            .Entries.Should()
+            .NotContain(
+                e =>
+                    e.Message.Contains(secret, StringComparison.Ordinal)
+                    || e.Properties.Values.Any(v =>
+                        v != null && v.ToString()!.Contains(secret, StringComparison.Ordinal)
+                    )
+                    || (e.Exception != null && e.Exception.ToString().Contains(secret, StringComparison.Ordinal)),
+                "no log line carries the provider's body"
             );
     }
 

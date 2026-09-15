@@ -17,6 +17,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Compaction;
@@ -156,7 +157,8 @@ public class CompactionLoopTests
             AgentCollaborationSetup? collaboration = null,
             Func<string, string>? echo = null,
             bool start = true,
-            Func<Exception, bool>? overflowVerdict = null
+            Func<Exception, bool>? overflowVerdict = null,
+            ILogger<MultiTurnAgentLoop>? logger = null
         )
         {
             Agent = new ScriptedAgent(script);
@@ -195,7 +197,8 @@ public class CompactionLoopTests
                 lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
                 subAgentOptions: subAgentOptions,
                 collaboration: collaboration,
-                compaction: Setup
+                compaction: Setup,
+                logger: logger
             );
             // An unstarted loop has not restored its thread: what a host holds between creating a loop and running it.
             _runTask = start ? Loop.RunAsync(_cts.Token) : Task.CompletedTask;
@@ -924,6 +927,80 @@ public class CompactionLoopTests
     }
 
     [Fact]
+    public async Task ReactiveOverflow_TheRetryWarning_LogsTheFailureTypeAndStatus_NeverTheProviderBody()
+    {
+        // A provider's error message carries its response body, which can quote the conversation (#774 F-004).
+        const string secret = "SECRET-CONVERSATION-TEXT";
+        var logger = new CapturingLogger<MultiTurnAgentLoop>();
+        var overflowed = 0;
+        await using var h = new Harness(
+            call =>
+                call == 7 && overflowed++ == 0
+                    ? throw new HttpRequestException(
+                        $"prompt is too long: 213462 tokens > 200000 maximum. Body: {secret}",
+                        new InvalidOperationException(secret),
+                        HttpStatusCode.BadRequest
+                    )
+                    : EchoThenDone(6)(call),
+            Options(CompactionMode.Compact),
+            _ => 8_000,
+            logger: logger
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(Describe(h, completed));
+        var retry = logger
+            .Entries.Should()
+            .ContainSingle(e => e.Message.Contains("overflowed the context window", StringComparison.Ordinal))
+            .Subject;
+        retry.Properties["ExceptionType"].Should().Be(nameof(HttpRequestException));
+        retry.Properties["HttpStatus"].Should().Be(400);
+        logger.Entries.Should().NotContain(e => e.Mentions(secret), "no log line carries the provider's body");
+    }
+
+    /// <summary>Every entry a loop logs: level, rendered message, template properties and the exception.</summary>
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<LogEntry> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) =>
+            Entries.Enqueue(
+                new LogEntry(
+                    logLevel,
+                    formatter(state, exception),
+                    (state as IEnumerable<KeyValuePair<string, object?>> ?? []).ToDictionary(p => p.Key, p => p.Value),
+                    exception
+                )
+            );
+    }
+
+    private sealed record LogEntry(
+        LogLevel Level,
+        string Message,
+        IReadOnlyDictionary<string, object?> Properties,
+        Exception? Exception
+    )
+    {
+        /// <summary>Whether <paramref name="text"/> appears in the message, any property value, or the exception.</summary>
+        public bool Mentions(string text) =>
+            Message.Contains(text, StringComparison.Ordinal)
+            || Properties.Values.Any(v => v?.ToString()?.Contains(text, StringComparison.Ordinal) == true)
+            || Exception?.ToString().Contains(text, StringComparison.Ordinal) == true;
+    }
+
+    [Fact]
     public async Task ReactiveOverflow_WhenOnlyTheTrimFloorFits_BelowTheRefusedRequestButOverTheTarget_RetriesTightened()
     {
         // Thirty parallel 7,000-char results (~53k tokens) fit 59,904 usable, and the provider refuses them. Clearing keeps
@@ -1555,6 +1632,46 @@ public class CompactionLoopTests
         h.Agent.Requests.Skip(requestsBefore)
             .Should()
             .OnlyContain(r => !HasEnvelope(r), "the raw history is sent again");
+    }
+
+    [Fact]
+    public async Task KillSwitch_WithAnOlderCheckpoint_DeactivatesToRawHistory_AndReEnablingNeverRestoresIt()
+    {
+        // §8.4: re-enable does not re-activate automatically. A rollback that fell back to the older checkpoint would
+        // leave it active, and clearing the switch would silently bring that view back (#774 F-003). Fourteen tool
+        // turns cross the compact band twice.
+        await using var h = new Harness(EchoThenDone(14), Options(CompactionMode.Compact), _ => Window);
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        var compacted = (await h.StateAsync())!
+            .History.Where(e => e.Status is CheckpointStatus.Active or CheckpointStatus.Superseded)
+            .Select(e => e.CheckpointId)
+            .ToList();
+        compacted
+            .Should()
+            .HaveCountGreaterThanOrEqualTo(2, "the fixture needs a checkpoint a rollback could fall back to");
+
+        h.KillSwitch = "1";
+        (await h.RunAsync("again")).IsError.Should().BeFalse();
+
+        var killed = await h.StateAsync();
+        killed!.ActiveCheckpointId.Should().BeNull("the kill deactivates to raw history, not to the older checkpoint");
+        killed.LastKnownGoodCheckpointId.Should().BeNull();
+        killed
+            .History.Where(e => compacted.Contains(e.CheckpointId))
+            .Should()
+            .OnlyContain(e => e.Status == CheckpointStatus.RolledBack && e.Reason == CompactionFailureReasons.Killed);
+
+        h.KillSwitch = null;
+        (await h.RunAsync("resume")).IsError.Should().BeFalse();
+
+        var resumed = await h.StateAsync();
+        compacted
+            .Should()
+            .NotContain(resumed!.ActiveCheckpointId ?? string.Empty, "only a fresh compaction activates a checkpoint");
+        resumed
+            .History.Where(e => compacted.Contains(e.CheckpointId))
+            .Should()
+            .OnlyContain(e => e.Status == CheckpointStatus.RolledBack);
     }
 
     [Fact]
@@ -2709,6 +2826,120 @@ public class CompactionLoopTests
             .Be("keep it");
         (await second.StateAsync())!.PendingManual.Should().BeNull();
         second.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionFailed).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ManualCompaction_AStoreFaultAfterTheClaim_EndsFailed_AndNeverStaysRunning()
+    {
+        // The claim clears the request in its own write, so a pass that faults before its checkpoint activates leaves
+        // nothing to run it again: the client must see it end, not watch "running" forever (#774 F-002).
+        var store = new FaultAfterManualClaimStore(new InMemoryConversationStore());
+        await using var h = new Harness(EchoThenDone(3), Options(CompactionMode.Compact), _ => Window, store: store);
+        using var subscription = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var live = new System.Collections.Concurrent.ConcurrentQueue<IMessage>();
+        var reader = CollectLive(h, live, subscription.Token);
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        (await h.RunAsync("again")).IsError.Should().BeFalse();
+        await WaitUntilAsync(() => Task.FromResult(live.OfType<RunCompletedMessage>().Any()), "the subscriber");
+
+        var result = await h.Loop.RequestCompactionAsync("keep it");
+        result.Accepted.Should().BeTrue();
+        await WaitUntilAsync(
+            () =>
+                Task.FromResult(
+                    Statuses(live, result.RequestId).Any(s => s.Phase is "applied" or "refused" or "failed")
+                ),
+            "the manual compaction to end"
+        );
+        await subscription.CancelAsync();
+        await reader;
+
+        store.Faulted.Should().BeTrue("the store failed after the request was claimed");
+        Statuses(live, result.RequestId).Select(s => s.Phase).Should().Equal("requested", "running", "failed");
+        Statuses(live, result.RequestId)[^1].Reason.Should().Be(CompactionReasons.PersistFailed);
+        (await h.StateAsync())!.PendingManual.Should().BeNull("an ended request is not queued again");
+        (await h.StoredRowsAsync()).OfType<CompactionCheckpointMessage>().Should().BeEmpty();
+        (await h.Loop.RequestCompactionAsync())
+            .Accepted.Should()
+            .BeTrue("the faulted pass released the one-compaction-at-a-time guard");
+    }
+
+    /// <summary>Throws once from the first row load after a metadata write claims (clears) a pending manual request.</summary>
+    private sealed class FaultAfterManualClaimStore(IConversationStore inner) : IConversationStore
+    {
+        private int _state; // 0 unarmed, 1 armed, 2 fired
+
+        public bool Faulted => Volatile.Read(ref _state) == 2;
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) =>
+            Interlocked.CompareExchange(ref _state, 2, 1) == 1
+                ? throw new IOException("the store went away")
+                : inner.LoadMessagesAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) =>
+            inner.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var next = update(existing);
+                    if (
+                        CompactionStateProjection.FromMetadata(existing)?.PendingManual is not null
+                        && CompactionStateProjection.FromMetadata(next)?.PendingManual is null
+                    )
+                    {
+                        _ = Interlocked.CompareExchange(ref _state, 1, 0);
+                    }
+
+                    return next;
+                },
+                ct
+            );
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     [Fact]

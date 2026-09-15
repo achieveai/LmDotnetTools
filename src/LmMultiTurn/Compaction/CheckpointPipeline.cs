@@ -678,13 +678,16 @@ internal sealed class CheckpointPipeline(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // The type and status only: a provider's exception message can carry its response body, which
+                // quotes the rows being summarised.
                 _options.Logger.LogWarning(
-                    ex,
-                    "Checkpoint summary attempt {Attempt} of {Attempts} for thread {ThreadId} checkpoint {CheckpointId} failed",
+                    "Checkpoint summary attempt {Attempt} of {Attempts} for thread {ThreadId} checkpoint {CheckpointId} failed: {ExceptionType} (HTTP {HttpStatus})",
                     attempt,
                     attempts,
                     request.ThreadId,
-                    request.CheckpointId
+                    request.CheckpointId,
+                    ex.GetType().Name,
+                    ProviderErrorClassifier.HttpStatusOf(ex)
                 );
             }
         }
