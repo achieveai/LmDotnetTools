@@ -6,6 +6,58 @@ import type {
 } from '@/types/chatMode';
 import { apiFetch } from '@/api/http';
 
+/** Raised on HTTP 400 `invalid_env`: one or more `env` keys are malformed or protected by the sandbox. */
+export class InvalidEnvError extends Error {
+  readonly keys: string[];
+  readonly layer: string | null;
+  constructor(message: string, keys: string[] = [], layer: string | null = null) {
+    super(message);
+    this.name = 'InvalidEnvError';
+    this.keys = keys;
+    this.layer = layer;
+  }
+}
+
+/** Best-effort parse of a JSON error body; returns `{}` when unreadable. */
+async function readBody(response: Response): Promise<Record<string, unknown>> {
+  try {
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function stringOf(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function stringListOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
+/**
+ * Maps a structured chat-mode failure to its typed error: 400 `invalid_env` →
+ * {@link InvalidEnvError}, carrying the offending keys in the message so any caller that renders
+ * `error.message` (this is all of them today — see ModeEditor's exposed `showFormError`) shows them.
+ * Anything else falls back to the server's `error` text, preserving the pre-existing behaviour.
+ */
+async function classifyFailure(response: Response, operation: string): Promise<Error> {
+  const body = await readBody(response);
+  const code = stringOf(body?.code);
+
+  if (response.status === 400 && code === 'invalid_env') {
+    const keys = stringListOf(body?.keys);
+    const base = stringOf(body?.error) || 'One or more environment variable names are invalid.';
+    return new InvalidEnvError(
+      keys.length > 0 ? `${base} (${keys.join(', ')})` : base,
+      keys,
+      stringOf(body?.layer)
+    );
+  }
+  return new Error(stringOf(body?.error) || `Failed to ${operation}: ${response.statusText}`);
+}
+
 /**
  * Fetches all chat modes from the backend.
  */
@@ -41,7 +93,7 @@ export async function createChatMode(mode: ChatModeCreateUpdate): Promise<ChatMo
     body: JSON.stringify(mode),
   });
   if (!response.ok) {
-    throw new Error(`Failed to create chat mode: ${response.statusText}`);
+    throw await classifyFailure(response, 'create chat mode');
   }
   return response.json();
 }
@@ -59,8 +111,7 @@ export async function updateChatMode(
     body: JSON.stringify(mode),
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || `Failed to update chat mode: ${response.statusText}`);
+    throw await classifyFailure(response, 'update chat mode');
   }
   return response.json();
 }

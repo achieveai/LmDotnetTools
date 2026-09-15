@@ -10,6 +10,7 @@ import type {
 } from '@/types/workspace';
 import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
+import EnvEditor from './EnvEditor.vue';
 
 /**
  * Tooltip for one workspace row. Three distinct sentences for three distinct states, because the
@@ -83,12 +84,16 @@ const directoryTouched = ref(false);
 const createMarketplaces = ref<string[]>([]);
 /** Tri-state, exactly as on the wire — `null` = legacy "all plugins", `[]` = none. Never `?? []`. */
 const createPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables for the new workspace. Not tri-state — `{}` means none. */
+const createEnv = ref<Record<string, string>>({});
 
 // Edit form state
 const editWorkspaceId = ref<string | null>(null);
 const editMarketplaces = ref<string[]>([]);
 /** Tri-state, seeded from the workspace being edited. See {@link createPluginSelection}. */
 const editPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables, seeded from the workspace being edited. See {@link seedEditFormFrom}. */
+const editEnv = ref<Record<string, string>>({});
 
 // Marketplace options sourced from the live gateway catalog (GET /api/marketplaces), replacing the
 // former static [core, community] seed. Empty when the gateway is offline (marketplacesUnavailable).
@@ -279,6 +284,18 @@ function pluginSelectionEquals(a: PluginRef[] | null, b: PluginRef[] | null): bo
   return left.every((key, i) => key === right[i]);
 }
 
+/**
+ * Order-insensitive record equality for {@link Workspace.env}. Used by `submitEdit` to decide
+ * whether `env` belongs in the payload at all — see the note there on why sending it unconditionally
+ * would be wasteful (same reasoning as `pluginSelection`, though `env` is not itself tri-state).
+ */
+function sameRecord(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+}
+
 
 const isLocked = computed(() => !!props.lockedWorkspaceId);
 
@@ -297,6 +314,7 @@ const lockedWorkspace = computed<Workspace | null>(() => {
       // `unavailable` says exactly that; `incompatible` would assert a verdict nobody reached.
       compatibility: 'unavailable',
       unsupportedMarketplaces: [],
+      env: {},
     }
   );
 });
@@ -364,6 +382,7 @@ function openCreateForm(): void {
   createMarketplaces.value = [];
   // A new workspace starts with no preference, i.e. legacy "all plugins" — NOT "no plugins".
   createPluginSelection.value = null;
+  createEnv.value = {};
   void loadAvailableMarketplaces();
 }
 
@@ -426,6 +445,9 @@ function submitCreate(): void {
     payload.pluginSelection =
       createPluginSelection.value === null ? null : [...createPluginSelection.value];
   }
+  if (Object.keys(createEnv.value).length > 0) {
+    payload.env = { ...createEnv.value };
+  }
   // Keep the form open and mark it in-flight. The parent awaits the API call and
   // calls closeForm() on success or showFormError() on failure (which re-renders
   // the inline error). Closing here would unmount the error element before the
@@ -451,6 +473,7 @@ function openEditForm(workspace: Workspace): void {
 function seedEditFormFrom(workspace: Workspace): void {
   editMarketplaces.value = [...workspace.marketplaces];
   editPluginSelection.value = seedSelection(workspace.pluginSelection);
+  editEnv.value = { ...(workspace.env ?? {}) };
 }
 
 /**
@@ -524,6 +547,13 @@ function submitEdit(): void {
   // Otherwise `pluginSelection` is ABSENT from the body — the backend's four-state "leave
   // unchanged". That covers a marketplace-only edit, a no-op save, and the whole UI when the
   // gateway cannot filter plugins: none of them may clobber a stored selection.
+
+  // `env` is included ONLY when it actually differs from what is stored, for the same reason as
+  // `pluginSelection` above: sending it on every save (a rename, a marketplace-only toggle, a no-op
+  // save) would trigger a live-session re-apply on the server for nothing.
+  if (workspace !== null && !sameRecord(editEnv.value, workspace.env ?? {})) {
+    payload.env = { ...editEnv.value };
+  }
   submitting.value = true;
   emit('update-workspace', editWorkspaceId.value, payload);
 }
@@ -807,6 +837,14 @@ watch(
               </p>
             </div>
           </div>
+          <div class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              v-model="createEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
+          </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}
           </div>
@@ -928,6 +966,14 @@ watch(
                 {{ marketplacesUnavailable ? 'Gateway offline — no marketplaces available.' : 'No marketplaces available.' }}
               </p>
             </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              v-model="editEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
           </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}

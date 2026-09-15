@@ -37,6 +37,18 @@ export class UnsupportedPluginsError extends Error {
   }
 }
 
+/** Raised on HTTP 400 `invalid_env`: one or more `env` keys are malformed or protected by the sandbox. */
+export class InvalidEnvError extends Error {
+  readonly keys: string[];
+  readonly layer: string | null;
+  constructor(message: string, keys: string[] = [], layer: string | null = null) {
+    super(message);
+    this.name = 'InvalidEnvError';
+    this.keys = keys;
+    this.layer = layer;
+  }
+}
+
 /** Best-effort parse of a JSON error body; returns null when unreadable. */
 async function readBody(response: Response): Promise<Record<string, unknown> | null> {
   try {
@@ -68,11 +80,18 @@ function unsupportedPluginLabels(body: Record<string, unknown> | null): string[]
   });
 }
 
+/** Reads `keys` as a list of strings, dropping anything that isn't one. */
+function stringListOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
 /**
  * Maps a structured workspace failure to its typed error, consistently for create and update:
  * 409 `workspace_revision_conflict` → {@link WorkspaceRevisionConflictError},
- * 400 `unsupported_plugins` → {@link UnsupportedPluginsError}. Anything else falls back to the
- * server's `error` text, preserving the pre-existing generic message.
+ * 400 `unsupported_plugins` → {@link UnsupportedPluginsError},
+ * 400 `invalid_env` → {@link InvalidEnvError}. Anything else falls back to the server's `error`
+ * text, preserving the pre-existing generic message.
  */
 async function classifyFailure(response: Response, operation: string): Promise<Error> {
   const body = await readBody(response);
@@ -92,6 +111,15 @@ async function classifyFailure(response: Response, operation: string): Promise<E
         ? `These plugins are not available in the selected marketplaces: ${labels.join(', ')}.`
         : 'One or more selected plugins are not available in the selected marketplaces.',
       labels
+    );
+  }
+  if (response.status === 400 && code === 'invalid_env') {
+    const keys = stringListOf(body?.keys);
+    const base = stringOf(body?.error) || 'One or more environment variable names are invalid.';
+    return new InvalidEnvError(
+      keys.length > 0 ? `${base} (${keys.join(', ')})` : base,
+      keys,
+      stringOf(body?.layer)
     );
   }
   return new Error(stringOf(body?.error) || `Failed to ${operation}: ${response.statusText}`);

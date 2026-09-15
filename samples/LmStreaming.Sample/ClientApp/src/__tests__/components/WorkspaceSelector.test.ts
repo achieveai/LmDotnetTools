@@ -85,6 +85,7 @@ const workspaces: Workspace[] = [
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
   },
   {
     id: 'ws-user',
@@ -96,6 +97,7 @@ const workspaces: Workspace[] = [
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
   },
 ];
 
@@ -600,6 +602,7 @@ describe('WorkspaceSelector plugin selection across marketplaces', () => {
         updatedAt: 0,
         compatibility: 'unknown',
         unsupportedMarketplaces: [],
+        env: {},
         pluginSelection: [
           { marketplace: 'demo', plugin: 'toolkit' },
           { marketplace: 'extra-mp', plugin: 'widget' },
@@ -634,6 +637,7 @@ describe('WorkspaceSelector edit form plugin selection', () => {
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -859,6 +863,7 @@ describe('WorkspaceSelector edit form omits an unchanged plugin selection', () =
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -984,6 +989,7 @@ describe('WorkspaceSelector reseedEditForm after a revision conflict', () => {
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
     pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
     pluginsRevision: 7,
   };
@@ -1152,6 +1158,7 @@ describe('WorkspaceSelector self-removing controls do not close the dropdown (F5
         updatedAt: 0,
         compatibility: 'unknown',
         unsupportedMarketplaces: [],
+        env: {},
         pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
         pluginsRevision: 7,
       },
@@ -1376,6 +1383,7 @@ describe('WorkspaceSelector blocks form interaction during a transient refresh',
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -1650,5 +1658,97 @@ describe('WorkspaceSelector unverified rows stay selectable (#459)', () => {
     await wrapper.get('[data-testid="workspace-option-unavailable-ws"]').trigger('click');
 
     expect(wrapper.emitted('select-workspace')?.[0]).toEqual(['unavailable-ws']);
+  });
+});
+
+/**
+ * `env` follows the same "only send it when it changed" rule as `pluginSelection` (F1 above), but is
+ * NOT itself tri-state on the wire — there is no separate "leave unchanged" vs "clear" distinction on
+ * `WorkspaceUpdate.env`; an absent key means unchanged and an empty object means "no variables".
+ */
+describe('WorkspaceSelector env', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: [],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
+      env: { FOO: 'bar' },
+    },
+  ];
+
+  it('seeds the edit form\'s EnvEditor from the workspace\'s stored env', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    const key = wrapper.get<HTMLInputElement>('[data-testid="workspace-env-key"]');
+    const value = wrapper.get<HTMLInputElement>('[data-testid="workspace-env-value"]');
+    expect(key.element.value).toBe('FOO');
+    expect(value.element.value).toBe('bar');
+  });
+
+  it('omits env from the PUT payload when it is saved unchanged', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('update-workspace')![0][1] as UpdatePayload;
+    expect('env' in payload).toBe(false);
+  });
+
+  it('includes env in the PUT payload when it is changed', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('update-workspace')![0][1] as UpdatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('includes a non-empty env in the create payload', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('With Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-key"]').setValue('TOKEN');
+    await wrapper.get('[data-testid="workspace-env-value"]').setValue('secret');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ TOKEN: 'secret' });
+  });
+
+  it('omits env from the create payload when nothing was entered', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('No Env');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload & {
+      env?: Record<string, string>;
+    };
+    expect('env' in payload).toBe(false);
   });
 });

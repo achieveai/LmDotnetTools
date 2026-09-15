@@ -146,6 +146,71 @@ describe('ModeEditor description', () => {
   });
 });
 
+describe('ModeEditor env', () => {
+  it('renders an EnvEditor seeded from the mode\'s stored env', () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+
+    const key = wrapper.get<HTMLInputElement>('[data-testid="mode-env-key"]');
+    const value = wrapper.get<HTMLInputElement>('[data-testid="mode-env-value"]');
+    expect(key.element.value).toBe('FOO');
+    expect(value.element.value).toBe('bar');
+  });
+
+  it('omits env from the save payload when it is unchanged', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+
+    await wrapper.get('form').trigger('submit');
+
+    expect('env' in lastSave(wrapper)).toBe(false);
+  });
+
+  it('includes the changed env in the save payload', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('form').trigger('submit');
+
+    expect(lastSave(wrapper).env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('writes an explicit null when every variable is removed from a mode that had some', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+
+    await wrapper.get('[data-testid="mode-env-remove"]').trigger('click');
+    await wrapper.get('form').trigger('submit');
+
+    const data = lastSave(wrapper);
+    expect(data.env).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('env' in wire).toBe(true);
+    expect(wire.env).toBeNull();
+  });
+
+  it('surfaces an API error from the parent through showFormError', async () => {
+    const wrapper = mount(ModeEditor, { props: { mode: null, tools: [] } });
+
+    (wrapper.vm as unknown as { showFormError: (m: string) => void }).showFormError(
+      'One or more environment variable names are invalid. (HTTP_PROXY)'
+    );
+    await wrapper.vm.$nextTick();
+
+    const error = wrapper.get('[data-testid="mode-editor-form-error"]');
+    expect(error.text()).toContain('HTTP_PROXY');
+  });
+});
+
 describe('ModeEditor sub-agent routing policy', () => {
   it('preserves policy fields that the form does not render when editing a mode', async () => {
     const policy = {
