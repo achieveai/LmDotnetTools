@@ -32,6 +32,20 @@ public sealed class ResponseEventParserTests
     }
 
     [Fact]
+    public void Parse_string_preserves_the_raw_wire_payload_verbatim()
+    {
+        // The wire text, spacing and all: a diagnostic dump must show what the server sent, not a
+        // re-serialization of what we understood of it. Parsing from a node has no wire text to keep.
+        const string json =
+            """{"type":"response.function_call_arguments.delta",  "item_id":"fc_1","output_index":0,"delta":" fee"}""";
+
+        var ev = ResponseEventParser.Parse(json);
+
+        ev.RawJson.Should().Be(json);
+        ResponseEventParser.Parse(JsonNode.Parse(json)!).RawJson.Should().BeNull();
+    }
+
+    [Fact]
     public void Parse_output_text_delta_carries_index_and_delta()
     {
         const string json = """
