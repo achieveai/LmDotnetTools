@@ -6,6 +6,7 @@ import path from 'path';
 import ChatLayout from '@/components/ChatLayout.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
+import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import {
   UnsupportedPluginsError,
   WorkspaceRevisionConflictError,
@@ -1991,7 +1992,12 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
   // raises (through BaseModal), and skips the preview fetch the real one fires on mount.
   const ArtifactPreviewModalStub = defineComponent({
     // Declared so the D6 test below can assert the prop ChatLayout drives, not a fallthrough attr.
-    props: { besideSidebar: { type: Boolean, default: false } },
+    props: {
+      besideSidebar: { type: Boolean, default: false },
+      threadId: { type: String, default: undefined },
+      path: { type: String, default: undefined },
+      target: { type: String, default: undefined },
+    },
     emits: ['close'],
     template:
       '<div data-test-id="artifact-preview-modal">'
@@ -2082,6 +2088,71 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     wrapper.findComponent({ name: 'ConversationSidebar' }).vm.$emit('toggle-collapse');
     await flushPromises();
     expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(false);
+  });
+
+  describe('chat file links', () => {
+    // Stands in for MessageList → TextMessage: injects exactly what TextMessage injects and calls
+    // `open` the way its click handler does, so the test drives ChatLayout's provider, not a copy.
+    const MessageListLinkStub = defineComponent({
+      setup() {
+        const links = inject<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS)!;
+        return { links };
+      },
+      template:
+        '<div>'
+        + '<span data-test="links-thread">{{ links.threadId.value }}</span>'
+        + '<button data-test="file-link" @click="links.open({ threadId: \'thread-1\', target: \'B:\\\\ws\\\\a.md\' })">a</button>'
+        + '<button data-test="stale-link" @click="links.open({ threadId: \'thread-old\', target: \'b.md\' })">b</button>'
+        + '</div>',
+    });
+
+    const mountWithLinks = async () => {
+      const wrapper = mount(ChatLayout, {
+        global: {
+          stubs: {
+            ConversationSidebar: true,
+            MessageList: MessageListLinkStub,
+            PendingMessageQueue: true,
+            ChatInput: true,
+            TodoBoardPanel: TodoBoardPanelStub,
+            ArtifactPreviewModal: ArtifactPreviewModalStub,
+          },
+        },
+      });
+      await flushPromises();
+      return wrapper;
+    };
+
+    it('provides the started conversation id to the message tree', async () => {
+      const wrapper = await mountWithLinks();
+      expect(wrapper.get('[data-test="links-thread"]').text()).toBe('thread-1');
+    });
+
+    it('opens the preview for a clicked link with its raw target against the current conversation', async () => {
+      const wrapper = await mountWithLinks();
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+
+      const modal = wrapper.getComponent(ArtifactPreviewModalStub);
+      expect(modal.props('threadId')).toBe('thread-1');
+      expect(modal.props('target')).toBe('B:\\ws\\a.md');
+      expect(modal.props('path')).toBeUndefined();
+    });
+
+    it('ignores a link rendered for a different conversation', async () => {
+      const wrapper = await mountWithLinks();
+
+      await wrapper.get('[data-test="stale-link"]').trigger('click');
+
+      expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(false);
+    });
+
+    it('still passes a board chip as a path, not a target', async () => {
+      const wrapper = await mountWithOpenModal();
+      const modal = wrapper.getComponent(ArtifactPreviewModalStub);
+      expect(modal.props('path')).toBe('docs/spec.md');
+      expect(modal.props('target')).toBeUndefined();
+    });
   });
 });
 

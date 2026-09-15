@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MessageList from '../../components/MessageList.vue';
 import TextMessage from '../../components/TextMessage.vue';
+import CopyMessageButton from '../../components/CopyMessageButton.vue';
 import { nextTick } from 'vue';
 
 import { MessageType } from '@/types';
@@ -273,3 +274,94 @@ describe('MessageList', () => {
   });
 });
 
+
+
+describe('MessageList copy button and workspace links', () => {
+  const userItem = (id: string, text = 'hi') => ({
+    id,
+    type: 'user-message' as const,
+    content: { $type: MessageType.Text, role: 'user' as const, text, isThinking: false },
+    status: 'active' as const,
+    timestamp: Date.now(),
+  });
+  const assistantItem = (id: string, text: string, isThinking = false) => ({
+    id,
+    type: 'assistant-message' as const,
+    content: { $type: MessageType.Text, role: 'assistant' as const, text, isThinking },
+  });
+  const mountList = (displayItems: any[], isLoading = false) =>
+    mount(MessageList, {
+      props: { displayItems, isLoading },
+      global: { stubs: { MetadataPill: true, NotificationPill: true } },
+    });
+
+  it('puts a copy button carrying the raw markdown in every finished assistant bubble, history and active', () => {
+    const wrapper = mountList([
+      userItem('u-1'),
+      assistantItem('a-1', '# old **answer**'),
+      userItem('u-2'),
+      assistantItem('a-2', '- new [x](docs/a.md)'),
+    ]);
+
+    const bubbles = wrapper.findAll('[data-testid="assistant-text"]');
+    expect(bubbles).toHaveLength(2);
+    const texts = wrapper.findAllComponents(CopyMessageButton).map((c) => c.props('text'));
+    expect(texts).toEqual(['# old **answer**', '- new [x](docs/a.md)']);
+    for (const bubble of bubbles) {
+      // A sibling of the bubble, never inside it: the browser E2E suite reads `assistant-text` by
+      // innerText, and a "Copy" label in there would change every answer's text.
+      expect(bubble.find('[data-testid="copy-message-button"]').exists()).toBe(false);
+      expect(bubble.text()).not.toContain('Copy');
+      const row = bubble.element.parentElement!;
+      expect(row.querySelector(':scope > [data-testid="copy-message-button"]')).not.toBeNull();
+    }
+  });
+
+  it('hides the copy button on the bubble that is still streaming', () => {
+    const wrapper = mountList([userItem('u-1'), assistantItem('a-1', 'growing')], true);
+    expect(wrapper.find('[data-testid="copy-message-button"]').exists()).toBe(false);
+  });
+
+  it('never puts a copy button on a user message', () => {
+    const wrapper = mountList([userItem('u-1', 'question')]);
+    expect(wrapper.find('[data-testid="copy-message-button"]').exists()).toBe(false);
+  });
+
+  it('turns on workspace links for assistant bubbles only', () => {
+    const wrapper = mountList([userItem('u-1'), assistantItem('a-1', 'x')]);
+    const byRole = Object.fromEntries(
+      wrapper
+        .findAllComponents(TextMessage)
+        .map((c) => [c.props('message').role, c.props('workspaceLinks')])
+    );
+    expect(byRole).toEqual({ user: false, assistant: true });
+  });
+
+  it('gives a thinking bubble neither copy nor workspace links, in history or active, while answers keep both', () => {
+    const wrapper = mountList([
+      userItem('u-1'),
+      assistantItem('t-1', 'old reasoning [x](docs/a.md)', true),
+      assistantItem('a-1', 'old answer'),
+      userItem('u-2'),
+      assistantItem('t-2', 'new reasoning', true),
+      assistantItem('a-2', 'new answer'),
+    ]);
+
+    expect(wrapper.findAllComponents(CopyMessageButton).map((c) => c.props('text'))).toEqual([
+      'old answer',
+      'new answer',
+    ]);
+    const linksByText = Object.fromEntries(
+      wrapper
+        .findAllComponents(TextMessage)
+        .filter((c) => c.props('message').role === 'assistant')
+        .map((c) => [c.props('message').text, c.props('workspaceLinks')])
+    );
+    expect(linksByText).toEqual({
+      'old reasoning [x](docs/a.md)': false,
+      'old answer': true,
+      'new reasoning': false,
+      'new answer': true,
+    });
+  });
+});
