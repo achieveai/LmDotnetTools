@@ -22,6 +22,7 @@ const emit = defineEmits<{
 const dropdownOpen = ref(false);
 const modalOpen = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
+const modeManagementModalRef = ref<InstanceType<typeof ModeManagementModal> | null>(null);
 
 const currentMode = computed(() =>
   props.modes.find((m) => m.id === props.currentModeId)
@@ -76,6 +77,23 @@ function handleDeleteMode(modeId: string): void {
 function handleCopyMode(modeId: string, newName: string): void {
   emit('copy-mode', modeId, newName);
 }
+
+/**
+ * Forwarding pair for the parent's create/update catch blocks (`ChatLayout.handleCreateMode`/
+ * `handleUpdateMode`). `ModeManagementModal` is `v-if`'d here, not in `ChatLayout`, so this is the
+ * only place that can hold a live ref to it — hence these thin pass-throughs instead of the parent
+ * reaching in directly. Both are safely no-ops if the modal was closed (X / backdrop / Escape)
+ * before the awaited API call settled.
+ */
+function closeManageForm(): void {
+  modeManagementModalRef.value?.closeForm();
+}
+
+function showManageFormError(message: string): void {
+  modeManagementModalRef.value?.showFormError(message);
+}
+
+defineExpose({ closeManageForm, showManageFormError });
 
 // Close dropdown when clicking outside
 function handleClickOutside(event: MouseEvent): void {
@@ -172,6 +190,7 @@ watch(
     <!-- Management Modal -->
     <ModeManagementModal
       v-if="modalOpen"
+      ref="modeManagementModalRef"
       :modes="modes"
       :tools="tools"
       :is-loading="isLoading"

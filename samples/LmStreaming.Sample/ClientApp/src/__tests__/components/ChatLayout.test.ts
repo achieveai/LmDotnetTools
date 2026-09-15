@@ -10,6 +10,7 @@ import {
   UnsupportedPluginsError,
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
+import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 
@@ -99,6 +100,10 @@ const sharedMocks = vi.hoisted(() => ({
   // typed errors workspacesApi throws, and assert what the parent's catch forwards to the child.
   createWorkspace: vi.fn(async () => {}),
   updateWorkspace: vi.fn(async () => {}),
+  // Mode create/update, routed through sharedMocks for the same reason — a test can make them
+  // REJECT with InvalidEnvError and assert it reaches ModeEditor's form-error text.
+  createMode: vi.fn(async () => {}),
+  updateMode: vi.fn(async () => {}),
   // The WorkspaceSelector methods ChatLayout reaches through its template ref.
   showFormError: vi.fn(),
   closeForm: vi.fn(),
@@ -184,8 +189,8 @@ vi.mock('@/composables/useChatModes', async () => {
         sharedMocks.selectMode(modeId);
       }),
       switchMode: sharedMocks.switchMode,
-      createMode: vi.fn(async () => {}),
-      updateMode: vi.fn(async () => {}),
+      createMode: sharedMocks.createMode,
+      updateMode: sharedMocks.updateMode,
       deleteMode: vi.fn(async () => {}),
       copyMode: vi.fn(async () => {}),
       currentMode: computed(() => modes.value[0]),
@@ -1541,6 +1546,70 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
   });
 });
 
+// Mode-side mirror of the workspace `invalid_env` surfacing above (Task 5 fix round 1): a rejected
+// create/update must reach ModeEditor's inline error, not just a console.error. Unlike the workspace
+// suite, `useChatModes` has no "real composable" toggle to fall back on, so this drives the genuine
+// ModeSelector -> ModeManagementModal -> ModeEditor chain (none of them stubbed) while mocking the
+// API at the composable level via `sharedMocks.createMode`/`updateMode`, the same seam the workspace
+// tests use for `createWorkspace`/`updateWorkspace`.
+describe('ChatLayout surfaces mode invalid_env failures inline', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ProviderSelector: true,
+          WorkspaceSelector: true,
+          // ModeSelector, ModeManagementModal and ModeEditor deliberately NOT stubbed — the ref
+          // chain threaded through them for this fix is the code under test.
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.hasPendingClientQuestion = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.createMode.mockReset();
+    sharedMocks.updateMode.mockReset();
+  });
+
+  it('leaves the create form mounted with the offending keys visible after a rejected mode save', async () => {
+    sharedMocks.createMode.mockRejectedValueOnce(
+      new InvalidEnvError(
+        'One or more environment variable names are invalid. (HTTP_PROXY)',
+        ['HTTP_PROXY'],
+        'mode'
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-create-new"]').trigger('click');
+
+    await wrapper.get('[data-testid="mode-editor-name"]').setValue('New Mode');
+    await wrapper.get('#mode-prompt').setValue('Be helpful.');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.createMode).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain('HTTP_PROXY');
+
+    wrapper.unmount();
+  });
+});
+
 // #435. "New chat" used to mint a thread id in the browser and hand it straight to useChat, which
 // opened a socket on it. Under `Identity:Enforce=true` that id has no metadata row and `/ws` refuses
 // the handshake — byte-identically to a thread somebody else owns, so there is nothing in the
@@ -1859,6 +1928,7 @@ describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#
     updatedAt: 0,
     compatibility: 'unavailable',
     unsupportedMarketplaces: [],
+    env: {},
   });
 
   beforeEach(() => {

@@ -8,6 +8,7 @@ import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
+import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
@@ -98,6 +99,7 @@ const {
 } = useWorkspaces();
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const modeSelectorRef = ref<InstanceType<typeof ModeSelector> | null>(null);
 
 // Initialize chat with getters for the current mode and provider ids.
 const {
@@ -671,8 +673,17 @@ async function handleSelectMode(modeId: string): Promise<void> {
 async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
   try {
     await createMode(data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to create mode:', e);
+    if (e instanceof InvalidEnvError) {
+      // Keeps the create form open (with the entered env rows intact) instead of the previous
+      // silent console.error — this is the one failure mode worth surfacing inline, since it names
+      // exactly which keys are wrong and the user can fix them without re-entering everything.
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to create mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -680,8 +691,14 @@ async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
 async function handleUpdateMode(modeId: string, data: ChatModeCreateUpdate): Promise<void> {
   try {
     await updateMode(modeId, data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to update mode:', e);
+    if (e instanceof InvalidEnvError) {
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to update mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -830,6 +847,7 @@ onBeforeUnmount(() => {
               @select-provider="handleSelectProvider"
             />
             <ModeSelector
+              ref="modeSelectorRef"
               :modes="modes"
               :current-mode-id="currentModeId"
               :tools="availableTools"
