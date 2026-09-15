@@ -166,6 +166,44 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
     }
 
     [Fact]
+    public async Task Predefined_key_entry_rule_carries_the_entrys_own_port()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-bap-port");
+        try
+        {
+            var keys = new PredefinedKeyRegistry(
+                dir.FullName,
+                new NoopTokenStore(),
+                new HttpClient(),
+                NullLoggerFactory.Instance
+            );
+            await keys.UpsertAsync(
+                new PredefinedKeyEntry
+                {
+                    Id = "e2",
+                    Host = "host.docker.internal",
+                    Port = 8443,
+                    Kind = PredefinedKeyKind.CustomHeaders,
+                    Headers = [new PredefinedHeader("Authorization", "Bearer v")],
+                }
+            );
+
+            await using var registry = CreateRegistry(new AuthOptions(), keys);
+
+            var (_, network) = registry.BuildAuthProvidersForTest();
+
+            var rule = network.Should().ContainSingle().Subject;
+            rule.Hosts.Should().Equal("host.docker.internal");
+            rule.Ports.Should().Equal(8443);
+            rule.AuthProvider.Should().Be("predefined-e2");
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task No_predefined_registry_emits_no_predefined_providers()
     {
         // Fail-closed: the headless daemon (and any caller) that passes no registry gets no keys.

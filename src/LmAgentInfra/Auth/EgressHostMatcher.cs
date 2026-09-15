@@ -96,7 +96,7 @@ internal static partial class EgressHostMatcher
 
         if (pattern.Contains(':', StringComparison.Ordinal))
         {
-            return "Host must not include a port (rules are HTTPS/443 only).";
+            return "Host must not include a port (set the port separately; it defaults to 443).";
         }
 
         if (pattern == "*")

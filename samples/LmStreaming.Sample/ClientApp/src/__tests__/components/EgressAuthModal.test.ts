@@ -35,6 +35,7 @@ vi.mock('@/composables/useEgressAuth', async () => {
 const keyA: EgressKeyView = {
   id: 'a',
   host: 'a.example.com',
+  port: 443,
   kind: 'custom-headers',
   headerName: 'Authorization',
   headerNames: ['Authorization', 'X-Api-Key'],
@@ -46,6 +47,7 @@ const keyA: EgressKeyView = {
 const keyB: EgressKeyView = {
   id: 'b',
   host: 'b.example.com',
+  port: 443,
   kind: 'refresh-token',
   headerName: 'Authorization',
   headerNames: [],
@@ -75,6 +77,47 @@ describe('EgressAuthModal', () => {
   afterEach(() => {
     activeWrapper?.unmount();
     activeWrapper = null;
+  });
+
+  it('defaults the port to 443 and sends the entered port on save', async () => {
+    const wrapper = mountModal();
+    await flushPromises();
+    await wrapper.get('[data-testid="egress-add-button"]').trigger('click');
+    await nextTick();
+
+    const portInput = wrapper.get<HTMLInputElement>('[data-testid="egress-port-input"]');
+    expect(portInput.element.value).toBe('443');
+
+    await wrapper.get('[data-testid="egress-host-input"]').setValue('host.docker.internal');
+    await portInput.setValue('8443');
+    const nameInputs = wrapper.findAll('[data-testid="egress-header-name-input"]');
+    await nameInputs[0].setValue('Authorization');
+    const valueInputs = wrapper.findAll('[data-testid="egress-header-value-input"]');
+    await valueInputs[0].setValue('Bearer t');
+    await wrapper.get('[data-testid="egress-save-button"]').trigger('click');
+    await flushPromises();
+
+    expect(mocks.saveEgressKey).toHaveBeenCalledTimes(1);
+    expect(mocks.saveEgressKey.mock.calls[0][0]).toMatchObject({ host: 'host.docker.internal', port: 8443 });
+  });
+
+  it('renders host:port in the list only when the port is not 443', async () => {
+    mocks.egressKeys.value = [keyA, { ...keyB, id: 'c', host: 'host.docker.internal', port: 8443 }];
+    const wrapper = mountModal();
+    await flushPromises();
+
+    const hosts = wrapper.findAll('.key-host').map((h) => h.text());
+    expect(hosts).toEqual(['a.example.com', 'host.docker.internal:8443']);
+  });
+
+  it('prefills the stored port on edit', async () => {
+    mocks.egressKeys.value = [{ ...keyA, port: 8443 }];
+    const wrapper = mountModal();
+    await flushPromises();
+    await wrapper.get('[data-testid="egress-key-item"] .btn-secondary').trigger('click');
+    await nextTick();
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="egress-port-input"]').element.value).toBe('8443');
   });
 
   it('loads keys on mount and renders one item per key with data-key-id', async () => {
@@ -131,6 +174,7 @@ describe('EgressAuthModal', () => {
     expect(mocks.saveEgressKey).toHaveBeenCalledWith({
       id: null,
       host: 'api.example.com',
+      port: 443,
       kind: 'custom-headers',
       headers: [{ name: 'Authorization', value: 'Bearer xyz' }],
     });
@@ -156,6 +200,7 @@ describe('EgressAuthModal', () => {
     expect(mocks.saveEgressKey).toHaveBeenCalledWith({
       id: null,
       host: 'auth.example.com',
+      port: 443,
       kind: 'refresh-token',
       headerName: 'Authorization',
       scopes: ['read', 'write'],
@@ -165,6 +210,30 @@ describe('EgressAuthModal', () => {
       refreshToken: 'rtoken',
     });
   });
+
+  it.each(['0', '', '70000', '84a3'])(
+    'rejects an invalid port %j before saving instead of coercing it to 443',
+    async (typed) => {
+      const wrapper = mountModal();
+      await flushPromises();
+      await wrapper.get('[data-testid="egress-add-button"]').trigger('click');
+      await nextTick();
+
+      await wrapper.get('[data-testid="egress-host-input"]').setValue('host.docker.internal');
+      await wrapper.get('[data-testid="egress-port-input"]').setValue(typed);
+      const nameInputs = wrapper.findAll('[data-testid="egress-header-name-input"]');
+      await nameInputs[0].setValue('Authorization');
+      const valueInputs = wrapper.findAll('[data-testid="egress-header-value-input"]');
+      await valueInputs[0].setValue('Bearer t');
+      // Submit the form directly: the input's min/max let the browser (and jsdom) block a submit-button
+      // click for 0 / 70000 natively, which would leave the script-side validator unexercised.
+      await wrapper.get('form').trigger('submit');
+      await flushPromises();
+
+      expect(mocks.saveEgressKey).not.toHaveBeenCalled();
+      expect(wrapper.get('[data-testid="egress-port-error"]').text()).toContain('1 to 65535');
+    }
+  );
 
   it('validates that host is required before saving', async () => {
     const wrapper = mountModal();
@@ -202,6 +271,7 @@ describe('EgressAuthModal', () => {
     expect(mocks.saveEgressKey).toHaveBeenCalledWith({
       id: 'a',
       host: 'a.example.com',
+      port: 443,
       kind: 'custom-headers',
       headers: [
         { name: 'Authorization', value: '' },

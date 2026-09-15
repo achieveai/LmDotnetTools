@@ -8,8 +8,9 @@ namespace LmStreaming.Sample.Tests.Auth;
 /// The <c>cfg-</c> (appsettings-configured) branch of <see cref="AuthWebhookController"/>: a
 /// <c>headers</c>-type egress provider injects its configured request headers when — and only when —
 /// the session secret authenticates, the provider exists and is enabled, the destination is inside
-/// the provider's host scope on 443, and the first matching CONFIG rule is an allow rule that both
-/// names this provider and carries the rule id the gateway reported. Every other shape denies.
+/// the provider's host scope, and the first matching CONFIG rule (host, PORT, method, path) is an
+/// allow rule that both names this provider and carries the rule id the gateway reported. Every
+/// other shape denies.
 /// </summary>
 public sealed class AuthWebhookControllerConfiguredHeadersTests
 {
@@ -131,6 +132,28 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
     }
 
     [Fact]
+    public async Task Allows_a_non_443_port_when_the_rule_lists_it()
+    {
+        // The proxy is TLS-only on every port, so the port gate is "in the matched rule", not "443".
+        // Distinguishing case: 8443 is listed → allow; 8444 is not → the rule does not match → deny.
+        var config = BaseConfig();
+        config["Network:Rules:partner-api:Ports"] = "443,8443";
+        var controller = CreateController(config);
+
+        var listed = Decision(
+            await controller.Evaluate("cfg-partner-headers", NewRequest(port: 8443), CancellationToken.None)
+        );
+        listed.Decision.Should().Be("allow");
+        listed.Headers.Should().HaveCount(2);
+
+        var unlisted = Decision(
+            await controller.Evaluate("cfg-partner-headers", NewRequest(port: 8444), CancellationToken.None)
+        );
+        unlisted.Decision.Should().Be("deny");
+        unlisted.Headers.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Denies_when_the_session_secret_does_not_match()
     {
         var controller = CreateController(BaseConfig(), authorization: "wrong-secret");
@@ -150,7 +173,7 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
                 "cfg-partner-headers",
                 NewRequest(host: "evil.example.org")
             },
-            { "cleartext / non-443 port", "cfg-partner-headers", NewRequest(port: 8443) },
+            { "port the rule does not list", "cfg-partner-headers", NewRequest(port: 8443) },
             { "method the rule does not allow", "cfg-partner-headers", NewRequest(method: "DELETE") },
             { "path the rule does not cover", "cfg-partner-headers", NewRequest(path: "/v2/items") },
             {
@@ -284,12 +307,16 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
         decision.Decision.Should().Be("deny");
     }
 
-    [Fact]
-    public async Task Denies_rather_than_throwing_when_the_policy_was_never_validated()
+    [Theory]
+    [InlineData("abc")] // unparseable port → UnmatchablePort → no rule matches
+    [InlineData("")] // empty list → MatchesRule says "any port", which must NOT become inject-on-every-port
+    public async Task Denies_rather_than_throwing_when_the_policy_was_never_validated(string ports)
     {
         // A programmatic consumer can build SandboxGatewayOptions in code and skip the validator, so the
-        // cfg- branch must survive malformed policy (here an unparseable port) with a 200 deny — an
-        // unhandled 500 would surface gateway-side as an opaque webhook failure, not a clean decision.
+        // cfg- branch must survive malformed policy with a 200 deny — an unhandled 500 would surface
+        // gateway-side as an opaque webhook failure, not a clean decision. The empty-Ports row is the
+        // defense-in-depth gate that replaced the old 443 pin: Validate rejects it, but the webhook
+        // must still refuse to inject on a port the rule never listed.
         var options = new SandboxGatewayOptions
         {
             AuthProviders =
@@ -308,7 +335,7 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
                     ["partner-api"] = new SandboxNetworkRuleOptions
                     {
                         Hosts = "api.example.com",
-                        Ports = "abc",
+                        Ports = ports,
                         Methods = "GET",
                         AuthProvider = "partner-headers",
                     },

@@ -348,15 +348,11 @@ public sealed class AuthWebhookController(
             return AuthWebhookResponse.Deny("provider mismatch");
         }
 
-        // HTTPS/443 only and inside the provider's declared host scope — a configured secret must never
-        // egress in cleartext, nor toward a host the provider does not declare.
-        if (
-            body.DestinationPort != 443
-            || !EgressHostMatcher.IsAllowed(
-                SandboxEgressPolicyCompiler.ParseList(configured.Hosts),
-                body.DestinationHost
-            )
-        )
+        // Inside the provider's declared host scope — a configured secret must never go toward a host
+        // the provider does not declare. The PORT is gated by the rule re-match below (the request must
+        // land on a port the admitting rule lists), not pinned to 443: the egress proxy refuses plain
+        // HTTP on every port, so TLS is guaranteed regardless of port number.
+        if (!EgressHostMatcher.IsAllowed(SandboxEgressPolicyCompiler.ParseList(configured.Hosts), body.DestinationHost))
         {
             logger.LogWarning(
                 "Auth-webhook deny for configured provider {Provider}: destination {DestinationHost}:{DestinationPort} is outside its allowlist.",
@@ -370,6 +366,9 @@ public sealed class AuthWebhookController(
         // Re-run the gateway's own first-match-wins evaluation over the CONFIGURED rules. The winning
         // rule must be the allow rule that names this provider AND the rule the gateway reported —
         // otherwise a higher-priority deny (or a different rule entirely) governs this destination.
+        // The rule must also LIST the port explicitly: MatchesRule treats an empty port list as "any
+        // port" (the gateway's routing semantics), which Validate rejects for authenticated rules, but a
+        // programmatic consumer that skipped Validate must not turn that into inject-on-every-port.
         var match = SandboxEgressPolicyCompiler.FirstMatchingRule(
             gatewayOptions,
             body.DestinationHost,
@@ -379,6 +378,7 @@ public sealed class AuthWebhookController(
         );
         if (
             match is null
+            || match.Ports.Count == 0
             || !string.Equals(match.Action, "allow", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(match.AuthProvider, provider, StringComparison.Ordinal)
             || !string.Equals(match.Id, body.RuleId, StringComparison.OrdinalIgnoreCase)
@@ -417,9 +417,10 @@ public sealed class AuthWebhookController(
 
     /// <summary>
     /// The defense-in-depth destination gate. Predefined keys gate on their own user-entered host(s)
-    /// AND on port 443 — the generated rule is HTTPS/443-only, so a malformed/misbehaving gateway must
-    /// not extract the credential for the same host on another (cleartext) port. Managed OAuth providers
-    /// gate on their compile-time host allowlist.
+    /// AND on the entry's own port — the generated rule lists exactly that port, so a
+    /// malformed/misbehaving gateway must not extract the credential for the same host on another
+    /// port. (TLS is not what the port check protects: the egress proxy refuses plain HTTP on every
+    /// port.) Managed OAuth providers gate on their compile-time host allowlist.
     /// </summary>
     private static bool IsDestinationAllowed(
         IOAuthTokenProvider provider,
@@ -427,7 +428,7 @@ public sealed class AuthWebhookController(
         int destinationPort
     ) =>
         provider is PredefinedKeyProvider pk
-            ? destinationPort == 443 && EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
+            ? destinationPort == pk.Port && EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
             : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
 
     /// <summary>

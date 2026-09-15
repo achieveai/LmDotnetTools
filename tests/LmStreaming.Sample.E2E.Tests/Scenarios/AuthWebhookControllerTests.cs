@@ -256,8 +256,8 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
                 deny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
             }
 
-            // Same host but a non-443 port is denied — a predefined key is HTTPS/443-only, so a
-            // misbehaving gateway cannot extract it over a cleartext port.
+            // Same host but a port the key does not list is denied — this key was created without a
+            // port, so it is pinned to 443 and a misbehaving gateway cannot extract it on 8443.
             using (
                 var portDeny = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test", port: 8443)
             )

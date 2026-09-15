@@ -77,6 +77,9 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     /// <summary>The single destination host this key authenticates egress to, as a one-element list.</summary>
     public IReadOnlyList<string> Hosts => [_entry.Host];
 
+    /// <summary>The single destination port this key authenticates egress to (the generated rule's only port).</summary>
+    public int Port => _entry.Port;
+
     /// <summary>True for the token-minting kinds (their token carries a real expiry the gateway caches on).</summary>
     public bool IncludeExpiry => _entry.Kind != PredefinedKeyKind.CustomHeaders;
 

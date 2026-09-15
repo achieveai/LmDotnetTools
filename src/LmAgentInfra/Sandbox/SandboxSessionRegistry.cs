@@ -2646,7 +2646,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                         id: id,
                         action: "allow",
                         hosts: [entry.Host],
-                        ports: [443],
+                        ports: [entry.Port],
                         methods: [],
                         paths: [],
                         authProvider: id,
