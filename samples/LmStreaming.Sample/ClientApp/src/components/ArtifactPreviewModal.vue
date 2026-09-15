@@ -1,31 +1,44 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import BaseModal from './BaseModal.vue';
-import { NoSessionError, previewFile } from '@/api/fileBrowserApi';
-import type { PreviewResult } from '@/types/fileBrowser';
+import {
+  FileBrowserError,
+  NoSessionError,
+  downloadFile,
+  fetchFileBlob,
+  listFiles,
+  previewFile,
+  resolveWorkspaceLink,
+} from '@/api/fileBrowserApi';
+import { isNoSession, type PreviewResult } from '@/types/fileBrowser';
 import { parseMarkdown } from '@/utils/markdown';
 import { isMarkdownArtifact } from '@/utils/todoBoard';
+import { delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
 import { logger } from '@/utils';
 
 /**
- * Read-only preview popup for a task's file artifact (#583, PR 5). Opened by clicking an artifact
- * chip on the work board; fetches the file through the EXISTING file-browser preview endpoint
- * (`GET /api/conversations/{threadId}/files/preview?path=...`), which owns the policy — the
- * 256 KiB / 5000-line cap, the UTF-8-only guard, and the dot-directory exclusions.
+ * Read-only preview popup for a workspace file. Two openers:
  *
- * Rendering: a `.md`/`.markdown` artifact goes through the app's existing `parseMarkdown` pipeline
- * (marked + DOMPurify, styled by the global `markdown.css` via `.markdown-content`); anything else
- * previewable renders as plain preformatted text. A non-previewable file shows the server's
- * `reason` rather than a blank box, and a conversation with no sandbox session says so — the chip
- * is data either way, so the modal explains instead of silently failing.
+ *   - a task's artifact chip on the work board (#583, PR 5) passes a workspace-relative `path`;
+ *   - a file link in an assistant message passes the raw link `target` (a host path, `file://` URI or
+ *     relative path), which the server first maps onto the workspace (`GET files/resolve?target=`).
+ *
+ * Content comes from the EXISTING file-browser endpoints, which own the policy: `preview` (256 KiB /
+ * 5000-line cap, UTF-8-only, dot-directory exclusions) for text, `download` (64 MiB) for image bytes.
+ *
+ * Viewers, by extension: `.md`/`.markdown` through the app's `parseMarkdown` pipeline; `.csv`/`.tsv` as a
+ * table; common images as `<img>` over a re-typed blob; any other previewable text as `<pre>`. A
+ * non-previewable file shows the server's `reason`. Every resolved file also gets a Download button.
  */
 const log = logger.forComponent('ArtifactPreviewModal');
 
 const props = defineProps<{
-  /** The conversation whose workspace the artifact lives in. */
+  /** The conversation whose workspace the file lives in. */
   threadId: string;
   /** Workspace-relative path, exactly as carried on the task row. */
-  path: string;
+  path?: string;
+  /** Raw file link from a chat message; resolved on the server. Used when `path` is absent. */
+  target?: string;
   /**
    * True while the layout reserves an expanded sidebar column on the left (#594 D6, #603 F-001):
    * the backdrop then stops at that column's edge so conversation switching stays a single click.
@@ -36,11 +49,37 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: [] }>();
 
+/** Images above this are not pulled into the page; the Download button still works. */
+const MAX_INLINE_IMAGE_BYTES = 16 * 1024 * 1024;
+
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  // Rendered only through <img>, where an SVG's scripts never run.
+  svg: 'image/svg+xml',
+};
+
 const isLoading = ref(true);
+const resolvedPath = ref<string | null>(props.path ?? null);
 const result = ref<PreviewResult | null>(null);
+const imageUrl = ref<string | null>(null);
+/** A client-side reason the file is not shown inline (folder, image too large). */
+const unavailableText = ref<string | null>(null);
 const errorText = ref<string | null>(null);
 
-const isMarkdown = computed(() => isMarkdownArtifact(props.path));
+const displayPath = computed(() => resolvedPath.value ?? props.target ?? '');
+
+const imageType = computed(() => {
+  const ext = /\.([a-z0-9]+)$/i.exec(resolvedPath.value ?? '')?.[1]?.toLowerCase();
+  return ext ? (IMAGE_TYPES[ext] ?? null) : null;
+});
+
+const isMarkdown = computed(() => isMarkdownArtifact(resolvedPath.value ?? ''));
+const delimiter = computed(() => delimiterForPath(resolvedPath.value ?? ''));
 
 const previewText = computed(() =>
   result.value?.previewable && result.value.text !== undefined ? result.value.text : null
@@ -51,38 +90,139 @@ const renderedMarkdown = computed(() =>
   previewText.value !== null && isMarkdown.value ? parseMarkdown(previewText.value) : ''
 );
 
+const table = computed(() =>
+  previewText.value !== null && delimiter.value
+    ? parseDelimitedText(previewText.value, delimiter.value)
+    : null
+);
+
+const isFolder = ref(false);
+
+/** Offered once the path is known and the entry is a file — including when its preview is unavailable. */
+const canDownload = computed(
+  () => !isLoading.value && resolvedPath.value !== null && !errorText.value && !isFolder.value
+);
+
 /**
- * Cancels the in-flight preview read when the modal unmounts (596/F-005). Unmounting already
- * prevented a stale paint — a late response writes into dead refs — but the request itself ran to
- * completion and was discarded, up to a 256 KiB read for nothing on every conversation switch.
+ * Cancels in-flight reads when the modal unmounts (596/F-005). Unmounting already prevented a stale
+ * paint — a late response writes into dead refs — but the request itself ran to completion and was
+ * discarded, up to a 256 KiB read for nothing on every conversation switch.
  */
 const abort = new AbortController();
 
+function describeFailure(e: unknown): string {
+  if (e instanceof NoSessionError) {
+    return 'This conversation has no workspace session, so the file cannot be previewed right now.';
+  }
+  if (e instanceof FileBrowserError) {
+    switch (e.code) {
+      case 'outside_workspace':
+        return 'This link points outside the workspace.';
+      case 'invalid_path':
+        return 'This link is not a valid workspace path.';
+      case 'not_found':
+        return 'This file was not found in the workspace.';
+    }
+  }
+  return 'Could not load the preview.';
+}
+
+/**
+ * The size of the file at a workspace-relative `path`, read from its parent's listing: the artifact chip
+ * passes a bare path, so nothing has reported the size yet. Null when the listing cannot say (the entry is
+ * past the server's row cap, or has no size).
+ */
+async function sizeFromListing(path: string): Promise<number | null> {
+  const slash = path.lastIndexOf('/');
+  const listing = await listFiles(props.threadId, slash < 0 ? '' : path.slice(0, slash), abort.signal);
+  if (isNoSession(listing)) throw new NoSessionError();
+  const name = path.slice(slash + 1);
+  const entry = listing.entries.find((e) => e.name === name);
+  if (entry) return entry.size;
+  if (listing.moreCount > 0) return null;
+  throw new FileBrowserError('File not found', 404, 'not_found');
+}
+
+async function load(): Promise<void> {
+  // undefined: not reported yet (the artifact chip's bare path); null: reported as unknown.
+  let size: number | null | undefined;
+  if (resolvedPath.value === null && props.target !== undefined) {
+    const resolved = await resolveWorkspaceLink(props.threadId, props.target, abort.signal);
+    resolvedPath.value = resolved.path;
+    size = resolved.size;
+    if (resolved.type === 'directory') {
+      isFolder.value = true;
+      unavailableText.value = 'This link points to a folder, not a file.';
+      return;
+    }
+  }
+
+  const path = resolvedPath.value;
+  if (path === null) return;
+
+  if (imageType.value) {
+    // Checked before any bytes move: the download endpoint would otherwise pull up to 64 MiB into the page.
+    if (size === undefined) size = await sizeFromListing(path);
+    if (size === null) {
+      unavailableText.value = "This image's size could not be checked, so it is not shown here.";
+      return;
+    }
+    if (size > MAX_INLINE_IMAGE_BYTES) {
+      unavailableText.value = 'This image is too large to show here.';
+      return;
+    }
+    const blob = await fetchFileBlob(props.threadId, path, abort.signal);
+    // The download endpoint answers application/octet-stream + nosniff; an <img> needs the real type.
+    imageUrl.value = URL.createObjectURL(new Blob([blob], { type: imageType.value }));
+    return;
+  }
+
+  result.value = await previewFile(props.threadId, path, abort.signal);
+}
+
 onMounted(async () => {
   try {
-    result.value = await previewFile(props.threadId, props.path, abort.signal);
+    await load();
   } catch (e) {
     // Our own unmount-time abort is not a failure — and the component is gone, so there is nothing
     // to say it to. (`fetch` rejects an aborted call with DOMException 'AbortError'.)
     if (abort.signal.aborted) return;
-    // The board is an accessory: a failed preview degrades to a message inside the modal, never
-    // to an error banner over the chat. Recorded at debug like the board's own load failures.
-    errorText.value =
-      e instanceof NoSessionError
-        ? 'This conversation has no workspace session, so the artifact cannot be previewed right now.'
-        : 'Could not load the preview.';
-    log.debug('Artifact preview failed', { path: props.path, error: e });
+    // The preview is an accessory: a failure degrades to a message inside the modal, never to an
+    // error banner over the chat. Recorded at debug like the board's own load failures.
+    errorText.value = describeFailure(e);
+    log.debug('Artifact preview failed', { path: displayPath.value, error: e });
   } finally {
     if (!abort.signal.aborted) isLoading.value = false;
   }
 });
 
-onBeforeUnmount(() => abort.abort());
+const isDownloading = ref(false);
+
+async function download(): Promise<void> {
+  if (resolvedPath.value === null) return;
+  isDownloading.value = true;
+  try {
+    await downloadFile(props.threadId, resolvedPath.value, abort.signal);
+  } catch (e) {
+    if (abort.signal.aborted) return;
+    log.debug('Artifact download failed', { path: resolvedPath.value, error: e });
+    errorText.value = e instanceof FileBrowserError && e.code === 'file_too_large'
+      ? 'This file is too large to download.'
+      : 'Could not download the file.';
+  } finally {
+    if (!abort.signal.aborted) isDownloading.value = false;
+  }
+}
+
+onBeforeUnmount(() => {
+  abort.abort();
+  if (imageUrl.value) URL.revokeObjectURL(imageUrl.value);
+});
 </script>
 
 <template>
   <BaseModal
-    :title="props.path"
+    :title="displayPath"
     :class="{ 'artifact-preview-beside-sidebar': props.besideSidebar }"
     data-test-id="artifact-preview-modal"
     @close="emit('close')"
@@ -100,6 +240,22 @@ onBeforeUnmount(() => abort.abort());
         {{ errorText }}
       </div>
 
+      <div
+        v-else-if="unavailableText"
+        class="artifact-preview-message"
+        data-testid="artifact-preview-unavailable"
+      >
+        {{ unavailableText }}
+      </div>
+
+      <img
+        v-else-if="imageUrl"
+        class="artifact-preview-image"
+        :src="imageUrl"
+        :alt="displayPath"
+        data-testid="artifact-preview-image"
+      />
+
       <!-- eslint-disable-next-line vue/no-v-html -- parseMarkdown sanitizes via DOMPurify -->
       <div
         v-else-if="previewText !== null && isMarkdown"
@@ -107,6 +263,24 @@ onBeforeUnmount(() => abort.abort());
         data-testid="artifact-preview-markdown"
         v-html="renderedMarkdown"
       ></div>
+
+      <div v-else-if="table" class="artifact-preview-table-wrap">
+        <table class="artifact-preview-table" data-testid="artifact-preview-table">
+          <thead v-if="table.rows.length > 0">
+            <tr>
+              <th v-for="(cell, c) in table.rows[0]" :key="c">{{ cell }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, r) in table.rows.slice(1)" :key="r">
+              <td v-for="(cell, c) in row" :key="c">{{ cell }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="table.truncated" class="artifact-preview-message">
+          Showing the first {{ table.rows.length }} rows. Download the file to see all of it.
+        </div>
+      </div>
 
       <pre
         v-else-if="previewText !== null"
@@ -118,6 +292,18 @@ onBeforeUnmount(() => abort.abort());
       <div v-else class="artifact-preview-message" data-testid="artifact-preview-unavailable">
         Preview unavailable<span v-if="result?.reason"> ({{ result.reason }})</span>.
       </div>
+    </div>
+
+    <div v-if="canDownload" class="artifact-preview-footer">
+      <button
+        type="button"
+        class="artifact-preview-download"
+        :disabled="isDownloading"
+        data-testid="artifact-preview-download"
+        @click="download"
+      >
+        {{ isDownloading ? 'Downloading…' : 'Download' }}
+      </button>
     </div>
   </BaseModal>
 </template>
@@ -178,5 +364,58 @@ onBeforeUnmount(() => abort.abort());
   word-break: break-word;
   background: #f8f9fa;
   border-radius: 6px;
+}
+
+.artifact-preview-image {
+  display: block;
+  max-width: 100%;
+  margin: 8px auto;
+}
+
+.artifact-preview-table-wrap {
+  padding: 8px;
+}
+
+.artifact-preview-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.artifact-preview-table th,
+.artifact-preview-table td {
+  border: 1px solid #e0e0e0;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.artifact-preview-table th {
+  position: sticky;
+  top: 0;
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+.artifact-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-top: 1px solid #eee;
+}
+
+.artifact-preview-download {
+  padding: 6px 14px;
+  border: 1px solid #007bff;
+  border-radius: 6px;
+  background: #007bff;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.artifact-preview-download:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 </style>

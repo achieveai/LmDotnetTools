@@ -2,6 +2,12 @@ import { Marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/core';
+import {
+  WORKSPACE_LINK_CLASS,
+  buildWorkspaceLinkHref,
+  isWebUrl,
+  isWorkspaceLinkCandidate,
+} from './workspaceLinks';
 
 import bash from 'highlight.js/lib/languages/bash';
 import csharp from 'highlight.js/lib/languages/csharp';
@@ -147,21 +153,83 @@ const ALLOWED_ATTR = [
   'type', 'checked', 'disabled', // task-list checkbox
 ];
 
+export interface ParseMarkdownOptions {
+  highlight?: boolean;
+  /**
+   * Rewrite links to workspace files (anything that is not web/mailto/tel or an in-page anchor) into
+   * in-page `#workspace-file?` links carrying this conversation id -- see `utils/workspaceLinks.ts`.
+   * Only assistant bubbles pass it; everywhere else such a link renders as before.
+   */
+  workspaceLinks?: { threadId: string };
+}
+
 /**
  * Sanitize marked's HTML for the `v-html` bindings.
  *
  * `ALLOW_DATA_ATTR`/`ALLOW_ARIA_ATTR` are off: markdown emits neither, and leaving them on keeps
  * an attribute channel open for no rendering benefit. Everything not listed above -- `<script>`,
- * `<iframe>`, `<style>`, `<form>`, SVG/MathML, every `on*` handler, `javascript:` URLs and
- * `target` -- is dropped.
+ * `<iframe>`, `<style>`, `<form>`, SVG/MathML, every `on*` handler, `javascript:` URLs and the
+ * document's own `target`/`rel` -- is dropped.
+ *
+ * Two link rewrites run as DOMPurify hooks, because only there is every `<a>` seen -- markdown links
+ * and raw-HTML anchors alike -- with the attribute allowlist already applied:
+ *
+ *   - `uponSanitizeAttribute` (workspace links only): rewrites the href BEFORE DOMPurify's URI check,
+ *     which would otherwise drop a `B:\...` or `file:` destination outright.
+ *   - `afterSanitizeAttributes`: web links get `target="_blank" rel="noopener noreferrer"` (set by us,
+ *     never taken from the document, whose `target`/`rel` were just stripped), and the
+ *     `workspace-link` class is kept only on a link this call rewrote.
+ *
+ * The hooks are added and removed around the synchronous `sanitize` call rather than registered once,
+ * so the per-call thread id is a closure, not module state, and DOMPurify's global instance is left
+ * exactly as found.
  */
-function sanitize(html: string): string {
-  return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
-    ALLOW_ARIA_ATTR: false,
-  });
+function sanitize(html: string, workspaceLinks: ParseMarkdownOptions['workspaceLinks']): string {
+  const rewrittenAnchors = new WeakSet<Element>();
+
+  const rewriteHref = (node: Element, data: { attrName: string; attrValue: string }) => {
+    if (
+      workspaceLinks &&
+      node.nodeName === 'A' &&
+      data.attrName === 'href' &&
+      isWorkspaceLinkCandidate(data.attrValue)
+    ) {
+      data.attrValue = buildWorkspaceLinkHref({
+        threadId: workspaceLinks.threadId,
+        target: data.attrValue.trim(),
+      });
+      rewrittenAnchors.add(node);
+    }
+  };
+
+  const finishAnchor = (node: Element) => {
+    if (node.nodeName !== 'A') return;
+    const href = node.getAttribute('href') ?? '';
+    if (isWebUrl(href)) {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+    if (rewrittenAnchors.has(node)) {
+      node.setAttribute('class', WORKSPACE_LINK_CLASS);
+    } else if (node.classList.contains(WORKSPACE_LINK_CLASS)) {
+      node.classList.remove(WORKSPACE_LINK_CLASS);
+      if (node.classList.length === 0) node.removeAttribute('class');
+    }
+  };
+
+  DOMPurify.addHook('uponSanitizeAttribute', rewriteHref);
+  DOMPurify.addHook('afterSanitizeAttributes', finishAnchor);
+  try {
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS,
+      ALLOWED_ATTR,
+      ALLOW_DATA_ATTR: false,
+      ALLOW_ARIA_ATTR: false,
+    });
+  } finally {
+    DOMPurify.removeHook('afterSanitizeAttributes', finishAnchor);
+    DOMPurify.removeHook('uponSanitizeAttribute', rewriteHref);
+  }
 }
 
 /**
@@ -173,8 +241,8 @@ function sanitize(html: string): string {
  * a 10 KB JS fence took 2.02 s highlighted vs 8.5 ms plain). Callers rendering a message that
  * is still streaming should pass `false` and re-render highlighted once it completes.
  */
-export function parseMarkdown(text: string, options?: { highlight?: boolean }): string {
+export function parseMarkdown(text: string, options?: ParseMarkdownOptions): string {
   if (!text) return '';
   const instance = options?.highlight === false ? markedPlain : markedHighlighted;
-  return sanitize(instance.parse(text) as string);
+  return sanitize(instance.parse(text) as string, options?.workspaceLinks);
 }

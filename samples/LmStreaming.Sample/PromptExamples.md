@@ -105,6 +105,26 @@ node playwright-scripts/gen-md-showcase-prompt.mjs
 `playwright-scripts/markdown-render-audit.mjs` sends this same prompt and asserts on the computed
 styles of every rendered construct.
 
+### Chat file links + copy
+
+Assistant text whose links point at workspace files, in every spelling a model produces: the host path
+it was told (bare and `<angle-bracketed>`), a relative path, a `file://` URI, a binary file, a folder,
+the Windows spelling of the same folder, a path outside the workspace, and a web link. Clicking a file
+link opens the preview modal; the hover Copy button copies this raw markdown.
+
+Send it in a **Workspace Agent** conversation on **Test (Mock)** after putting `docs/report.md`,
+`data/items.csv`, `img/dot.png` and `bin/blob.dat` in the workspace. `/workspace` is the HostPath the
+docker-compose gateway reports (the system prompt's "Your workspace directory is:" line); against a
+natively spawned gateway, substitute that line's Windows path. The `report-win` links name one
+machine's bind-mount folder — adjust them to yours.
+
+<|instruction_start|>{"instruction_chain":[{"id":"file-links","id_message":"file-links","messages":[{"text":"Here are the files I produced:\n\n- Report (host path as told): [report.md](/workspace/docs/report.md)\n- Report (angle brackets): [report-angle.md](</workspace/docs/report.md>)\n- Items (relative): [items.csv](data/items.csv)\n- Image (file URI): [dot.png](file:///workspace/img/dot.png)\n- Binary: [blob.dat](/workspace/bin/blob.dat)\n- Folder: [docs folder](/workspace/docs)\n- Report (raw Windows path): [report-win.md](B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56\\wt5-file-link-check\\docs\\report.md)\n- Report (Windows, angle brackets): [report-win-angle.md](<B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56\\wt5-file-link-check\\docs\\report.md>)\n- Outside: [win.ini](C:\\Windows\\win.ini)\n- Web: [example](https://example.com/)"}]}]}<|instruction_end|>
+
+`playwright-scripts/chat-file-link-preview.mjs` does all of it in one call: it provisions the
+conversation, reads the real HostPath from the system-prompt echo, uploads the fixtures, sends this
+prompt (rebuilt around that HostPath) and asserts every modal state, the download bytes and the
+clipboard.
+
 ### Weather Emoji Conditions
 
 The mock SampleTools.GetWeather returns random conditions from:

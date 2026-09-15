@@ -389,6 +389,171 @@ public class FileBrowserControllerTests
             );
     }
 
+    // -------- Resolve link --------
+
+    [Fact]
+    public async Task ResolveLink_AbsoluteHostPathFile_Returns200WithRelativePathTypeAndSize()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [File("a.md", size: 812)];
+
+        // FakeFileBrowser.LiveSession mounts the workspace at host path "/host/ws".
+        var result = await controller.Resolve(ThreadId, "file:///host/ws/docs/a.md#L3", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/a.md", "file", 812));
+    }
+
+    [Fact]
+    public async Task ResolveLink_RelativeDirectory_Returns200Directory()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+
+        var result = await controller.Resolve(ThreadId, "./docs", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs", "directory", null));
+    }
+
+    [Fact]
+    public async Task ResolveLink_WindowsHostPath_StripsPrefixCaseInsensitively()
+    {
+        var (controller, browser) = Build();
+        browser.Resolution = new SandboxSessionResolution(
+            SandboxSessionResolutionOutcome.Resolved,
+            new SandboxSession("default", "sess-1", "/workspace", @"B:\sandbox-workspaces\Repo"),
+            "app",
+            null
+        );
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [File("report.md", size: 5)];
+
+        var result = await controller.Resolve(
+            ThreadId,
+            @"b:\SANDBOX-WORKSPACES\repo\docs\report.md",
+            CancellationToken.None
+        );
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/report.md", "file", 5));
+    }
+
+    [Fact]
+    public async Task ResolveLink_OutsideWorkspace_Returns400_WithoutListing()
+    {
+        var (controller, browser) = Build();
+        // The refusal must come from the host-path check alone, before any gateway listing.
+        browser.ListThrows = new InvalidOperationException("listing must not be reached");
+
+        var result = await controller.Resolve(ThreadId, "/host/ws2/secret.md", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<BadRequestObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(
+                new
+                {
+                    error = "outside_workspace",
+                    code = "outside_workspace",
+                    threadId = ThreadId,
+                }
+            );
+    }
+
+    [Fact]
+    public async Task ResolveLink_DotDotSegment_Returns400InvalidPath()
+    {
+        var (controller, _) = Build();
+
+        var result = await controller.Resolve(ThreadId, "docs/../../etc/passwd", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<BadRequestObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(
+                new
+                {
+                    error = "invalid_path",
+                    code = "invalid_path",
+                    threadId = ThreadId,
+                }
+            );
+    }
+
+    [Fact]
+    public async Task ResolveLink_MissingFile_Returns404()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [];
+
+        var result = await controller.Resolve(ThreadId, "docs/missing.md", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<NotFoundObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(
+                new
+                {
+                    error = "not_found",
+                    code = "not_found",
+                    threadId = ThreadId,
+                }
+            );
+    }
+
+    [Fact]
+    public async Task ResolveLink_GatewayErrorDuringListing_MapsTo502()
+    {
+        var (controller, browser) = Build();
+        // A gateway failure while walking the path must map like every other file route, not escape as a 500.
+        browser.ListThrows = new SandboxException(SandboxErrorKind.Protocol, "gateway said no");
+
+        var result = await controller.Resolve(ThreadId, "docs/a.md", CancellationToken.None);
+
+        var error = result.Should().BeOfType<ObjectResult>().Which;
+        error.StatusCode.Should().Be(StatusCodes.Status502BadGateway);
+        error
+            .Value.Should()
+            .BeEquivalentTo(
+                new
+                {
+                    error = "gateway_error",
+                    code = "gateway_error",
+                    threadId = ThreadId,
+                }
+            );
+    }
+
+    [Fact]
+    public async Task ResolveLink_NoSession_Returns409NoSessionYet()
+    {
+        var (controller, browser) = Build();
+        browser.Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+
+        var result = await controller.Resolve(ThreadId, "docs/a.md", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<ConflictObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new { code = "no_session_yet", error = "no_session_yet" });
+    }
+
     // -------- Preview --------
 
     [Fact]
