@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.Sandbox.Wire;
@@ -24,7 +25,12 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "sandbox creation");
+            // A 400 is the only sandbox-create failure whose body is safe to read (never the
+            // credential-rejection response) and worth reading (it is the sole source of
+            // invalid_env's offending keys) — see MapRestBadRequestAsync.
+            throw response.StatusCode == HttpStatusCode.BadRequest
+                ? await MapRestBadRequestAsync(response, "sandbox creation", ct).ConfigureAwait(false)
+                : MapErrorResponse(response, "sandbox creation");
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
@@ -164,7 +170,8 @@ public sealed partial class SandboxClient
             // an empty selection is sent as an explicit empty array.
             PluginSelection: request.PluginSelection is null
                 ? null
-                : [.. request.PluginSelection.Select(ToPluginRefDto)]
+                : [.. request.PluginSelection.Select(ToPluginRefDto)],
+            Env: request.Env.Count > 0 ? request.Env : null
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>

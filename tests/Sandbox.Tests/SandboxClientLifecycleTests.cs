@@ -153,6 +153,78 @@ public class SandboxClientLifecycleTests
     }
 
     [Fact]
+    public async Task CreateAsync_WithEnv_IncludedInWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        var request = new SandboxCreateRequest(
+            "my-workspace",
+            env: new Dictionary<string, string> { ["FOO"] = "1", ["PATH"] = "/opt/bin:/usr/bin" }
+        );
+
+        _ = await client.CreateAsync(request);
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+
+        body.GetProperty("env").GetProperty("FOO").GetString().Should().Be("1");
+        body.GetProperty("env").GetProperty("PATH").GetString().Should().Be("/opt/bin:/usr/bin");
+    }
+
+    [Fact]
+    public async Task CreateAsync_EmptyOrNullEnv_OmitsEnvFieldFromWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws", env: new Dictionary<string, string>()));
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        foreach (var sent in handler.Requests.Where(r => r.Method == HttpMethod.Post))
+        {
+            var body = JsonDocument.Parse(sent.Body!).RootElement;
+            body.TryGetProperty("env", out _).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public void SandboxCreateRequest_Env_IsDefensiveCopy()
+    {
+        var source = new Dictionary<string, string> { ["FOO"] = "1" };
+
+        var request = new SandboxCreateRequest("ws", env: source);
+        source["BAR"] = "2";
+
+        request.Env.Should().ContainKey("FOO").WhoseValue.Should().Be("1");
+        request.Env.Should().NotContainKey("BAR");
+    }
+
+    [Fact]
+    public async Task CreateAsync_InvalidEnv400_MapsToInvalidEnvWithKeys()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"error":"invalid env","error_code":"invalid_env","keys":["SANDBOX_HOME"]}""",
+            HttpStatusCode.BadRequest
+        );
+
+        var exception = await Record.ExceptionAsync(() =>
+            client.CreateAsync(
+                new SandboxCreateRequest("ws", env: new Dictionary<string, string> { ["SANDBOX_HOME"] = "x" })
+            )
+        );
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.InvalidEnv);
+        sandboxException.StatusCode.Should().Be(400);
+        sandboxException.InvalidKeys.Should().Equal("SANDBOX_HOME");
+    }
+
+    [Fact]
     public async Task CreateAsync_ResponseWithUnknownFields_IsTolerated()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
