@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -122,7 +123,17 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             request.Tools?.Count ?? 0
         );
 
-        var eventStream = _client.StreamResponseAsync(request, cancellationToken);
+        // Same opt-in diagnostic dump OpenAgent/AnthropicAgent honour (the sample's ?record=1 sets it):
+        // the request as serialized for the wire, then every event payload verbatim as received. The
+        // raw payloads are what make a "the model sent X" claim checkable without a proxy.
+        var dumpWriter = RequestResponseDumpWriter.Create(
+            options?.RequestResponseDumpFileName,
+            OpenAiResponsesClient.s_serializerOptions,
+            _logger
+        );
+        dumpWriter?.WriteRequest(request with { Stream = true });
+
+        var eventStream = DumpRawEvents(_client.StreamResponseAsync(request, cancellationToken), dumpWriter);
         var mapped = EventStreamToMessages(eventStream, Name, options?.GenerationId, cancellationToken);
         // The agent constructs messages itself, so (unlike OpenAgent/AnthropicAgent) it must stamp the
         // run's RunId/ParentRunId/ThreadId explicitly — otherwise every emitted message carries a null
@@ -130,6 +141,21 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         // WithIds preserves the GenerationId already set above (BUG H1), only overriding it when the run
         // advertises one — which equals the id the messages already carry.
         return Task.FromResult(StampRunIds(mapped, options, cancellationToken));
+    }
+
+    private static async IAsyncEnumerable<ResponseEvent> DumpRawEvents(
+        IAsyncEnumerable<ResponseEvent> source,
+        RequestResponseDumpWriter? dumpWriter
+    )
+    {
+        await foreach (var ev in source.ConfigureAwait(false))
+        {
+            // Events built in code (tests, scripted clients) carry no wire text; fall back to a
+            // re-serialization so the dump still records that the event happened.
+            dumpWriter?.AppendRawResponseLine(ev.RawJson ?? ResponseEventParser.ToJsonObject(ev).ToJsonString());
+
+            yield return ev;
+        }
     }
 
     private static async IAsyncEnumerable<IMessage> StampRunIds(

@@ -25,7 +25,8 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
     /// <summary>Default Responses API path (OpenAI). Some hosts use <c>/responses</c>.</summary>
     public const string DefaultResponsesPath = "/v1/responses";
 
-    private static readonly JsonSerializerOptions s_serializerOptions = new(JsonSerializerDefaults.Web)
+    /// <summary>The wire serializer options, shared with the agent so a request dump is the request as sent.</summary>
+    internal static readonly JsonSerializerOptions s_serializerOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
