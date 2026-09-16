@@ -95,6 +95,8 @@ const createMarketplaces = ref<string[]>([]);
 const createPluginSelection = ref<PluginRef[] | null>(null);
 /** Sandbox environment variables for the new workspace. Not tri-state — `{}` means none. */
 const createEnv = ref<Record<string, string>>({});
+/** Live handle on the create form's env rows, so the submit can refuse what they already flag. */
+const createEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Edit form state
 const editWorkspaceId = ref<string | null>(null);
@@ -103,6 +105,8 @@ const editMarketplaces = ref<string[]>([]);
 const editPluginSelection = ref<PluginRef[] | null>(null);
 /** Sandbox environment variables, seeded from the workspace being edited. See {@link seedEditFormFrom}. */
 const editEnv = ref<Record<string, string>>({});
+/** Live handle on the edit form's env rows; see {@link createEnvEditorRef}. */
+const editEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Marketplace options sourced from the live gateway catalog (GET /api/marketplaces), replacing the
 // former static [core, community] seed. Empty when the gateway is offline (marketplacesUnavailable).
@@ -441,6 +445,13 @@ function submitCreate(): void {
     formError.value = 'Name is required';
     return;
   }
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (createEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const directory = createDirectory.value.trim();
   const payload: WorkspaceCreate = {
     name,
@@ -532,6 +543,13 @@ function submitEdit(): void {
   if (submitting.value || interactionBlocked.value) return;
   formError.value = null;
   if (!editWorkspaceId.value) return;
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (editEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const payload: WorkspaceUpdate = { marketplaces: [...editMarketplaces.value] };
   const workspace = editWorkspace.value;
   // Include the selection ONLY when it actually differs from what is stored. Setting the key on
@@ -860,6 +878,7 @@ watch(
           <div v-if="sandboxEnvSupported" class="field">
             <span class="field-label">Environment Variables</span>
             <EnvEditor
+              ref="createEnvEditorRef"
               v-model="createEnv"
               testid-prefix="workspace-env"
               :disabled="submitting || interactionBlocked"
@@ -990,6 +1009,7 @@ watch(
           <div v-if="sandboxEnvSupported" class="field">
             <span class="field-label">Environment Variables</span>
             <EnvEditor
+              ref="editEnvEditorRef"
               v-model="editEnv"
               testid-prefix="workspace-env"
               :disabled="submitting || interactionBlocked"

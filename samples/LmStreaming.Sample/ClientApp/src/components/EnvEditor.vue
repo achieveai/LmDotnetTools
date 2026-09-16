@@ -152,7 +152,9 @@ function rowError(row: EnvRow): string {
   if (duplicateKeys.value.has(key.toUpperCase())) {
     // buildRecord() writes into a plain object, so duplicates do not survive to the payload — the
     // last row silently wins and the other rows the user typed simply vanish on save. Flagging it is
-    // the only way they find out, and `hasErrors` below stops the save until they resolve it.
+    // the only way they find out; `hasErrors` below is what lets the parent form refuse the save,
+    // but only because each parent actually reads it (ModeEditor.validate, WorkspaceSelector's two
+    // submit handlers). This component cannot block a submit it does not own.
     return 'This name is already set above. Keys are case-insensitive.';
   }
   return '';

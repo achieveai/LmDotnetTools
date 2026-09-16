@@ -75,6 +75,8 @@ const preservedRequiredToolIds = ref<string[]>([]);
  * — see {@link handleSave} — matching the server's presence-aware update contract.
  */
 const env = ref<Record<string, string>>({});
+/** Live handle on the env rows, so `validate()` can refuse a save the editor already knows is bad. */
+const envEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 /** A create/update failure surfaced by the parent via the exposed {@link showFormError}. */
 const formError = ref<string | null>(null);
 
@@ -190,6 +192,15 @@ function validate(): boolean {
     valid = false;
   } else {
     systemPromptError.value = '';
+  }
+
+  // The env rows validate themselves and render their own per-row messages, but until the parent
+  // ASKS, nothing stopped the save: `buildRecord` collapses two rows with the same name into one
+  // object key, so submitting with a duplicate silently dropped a variable the user had typed. The
+  // row error was on screen the whole time and the save went through anyway.
+  if (envEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    valid = false;
   }
 
   return valid;
@@ -335,7 +346,12 @@ function handleCancel(): void {
         <p class="field-hint">
           Sandbox environment variables layered onto every session opened in this mode.
         </p>
-        <EnvEditor v-model="env" testid-prefix="mode-env" :disabled="isLoading" />
+        <EnvEditor
+          ref="envEditorRef"
+          v-model="env"
+          testid-prefix="mode-env"
+          :disabled="isLoading"
+        />
       </div>
 
       <div class="form-group" data-testid="mode-editor-required-tools">

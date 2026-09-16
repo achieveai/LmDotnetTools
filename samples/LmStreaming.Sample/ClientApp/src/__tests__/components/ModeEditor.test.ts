@@ -264,6 +264,67 @@ describe('ModeEditor env', () => {
     expect(wire.env).toBeNull();
   });
 
+  /**
+   * `EnvEditor` flags a bad row and exposes `hasErrors`, but nothing read it: `validate()` passed and
+   * the mode saved with a duplicate key collapsed away — a variable the user had typed vanished while
+   * its red error was still on screen. These pin the parent half of that contract.
+   */
+  it('refuses to save while a row is malformed', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    await keys[1].setValue('9NOPE');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  it('refuses to save when two rows share a key, the case that silently dropped a value', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    // Case-insensitive on purpose: this is exactly what `buildRecord` would collapse.
+    await keys[1].setValue('foo');
+    await values[1].setValue('second');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+  });
+
+  // PAIRED POSITIVE: without it the two "no save" assertions above would still pass if the new guard
+  // were unconditional — i.e. if it blocked every save, valid env included.
+  it('still saves when the added row is valid', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(lastSave(wrapper).env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+    expect(wrapper.find('[data-testid="mode-editor-form-error"]').exists()).toBe(false);
+  });
+
   it('surfaces an API error from the parent through showFormError', async () => {
     const wrapper = mount(ModeEditor, { props: { mode: null, tools: [] } });
 
