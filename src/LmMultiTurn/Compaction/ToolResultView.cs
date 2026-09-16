@@ -27,8 +27,18 @@ internal sealed record ToolResultViewOptions
     /// <summary>The least a tightened result keeps, in characters (never more than <see cref="CapChars" />).</summary>
     public int TightenedFloorChars { get; init; }
 
+    /// <summary>
+    ///     RC1: result seq → the newest result seq that read the same resource. Those seqs show a placeholder
+    ///     naming the newer copy, whatever the clear watermark says. Null or empty dedupes nothing.
+    /// </summary>
+    public IReadOnlyDictionary<long, long>? SupersededBy { get; init; }
+
     /// <summary>True when no transform can change a message.</summary>
-    public bool IsIdentity => CapChars == int.MaxValue && ClearedThroughSeq <= 0 && TightenedThroughSeq <= 0;
+    public bool IsIdentity =>
+        CapChars == int.MaxValue
+        && ClearedThroughSeq <= 0
+        && TightenedThroughSeq <= 0
+        && SupersededBy is null or { Count: 0 };
 
     /// <summary>One whole, in <see cref="TightenedPartsPerMillion" /> units.</summary>
     public const int PartsPerMillion = 1_000_000;
@@ -48,8 +58,10 @@ internal sealed record ToolResultViewOptions
 }
 
 /// <summary>
-///     The two view-only transforms of a tool result (compaction phase 1): <b>clear</b> — a result at or below
-///     the persisted clear watermark becomes a short placeholder naming its seq and size — and <b>trim</b> — a
+///     The view-only transforms of a tool result (compaction phase 1): <b>supersede</b> — a result the eval's RC1
+///     check found an identical newer read of becomes a placeholder naming that newer seq — <b>clear</b> — a
+///     result at or below the persisted clear watermark becomes a short placeholder naming its seq and size —
+///     and <b>trim</b> — a
 ///     result longer than the cap keeps its head and tail around a marker naming the elided size and the
 ///     recall call that reads it. A result the fit check had to shrink further is trimmed below the cap
 ///     (<see cref="ToolResultViewOptions.TightenedThroughSeq" />). All are pure functions of the row, its seq and the
@@ -154,6 +166,12 @@ internal static class ToolResultView
             return null;
         }
 
+        if (options.SupersededBy is { } superseded && superseded.TryGetValue(seq, out var newest))
+        {
+            var replaced = SupersededPlaceholder(text.Length, toolCallId, seq, newest, options.RecallToolName);
+            return replaced.Length < text.Length ? replaced : null;
+        }
+
         if (seq <= options.ClearedThroughSeq)
         {
             var placeholder = Placeholder(text.Length, toolCallId, seq, options.RecallToolName);
@@ -170,6 +188,15 @@ internal static class ToolResultView
         return string.Create(
             CultureInfo.InvariantCulture,
             $"[Tool result cleared from the context to save space: {chars} characters, seq {seq}{id}. Read it with {recall}(seq={seq}) if it is still needed.]"
+        );
+    }
+
+    private static string SupersededPlaceholder(int chars, string? toolCallId, long seq, long newest, string recall)
+    {
+        var id = toolCallId is null ? string.Empty : ", tool_call_id " + toolCallId;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"[Tool result superseded by a newer read of the same resource at seq {newest} ({chars} characters cleared, seq {seq}{id}). Read it with {recall}(seq={seq}) only if the older copy matters.]"
         );
     }
 
