@@ -145,7 +145,7 @@
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
         "--Compaction:ClearToolResultsKeepTurns=",
-        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v1.md",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v1.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
@@ -157,7 +157,7 @@
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
         "--Compaction:ClearToolResultsKeepTurns=",
-        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v2.md",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v2.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
@@ -169,7 +169,7 @@
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
         "--Compaction:ClearToolResultsKeepTurns=",
-        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v3.md",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v3.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
@@ -181,7 +181,7 @@
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
         "--Compaction:ClearToolResultsKeepTurns=",
-        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v4.md",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v4.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
