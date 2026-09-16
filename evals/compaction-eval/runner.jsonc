@@ -1,0 +1,85 @@
+// Compaction strategy eval — live config (adopts the local docker gateway; no exe paths).
+//
+//   dotnet run -c Release --project samples/TodoEval.Runner -- \
+//     --config evals/compaction-eval/runner.jsonc --env-file samples/LmStreaming.Sample/.env \
+//     [--tasks c1,d1] [--variants off,compact-v0] [--seeds 1]
+//
+// The env file (gateway app key, provider tokens) is passed on the CLI and never lives here.
+// One host per variant; every knob under test is a --Compaction:* or --Pricing:* host argument.
+{
+  "evalDir": "evals/compaction-eval",
+  "modeName": "compaction-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "compaction-eval",
+  "workspacesRoot": "B:\\sandbox-workspaces\\workspaces",
+
+  "models": ["gpt-5.6-terra"],
+
+  "variants": [
+    {
+      // Control arm: no compaction, the real 272k window. Crossing it is the "Off did not fit" signal.
+      "name": "off",
+      "extraArgs": ["--Compaction:Mode=Off"]
+    },
+    {
+      // H0: the shipped summarizer (prompt v0 is byte-identical to the built-in), window clamped to
+      // 64k so every task compacts at least once inside the budget.
+      "name": "compact-v0",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // H3: same strategy, summary request replays the agent's own cached prefix.
+      "name": "compact-v0-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    }
+  ],
+
+  "tasks": ["c1", "d1", "c2", "r1", "s1", "m1"],
+  "seeds": 3,
+  "maxParallelRuns": 2,
+  "perRunTimeoutMinutes": 30,
+
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      // Adopt the already-running local gateway (docker); AutoSpawn=true only spawns when unhealthy.
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:\\sandbox-workspaces\\workspaces",
+      // Shadow prices (pricing.shadow.md): tokens are the primary signal, dollars are relative.
+      "--Pricing:Version=shadow-2026-09-16",
+      "--Pricing:Models:gpt-5.6-terra:PromptPerMillion=5",
+      "--Pricing:Models:gpt-5.6-terra:CacheReadPerMillion=1",
+      "--Pricing:Models:gpt-5.6-terra:CompletionPerMillion=30",
+      "--Pricing:Models:gpt-5.6-terra:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-terra:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-terra:MaxOutputTokens=128000",
+      "--Pricing:Models:gpt-5.6-sol:PromptPerMillion=10",
+      "--Pricing:Models:gpt-5.6-sol:CacheReadPerMillion=2",
+      "--Pricing:Models:gpt-5.6-sol:CompletionPerMillion=60",
+      "--Pricing:Models:gpt-5.6-sol:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-sol:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-sol:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-sol:MaxOutputTokens=128000",
+      "--Pricing:Models:gpt-5.6-luna:PromptPerMillion=2",
+      "--Pricing:Models:gpt-5.6-luna:CacheReadPerMillion=0.4",
+      "--Pricing:Models:gpt-5.6-luna:CompletionPerMillion=12",
+      "--Pricing:Models:gpt-5.6-luna:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-luna:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-luna:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-luna:MaxOutputTokens=128000"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}
