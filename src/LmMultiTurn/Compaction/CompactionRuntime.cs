@@ -691,12 +691,35 @@ internal sealed class CompactionRuntime
         options.Validate();
         _registry = ToolKnowledgeRegistry.Merge(options.ToolKnowledge);
         _policy = new CompactionPolicy(options);
+        if (
+            options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
+            && options.SummaryModelId is { } summaryModel
+            && !string.Equals(summaryModel, host.DefaultOptions.ModelId, StringComparison.Ordinal)
+        )
+        {
+            throw new ArgumentException(
+                "SummaryPrefixMode CachedPrefix needs the same model as the loop: a different summary model shares no prompt cache.",
+                nameof(setup)
+            );
+        }
+
+        // The delegate is only called during a summary pass, long after the ctor has filled the fields it reads.
         _summarizer =
             setup.Summarizer
-            ?? new ProviderCheckpointSummarizer(
-                providerAgent,
-                options.SummaryModelId ?? host.DefaultOptions.ModelId,
-                setup.SummarySystemPrompt
+            ?? (
+                options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
+                    ? new CachedPrefixCheckpointSummarizer(
+                        providerAgent,
+                        PrefixThroughSeq,
+                        () => host.DefaultOptions.Functions,
+                        host.DefaultOptions.ModelId,
+                        setup.SummarySystemPrompt
+                    )
+                    : new ProviderCheckpointSummarizer(
+                        providerAgent,
+                        options.SummaryModelId ?? host.DefaultOptions.ModelId,
+                        setup.SummarySystemPrompt
+                    )
             );
         _pipeline = new CheckpointPipeline(
             _summarizer,
@@ -881,6 +904,22 @@ internal sealed class CompactionRuntime
         }
 
         return AgentContextProjection.Default.Build(_host.SystemPrompt, rows, Active, RenderOptions, shaping);
+    }
+
+    /// <summary>
+    ///     The view as the agent sends it, cut after <paramref name="seq" />: what a cached-prefix summary call
+    ///     replays so the provider can serve the covered rows from its prompt cache.
+    /// </summary>
+    private IReadOnlyList<IMessage> PrefixThroughSeq(long seq)
+    {
+        var rows = Sequence(_host.HistorySnapshot());
+        return AgentContextProjection.Default.Build(
+            _host.SystemPrompt,
+            [.. rows.Where(r => r.Seq <= seq)],
+            Active,
+            RenderOptions,
+            ToolResultShaping(_tightened, rows)
+        );
     }
 
     /// <summary>

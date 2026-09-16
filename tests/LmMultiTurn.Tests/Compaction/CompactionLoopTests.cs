@@ -59,11 +59,20 @@ public class CompactionLoopTests
             return Task.FromResult(Stream(reply));
         }
 
+        /// <summary>The requests made off the streaming path: the summary pass calls the agent directly.</summary>
+        public List<IReadOnlyList<IMessage>> SummaryRequests { get; } = [];
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
             CancellationToken cancellationToken = default
-        ) => throw new NotSupportedException();
+        )
+        {
+            SummaryRequests.Add([.. messages]);
+            return Task.FromResult<IEnumerable<IMessage>>([
+                new TextMessage { Text = SummaryJson, Role = Role.Assistant },
+            ]);
+        }
 
         private static async IAsyncEnumerable<IMessage> Stream(
             IEnumerable<IMessage> messages,
@@ -78,6 +87,10 @@ public class CompactionLoopTests
             }
         }
     }
+
+    /// <summary>What a real summarizer's provider answers: the smallest summary the validator accepts.</summary>
+    private const string SummaryJson =
+        """{"instructions":[],"goals":[],"decisions":[],"tasks":[],"artifacts":[],"headlines":{},"agent_outcomes":{},"narrative":"Summarised."}""";
 
     /// <summary>Quotes the current instruction whole and headlines every run: always passes V1–V9.</summary>
     private sealed class EchoSummarizer : ICheckpointSummarizer
@@ -159,7 +172,8 @@ public class CompactionLoopTests
             bool start = true,
             Func<Exception, bool>? overflowVerdict = null,
             ILogger<MultiTurnAgentLoop>? logger = null,
-            string? extraTool = null
+            string? extraTool = null,
+            bool realSummarizer = false
         )
         {
             Agent = new ScriptedAgent(script);
@@ -192,7 +206,8 @@ public class CompactionLoopTests
             Setup = new CompactionSetup
             {
                 Options = options,
-                Summarizer = Summarizer,
+                // Null lets the runtime pick the summarizer its options name, which is what the prefix mode selects.
+                Summarizer = realSummarizer ? null : Summarizer,
                 // Each test's window is what the conversation may use: the tool definitions every request
                 // carries come on top, so the arithmetic above holds while the estimate counts them.
                 ResolveWindowTokens = window is null ? null : model => window(model) + (Loop?.ToolSchemaTokens ?? 0),
@@ -812,6 +827,46 @@ public class CompactionLoopTests
         var state = await h.StateAsync();
         state!.ActiveCheckpointId.Should().Be(applied.CheckpointId);
         state.ActiveBoundarySeq.Should().Be(applied.BoundarySeq);
+    }
+
+    [Fact]
+    public void CachedPrefix_WithADifferentSummaryModel_IsRefusedWhenTheRuntimeIsBuilt()
+    {
+        var options = Options(CompactionMode.Compact) with
+        {
+            SummaryPrefixMode = SummaryPrefixMode.CachedPrefix,
+            SummaryModelId = "other-model",
+        };
+
+        var act = () => new Harness(EchoThenDone(1), options, _ => Window, start: false);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*CachedPrefix needs the same model as the loop*");
+    }
+
+    [Fact]
+    public async Task CachedPrefix_RunsTheSummaryPass_OnTheAgentsOwnRequestPrefix()
+    {
+        await using var h = new Harness(
+            EchoThenDone(7),
+            Options(CompactionMode.Compact) with
+            {
+                SummaryPrefixMode = SummaryPrefixMode.CachedPrefix,
+            },
+            _ => Window,
+            realSummarizer: true
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var summaryRequest = h.Agent.SummaryRequests.Should().ContainSingle().Subject;
+        summaryRequest[0].Role.Should().Be(Role.System, "the prefix opens with the loop's own system prompt");
+        summaryRequest[^1]
+            .Should()
+            .BeOfType<TextMessage>()
+            .Which.Text.Should()
+            .Contain("Rows being compacted (already in your context above; cite by seq):");
+        h.Agent.Requests.Should().Contain(r => HasEnvelope(r), "the pass produced a checkpoint the view uses");
     }
 
     [Fact]
