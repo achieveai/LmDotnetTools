@@ -56,6 +56,13 @@ public record RunCompletedMessage : IMessage
     /// </summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// Stable, machine-comparable reason when <see cref="IsError"/> is true and the failure has one (e.g.
+    /// <c>view_exceeds_window</c> for a request compaction refused to send). Null for an unclassified failure
+    /// and on rows written before the field existed.
+    /// </summary>
+    public string? ErrorCode { get; init; }
+
     public string? FromAgent { get; init; }
     public Role Role => Role.System;
     public ImmutableDictionary<string, object>? Metadata { get; init; }

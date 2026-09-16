@@ -3,7 +3,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -408,6 +410,127 @@ public sealed class ConversationsControllerSubAgentsTests
         child.Template.Should().Be("worker");
         child.Status.Should().Be("completed");
         child.ThreadId.Should().Be($"subagent-{childId}");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReportsTheFailureCodeAndTerminalInstant_OfALiveChildRefusedForSize()
+    {
+        // The child's loop refuses its request for size. The flat listing must say why in a machine-readable way
+        // and when it ended, not only "error" (the live rows used to drop both fields in the projection).
+        var threadId = "thread-refused-child";
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () =>
+                        ThrowingProvider(
+                            new ContextOverflowException(
+                                CompactionReasons.ViewExceedsWindow,
+                                "the request is still too large"
+                            )
+                        ),
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            new FunctionRegistry(),
+            threadId: threadId,
+            subAgentOptions: subAgentOptions
+        );
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var childId = ParseAgentId(
+            await loop.SubAgentManager!.SpawnAsync("worker", "too big", name: "alpha", runInBackground: true)
+        );
+        await Wait.UntilAsync(
+            () => loop.SubAgentManager.ListAgents().Single(s => s.AgentId == childId).Status == SubAgentStatus.Error,
+            "the refused child reported error",
+            TimeSpan.FromSeconds(10)
+        );
+
+        var result = await CreateController(pool).ListSubAgents(threadId);
+
+        var child = Assert
+            .IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(Assert.IsType<OkObjectResult>(result).Value)
+            .Should()
+            .ContainSingle(s => s.AgentId == childId)
+            .Which;
+        child.Status.Should().Be("error");
+        child.FailureCode.Should().Be(CompactionReasons.ViewExceedsWindow);
+        child.TerminalAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ListSubAgents_FlatAndRecursive_ReportTheFailureCode_OfAPersistedErroredChild()
+    {
+        const string threadId = "thread-refused-persisted";
+        const string childThreadId = "subagent-refused-persisted-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+        await store.SaveMetadataAsync(
+            childThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = childThreadId,
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    threadId,
+                    new SubAgentSnapshot(
+                        "refused-child",
+                        Name: "alpha",
+                        TemplateName: "worker",
+                        Task: "too big",
+                        Status: SubAgentStatus.Error,
+                        ThreadId: childThreadId,
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UnixEpoch,
+                        FailureCode: CompactionReasons.ViewExceedsWindow
+                    )
+                ),
+            }
+        );
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var flat = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(threadId)).Value
+        );
+        var tree = Assert.IsType<SubAgentTreeResponse>(
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(threadId, recursive: true)).Value
+        );
+
+        foreach (var node in new[] { flat.Single(), tree.Nodes.Single() })
+        {
+            node.FailureCode.Should().Be(CompactionReasons.ViewExceedsWindow);
+            node.TerminalAtUtc.Should().Be(DateTimeOffset.UnixEpoch);
+        }
+
+        JsonSerializer
+            .Serialize(tree, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            .Should()
+            .Contain("\"failureCode\":\"view_exceeds_window\"", "the S2S client reads the camel-cased wire name");
+    }
+
+    private static IStreamingAgent ThrowingProvider(Exception failure)
+    {
+        var provider = new Mock<IStreamingAgent>();
+        provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(failure);
+        return provider.Object;
     }
 
     private static string ParseAgentId(string spawnJson)

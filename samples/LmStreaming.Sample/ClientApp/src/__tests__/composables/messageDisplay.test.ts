@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildDisplayItems, type DisplayableMessage } from '@/composables/messageDisplay';
-import { MessageType, type ReasoningMessage } from '@/types';
+import { buildDisplayItems, checkpointToDisplayData, type DisplayableMessage } from '@/composables/messageDisplay';
+import { MessageType, type CompactionCheckpointMessage, type ReasoningMessage } from '@/types';
 
 /**
  * Reasoning pill buffering (#709).
@@ -76,5 +76,32 @@ describe('buildDisplayItems reasoning pills', () => {
     const pills = items.filter((item) => item.type === 'pill');
     expect(pills).toHaveLength(1);
     expect(pills[0].items).toHaveLength(1);
+  });
+});
+
+describe('checkpointToDisplayData — manual compaction focus', () => {
+  function checkpoint(focus?: string | null) {
+    return {
+      $type: MessageType.CompactionCheckpoint,
+      role: 'user',
+      checkpoint_id: 'cp-t1-1',
+      boundary: { seq: 12, message_id: 'm-12' },
+      trigger: 'Manual',
+      manifest: {},
+      narrative: 'Turn one gathered the data.',
+      ...(focus === undefined ? {} : { focus }),
+    } as CompactionCheckpointMessage;
+  }
+
+  it('shows the focus the user asked the summary to keep', () => {
+    const detail = checkpointToDisplayData(checkpoint('keep the API design decisions')).detail ?? '';
+    expect(detail).toContain('## Focus\nkeep the API design decisions');
+    expect(detail.indexOf('## Focus')).toBeLessThan(detail.indexOf('## What happened'));
+  });
+
+  it('omits the section when the checkpoint has no focus', () => {
+    expect(checkpointToDisplayData(checkpoint()).detail).not.toContain('## Focus');
+    expect(checkpointToDisplayData(checkpoint('   ')).detail).not.toContain('## Focus');
+    expect(checkpointToDisplayData(checkpoint(null)).detail).not.toContain('## Focus');
   });
 });

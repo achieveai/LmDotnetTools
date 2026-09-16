@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
@@ -42,7 +44,7 @@ internal enum ContextOverflowVerdict
 /// exception in the chain is inspected and the strongest verdict wins.
 /// </para>
 /// </remarks>
-internal static class ProviderErrorClassifier
+internal static partial class ProviderErrorClassifier
 {
     /// <summary>
     /// The estimated token count (chars / 4) at which a conversation counts as large enough that a transport
@@ -54,9 +56,13 @@ internal static class ProviderErrorClassifier
     //   Anthropic  — "prompt is too long: 213462 tokens > 200000 maximum"
     //   OpenAI     — code "context_length_exceeded" / "This model's maximum context length is N tokens"
     //   Responses  — "Your input exceeds the context window of this model"
+    //   Copilot    — code "model_max_prompt_tokens_exceeded" ("prompt token count of N exceeds the limit of M")
+    //   Anthropic  — "input length and `max_tokens` exceed context limit: N + M > L"
     // plus the generic phrasings gateways (OpenRouter, Copilot) forward.
     private static readonly string[] s_overflowSignatures =
     [
+        "max_prompt_tokens_exceeded",
+        "exceed context limit",
         "prompt is too long",
         "prompt too long",
         "input is too long",
@@ -106,17 +112,57 @@ internal static class ProviderErrorClassifier
             : ContextOverflowVerdict.NotOverflow;
     }
 
-    /// <summary>The provider told us: an overflow status, or an overflow error body in the message.</summary>
-    private static bool IsProviderOverflow(Exception candidate)
-    {
-        // 413 is "request too large" on every provider here (Anthropic request_too_large, OpenAI/gateways
-        // for an oversized payload) — reduce-scope advice applies whatever the body says.
-        if (candidate is HttpRequestException { StatusCode: HttpStatusCode.RequestEntityTooLarge })
+    /// <summary>
+    /// The provider told us: an overflow status, or an overflow error body in the message. A known status other than
+    /// 400 or 413 is never an overflow, whatever its body mentions (a tokens-per-minute 429, a 500). Nor is a body
+    /// whose output reservation is at least its input: a smaller conversation cannot make that request fit.
+    /// </summary>
+    private static bool IsProviderOverflow(Exception candidate) =>
+        candidate switch
         {
+            // 413 is "request too large" on every provider here (Anthropic request_too_large, OpenAI/gateways
+            // for an oversized payload) — reduce-scope advice applies whatever the body says.
+            HttpRequestException { StatusCode: HttpStatusCode.RequestEntityTooLarge } => true,
+            HttpRequestException { StatusCode: { } status } when status != HttpStatusCode.BadRequest => false,
+            _ => ContainsAny(candidate.Message, s_overflowSignatures) && !IsOutputDominated(candidate.Message),
+        };
+
+    /// <summary>
+    /// Whether the refusal names its token split and the output side is at least the input side: OpenRouter's
+    /// "(N of text input, K of tool input, M in the output)" or Anthropic's "exceed context limit: N + M > L".
+    /// A split with a count too large to parse is not output-dominated: this runs on the error path, so it must never
+    /// throw and mask the provider's error.
+    /// </summary>
+    private static bool IsOutputDominated(string message)
+    {
+        if (OutputSplitPattern().Match(message) is { Success: true } split)
+        {
+            if (!TryTokens(split.Groups["output"], out var remaining))
+            {
+                return false;
+            }
+
+            // Subtract each input from the output rather than summing the inputs, so the total cannot overflow.
+            foreach (Capture capture in split.Groups["input"].Captures)
+            {
+                if (!TryTokens(capture, out var tokens) || tokens > remaining)
+                {
+                    return false;
+                }
+
+                remaining -= tokens;
+            }
+
             return true;
         }
 
-        return ContainsAny(candidate.Message, s_overflowSignatures);
+        return MaxTokensSplitPattern().Match(message) is { Success: true } sum
+            && TryTokens(sum.Groups["input"], out var input)
+            && TryTokens(sum.Groups["output"], out var output)
+            && output >= input;
+
+        static bool TryTokens(Capture capture, out long tokens) =>
+            long.TryParse(capture.Value, NumberStyles.None, CultureInfo.InvariantCulture, out tokens);
     }
 
     /// <summary>
@@ -142,6 +188,19 @@ internal static class ProviderErrorClassifier
             HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded } => true,
             _ => ContainsAny(candidate.Message, s_transportAbortSignatures),
         };
+    }
+
+    /// <summary>
+    /// The HTTP status of the first exception in the chain that carries one, or null. It is what a log may keep of a
+    /// provider failure: the message often embeds the response body, which can quote the prompt or the conversation.
+    /// </summary>
+    internal static int? HttpStatusOf(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return Unwrap(exception)
+            .OfType<HttpRequestException>()
+            .Select(e => (int?)e.StatusCode)
+            .FirstOrDefault(status => status is not null);
     }
 
     private static bool ContainsAny(string? message, string[] signatures)
@@ -192,4 +251,13 @@ internal static class ProviderErrorClassifier
             }
         }
     }
+
+    [GeneratedRegex(
+        @"\((?:(?<input>\d+) of [a-z]+ input, )+(?<output>\d+) in the output\)",
+        RegexOptions.CultureInvariant
+    )]
+    private static partial Regex OutputSplitPattern();
+
+    [GeneratedRegex(@"exceed context limit: (?<input>\d+) \+ (?<output>\d+) >", RegexOptions.CultureInvariant)]
+    private static partial Regex MaxTokensSplitPattern();
 }

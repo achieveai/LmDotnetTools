@@ -87,6 +87,7 @@ public sealed record MultiTurnLifecycleServices
     /// Sizes a request before dispatch for the per-generation context observation (#681). Null uses
     /// <see cref="DefaultContextTokenEstimator"/>. Rides on the bundle so a spawned agent inherits it
     /// through <see cref="ForSpawnedAgent"/> and no loop constructor grows a parameter for it.
+    /// When compaction is enabled, observations use the compaction policy's estimate instead.
     /// </summary>
     public IContextTokenEstimator? ContextTokenEstimator { get; init; }
 

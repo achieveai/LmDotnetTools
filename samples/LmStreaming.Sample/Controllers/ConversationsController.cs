@@ -215,7 +215,8 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner
+    ConversationDescendantScanner descendantScanner,
+    CompactionOptions? compactionOptions = null
 ) : ControllerBase
 {
     /// <summary>
@@ -1035,8 +1036,265 @@ public class ConversationsController(
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
                 RootReasoningEffort = true,
+                ManualCompaction = ManualCompactionConfigured,
             }
         );
+
+    /// <summary>
+    /// True when some route can run in Compact mode and the kill switch is off. A per-agent refusal still
+    /// decides each request; this only keeps a host with compaction off from building an agent to say so.
+    /// </summary>
+    private bool ManualCompactionConfigured =>
+        compactionOptions is { } options
+        && !options.IsKilled()
+        && (
+            options.Mode == CompactionMode.Compact
+            || (options.ModeByRoute?.Values.Any(mode => mode == CompactionMode.Compact) ?? false)
+        );
+
+    /// <summary>
+    /// Asks the conversation's agent to compact its context now, optionally steered by a focus. Non-blocking:
+    /// an idle loop compacts without a model turn, an active run applies it before its next provider call, and
+    /// progress arrives as transient <c>compaction_status</c> frames on the conversation's socket.
+    /// </summary>
+    /// <remarks>
+    /// Guarded like <see cref="SendMessage"/>: agent-owned threads are refused, write access is decided before the
+    /// unknown-thread 404, and an agent that is not pooled is created the same way. A request the agent will not
+    /// take answers 409 with one <see cref="ManualCompactionRefusals"/> reason.
+    /// </remarks>
+    [HttpPost("{threadId}/compaction")]
+    public async Task<IActionResult> RequestCompaction(
+        string threadId,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)]
+            ManualCompactionRequest? request,
+        CancellationToken ct = default
+    )
+    {
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+
+        // Before the null-metadata 404, for the same equal-work reason as SendMessage.
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct)) is { } denied)
+        {
+            return denied;
+        }
+
+        if (metadata == null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        if (!ManualCompactionConfigured)
+        {
+            return CompactionRefused(threadId, ManualCompactionRefusals.CompactionOff);
+        }
+
+        var resolved = await ResolveCurrentAgentAsync(threadId, metadata, "RequestCompaction", ct);
+        if (resolved.Agent is not { } agent)
+        {
+            return resolved.Refusal!;
+        }
+
+        // A provider-hosted loop (Claude, Codex, Copilot) keeps the history on the provider's side, so the harness
+        // has nothing it may cut; any other agent type has no compaction runtime at all.
+        var result = agent switch
+        {
+            IManualCompactionAgent compacting => await compacting.RequestCompactionAsync(request?.Focus, ct),
+            MultiTurnAgentBase => ManualCompactionResult.Refused(ManualCompactionRefusals.ProviderOwnedSession),
+            _ => ManualCompactionResult.Refused(ManualCompactionRefusals.CompactionOff),
+        };
+
+        if (!result.Accepted)
+        {
+            return CompactionRefused(threadId, result.RefusalReason!);
+        }
+
+        logger.LogInformation(
+            "Manual compaction {RequestId} accepted for thread {ThreadId} with status {Status}",
+            result.RequestId,
+            threadId,
+            result.Status
+        );
+        return StatusCode(
+            StatusCodes.Status202Accepted,
+            new ManualCompactionResponse { RequestId = result.RequestId!, Status = result.Status! }
+        );
+    }
+
+    private ConflictObjectResult CompactionRefused(string threadId, string reason)
+    {
+        logger.LogInformation("Manual compaction refused for thread {ThreadId}: {Reason}", threadId, reason);
+        return Conflict(new ManualCompactionRefusalResponse { Reason = reason });
+    }
+
+    /// <summary>
+    /// Resolves the conversation's mode and returns its current pooled agent, creating it when it is not pooled and
+    /// refreshing it when its sandbox session was replaced. Returns the response to send instead when it cannot.
+    /// </summary>
+    /// <param name="threadId">The conversation, already authorized for write and known to exist.</param>
+    /// <param name="metadata">The conversation's row.</param>
+    /// <param name="operation">The route asking, for log lines.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<(IMultiTurnAgent? Agent, IActionResult? Refusal)> ResolveCurrentAgentAsync(
+        string threadId,
+        ThreadMetadata metadata,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        var persistedModeId =
+            metadata.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                ? modeObj?.ToString()
+                : null;
+        var mode =
+            await modeStore.GetModeAsync(persistedModeId ?? SystemChatModes.DefaultModeId, ct)
+            ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+        if (mode == null)
+        {
+            return (
+                null,
+                StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new { error = "Could not resolve the conversation's mode.", threadId }
+                )
+            );
+        }
+
+        // HttpContext is null when an action is invoked directly (outside the MVC pipeline, e.g. a
+        // unit test constructing the controller without wiring ControllerContext) — treat that the
+        // same as "no caller credential" rather than dereferencing a null Request.
+        var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
+
+        try
+        {
+            // AFTER the authorization the caller did, never before - see the helper's remarks. Inside the
+            // try because it can refuse a cross-app handoff, and that refusal is the same
+            // caller_credential_conflict the pool raises a few lines below.
+            await ReleaseAgentBoundToAnotherUserAsync(threadId, operation, callerCredential);
+
+            _ = agentPool.GetOrCreateAgent(
+                threadId,
+                mode,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                callerCredential: callerCredential,
+                ownerUserId: CallerUserId
+            );
+
+            // A pooled agent can outlive the sandbox session it was bound to — a workspace
+            // plugin-selection change replaces the session underneath it. GetOrCreateAgent returns
+            // whatever is pooled, session-liveness unexamined, so dispatching straight off it would
+            // send this turn into a destroyed session. The WebSocket setup path solves this by
+            // DISCARDING the GetOrCreateAgent result and taking the agent off the refresh instead
+            // (ChatWebSocketManager, connection setup); REST/S2S is the same one-shot situation and
+            // gets the same treatment, so both entry points agree on what "current" means.
+            //
+            // callerCredential must be threaded through even though the WebSocket call omits it:
+            // that path never passes a credential to GetOrCreateAgent, so its entries hold none and
+            // the default null matches. Here the entry is created WITH this caller's credential, so
+            // omitting it would compare a non-null app id against null and raise a bogus
+            // SandboxCredentialConflictException against the very caller that owns the thread.
+            var refresh = await agentPool.EnsureCurrentAgentAsync(
+                threadId,
+                callerCredential,
+                ct,
+                ownerUserId: CallerUserId
+            );
+            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
+            {
+                // RefreshDeferred means the pooled entry has an ACTIVE run, so the refresh could not
+                // swap it: EnsureCurrentAgentAsync hands back that same old agent, still bound to the
+                // superseded session. Dispatching on it would queue this request into a session the
+                // migration's retirement grace is about to destroy. The WebSocket path can tell an
+                // already-connected client to stand by (it emits this same
+                // "sandbox_session_refresh_deferred" name); REST is one-shot, so it answers with the
+                // 503 its sibling transient failures below use. Retrying after the active run ends
+                // takes the normal refresh path.
+                logger.LogWarning(
+                    "{Operation} for thread {ThreadId} deferred: sandbox session refresh is blocked by an active run",
+                    operation,
+                    threadId
+                );
+                return (
+                    null,
+                    StatusCode(
+                        StatusCodes.Status503ServiceUnavailable,
+                        new
+                        {
+                            error = "sandbox_session_refresh_deferred",
+                            code = "sandbox_session_refresh_deferred",
+                            detail = "The conversation's sandbox session is being replaced and its current run must finish first. Retry shortly.",
+                            threadId,
+                        }
+                    )
+                );
+            }
+
+            return (refresh.Agent, null);
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "{Operation} for thread {ThreadId} failed: provider {ProviderId} unavailable",
+                operation,
+                threadId,
+                ex.ProviderId
+            );
+            return (
+                null,
+                StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new
+                    {
+                        error = "provider_unavailable",
+                        code = "provider_unavailable",
+                        providerId = ex.ProviderId,
+                        detail = ex.Message,
+                        threadId,
+                    }
+                )
+            );
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "{Operation} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
+                operation,
+                threadId,
+                ex.StatusCode
+            );
+            return (
+                null,
+                StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new
+                    {
+                        error = "sandbox_unavailable",
+                        code = "sandbox_unavailable",
+                        detail = ex.Message,
+                        threadId,
+                    }
+                )
+            );
+        }
+        catch (SandboxCredentialConflictException ex)
+        {
+            return (null, CallerCredentialConflict(threadId, operation, ex));
+        }
+        catch (PrincipalConflictException ex)
+        {
+            return (null, PrincipalConflict(threadId, operation, ex));
+        }
+    }
 
     /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
@@ -1102,136 +1360,10 @@ public class ConversationsController(
             return UnknownThread(threadId);
         }
 
-        var persistedModeId =
-            metadata.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
-                ? modeObj?.ToString()
-                : null;
-        var mode =
-            await modeStore.GetModeAsync(persistedModeId ?? SystemChatModes.DefaultModeId, ct)
-            ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
-        if (mode == null)
+        var resolved = await ResolveCurrentAgentAsync(threadId, metadata, "SendMessage", ct);
+        if (resolved.Agent is not { } agent)
         {
-            return StatusCode(
-                StatusCodes.Status500InternalServerError,
-                new { error = "Could not resolve the conversation's mode.", threadId }
-            );
-        }
-
-        // HttpContext is null when an action is invoked directly (outside the MVC pipeline, e.g. a
-        // unit test constructing the controller without wiring ControllerContext) — treat that the
-        // same as "no caller credential" rather than dereferencing a null Request.
-        var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
-
-        IMultiTurnAgent agent;
-        try
-        {
-            // AFTER the authorization above, never before - see the helper's remarks. Inside the try
-            // because it can now refuse a cross-app handoff, and that refusal is the same
-            // caller_credential_conflict the pool raises a few lines below.
-            await ReleaseAgentBoundToAnotherUserAsync(threadId, "SendMessage", callerCredential);
-
-            _ = agentPool.GetOrCreateAgent(
-                threadId,
-                mode,
-                requestedProviderId: null,
-                requestResponseDumpFileName: null,
-                callerCredential: callerCredential,
-                ownerUserId: CallerUserId
-            );
-
-            // A pooled agent can outlive the sandbox session it was bound to — a workspace
-            // plugin-selection change replaces the session underneath it. GetOrCreateAgent returns
-            // whatever is pooled, session-liveness unexamined, so dispatching straight off it would
-            // send this turn into a destroyed session. The WebSocket setup path solves this by
-            // DISCARDING the GetOrCreateAgent result and taking the agent off the refresh instead
-            // (ChatWebSocketManager, connection setup); REST/S2S is the same one-shot situation and
-            // gets the same treatment, so both entry points agree on what "current" means.
-            //
-            // callerCredential must be threaded through even though the WebSocket call omits it:
-            // that path never passes a credential to GetOrCreateAgent, so its entries hold none and
-            // the default null matches. Here the entry is created WITH this caller's credential, so
-            // omitting it would compare a non-null app id against null and raise a bogus
-            // SandboxCredentialConflictException against the very caller that owns the thread.
-            var refresh = await agentPool.EnsureCurrentAgentAsync(
-                threadId,
-                callerCredential,
-                ct,
-                ownerUserId: CallerUserId
-            );
-            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
-            {
-                // RefreshDeferred means the pooled entry has an ACTIVE run, so the refresh could not
-                // swap it: EnsureCurrentAgentAsync hands back that same old agent, still bound to the
-                // superseded session. Dispatching on it would queue this turn into a session the
-                // migration's retirement grace is about to destroy. The WebSocket path can tell an
-                // already-connected client to stand by (it emits this same
-                // "sandbox_session_refresh_deferred" name); REST is one-shot, so it answers with the
-                // 503 its sibling transient failures above use. Retrying after the active run ends
-                // takes the normal refresh path.
-                logger.LogWarning(
-                    "SendMessage for thread {ThreadId} deferred: sandbox session refresh is blocked by an active run",
-                    threadId
-                );
-                return StatusCode(
-                    StatusCodes.Status503ServiceUnavailable,
-                    new
-                    {
-                        error = "sandbox_session_refresh_deferred",
-                        code = "sandbox_session_refresh_deferred",
-                        detail = "The conversation's sandbox session is being replaced and its current run must finish first. Retry shortly.",
-                        threadId,
-                    }
-                );
-            }
-
-            agent = refresh.Agent;
-        }
-        catch (ProviderUnavailableException ex)
-        {
-            logger.LogWarning(
-                ex,
-                "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable",
-                threadId,
-                ex.ProviderId
-            );
-            return StatusCode(
-                StatusCodes.Status503ServiceUnavailable,
-                new
-                {
-                    error = "provider_unavailable",
-                    code = "provider_unavailable",
-                    providerId = ex.ProviderId,
-                    detail = ex.Message,
-                    threadId,
-                }
-            );
-        }
-        catch (SandboxSessionUnavailableException ex)
-        {
-            logger.LogWarning(
-                ex,
-                "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
-                threadId,
-                ex.StatusCode
-            );
-            return StatusCode(
-                StatusCodes.Status503ServiceUnavailable,
-                new
-                {
-                    error = "sandbox_unavailable",
-                    code = "sandbox_unavailable",
-                    detail = ex.Message,
-                    threadId,
-                }
-            );
-        }
-        catch (SandboxCredentialConflictException ex)
-        {
-            return CallerCredentialConflict(threadId, "SendMessage", ex);
-        }
-        catch (PrincipalConflictException ex)
-        {
-            return PrincipalConflict(threadId, "SendMessage", ex);
+            return resolved.Refusal!;
         }
 
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };

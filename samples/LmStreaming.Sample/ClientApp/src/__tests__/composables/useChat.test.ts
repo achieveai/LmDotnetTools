@@ -463,6 +463,131 @@ describe('useChat rehydration multi-turn identity (reload keeps turns distinct)'
   });
 });
 
+describe('useChat compaction checkpoint divider (#721, spec 679 §7.2)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // The persisted row, as CompactionCheckpointMessage serializes it (role user, no generation id).
+  function checkpoint(id: string, boundarySeq: number, rows: number) {
+    return {
+      $type: MessageType.CompactionCheckpoint,
+      role: 'user',
+      checkpoint_id: id,
+      schema_version: 1,
+      boundary: { seq: boundarySeq, message_id: `m-${boundarySeq}` },
+      trigger: 'Preemptive',
+      manifest: {
+        current_instruction: [{ seq: 1, quote: 'Build the report' }],
+        instructions: [],
+        goals: ['Ship it'],
+        decisions: [],
+        tasks: [],
+        artifacts: [],
+        agents: [],
+        index: [],
+        recovery: { deferred_tool_calls: 0, parked_waits: 0, owed_continuations: 0, interrupted_turns: 0 },
+      },
+      narrative: 'Turn one gathered the data.',
+      stats: { rows_covered: rows, estimated_tokens_before: 28000, estimated_tokens_after: 12000 },
+      text: '<context-checkpoint …>',
+    };
+  }
+
+  // Each row gets its own messageOrderIdx (its timestamp) so user and assistant text never share a key.
+  function row(id: string, timestamp: number, message: Record<string, unknown>, runId: string) {
+    return {
+      id,
+      threadId: 'thread-x',
+      runId,
+      generationId: `gen-${runId}`,
+      messageOrderIdx: timestamp,
+      timestamp,
+      messageType: String(message.$type),
+      role: String(message.role),
+      messageJson: JSON.stringify(message),
+    };
+  }
+
+  const compactionItems = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value.filter(
+      (i) => i.type === 'notification' && (i as any).notification.notifyKind === 'compaction'
+    );
+
+  it('renders a reloaded checkpoint row as ONE divider in place, never a user bubble', async () => {
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      row('p1', 1000, { $type: MessageType.Text, role: 'user', text: 'turn one' }, 'run-1'),
+      row('p2', 1001, { $type: MessageType.Text, role: 'assistant', text: 'A1' }, 'run-1'),
+      row('p3', 1002, checkpoint('cp-x-1', 2, 2), 'run-2'),
+      row('p4', 1003, { $type: MessageType.Text, role: 'user', text: 'turn two' }, 'run-2'),
+      row('p5', 1004, { $type: MessageType.Text, role: 'assistant', text: 'A2' }, 'run-2'),
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    await chat.loadMessagesFromBackend('thread-x');
+
+    const types = chat.displayItems.value.map((i) =>
+      i.type === 'notification' ? `notification:${(i as any).notification.notifyKind}` : i.type
+    );
+    expect(types).toEqual(['user-message', 'assistant-message', 'notification:compaction', 'user-message', 'assistant-message']);
+
+    const divider = (compactionItems(chat)[0] as any).notification;
+    expect(divider.checkpointId).toBe('cp-x-1');
+    expect(divider.label).toBe('2 rows · ~16,000 tokens saved');
+    expect(divider.detail).toContain('Turn one gathered the data.');
+    expect(divider.detail).toContain('Build the report');
+  });
+
+  it('merges the live checkpoint with its reloaded twin across turns (exactly one divider)', async () => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    await chat.sendMessage('turn one');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    // Turn 1 streams live; the checkpoint is published live when it activates at the start of run 2.
+    const assign = (runId: string) => ({
+      $type: MessageType.RunAssignment,
+      Assignment: { runId, generationId: `gen-${runId}`, inputIds: [] },
+    });
+    options.onMessage(assign('run-1'));
+    options.onMessage({ $type: MessageType.Text, role: 'assistant', text: 'A1', runId: 'run-1', generationId: 'gen-run-1', messageOrderIdx: 0 });
+    options.onMessage(assign('run-2'));
+    options.onMessage({ ...checkpoint('cp-x-1', 2, 2), threadId: 'thread-provisioned' });
+    options.onMessage({ $type: MessageType.Text, role: 'assistant', text: 'A2', runId: 'run-2', generationId: 'gen-run-2', messageOrderIdx: 1 });
+    // A replayed copy of the same live frame (resume) must not add a second divider.
+    options.onMessage({ ...checkpoint('cp-x-1', 2, 2), threadId: 'thread-provisioned' });
+    expect(compactionItems(chat), 'live').toHaveLength(1);
+
+    // Reload: the persisted copy carries the run id the live one lacked — still one divider.
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      row('p1', 1000, { $type: MessageType.Text, role: 'user', text: 'turn one' }, 'run-1'),
+      row('p2', 1001, { $type: MessageType.Text, role: 'assistant', text: 'A1' }, 'run-1'),
+      row('p3', 1002, checkpoint('cp-x-1', 2, 2), 'run-2'),
+      row('p4', 1003, { $type: MessageType.Text, role: 'assistant', text: 'A2' }, 'run-2'),
+    ]);
+    await chat.loadMessagesFromBackend('thread-x');
+    expect(compactionItems(chat), 'reload').toHaveLength(1);
+    // Switch-back resume: the rehydrated row (stamped gen/order identity) is already indexed when the
+    // replay buffer re-delivers the live frame (no generation id, no order index). This is the case a
+    // run/generation-scoped key gets wrong.
+    options.onMessage({ ...checkpoint('cp-x-1', 2, 2), threadId: 'thread-x' });
+    expect(compactionItems(chat), 'reload then live replay').toHaveLength(1);
+
+    // A second, different checkpoint later is its own divider.
+    options.onMessage({ ...checkpoint('cp-x-2', 4, 2), runId: 'run-3' });
+    expect(compactionItems(chat).map((i: any) => i.notification.checkpointId)).toEqual(['cp-x-1', 'cp-x-2']);
+  });
+});
+
 describe('useChat rehydration duplicate merge-key (BLOCKER 1)', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();

@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, inject, ref, toRef } from 'vue';
 import type { AgentMessageType, NotificationDisplayData } from '@/types';
-import { AGENT_MESSAGE_NOTIFY_KIND } from '@/composables/messageDisplay';
+import {
+  AGENT_MESSAGE_NOTIFY_KIND,
+  COMPACTION_NOTIFY_KIND,
+  GET_CHECKPOINT_STATE,
+  type CheckpointStateLookup,
+} from '@/composables/messageDisplay';
 import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 
@@ -28,6 +33,8 @@ const icon = computed<string>(() => {
       return '❓'; // ❓
     case AGENT_MESSAGE_NOTIFY_KIND:
       return '\u{1F4AC}'; // 💬
+    case COMPACTION_NOTIFY_KIND:
+      return '\u{1F5DC}\u{FE0F}'; // 🗜️
     default:
       return '\u{1F514}'; // 🔔
   }
@@ -54,6 +61,8 @@ const kindLabel = computed<string>(() => {
       return 'Question pending';
     case 'client-notification':
       return 'Notification';
+    case COMPACTION_NOTIFY_KIND:
+      return 'Context compacted';
     case AGENT_MESSAGE_NOTIFY_KIND: {
       const type = data.value.agentMessageType;
       return (type && AGENT_MESSAGE_HEADINGS[type]) || type || 'Agent message';
@@ -99,6 +108,14 @@ function handleHeaderClick(): void {
   }
 }
 
+// #721: a compaction divider spans the transcript and, when the context report says its checkpoint
+// was rolled back, says so — history is truth, so the divider stays, but the agent no longer uses it.
+const isCompaction = computed<boolean>(() => data.value.notifyKind === COMPACTION_NOTIFY_KIND);
+const getCheckpointState = inject<CheckpointStateLookup>(GET_CHECKPOINT_STATE, () => null);
+const rolledBack = computed<boolean>(
+  () => isCompaction.value && !!data.value.checkpointId && getCheckpointState(data.value.checkpointId) === 'RolledBack'
+);
+
 // Tint notifications that belong to a known agent: a completion uses the completing agent's id,
 // while an agent-message uses the normalized sender id. Other notification kinds are unchanged.
 const getAgentColor = inject<AgentColorLookup>(GET_AGENT_COLOR, () => null);
@@ -112,8 +129,10 @@ const agentColor = computed<string | null>(() =>
 <template>
   <div
     class="notification-pill"
+    :class="{ 'compaction-divider': isCompaction }"
     data-testid="notification-pill"
     :data-notify-kind="data.notifyKind"
+    :data-checkpoint-id="data.checkpointId ?? undefined"
     :style="agentColor ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : undefined"
   >
     <div
@@ -138,6 +157,11 @@ const agentColor = computed<string | null>(() =>
         class="notification-truncated"
         data-testid="notification-truncated"
       >(truncated)</span>
+      <span
+        v-if="rolledBack"
+        class="compaction-badge"
+        data-testid="compaction-badge"
+      >rolled back</span>
       <span v-if="hasBody" class="notification-expand" aria-hidden="true">{{ expanded ? '▼' : '▶' }}</span>
     </div>
     <pre v-if="expanded && hasBody" class="notification-body" data-testid="notification-body">{{ bodyText }}</pre>
@@ -156,6 +180,26 @@ const agentColor = computed<string | null>(() =>
   border-radius: 12px;
   color: #3730a3;
   font-size: 13px;
+}
+
+/* Full-width divider for a compaction checkpoint: dashed rules read as "a line in the history". */
+.notification-pill.compaction-divider {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  background: #f8fafc;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  color: #334155;
+}
+
+.compaction-badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .notification-header {

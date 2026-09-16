@@ -38,6 +38,24 @@ public sealed record CheckpointSummaryRequest
 
     /// <summary>The model the summary pass should use, or null for the summarizer's default.</summary>
     public string? ModelId { get; init; }
+
+    /// <summary>The output-token limit to send the summary call with, or null for the provider's default.</summary>
+    public int? MaxOutputTokens { get; init; }
+
+    /// <summary>Longest text one non-human row may contribute to the prompt, or null for no cap.</summary>
+    public int? RowCharCap { get; init; }
+
+    /// <summary>
+    ///     Characters the prompt's rows should fit in, or null for no budget. Human rows always travel whole; the
+    ///     other rows' cap shrinks until the rows fit.
+    /// </summary>
+    public int? PromptCharBudget { get; init; }
+
+    /// <summary>
+    ///     An operator's focus for a manual compaction: steers what the summary keeps. It is never a quote source;
+    ///     validation checks quotes against rows exactly as without it.
+    /// </summary>
+    public string? Focus { get; init; }
 }
 
 /// <summary>

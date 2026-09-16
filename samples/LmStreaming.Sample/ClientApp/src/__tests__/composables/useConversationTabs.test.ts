@@ -129,6 +129,12 @@ describe('useConversationTabs', () => {
     expect(tabs[2].color).toBe(AGENT_HUES[1]);
   });
 
+  it('carries an errored child\'s failureCode onto its tab', () => {
+    const { api } = harness([child('a1', { status: 'error', failureCode: 'view_exceeds_window' }), child('a2')]);
+    expect(api.tabs.value[1]).toMatchObject({ status: 'error', failureCode: 'view_exceeds_window' });
+    expect(api.tabs.value[2].failureCode).toBeUndefined();
+  });
+
   it('a missing kind is treated as a sub-agent tab', () => {
     const { api } = harness([child('a1')]); // child() sets no kind
     expect(api.tabs.value[1].kind).toBe('subagent');

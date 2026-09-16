@@ -72,8 +72,96 @@ public class RecallConversationToolTests
     private static RecallConversationToolProvider Provider(
         IConversationStore? store,
         long? boundary,
-        RecallLimits? limits = null
-    ) => new(Thread, store, () => boundary, limits);
+        RecallLimits? limits = null,
+        int? resultCharCap = null
+    ) => new(Thread, store, () => boundary, limits, () => resultCharCap);
+
+    /// <summary>Seeds run-1 plus a 120,000-char tool result in run-2: call at seq 9, result at seq 10.</summary>
+    private static async Task<(InMemoryConversationStore Store, string Big)> SeedWithBigTailResultAsync()
+    {
+        var store = await SeedAsync();
+        var big = string.Concat(Enumerable.Range(0, 12_000).Select(i => $"row {i:D5}\n"));
+        await store.AppendMessagesAsync(
+            Thread,
+            MessagePersistenceConverter.ToPersistedMessages(
+                [
+                    new ToolCallMessage
+                    {
+                        ToolCallId = "grep-1",
+                        FunctionName = "Grep",
+                        FunctionArgs = """{"pattern":"row"}""",
+                        Role = Role.Assistant,
+                    },
+                    new ToolCallResultMessage
+                    {
+                        ToolCallId = "grep-1",
+                        Result = big,
+                        Role = Role.Tool,
+                    },
+                ],
+                Thread,
+                "run-2"
+            )
+        );
+        return (store, big);
+    }
+
+    [Fact]
+    public async Task TargetedRead_BySeqAndOffset_PagesATailRowPastTheBoundary()
+    {
+        var (store, big) = await SeedWithBigTailResultAsync();
+        var provider = Provider(store, 7);
+
+        var page = await ReadAsync(
+            provider,
+            store,
+            7,
+            new()
+            {
+                Seq = 10,
+                Offset = 50_000,
+                MaxChars = 20_000,
+            }
+        );
+
+        var row = page.Rows.Should().ContainSingle().Subject;
+        row.Seq.Should().Be(10, "a trimmed tail row is readable although it sits after the boundary");
+        row.Text.Should().StartWith(big.Substring(50_000, 20_000));
+        row.TotalChars.Should().Be(120_000);
+        row.NextOffset.Should().Be(70_000);
+        page.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TargetedRead_ByToolCallId_WorksWithoutAnActiveCheckpoint_AndFitsTheViewCap()
+    {
+        var (store, big) = await SeedWithBigTailResultAsync();
+        var handler = Provider(store, boundary: null, resultCharCap: 6_000).GetFunctions().Single().Handler;
+
+        var result = await handler(
+            """{"tool_call_id":"grep-1","offset":100000,"max_chars":32000}""",
+            new ToolCallContext { ToolCallId = "tc" },
+            CancellationToken.None
+        );
+
+        var text = result.Should().BeOfType<ToolHandlerResult.Resolved>().Which.Payload.Text;
+        text.Should().NotContain(RecallConversationToolProvider.NothingCompacted);
+        text.Length.Should().BeLessThanOrEqualTo(6_000, "a recall answer is never itself trimmed by the view cap");
+        big.Substring(100_000, 9).Should().Be("row 10000");
+        text.Should().Contain("row 10000\\nrow 10001").And.Contain("row 10100").And.Contain("\"next_offset\":");
+        text.Should().NotContain("row 09999", "the read starts at the offset");
+    }
+
+    [Fact]
+    public async Task UntargetedRead_StillStopsAtTheBoundary()
+    {
+        var (store, _) = await SeedWithBigTailResultAsync();
+        var handler = Provider(store, boundary: null).GetFunctions().Single().Handler;
+
+        var result = await handler("""{"query":"row"}""", new ToolCallContext(), CancellationToken.None);
+
+        result.Should().BeOfType<ToolHandlerResult.Resolved>().Which.Payload.Text.Should().Contain("nothing_compacted");
+    }
 
     private static Task<RecallConversationToolProvider.RecallResult> ReadAsync(
         RecallConversationToolProvider provider,

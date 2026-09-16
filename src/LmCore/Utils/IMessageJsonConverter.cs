@@ -286,6 +286,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return ContextPressureMessage.TypeDiscriminator;
         }
 
+        if (type == typeof(CompactionStatusMessage))
+        {
+            return CompactionStatusMessage.TypeDiscriminator;
+        }
+
         if (type == typeof(AgentMessage))
         {
             return "agent";
@@ -462,6 +467,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "conversation_usage" => typeof(ConversationUsageMessage),
             "conversation_todo" => typeof(ConversationTodoMessage),
             ContextPressureMessage.TypeDiscriminator => typeof(ContextPressureMessage),
+            CompactionStatusMessage.TypeDiscriminator => typeof(CompactionStatusMessage),
             CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
             _ => null,
         };

@@ -38,12 +38,21 @@ public sealed record SequencedMessage(long Seq, string? MessageId, string? RunId
 
     /// <summary>
     ///     Human input (spec 679 §2.4): a <see cref="Role.User" /> row that is not a notification, not a
-    ///     checkpoint, and not a tool result (which is user-role on the wire but authored by the loop).
+    ///     checkpoint, and not a tool result (which is user-role on the wire but authored by the loop). Another
+    ///     agent's message counts only when it is a directive (<see cref="AgentMessageType.DelegateTask" /> or
+    ///     <see cref="AgentMessageType.Steer" />); a question, update, response or delivery failure is content, like
+    ///     a notification.
     /// </summary>
     public bool IsHumanRow =>
         Message.Role == Role.User
         && Message
-            is not (NotifyMessage or CompactionCheckpointMessage or ToolCallResultMessage or ToolsCallResultMessage);
+            is not (
+                NotifyMessage
+                or CompactionCheckpointMessage
+                or ToolCallResultMessage
+                or ToolsCallResultMessage
+                or AgentMessage { AgentMessageType: not (AgentMessageType.DelegateTask or AgentMessageType.Steer) }
+            );
 
     /// <summary>True for a <see cref="CompactionCheckpointMessage" /> row, which the projection never dispatches.</summary>
     public bool IsCheckpointRow => Message is CompactionCheckpointMessage;

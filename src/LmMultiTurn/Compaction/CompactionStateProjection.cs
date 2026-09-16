@@ -108,6 +108,7 @@ public static class CompactionStateProjection
                             WatermarkAtPrepare = watermarkAtPrepare,
                             Trigger = trigger,
                             At = stamp,
+                            PreparedAt = stamp,
                         }
                     )
                     .ToList();
@@ -121,12 +122,16 @@ public static class CompactionStateProjection
         );
     }
 
-    /// <summary>Moves a Prepared entry to Validated. Any other status is left as it is.</summary>
+    /// <summary>
+    ///     Moves a Prepared entry to Validated, recording <paramref name="summaryFallback" /> when the checkpoint was
+    ///     built without its summary. Any other status is left as it is.
+    /// </summary>
     public static Task<CompactionState?> MarkValidatedAsync(
         IConversationStore store,
         string threadId,
         string checkpointId,
         DateTimeOffset? at = null,
+        string? summaryFallback = null,
         CancellationToken ct = default
     ) =>
         Transition(
@@ -138,6 +143,7 @@ public static class CompactionStateProjection
                     ? entry with
                     {
                         Status = CheckpointStatus.Validated,
+                        SummaryFallback = summaryFallback,
                         At = at ?? DateTimeOffset.UtcNow,
                     }
                     : entry,
@@ -339,6 +345,52 @@ public static class CompactionStateProjection
                     LastKnownGoodCheckpointId = fallback.CheckpointId,
                 };
             },
+            ct
+        );
+    }
+
+    /// <summary>
+    ///     The kill switch's transition (spec 679 §8.4): the active checkpoint and every Superseded one become
+    ///     RolledBack with <paramref name="reason" />, and the view is raw history. Unlike <see cref="RollBackAsync" />
+    ///     nothing is left to fall back to, so clearing the switch cannot bring an older checkpoint back; only a fresh
+    ///     compaction activates one. The rows stay. Nothing active is a no-op.
+    /// </summary>
+    public static Task<CompactionState?> DeactivateAsync(
+        IConversationStore store,
+        string threadId,
+        string reason,
+        DateTimeOffset? at = null,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrEmpty(reason);
+        var stamp = at ?? DateTimeOffset.UtcNow;
+
+        return UpdateAsync(
+            store,
+            threadId,
+            state =>
+                state.Active is null
+                    ? state
+                    : state with
+                    {
+                        History =
+                        [
+                            .. state.History.Select(e =>
+                                e.Status is CheckpointStatus.Active or CheckpointStatus.Superseded
+                                    ? e with
+                                    {
+                                        Status = CheckpointStatus.RolledBack,
+                                        Reason = reason,
+                                        At = stamp,
+                                    }
+                                    : e
+                            ),
+                        ],
+                        ActiveCheckpointId = null,
+                        ActiveBoundarySeq = null,
+                        LastKnownGoodCheckpointId = null,
+                    },
             ct
         );
     }

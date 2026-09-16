@@ -54,7 +54,10 @@ public sealed record CompactionDecisionSummary
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Utilization { get; init; }
 
-    /// <summary>Tokens in the view the decision was made for.</summary>
+    /// <summary>
+    ///     The request estimate the decision was made on: messages, tool definitions and any ephemeral instruction,
+    ///     raised to the provider's last measurement of the same view when that is higher.
+    /// </summary>
     [JsonPropertyName("tokens")]
     public long Tokens { get; init; }
 
@@ -129,7 +132,11 @@ public sealed record ContextObservation
     [JsonPropertyName("effective_model_id")]
     public required string EffectiveModelId { get; init; }
 
-    /// <summary>Pre-send estimate of the request's input tokens (§4.2).</summary>
+    /// <summary>
+    ///     Pre-send estimate of the request's input tokens (§4.2): the character heuristic over the messages sent,
+    ///     without the tool definitions and uncalibrated, so usually below <see cref="CompactionDecisionSummary.Tokens" />.
+    ///     A generation the loop never sent (an idle manual compaction, a refused request) carries the policy's figure.
+    /// </summary>
     [JsonPropertyName("estimated_input_tokens")]
     public long EstimatedInputTokens { get; init; }
 

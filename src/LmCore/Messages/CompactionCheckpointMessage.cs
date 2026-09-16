@@ -188,6 +188,14 @@ public sealed record CheckpointStats
     [JsonPropertyName("summary_latency_ms")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? SummaryLatencyMs { get; init; }
+
+    /// <summary>
+    ///     Set when the checkpoint was built without a model summary because the summary failed: that failure's typed
+    ///     reason (e.g. <c>summary_call_failed</c>, <c>validation_failed:V3</c>). Null for a summarised checkpoint.
+    /// </summary>
+    [JsonPropertyName("summary_fallback")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SummaryFallback { get; init; }
 }
 
 /// <summary>
@@ -298,6 +306,14 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     /// <summary>The narrative: what happened, bounded by the narrative token cap.</summary>
     [JsonPropertyName("narrative")]
     public required string Narrative { get; init; }
+
+    /// <summary>
+    ///     The operator's focus for a manual compaction: what the summary was steered to keep. Never quoted into
+    ///     the manifest; at most 2,000 characters. Null for an automatic checkpoint.
+    /// </summary>
+    [JsonPropertyName("focus")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Focus { get; init; }
 
     /// <summary>Size and provenance figures.</summary>
     [JsonPropertyName("stats")]
