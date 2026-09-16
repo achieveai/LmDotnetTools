@@ -33,6 +33,12 @@ internal sealed record UsageTotals
 /// </summary>
 internal sealed record UsageRecordRow
 {
+    /// <summary>The <c>UsageExecutionKind</c> naming a compaction summarization pass.</summary>
+    public const string CompactionKind = "Compaction";
+
+    /// <summary>The generation-id prefix a summary pass mints (<c>CompactionRuntime</c>).</summary>
+    public const string CompactionAttemptPrefix = "compaction-";
+
     public required string ProviderAttemptId { get; init; }
     public required string ExecutionKind { get; init; }
     public string? ParentExecutionId { get; init; }
@@ -43,6 +49,36 @@ internal sealed record UsageRecordRow
     public long CacheWriteTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public long TotalTokens { get; init; }
+
+    /// <summary>
+    /// What this attempt cost in micro-units, or null when no cost could be resolved. Mirrors
+    /// <c>UsageRecord.PreferredCostMicros</c>: the provider's own figure when it reported one, else
+    /// the public-pricing estimate. Read defensively — an archive written before costs were persisted
+    /// carries none of the three fields, and null there means UNKNOWN, never free.
+    /// </summary>
+    public long? CostMicros { get; init; }
+
+    /// <summary>The checkpoint a compaction summary pass produced; null for every other kind.</summary>
+    public string? CompactionCheckpointId { get; init; }
+
+    /// <summary>
+    /// True when this row is a compaction summary pass. Three independent marks, any one of which is
+    /// enough: the execution kind, the checkpoint id, or the <c>compaction-</c> generation-id prefix
+    /// the summary pass mints. An archive written by a host that stamps only one of them still
+    /// attributes correctly.
+    /// </summary>
+    public bool IsCompactionSummary =>
+        string.Equals(ExecutionKind, CompactionKind, StringComparison.Ordinal)
+        || CompactionCheckpointId is not null
+        || AttemptKey.StartsWith(CompactionAttemptPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Billed input tokens that were NOT served from cache. <c>UsageRecord</c> declares
+    /// <c>CacheReadTokens ⊆ InputTokens</c> as normative and carries no accounting-mode field, so the
+    /// subtraction is the definition; the clamp only guards a provider row that violates the subset
+    /// rule, which must not turn into a negative token count.
+    /// </summary>
+    public long InputTokensUncached => Math.Max(0, InputTokens - CacheReadTokens);
 
     /// <summary>
     /// The emitting execution: the sub-agent's own thread for a sub-agent record
@@ -63,6 +99,57 @@ internal sealed record UsageRecordRow
             return separator < 0 ? ProviderAttemptId : ProviderAttemptId[(separator + 1)..];
         }
     }
+}
+
+/// <summary>
+/// One run's cache-aware cost. Compaction is only worth its price where the alternative is failure —
+/// on a conversation that fits the window it rewrites the cached prefix and bills every summary — so
+/// a strategy comparison has to read the cache split and the money, not the token total alone.
+/// </summary>
+/// <remarks>
+/// Every field is derived from the SAME deduplicated walk as <see cref="UsageReport.Totals"/>: one
+/// provider attempt is relayed into more than one metadata bag by design, and two independent
+/// reductions of that bag are exactly how a token count and the cost computed from it end up
+/// disagreeing in one published row.
+/// </remarks>
+internal sealed record RunCost
+{
+    /// <summary>The cost block of a run whose threads persisted no usage record at all.</summary>
+    public static readonly RunCost Absent = new();
+
+    public long InputTokens { get; init; }
+
+    /// <summary>Billed input tokens not served from cache: <c>inputTokens - cacheReadTokens</c>.</summary>
+    public long InputTokensUncached { get; init; }
+
+    public long CacheReadTokens { get; init; }
+    public long CacheWriteTokens { get; init; }
+    public long OutputTokens { get; init; }
+
+    /// <summary>Cached share of billed input, 0 when no input token was billed.</summary>
+    public double CacheHitRatio { get; init; }
+
+    /// <summary>
+    /// Resolved cost in micro-units over <see cref="RecordsWithCost"/>, or null when NO record carried
+    /// one. Null means unpriced, never free — and a figure covering only some of the records is a
+    /// lower bound, which is why the two counts travel with it.
+    /// </summary>
+    public long? CostMicros { get; init; }
+
+    public int RecordsWithCost { get; init; }
+
+    /// <summary>Deduplicated usage records behind every number here; zero means ABSENT, not zero spend.</summary>
+    public int Records { get; init; }
+
+    /// <summary>Records marked as a compaction summary pass (<see cref="UsageRecordRow.IsCompactionSummary"/>).</summary>
+    public int CompactionSummaryRecords { get; init; }
+
+    /// <summary>
+    /// Tokens the summary passes themselves billed — what compaction charges before any saving is
+    /// counted. Null when <see cref="CompactionSummaryRecords"/> is 0, because a 0 there would read as
+    /// "measured, the summaries were free" when the truth is that nothing attributed them.
+    /// </summary>
+    public long? CompactionSummaryTokens { get; init; }
 }
 
 /// <summary>The score object's <c>usage</c> block: rollups plus the limits that bound them.</summary>
@@ -91,6 +178,10 @@ internal sealed record UsageReport
         + "once, so no per-family split exists in the data; none is invented here.";
 
     public UsageTotals Totals { get; init; } = new();
+
+    /// <summary>The cache-aware cost of the same deduplicated records (compaction strategy eval, §6).</summary>
+    public RunCost Cost { get; init; } = RunCost.Absent;
+
     public int DuplicateAttemptIds { get; init; }
     public IReadOnlyDictionary<string, UsageTotals> ByExecutionKind { get; init; } =
         new Dictionary<string, UsageTotals>(StringComparer.Ordinal);
@@ -117,6 +208,12 @@ internal static class UsageReader
 {
     public const string RecordsPropertyKey = "usage.records";
 
+    /// <summary>
+    /// <c>UsageExecutionKind</c> by ordinal — the form the default serializer writes. The list must
+    /// stay in the enum's declaration order and cover every member: a kind missing from the end reads
+    /// as <c>(unknown)</c>, which is how a whole compaction pass would silently leave the by-kind
+    /// rollup it belongs in.
+    /// </summary>
     private static readonly string[] KindNames =
     [
         "Primary",
@@ -124,6 +221,7 @@ internal static class UsageReader
         "WorkflowController",
         "WorkflowTask",
         "Continuation",
+        UsageRecordRow.CompactionKind,
     ];
 
     /// <summary>Parses the records array out of the raw <c>usage.records</c> property value.</summary>
@@ -170,6 +268,7 @@ internal static class UsageReader
         var byAgent = new Dictionary<string, UsageTotals>(StringComparer.Ordinal);
         long attributed = 0;
         long unattributed = 0;
+        var cost = new CostAccumulator();
 
         foreach (var row in records)
         {
@@ -180,6 +279,7 @@ internal static class UsageReader
             }
 
             totals = totals.Add(row);
+            cost.Add(row);
             byKind[row.ExecutionKind] = (byKind.TryGetValue(row.ExecutionKind, out var k) ? k : new()).Add(row);
             byAgent[row.AgentId] = (byAgent.TryGetValue(row.AgentId, out var a) ? a : new()).Add(row);
 
@@ -198,12 +298,71 @@ internal static class UsageReader
         return new UsageReport
         {
             Totals = totals,
+            Cost = cost.Build(),
             DuplicateAttemptIds = duplicates,
             ByExecutionKind = byKind,
             ByAgent = byAgent,
             AttributedTurnTokens = attributed,
             UnattributedTurnTokens = unattributed,
         };
+    }
+
+    /// <summary>
+    /// Folds the deduplicated rows into a <see cref="RunCost"/>. A mutable accumulator rather than a
+    /// second pass, so the cost block can never be computed over a different row set than the totals
+    /// beside it.
+    /// </summary>
+    private sealed class CostAccumulator
+    {
+        private int _records;
+        private long _input;
+        private long _inputUncached;
+        private long _cacheRead;
+        private long _cacheWrite;
+        private long _output;
+        private long _cost;
+        private int _recordsWithCost;
+        private int _compactionRecords;
+        private long _compactionTokens;
+
+        public void Add(UsageRecordRow row)
+        {
+            _records++;
+            _input += row.InputTokens;
+            _inputUncached += row.InputTokensUncached;
+            _cacheRead += row.CacheReadTokens;
+            _cacheWrite += row.CacheWriteTokens;
+            _output += row.OutputTokens;
+            if (row.CostMicros is { } micros)
+            {
+                _cost += micros;
+                _recordsWithCost++;
+            }
+
+            if (row.IsCompactionSummary)
+            {
+                _compactionRecords++;
+                _compactionTokens += row.TotalTokens;
+            }
+        }
+
+        public RunCost Build() =>
+            _records == 0
+                ? RunCost.Absent
+                : new RunCost
+                {
+                    Records = _records,
+                    InputTokens = _input,
+                    InputTokensUncached = _inputUncached,
+                    CacheReadTokens = _cacheRead,
+                    CacheWriteTokens = _cacheWrite,
+                    OutputTokens = _output,
+                    CacheHitRatio = _input == 0 ? 0 : (double)_cacheRead / _input,
+                    CostMicros = _recordsWithCost == 0 ? null : _cost,
+                    RecordsWithCost = _recordsWithCost,
+                    CompactionSummaryRecords = _compactionRecords,
+                    CompactionSummaryTokens = _compactionRecords == 0 ? null : _compactionTokens,
+                };
     }
 
     private static UsageRecordRow? ReadRow(JsonElement element)
@@ -233,8 +392,20 @@ internal static class UsageReader
             CacheWriteTokens = GetLong(element, "CacheWriteTokens"),
             ReasoningTokens = GetLong(element, "ReasoningTokens"),
             TotalTokens = GetLong(element, "TotalTokens"),
+            CostMicros = ReadCost(element),
+            CompactionCheckpointId = GetString(element, "CompactionCheckpointId"),
         };
     }
+
+    /// <summary>
+    /// The record's preferred cost: the serialized computed property when the archive carries it,
+    /// else the same rule recomputed from the two underlying figures — provider-reported first,
+    /// because it is what was actually billed. Null when the archive carries none of the three.
+    /// </summary>
+    private static long? ReadCost(JsonElement element) =>
+        GetNullableLong(element, "PreferredCostMicros")
+        ?? GetNullableLong(element, "ProviderReportedCostMicros")
+        ?? GetNullableLong(element, "EstimatedPublicCostMicros");
 
     /// <summary>Case-insensitive property lookup — the payload's casing is not this reader's to pin.</summary>
     private static bool TryGet(JsonElement element, string name, out JsonElement value)
@@ -254,6 +425,15 @@ internal static class UsageReader
 
     private static string? GetString(JsonElement element, string name) =>
         TryGet(element, name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    /// <summary>
+    /// A long that distinguishes "absent or null" from zero. A cost of 0 is a real measurement (a free
+    /// model), so it must never collapse into the same value as an unpriced record.
+    /// </summary>
+    private static long? GetNullableLong(JsonElement element, string name) =>
+        TryGet(element, name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n)
+            ? n
+            : null;
 
     private static long GetLong(JsonElement element, string name) =>
         TryGet(element, name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n)
