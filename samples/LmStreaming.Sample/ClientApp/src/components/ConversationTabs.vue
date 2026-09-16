@@ -17,10 +17,15 @@ function hueFor(tab: ConversationTab): string {
   return tab.color ?? MAIN_TAB_COLOR;
 }
 
-/** Tooltip text: prefix workflow tabs with "Workflow: " so their kind reads even when the badge is off-screen. */
+/**
+ * Tooltip text: prefix workflow tabs with "Workflow: " so their kind reads even when the badge is off-screen, and
+ * name an errored child's failure code (e.g. "error (view_exceeds_window)") so a size refusal is not a bare "error".
+ */
 function tabTitle(tab: ConversationTab): string {
   const base = tab.kind === 'workflow' ? `Workflow: ${tab.label}` : tab.label;
-  return tab.status ? `${base} · ${tab.status}` : base;
+  if (!tab.status) return base;
+  const status = tab.status === 'error' && tab.failureCode ? `error (${tab.failureCode})` : tab.status;
+  return `${base} · ${status}`;
 }
 
 function tabStyle(tab: ConversationTab): Record<string, string> {

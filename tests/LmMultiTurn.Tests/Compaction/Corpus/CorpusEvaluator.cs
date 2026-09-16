@@ -53,7 +53,11 @@ internal static class CorpusEvaluator
                 if (
                     !rowsBySeq.TryGetValue(quote.Seq, out var row)
                     || MessagePersistenceConverter.FromPersistedMessage(row) is not TextMessage text
-                    || !string.Equals(text.Text, quote.Quote, StringComparison.Ordinal)
+                    || (
+                        !string.Equals(text.Text, quote.Quote, StringComparison.Ordinal)
+                        // A quote the envelope budget trimmed is still the row: head and tail verbatim, exact count.
+                        && !CurrentInstructionQuotes.IsTrimOf(quote.Quote, quote.Seq, text.Text)
+                    )
                 )
                 {
                     instructionVerbatim = false;

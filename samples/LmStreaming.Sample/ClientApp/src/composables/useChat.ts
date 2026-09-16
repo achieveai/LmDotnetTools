@@ -12,6 +12,7 @@ import type {
   AuthRequiredEvent,
   ConversationTodoMessage,
   ContextPressureMessage,
+  CompactionStatusMessage,
 } from '@/types';
 import {
   MessageType,
@@ -32,9 +33,11 @@ import {
   isTextWithCitationsMessage,
   isNotifyMessage,
   isAgentMessage,
+  isCompactionCheckpointMessage,
   isConversationUsageMessage,
   isConversationTodoMessage,
   isContextPressureMessage,
+  isCompactionStatusMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -218,6 +221,17 @@ export function useChat(options: UseChatOptions = {}) {
    * produces no display item.
    */
   const contextPressure = ref<ContextPressureMessage | null>(null);
+
+  /**
+   * Newest `compaction_status` frame, same rule again: `useManualCompaction` owns the Compact now
+   * state and watches this ref. Progress metadata, never transcript content — no display item.
+   */
+  const compactionStatus = ref<CompactionStatusMessage | null>(null);
+  /**
+   * Bumped each time a WebSocket is installed (first open, reconnect, resync). Transient frames sent
+   * while no socket was listening are gone, so consumers of such frames re-read state on a change.
+   */
+  const connectionEpoch = ref(0);
 
   /**
    * Replaces the usage banner with a folded conversation-wide aggregate (#196). The authoritative source
@@ -971,6 +985,12 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // Live compaction progress frame (manual or automatic). SET: each frame is one attempt's latest phase.
+    if (isCompactionStatusMessage(msg)) {
+      compactionStatus.value = msg;
+      return;
+    }
+
     // Handle lifecycle messages
     if (isRunAssignmentMessage(msg)) {
       handleRunAssignment(msg);
@@ -1088,7 +1108,8 @@ export function useChat(options: UseChatOptions = {}) {
     // AgentMessage are terminal, non-streamed messages (out-of-band relative to the human's own
     // turn) — routed here so they are NOT dropped as an "unknown message type"; the displayItems
     // notification branch renders both as pills.
-    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg) || isNotifyMessage(msg) || isAgentMessage(msg);
+    // A compaction checkpoint (#721) joins them: published live at activation, rendered as a divider.
+    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg) || isNotifyMessage(msg) || isAgentMessage(msg) || isCompactionCheckpointMessage(msg);
 
     if (!isUpdate && !isCompleteMessage) {
       // Unknown message type - skip
@@ -1648,6 +1669,7 @@ export function useChat(options: UseChatOptions = {}) {
       return null;
     }
 
+    connectionEpoch.value++;
     return connection;
   }
 
@@ -1926,6 +1948,7 @@ export function useChat(options: UseChatOptions = {}) {
     cumulativeUsage.value = { promptTokens: 0, uncachedInputTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
     cumulativeCost.value = { estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' };
     contextPressure.value = null;
+    compactionStatus.value = null;
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -2177,6 +2200,8 @@ export function useChat(options: UseChatOptions = {}) {
     cumulativeCost,
     conversationTodo,
     contextPressure,
+    compactionStatus,
+    connectionEpoch,
     transport,
     threadId,
     currentRunId,

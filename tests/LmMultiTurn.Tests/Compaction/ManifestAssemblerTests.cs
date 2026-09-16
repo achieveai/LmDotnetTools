@@ -191,7 +191,7 @@ public sealed class ManifestAssemblerTests
         var thread = new ThreadFixture()
             .Human("go")
             .ToolTurns(1)
-            .Notify(label: "agent-1 finished: tests green")
+            .Notify(label: "coder", detail: Completion("agent-1", "fix", "tests green"))
             .ToolTurns(1);
         var roster = new[]
         {
@@ -229,10 +229,140 @@ public sealed class ManifestAssemblerTests
             .Agents.Select(a => (a.AgentId, a.Status, a.Outcome))
             .Should()
             .Equal(
-                ("agent-1", "Completed", "agent-1 finished: tests green"),
+                ("agent-1", "Completed", "tests green"),
                 ("agent-2", "Running", null),
                 ("agent-3", "Completed", "wrote the docs")
             );
+    }
+
+    /// <summary>The <c>&lt;sub-agent&gt;</c> block SubAgentManager puts in a completion notification's Detail.</summary>
+    private static string Completion(string agentId, string task, string result) =>
+        $"<sub-agent name=\"coder\" template=\"coder\" id=\"{agentId}\">\n[Completed] Task: {task}\nResult: {result}\n</sub-agent>";
+
+    private static AgentRef Agent(string agentId, string task, string status) =>
+        new()
+        {
+            AgentId = agentId,
+            Template = "coder",
+            Task = task,
+            Status = status,
+        };
+
+    [Theory]
+    [InlineData("running", false)]
+    [InlineData("running", true)]
+    [InlineData("stopped", false)]
+    public void BoundAgents_AResumedAgentThatIsRunningAgain_ShowsNoOutcome_NotItsPreviousRunsResult(
+        string status,
+        bool taskChanged
+    )
+    {
+        // A warm-resumed agent (#759) is running again, yet its previous run's completion is still the last one before
+        // the cut. Shown beside "running" it reads as the current result; the row stays recallable from the index. A stop
+        // sends no completion, so a resumed-then-stopped agent's last one is just as stale.
+        var thread = new ThreadFixture()
+            .Human("go")
+            .Notify(
+                label: "coder",
+                detail: Completion("agent-1", "fix the parser", "PREVIOUS-RESULT"),
+                sourceToolCallId: "agent-1"
+            )
+            .Notify(label: "coder", detail: Completion("agent-2", "lint", "LINT-RESULT"), sourceToolCallId: "agent-2")
+            .ToolTurns(1);
+        var roster = new[]
+        {
+            Agent("agent-1", taskChanged ? "add tests for the parser" : "fix the parser", status),
+            Agent("agent-2", "lint", "completed"),
+        };
+        var summary = Summary(
+            outcomes: new Dictionary<string, string>(StringComparer.Ordinal) { ["agent-1"] = "model: parser fixed" }
+        );
+
+        var agents = ManifestAssembler.BoundAgents(thread.Rows, thread.LastSeq, roster, summary, keepChars: 600);
+
+        agents.Select(a => (a.AgentId, a.Outcome)).Should().Equal(("agent-1", null), ("agent-2", "LINT-RESULT"));
+    }
+
+    [Fact]
+    public void BoundAgents_ACompletedAgentsLastCompletionForAnotherTask_IsNotItsOutcome_NorTheWholeBlock()
+    {
+        var thread = new ThreadFixture()
+            .Human("go")
+            .Notify(
+                label: "coder",
+                detail: Completion("agent-1", "old task", "OLD-RESULT"),
+                sourceToolCallId: "agent-1"
+            )
+            .ToolTurns(1);
+        var summary = Summary(
+            outcomes: new Dictionary<string, string>(StringComparer.Ordinal) { ["agent-1"] = "model: new task done" }
+        );
+
+        var agents = ManifestAssembler.BoundAgents(
+            thread.Rows,
+            thread.LastSeq,
+            [Agent("agent-1", "new task", "completed")],
+            summary,
+            keepChars: 600
+        );
+
+        agents.Should().ContainSingle().Which.Outcome.Should().Be("model: new task done");
+    }
+
+    [Fact]
+    public void BoundAgents_ALegacyCompletionWithoutASourceId_IsMatchedByItsIdAttribute_SoAgent1NeverTakesAgent10s()
+    {
+        // Both were given the same task, so only the id tells their blocks apart. agent-10's comes last and its result
+        // mentions agent-1: a plain Contains gave agent-1 that block.
+        var thread = new ThreadFixture()
+            .Human("go")
+            .Notify(label: "coder", detail: Completion("agent-1", "review", "ONE"))
+            .Notify(label: "coder", detail: Completion("agent-10", "review", "TEN, after agent-1 said ONE"))
+            .ToolTurns(1);
+
+        var agents = ManifestAssembler.BoundAgents(
+            thread.Rows,
+            thread.LastSeq,
+            [Agent("agent-1", "review", "completed"), Agent("agent-10", "review", "completed")],
+            Summary(),
+            keepChars: 600
+        );
+
+        agents
+            .Select(a => (a.AgentId, a.Outcome))
+            .Should()
+            .Equal(("agent-1", "ONE"), ("agent-10", "TEN, after agent-1 said ONE"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BoundAgents_ALongTaskWhoseOnlyRowIsPastTheCut_GetsNoMarkerNamingThatRow(bool completionRow)
+    {
+        // The checkpoint describes the thread up to its cut, as the outcome does: a spawn call or completion in the tail
+        // is not its row.
+        var task = "TASK " + new string('t', 1_000);
+        var thread = new ThreadFixture().Human("go").ToolTurns(2);
+        var cutSeq = thread.LastSeq;
+        _ = completionRow
+            ? thread.Notify(label: "coder", detail: Completion("agent-1", task, "DONE"), sourceToolCallId: "agent-1")
+            : thread.ToolTurn(tool: "Agent", args: $$"""{"subagent_type":"coder","prompt":"{{task}}"}""");
+
+        var agents = ManifestAssembler.BoundAgents(
+            thread.Rows,
+            cutSeq,
+            [Agent("agent-1", task, completionRow ? "completed" : "running")],
+            Summary(),
+            keepChars: 600
+        );
+
+        agents
+            .Should()
+            .ContainSingle()
+            .Which.Task.Should()
+            .StartWith("TASK ")
+            .And.NotContain("RecallConversation seq")
+            .And.HaveLength(ManifestAssembler.MaxAgentTaskChars);
     }
 
     [Fact]
@@ -327,6 +457,34 @@ public sealed class ManifestAssemblerTests
             .Index.Select(e => (e.FromSeq, e.ToSeq, e.RunId))
             .Should()
             .Equal((1L, 3L, "run-1,run-2,run-3"), (4L, 4L, "run-4"));
+    }
+
+    [Fact]
+    public void Index_CoalescedEntries_StayBounded_HeadlineKeepsItsEnds_AndRunIdsNameThreePlusACount()
+    {
+        // Coalescing used to concatenate "a; b" and "a,b" without a cap, so entry 0 grew with every checkpoint.
+        var thread = new ThreadFixture();
+        var headlines = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var run = 1; run <= 12; run++)
+        {
+            _ = thread.Run($"run-{run}").Human($"step {run}");
+            headlines[$"run-{run}"] = $"H{run}:" + new string('h', 150) + $":E{run}";
+        }
+
+        var manifest = Assemble(
+            thread,
+            CutAt(thread, thread.LastSeq),
+            Summary(headlines: headlines),
+            options: new ManifestAssemblerOptions { MaxIndexEntries = 3 }
+        );
+
+        manifest
+            .Index.Select(e => (e.FromSeq, e.ToSeq, e.RunId))
+            .Should()
+            .Equal((1L, 10L, "run-1,run-2,run-3 +7 more"), (11L, 11L, "run-11"), (12L, 12L, "run-12"));
+        var merged = manifest.Index[0].Headline;
+        merged.Length.Should().BeLessThanOrEqualTo(ManifestAssembler.MaxCoalescedHeadlineChars);
+        merged.Should().StartWith("H1:").And.EndWith(":E10").And.Contain("…");
     }
 
     [Fact]

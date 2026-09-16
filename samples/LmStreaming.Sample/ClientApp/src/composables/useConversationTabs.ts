@@ -26,6 +26,8 @@ export interface ConversationTab {
   /** Assigned hue for a sub-agent/workflow, or null for the neutral `main` tab. */
   color: string | null;
   status?: SubAgentStatus;
+  /** Machine-readable reason an errored child's run failed (e.g. `view_exceeds_window`), when the server named one. */
+  failureCode?: string | null;
 }
 
 /**
@@ -107,6 +109,7 @@ export function useConversationTabs(deps: ConversationTabsDeps) {
         kind: child.kind === 'workflow' ? 'workflow' : 'subagent',
         color: getAgentColor(child.agentId),
         status: child.status,
+        failureCode: child.failureCode,
       });
     }
     return list;

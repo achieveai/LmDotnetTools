@@ -38,6 +38,11 @@ public sealed record ExecutionViewDescriptor(
 ///         <c>GetMessagesWithSystemPrompt()</c> returned before compaction existed.
 ///     </para>
 ///     <para>
+///         4. With <see cref="ToolResultViewOptions" />, tool results at or below the persisted clear
+///         watermark become placeholders and results over the cap (or the persisted tightened share of it) are
+///         trimmed to head + marker + tail; the rows themselves are never edited.
+///     </para>
+///     <para>
 ///         Replaying the store produces the same view (§8): nothing here reads a clock, a counter, or
 ///         anything but its arguments.
 ///     </para>
@@ -62,15 +67,20 @@ internal sealed class AgentContextProjection
         string? systemPrompt,
         IReadOnlyList<IMessage> history,
         CompactionCheckpointMessage? active,
-        CheckpointRenderOptions? render = null
-    ) => Build(systemPrompt, SequencedHistory.FromSnapshot(history), active, render);
+        CheckpointRenderOptions? render = null,
+        ToolResultViewOptions? toolResults = null
+    ) => Build(systemPrompt, SequencedHistory.FromSnapshot(history), active, render, toolResults);
 
-    /// <summary>The execution view over sequenced canonical rows.</summary>
+    /// <summary>
+    ///     The execution view over sequenced canonical rows. <paramref name="toolResults" /> clears and trims
+    ///     tool results in the view only (<see cref="ToolResultView" />); null dispatches every row as it is.
+    /// </summary>
     public IReadOnlyList<IMessage> Build(
         string? systemPrompt,
         IReadOnlyList<SequencedMessage> history,
         CompactionCheckpointMessage? active,
-        CheckpointRenderOptions? render = null
+        CheckpointRenderOptions? render = null,
+        ToolResultViewOptions? toolResults = null
     )
     {
         ArgumentNullException.ThrowIfNull(history);
@@ -100,13 +110,13 @@ internal sealed class AgentContextProjection
                 continue;
             }
 
-            view.Add(row.Message);
+            view.Add(toolResults is null ? row.Message : ToolResultView.Apply(row.Message, row.Seq, toolResults));
         }
 
         return view;
     }
 
-    /// <summary>Counts and sizes of the view <see cref="Build(string?, IReadOnlyList{SequencedMessage}, CompactionCheckpointMessage?, CheckpointRenderOptions?)" /> would produce.</summary>
+    /// <summary>Counts and sizes of the view <see cref="Build(string?, IReadOnlyList{SequencedMessage}, CompactionCheckpointMessage?, CheckpointRenderOptions?, ToolResultViewOptions?)" /> would produce.</summary>
     public ExecutionViewDescriptor Describe(
         IReadOnlyList<SequencedMessage> history,
         CompactionCheckpointMessage? active,

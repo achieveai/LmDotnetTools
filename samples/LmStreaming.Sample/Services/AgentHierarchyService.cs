@@ -448,6 +448,8 @@ public sealed class AgentHierarchyService(
             Status = s.Status.ToString().ToLowerInvariant(),
             ThreadId = s.ThreadId,
             LastActivityUtc = s.LastActivityUtc,
+            TerminalAtUtc = s.TerminalAtUtc,
+            FailureCode = s.FailureCode,
             EffectiveModelId = s.EffectiveModelId,
             EffectiveModelIntelligence = s.EffectiveModelIntelligence,
             ModelSelectionSource = s.ModelSelectionSource,

@@ -419,4 +419,89 @@ public class ConversationsControllerS2SAuthTests
         payload.Should().NotContain("a-secret-key-value");
         payload.Should().NotContain("b-secret-key-value");
     }
+
+    // ---------------------------------------------------------------------------------------
+    // RequestCompaction — the same caller-credential passthrough and conflict mapping as SendMessage
+    // ---------------------------------------------------------------------------------------
+
+    private static ConversationsController CreateCompactingController(
+        InMemoryConversationStore store,
+        MultiTurnAgentPool pool
+    ) =>
+        new(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            Mock.Of<IWorkspaceStore>(),
+            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
+            new ConversationStatusResolver(store, store),
+            TimeProvider.System,
+            new WorkflowRunRegistry(),
+            TestAuthorizers.Disabled(),
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
+            new AchieveAi.LmDotnetTools.LmMultiTurn.Compaction.CompactionOptions
+            {
+                Mode = AchieveAi.LmDotnetTools.LmMultiTurn.Compaction.CompactionMode.Compact,
+            }
+        );
+
+    [Fact]
+    public async Task RequestCompaction_BuildsCallerCredential_FromSbxHeaders_AndPassesToPool()
+    {
+        var store = new InMemoryConversationStore();
+        const string threadId = "thread-s2s-compaction-cred";
+        await SeedThreadMetadataForDefaultModeAsync(store, threadId);
+
+        MultiTurnAgentPool.AgentCreationContext? capturedContext = null;
+        await using var pool = CreatePoolCapturingCredential(ctx => capturedContext = ctx);
+
+        var controller = CreateCompactingController(store, pool);
+        SetRequestHeaders(
+            controller,
+            new Dictionary<string, string> { ["X-Sbx-App-Id"] = "app-a", ["X-Sbx-App-Key"] = "a-key-value" }
+        );
+
+        var result = await controller.RequestCompaction(threadId, request: null, CancellationToken.None);
+
+        // The fake has no compaction runtime, so the agent's answer is a refusal; what matters is how it was built.
+        Assert.IsType<ConflictObjectResult>(result);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.CallerCredential.Should().Be(new SandboxCredential("app-a", "a-key-value"));
+        JsonSerializer.Serialize(((ConflictObjectResult)result).Value).Should().NotContain("a-key-value");
+    }
+
+    [Fact]
+    public async Task RequestCompaction_Returns409_OnCrossActorCredentialConflict_WithoutLeakingAppIdsOrKeys()
+    {
+        var store = new InMemoryConversationStore();
+        const string threadId = "thread-s2s-compaction-conflict";
+        await SeedThreadMetadataForDefaultModeAsync(store, threadId);
+
+        await using var pool = CreatePoolCapturingCredential(onCreate: _ => { });
+        _ = pool.GetOrCreateAgent(
+            threadId,
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: new SandboxCredential("app-a", "a-secret-key-value")
+        );
+
+        var controller = CreateCompactingController(store, pool);
+        SetRequestHeaders(
+            controller,
+            new Dictionary<string, string> { ["X-Sbx-App-Id"] = "app-b", ["X-Sbx-App-Key"] = "b-secret-key-value" }
+        );
+
+        var result = await controller.RequestCompaction(threadId, request: null, CancellationToken.None);
+
+        var payload = JsonSerializer.Serialize(Assert.IsType<ConflictObjectResult>(result).Value);
+        payload.Should().Contain("\"code\":\"caller_credential_conflict\"");
+        payload.Should().NotContain("app-a");
+        payload.Should().NotContain("app-b");
+        payload.Should().NotContain("secret-key-value");
+    }
 }

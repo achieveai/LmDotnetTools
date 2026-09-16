@@ -753,6 +753,10 @@ try
     // (cited public list prices only, #682) and which ids are deliberately left unpriced.
     _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
+    // #721: the Compaction section, bound once for the process and shared by the pool's loops and the
+    // conversations controller's manual-compaction capability.
+    _ = builder.Services.AddSingleton(sp => CompactionHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>()));
+
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -772,6 +776,10 @@ try
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddLmConfig registers this
         // resolver over that catalog. Null only for a container that never registered LmConfig.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
+        // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see
+        // CompactionHostSetup for the test-profile knobs.
+        var compactionOptions =
+            sp.GetRequiredService<AchieveAi.LmDotnetTools.LmMultiTurn.Compaction.CompactionOptions>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
@@ -2075,6 +2083,10 @@ try
                         providerAgent,
                         filteredRegistry,
                         threadId,
+                        // The designated constructor (the only one taking `compaction:`); both client tools
+                        // stay registered, exactly as the compatibility overload used here before did.
+                        includeAskUserQuestionTool: true,
+                        includeNotifyClientTool: true,
                         // The caller's own instructions (the code-review daemon's methodology, output
                         // contract and sub-agent-dispatch protocol), recorded at provision and appended
                         // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
@@ -2128,7 +2140,15 @@ try
                         // subtree: the loop registers itself as the root node and forwards the same handle to
                         // the SubAgentManager it builds, so every descendant shares one directory and one
                         // ledger. Null keeps the legacy tool schemas and per-manager limits.
-                        collaboration: rootCollaboration
+                        collaboration: rootCollaboration,
+                        // Null unless the Compaction section puts some route above Off (#721). The window
+                        // comes from the same capacity resolver the context panel reads; spawned children
+                        // inherit this setup through SubAgentOptions.Compaction.
+                        compaction: CompactionHostSetup.Create(
+                            compactionOptions,
+                            capacityResolver,
+                            normalizedProviderId
+                        )
                     );
 
                     // #676: whatever the LAST process wrote about this root's agents is reconciled into

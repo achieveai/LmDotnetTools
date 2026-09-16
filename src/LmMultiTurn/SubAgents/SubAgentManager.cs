@@ -41,6 +41,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <param name="ModelSelectionSource">Stable label identifying the winning selection input.</param>
 /// <param name="RequestedReasoningEffort">Normalized effort requested before provider capability shaping.</param>
 /// <param name="ShapedReasoningEffort">Effort placed on the provider request, or null when omitted.</param>
+/// <param name="FailureCode">Machine-readable reason of the run that ended in <see cref="SubAgentStatus.Error"/>, when
+/// the failure had one (<see cref="Messages.RunCompletedMessage.ErrorCode"/>); null otherwise.</param>
 public sealed record SubAgentSnapshot(
     string AgentId,
     string? Name,
@@ -54,7 +56,8 @@ public sealed record SubAgentSnapshot(
     int? EffectiveModelIntelligence = null,
     string ModelSelectionSource = "unknown",
     string? RequestedReasoningEffort = null,
-    string? ShapedReasoningEffort = null
+    string? ShapedReasoningEffort = null,
+    string? FailureCode = null
 );
 
 /// <summary>Final model and reasoning-routing decision captured when a sub-agent provider is built.</summary>
@@ -2239,7 +2242,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     EffectiveModelIntelligence: state.EffectiveModelIntelligence,
                     ModelSelectionSource: state.ModelSelectionSource,
                     RequestedReasoningEffort: state.RequestedReasoningEffort,
-                    ShapedReasoningEffort: state.ShapedReasoningEffort
+                    ShapedReasoningEffort: state.ShapedReasoningEffort,
+                    FailureCode: state.FailureCode
                 )
             );
         }
@@ -5046,7 +5050,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Settle this run against continuation admission. Drain or cancel an outstanding send lease
         // before publishing the idle outcome; a cancelled admission is redelivered by SendMessageAsync.
         // Provider lifetime is independent of this run outcome.
-        await state.BeginTerminalDisposalAsync(rcm.IsError);
+        await state.BeginTerminalDisposalAsync(rcm.IsError, rcm.ErrorCode);
 
         // The identity of the transition just published, captured while it is unambiguously current.
         // Everything the caller performs afterwards carries it, so a status that lands after a newer

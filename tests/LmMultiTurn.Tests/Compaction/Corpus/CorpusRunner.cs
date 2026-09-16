@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -223,8 +222,21 @@ internal sealed class CorpusRunner : IAsyncDisposable
         Options = options ?? DefaultOptions(mode);
         Inner = scenario.Store == "file-legacy" ? harness.Open("file") : new InMemoryConversationStore();
         RootStore = new ThreadScopedStore(Inner, RootThread, Log, stripSeqOnLoad);
-        Root = new ScriptedProvider("root", scenario.Root, Gates, scenario.WindowTokens);
+        Root = new ScriptedProvider("root", scenario.Root, Gates, WindowTokens);
     }
+
+    /// <summary>
+    /// The scenario window plus the compaction note the harness adds to the system prompt whenever compaction
+    /// is on: like the tool definitions, a fixed cost the scenario arithmetic does not count.
+    /// </summary>
+    private long? WindowTokens =>
+        _scenario.WindowTokens
+        + (
+            Options.Mode == CompactionMode.Off
+                ? 0
+                : CompactionTokenEstimate.PerMessageOverhead
+                    + CompactionTokenEstimate.EstimateText(CompactionRuntime.SystemNote)
+        );
 
     public CompactionMode Mode { get; }
 
@@ -266,6 +278,8 @@ internal sealed class CorpusRunner : IAsyncDisposable
             CooldownGenerations = 0,
             CooldownNewTokens = 0,
             CacheTtl = TimeSpan.Zero,
+            // These fixtures pin the checkpoint path; clearing old tool results first is pinned by its own tests.
+            ClearToolResultsKeepTurns = null,
             MaxCompactionsPerRun = 20,
         };
 
@@ -535,7 +549,7 @@ internal sealed class CorpusRunner : IAsyncDisposable
                         Role = kv.Key,
                         AgentFactory = () =>
                         {
-                            var child = new ScriptedProvider(kv.Key, kv.Value, Gates, _scenario.WindowTokens);
+                            var child = new ScriptedProvider(kv.Key, kv.Value, Gates, WindowTokens);
                             lock (_children)
                             {
                                 _children.Add(child);
@@ -603,11 +617,12 @@ internal sealed class CorpusRunner : IAsyncDisposable
         {
             Options = Options,
             Summarizer = Summarizer,
-            ResolveWindowTokens = _ => _scenario.WindowTokens,
+            // The scenario's window is what the conversation may use: the tool definitions every request
+            // carries come on top, so the scenario arithmetic stays the same as the estimate counts them.
+            ResolveWindowTokens = _ => WindowTokens + (Loop?.ToolSchemaTokens ?? 0),
             ProviderId = "corpus",
             Clock = Clock,
             ReadEnvironment = _ => KillSwitchEnv,
-            IsContextOverflow = ex => ex is HttpRequestException { StatusCode: HttpStatusCode.BadRequest },
         };
 
     private async Task StopLoopAsync()

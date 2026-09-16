@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -38,8 +39,10 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
         }
 
         Rules: quotes must be copied verbatim from the cited row — they are verified byte for byte and a
-        paraphrase rejects the whole checkpoint. Quote every standing instruction, constraint, prohibition,
-        approval and decision a human gave. Never paraphrase a human row anywhere. Keep the narrative within
+        paraphrase rejects the whole checkpoint. Quote only from a row whose text is shown in full, and copy
+        only the text after its label (such as "user: "), never the seq or run tags. Never quote a row marked
+        [not quotable]: tool call rows, tool result rows, checkpoint rows and truncated rows have no whole text
+        to quote. Quote every standing instruction, constraint, prohibition, approval and decision a human gave. Never paraphrase a human row anywhere. Keep the narrative within
         the stated cap. Do not invent tasks, agents or artifacts the rows do not show.
         """;
 
@@ -68,6 +71,7 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
         {
             ModelId = request.ModelId ?? defaultModelId ?? string.Empty,
             Functions = null,
+            MaxToken = request.MaxOutputTokens,
         };
 
         var reply = (await providerAgent.GenerateReplyAsync(messages, options, ct).ConfigureAwait(false)).ToList();
@@ -107,6 +111,17 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
                 .Append('\n');
         }
 
+        if (!string.IsNullOrWhiteSpace(request.Focus))
+        {
+            _ = sb.Append(
+                    "\nOperator focus (steer what to keep and what the narrative emphasises; do not quote this text):\n"
+                )
+                .Append("<<<FOCUS\n")
+                // The operator's text must not be able to close its own section and speak as the prompt.
+                .Append(request.Focus.Replace("FOCUS>>>", "FOCUS> > >", StringComparison.OrdinalIgnoreCase))
+                .Append("\nFOCUS>>>\n");
+        }
+
         if (request.Roster.Count > 0)
         {
             _ = sb.Append("\nAgents (give an outcome for each that finished):\n");
@@ -140,19 +155,74 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
         }
 
         _ = sb.Append("\nRows being compacted:\n");
-        foreach (var row in request.Rows)
+        var described = request.Rows.Select(r => (Row: r, Text: Describe(r.Message))).ToList();
+        var cap = RowCap(described, request.RowCharCap, request.PromptCharBudget);
+        foreach (var (row, text) in described)
         {
+            var shown = row.IsHumanRow ? text : Truncate(text, cap);
+            // V3 checks a quote against the row's own text, so only a row whose whole text is on the line can be quoted.
+            var quotable =
+                !string.IsNullOrEmpty(row.Text) && !row.IsCheckpointRow && (row.IsHumanRow || text.Length <= cap);
             _ = sb.Append('[')
                 .Append("seq ")
                 .Append(row.Seq)
                 .Append("] (")
                 .Append(row.EffectiveRunId ?? "-")
                 .Append(") ")
-                .Append(Describe(row.Message))
+                .Append(quotable ? "" : NotQuotable)
+                .Append(shown)
                 .Append('\n');
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>The tag on a row line whose text cannot be quoted: a tool call or result, a checkpoint, or a truncated row.</summary>
+    internal const string NotQuotable = "[not quotable] ";
+
+    /// <summary>The least a non-human row is cut to, however tight the budget.</summary>
+    internal const int MinRowCharCap = 200;
+
+    /// <summary>Per-line characters besides the row text: the seq and run tags and the not-quotable tag.</summary>
+    private const int RowLineOverhead = 32 + 15;
+
+    /// <summary>
+    ///     The per-row cap for non-human rows: the configured cap, halved while the rows overrun the budget. Human
+    ///     rows are the quote sources and are never cut, so they are charged to the budget whole.
+    /// </summary>
+    private static int RowCap(List<(SequencedMessage Row, string Text)> rows, int? rowCharCap, int? budget)
+    {
+        var cap = rowCharCap ?? int.MaxValue;
+        if (budget is not { } limit)
+        {
+            return cap;
+        }
+
+        var human = rows.Where(r => r.Row.IsHumanRow).Sum(r => (long)r.Text.Length + RowLineOverhead);
+        while (
+            cap > MinRowCharCap
+            && human + rows.Where(r => !r.Row.IsHumanRow).Sum(r => (long)Math.Min(r.Text.Length, cap) + RowLineOverhead)
+                > limit
+        )
+        {
+            cap = Math.Max(MinRowCharCap, cap / 2);
+        }
+
+        return cap;
+    }
+
+    private static string Truncate(string text, int cap)
+    {
+        if (text.Length <= cap)
+        {
+            return text;
+        }
+
+        var keep = cap > 0 && char.IsHighSurrogate(text[cap - 1]) ? cap - 1 : cap;
+        return string.Concat(
+            text.AsSpan(0, keep),
+            string.Create(CultureInfo.InvariantCulture, $" …[truncated {text.Length - keep} chars]")
+        );
     }
 
     /// <summary>Parses the model's JSON object, tolerating code fences and prose around it.</summary>

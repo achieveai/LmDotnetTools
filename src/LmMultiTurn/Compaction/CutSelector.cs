@@ -18,6 +18,9 @@ internal sealed record CutSelectorOptions
 
     /// <summary>The estimator every size test uses.</summary>
     public Func<IMessage, long> Estimator { get; init; } = CompactionTokenEstimate.Default;
+
+    /// <summary>R4: runs compaction ended because no view fit; the run after one is not kept whole for it.</summary>
+    public IReadOnlySet<string> SizeRefusedRunIds { get; init; } = new HashSet<string>(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -85,6 +88,13 @@ internal abstract record CutDecision
     {
         /// <summary>The typed reason.</summary>
         public required string Reason { get; init; }
+
+        /// <summary>
+        ///     True when nothing blocks a cut and R3 alone refused it: every candidate past the active boundary lies in
+        ///     the tail the rules keep (right after a checkpoint, say), so there is nothing yet to cover. False when an
+        ///     obstacle (R6), an open tool call or a protected run (R4) refused one.
+        /// </summary>
+        public bool TailOnly { get; init; }
     }
 }
 
@@ -144,15 +154,30 @@ internal static class CutSelector
             .DefaultIfEmpty(long.MaxValue)
             .Min();
 
-        var lastHuman = rows.LastOrDefault(r => r.IsHumanRow);
-        var currentRunId = lastHuman?.EffectiveRunId;
-        var currentRun = currentRunId is null ? [] : RowsOfRun(rows, currentRunId);
-        var currentRunTokens = currentRun.Sum(r => options.Estimator(r.Message));
-        var protectedRuns = ProtectedRuns(rows, request.Runs, options.CorrectionLookbackRuns);
+        // Two runs, kept apart: the instruction run (of the last human or directive row) is what CurrentInstruction
+        // quotes; the current run R3 keeps is that of the latest input of any kind, since a sub-agent's response or a
+        // notification wakes a new run that must not be cut away while the finished run before it stays whole.
+        var currentRunId = rows.LastOrDefault(r => r.IsHumanRow)?.EffectiveRunId;
+        var instructionRun = currentRunId is null ? [] : RowsOfRun(rows, currentRunId);
+        var tailRunId = rows.LastOrDefault(IsInputRow)?.EffectiveRunId;
+        var currentRun = tailRunId is null ? [] : RowsOfRun(rows, tailRunId);
+        // A checkpoint row is never sent, so it is no part of the tail R3 keeps.
+        var currentRunTokens = currentRun.Where(r => !r.IsCheckpointRow).Sum(r => options.Estimator(r.Message));
+        var protectedRuns = ProtectedRuns(
+            rows,
+            request.Runs,
+            options.CorrectionLookbackRuns,
+            options.SizeRefusedRunIds
+        );
         var floor = request.ActiveBoundarySeq ?? 0;
 
         var pairing = new ToolPairing(rows);
         var start = Math.Min(request.CandidateSeq, rows[^1].Seq);
+
+        // Why no cut, for a caller that must tell "blocked right now" from "nothing yet to cover": R3 is monotone, so
+        // a candidate R4 refuses is one R3 allowed, and a skip with no blocker and some R3 refusal is the kept tail.
+        var blocked = pairing.HasOpenCallAfter(floor);
+        var heldByTail = false;
 
         for (var i = rows.Count - 1; i >= 0; i--)
         {
@@ -170,6 +195,7 @@ internal static class CutSelector
 
             if (cut >= firstObstacle)
             {
+                blocked = true;
                 continue; // R6
             }
 
@@ -180,11 +206,13 @@ internal static class CutSelector
 
             if (!SatisfiesTailFloor(currentRun, currentRunTokens, cut, options))
             {
+                heldByTail = true;
                 continue; // R3
             }
 
             if (protectedRuns.Any(run => run.First <= cut && cut < run.Last))
             {
+                blocked = true;
                 continue; // R4
             }
 
@@ -194,7 +222,7 @@ internal static class CutSelector
                 Seq = cut,
                 CandidateSeq = request.CandidateSeq,
                 CurrentRunId = currentRunId,
-                CurrentInstruction = [.. currentRun.Where(r => r.IsHumanRow && r.Seq <= cut)],
+                CurrentInstruction = [.. instructionRun.Where(r => r.IsHumanRow && r.Seq <= cut)],
                 TailTokens = tailTokens,
                 ExceedsMaxTail = tailTokens > options.MaxTailTokens,
                 Recovery = Observe(rows, request.LoopState, upToSeq: cut),
@@ -204,6 +232,7 @@ internal static class CutSelector
         return new CutDecision.Skipped
         {
             Reason = CompactionReasons.NoSafeBoundary,
+            TailOnly = heldByTail && !blocked,
             Recovery = Observe(rows, request.LoopState, upToSeq: long.MaxValue),
         };
     }
@@ -283,6 +312,10 @@ internal static class CutSelector
         };
     }
 
+    /// <summary>A row that starts or steers a run: human input, any other agent's message, or a notification.</summary>
+    private static bool IsInputRow(SequencedMessage row) =>
+        row.IsHumanRow || row.Message is AgentMessage or NotifyMessage;
+
     private static bool IsObstacle(IMessage message) =>
         message switch
         {
@@ -315,8 +348,8 @@ internal static class CutSelector
     }
 
     /// <summary>
-    ///     R3: the tail keeps at least <see cref="CutSelectorOptions.MinTailTokens" /> of the current run;
-    ///     a run shorter than that stays whole, which means the cut lies before its first row.
+    ///     R3: the tail keeps at least <see cref="CutSelectorOptions.MinTailTokens" /> of the current run (the run of
+    ///     the latest input row); a run shorter than that stays whole, which means the cut lies before its first row.
     /// </summary>
     private static bool SatisfiesTailFloor(
         List<SequencedMessage> currentRun,
@@ -335,20 +368,23 @@ internal static class CutSelector
             return cut < currentRun[0].Seq;
         }
 
-        var kept = currentRun.Where(r => r.Seq > cut).Sum(r => options.Estimator(r.Message));
+        var kept = currentRun.Where(r => r.Seq > cut && !r.IsCheckpointRow).Sum(r => options.Estimator(r.Message));
         return kept >= options.MinTailTokens;
     }
 
     /// <summary>
     ///     R4: among the last <paramref name="lookback" /> runs (by row order), those that received a
-    ///     mid-run injection — a human row after an assistant row inside the same run — or that started
-    ///     while the previous run ended Errored or Interrupted. Each is returned as its first and last
-    ///     <c>Seq</c>; a cut strictly inside the span splits it.
+    ///     mid-run injection — a human row other than an <see cref="AgentMessage"/> after an assistant row inside the
+    ///     same run — or that started
+    ///     while the previous run ended Errored or Interrupted — unless compaction itself ended that run because
+    ///     no view fit (<paramref name="sizeRefused"/>). Each is returned as its first and last <c>Seq</c>; a cut
+    ///     strictly inside the span splits it.
     /// </summary>
     private static List<(long First, long Last)> ProtectedRuns(
         IReadOnlyList<SequencedMessage> rows,
         IReadOnlyList<RunLedgerEntry> ledger,
-        int lookback
+        int lookback,
+        IReadOnlySet<string> sizeRefused
     )
     {
         var spans = new List<(string RunId, long First, long Last)>();
@@ -389,17 +425,22 @@ internal static class CutSelector
                 {
                     sawAssistant = true;
                 }
-                else if (row.IsHumanRow && sawAssistant)
+                // Another agent's message is not a human correction: a multi-agent run would never be cuttable. The
+                // current instruction still quotes a directive (Steer, DelegateTask) verbatim.
+                else if (row.IsHumanRow && row.Message is not AgentMessage && sawAssistant)
                 {
                     injected = true;
                     break;
                 }
             }
 
+            // A predecessor that failed only because its request could not fit is no correction to protect:
+            // keeping this run whole would make the retry uncuttable for the same reason.
             var afterFailure =
                 i > 0
                 && statusByRun.TryGetValue(spans[i - 1].RunId, out var previous)
-                && previous is RunStatus.Errored or RunStatus.Interrupted;
+                && previous is RunStatus.Errored or RunStatus.Interrupted
+                && !sizeRefused.Contains(spans[i - 1].RunId);
 
             if (injected || afterFailure)
             {
@@ -415,6 +456,7 @@ internal static class CutSelector
     {
         private readonly List<(long CallSeq, long ResultSeq)> _pairs = [];
         private readonly HashSet<long> _callRows = [];
+        private readonly Dictionary<string, long> _openCallSeqById = new(StringComparer.Ordinal);
 
         public ToolPairing(IReadOnlyList<SequencedMessage> rows)
         {
@@ -428,6 +470,7 @@ internal static class CutSelector
                     foreach (var id in callIds)
                     {
                         callSeqById[id] = row.Seq;
+                        _openCallSeqById[id] = row.Seq;
                     }
                 }
 
@@ -436,6 +479,7 @@ internal static class CutSelector
                     if (callSeqById.TryGetValue(id, out var callSeq))
                     {
                         _pairs.Add((callSeq, row.Seq));
+                        _ = _openCallSeqById.Remove(id);
                     }
                 }
             }
@@ -444,6 +488,9 @@ internal static class CutSelector
         /// <summary>True when the last row at or before <paramref name="cut" /> is a call, or any pair straddles it.</summary>
         public bool Splits(long cut) =>
             _callRows.Contains(cut) || _pairs.Any(p => p.CallSeq <= cut && p.ResultSeq > cut);
+
+        /// <summary>True when a call row after <paramref name="seq" /> still has no result row.</summary>
+        public bool HasOpenCallAfter(long seq) => _openCallSeqById.Values.Any(callSeq => callSeq > seq);
 
         private static IEnumerable<string> CallIds(IMessage message) =>
             message switch
