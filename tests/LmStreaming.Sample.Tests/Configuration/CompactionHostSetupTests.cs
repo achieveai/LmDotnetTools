@@ -149,6 +149,22 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void EmptyClearToolResultsKeepTurns_KeepsTheDefault_SoClearingCannotBeTurnedOffFromTheCommandLine()
+    {
+        // The binder treats an empty value as unset, so `--Compaction:ClearToolResultsKeepTurns=` keeps the default
+        // of 3 rather than binding null. The eval's sum-* arms therefore pass 99 to make the proactive clear inert.
+        var setup = Create(
+            new Dictionary<string, string?>
+            {
+                ["Compaction:Mode"] = "Compact",
+                ["Compaction:ClearToolResultsKeepTurns"] = "",
+            }
+        );
+
+        setup!.Options.ClearToolResultsKeepTurns.Should().Be(3);
+    }
+
+    [Fact]
     public void SummaryPromptFile_IsReadIntoTheSetup_WithoutItsFrontMatter()
     {
         var path = Path.Combine(Path.GetTempPath(), $"prompt-{Guid.NewGuid():N}.md");

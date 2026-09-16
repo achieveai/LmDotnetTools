@@ -110,8 +110,8 @@
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
       ]
     },
-    // The `sum-*` family (round 3b): tool-result clearing OFF (empty ClearToolResultsKeepTurns binds to null), so
-    // the summariser is the only way to make room. Round 3 showed the proactive clear runs before the cut and removes
+    // The `sum-*` family (round 3b): the proactive tool-result clear is inert (keep 99 turns; an empty value would
+    // keep the default of 3, not bind null), so the summariser is the only way to make room short of a real overflow. Round 3 showed the proactive clear runs before the cut and removes
     // exactly the results the cut would free, so on r2 the cut fell under the 10% minimum gain and no summary ran
     // on any arm. Every arm here carries the real tokenizer; they differ only in the summary prompt / model / checks.
     {
@@ -121,7 +121,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
@@ -132,7 +132,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryPrefixMode=CachedPrefix",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -144,7 +144,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v1.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -156,7 +156,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v2.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -168,7 +168,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v3.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -180,7 +180,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v4.md",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -192,7 +192,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:Checks:Rc1ResourceDedupe=true",
         "--Compaction:Checks:Rc2ShellRetention=true",
         "--Compaction:Checks:Rc3OpenExchanges=true",
@@ -206,7 +206,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryModelId=gpt-5.6-luna",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
@@ -218,7 +218,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:TextTokenizer=o200k",
-        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:ClearToolResultsKeepTurns=99",
         "--Compaction:SummaryModelId=gpt-5.6-sol",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
