@@ -44,6 +44,82 @@
         "--Compaction:SummaryPrefixMode=CachedPrefix",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
+    },
+
+    // ── Phase 2 (HTR round 1) — select with --variants; every arm is compact-v0 plus ONE change.
+    // The prompt path must be absolute: the host's cwd is a temp instance dir. This branch's checkout
+    // is the only place these prompts live, so the path names it; results record the prompt fingerprint.
+    {
+      // H1: prompt v1 (essence-first).
+      "name": "prompt-v1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v1.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v2 (tool-call essence).
+      "name": "prompt-v2",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v2.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v3 (open-exchange focus).
+      "name": "prompt-v3",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v3.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v4 (hand-off brief).
+      "name": "prompt-v4",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPromptPath=B:\\sources\\LmDotnetTools\\.worktrees\\WT3\\evals\\compaction-eval\\prompts\\v4.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H2: all three deterministic checks on (RC1 resource dedupe, RC2 shell retention, RC3 open exchanges).
+      "name": "checks-all",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:Checks:Rc1ResourceDedupe=true",
+        "--Compaction:Checks:Rc2ShellRetention=true",
+        "--Compaction:Checks:Rc3OpenExchanges=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H4: cheaper summary model (luna) writing the checkpoint for a terra agent.
+      "name": "summary-luna",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryModelId=gpt-5.6-luna",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H4: stronger summary model (sol) writing the checkpoint for a terra agent.
+      "name": "summary-sol",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryModelId=gpt-5.6-sol",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
     }
   ],
 
