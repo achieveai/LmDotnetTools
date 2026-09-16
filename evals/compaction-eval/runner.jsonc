@@ -23,12 +23,13 @@
     },
     {
       // H0: the shipped summarizer (prompt v0 is byte-identical to the built-in), window clamped to
-      // 64k so every task compacts at least once inside the budget.
+      // 96k so every task compacts at least once inside the budget. (64k left ~37k usable after the
+      // reserve, which the prefix + tail alone exceeded: view_exceeds_window in smoke0.)
       "name": "compact-v0",
       "compacts": true,
       "extraArgs": [
         "--Compaction:Mode=Compact",
-        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
     {
@@ -38,7 +39,7 @@
       "extraArgs": [
         "--Compaction:Mode=Compact",
         "--Compaction:SummaryPrefixMode=CachedPrefix",
-        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     }
   ],
@@ -55,6 +56,11 @@
       "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
       "--SandboxGateway:AutoSpawn=true",
       "--SandboxGateway:WorkspaceBasePath=B:\\sandbox-workspaces\\workspaces",
+      // Only the tiny demo marketplace: superpowers + gb-plugins inflate the first prompt to ~30k
+      // tokens and their brainstorming skill parks the run on a question (smoke0 finding).
+      "--SandboxGateway:Marketplaces=demo",
+      // Unattended: no AskUserQuestion tool on the root or any sub-agent.
+      "--ClientTools:AskUserQuestion=false",
       // Shadow prices (pricing.shadow.md): tokens are the primary signal, dollars are relative.
       "--Pricing:Version=shadow-2026-09-16",
       "--Pricing:Models:gpt-5.6-terra:PromptPerMillion=5",
