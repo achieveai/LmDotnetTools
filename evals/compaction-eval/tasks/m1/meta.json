@@ -3,6 +3,6 @@
   "split": "dev",
   "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
   "minCompactions": 1,
-  "timeoutMinutes": 40,
-  "windowPressure": "lead writes six long sections (read+append each) while three worker questions are open; the cut lands with exchanges open"
+  "timeoutMinutes": 45,
+  "windowPressure": "the lead reads eight specs in full right after dispatch (36.3k words, 44.9k tokens with line numbers, measured with o200k_base) while three worker questions are open; with the ~17k prefix+turn overhead measured on r1, ~12k of board/dispatch/message traffic (Phase 1 m1 ran 11-24k above the prefix), ~3k of read+append release-plan cycles and ~3k of worker reports read at the end, the lead's Off-arm peak is predicted at ~80k (>= 70k target). The cut lands with exchanges open (RC3) and the eight gate ids must survive it into gates.md, the plan and summary.md (R3)"
 }

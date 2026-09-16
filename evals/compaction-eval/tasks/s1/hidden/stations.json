@@ -1,0 +1,72 @@
+{
+  "report-01.txt": {
+    "station": "ST-241",
+    "verified_count": 355,
+    "stale_count": 340
+  },
+  "report-02.txt": {
+    "station": "ST-118",
+    "verified_count": 497,
+    "stale_count": 512
+  },
+  "report-03.txt": {
+    "station": "ST-306",
+    "verified_count": 301,
+    "stale_count": 288
+  },
+  "report-04.txt": {
+    "station": "ST-472",
+    "verified_count": 634,
+    "stale_count": 610
+  },
+  "report-05.txt": {
+    "station": "ST-159",
+    "verified_count": 418,
+    "stale_count": 425
+  },
+  "report-06.txt": {
+    "station": "ST-388",
+    "verified_count": 392,
+    "stale_count": 377
+  },
+  "report-07.txt": {
+    "station": "ST-207",
+    "verified_count": 451,
+    "stale_count": 466
+  },
+  "report-08.txt": {
+    "station": "ST-533",
+    "verified_count": 733,
+    "stale_count": 719
+  },
+  "report-09.txt": {
+    "station": "ST-124",
+    "verified_count": 371,
+    "stale_count": 358
+  },
+  "report-10.txt": {
+    "station": "ST-461",
+    "verified_count": 580,
+    "stale_count": 593
+  },
+  "report-11.txt": {
+    "station": "ST-275",
+    "verified_count": 417,
+    "stale_count": 402
+  },
+  "report-12.txt": {
+    "station": "ST-349",
+    "verified_count": 548,
+    "stale_count": 531
+  },
+  "report-13.txt": {
+    "station": "ST-196",
+    "verified_count": 436,
+    "stale_count": 449
+  },
+  "report-14.txt": {
+    "station": "ST-508",
+    "verified_count": 682,
+    "stale_count": 667
+  }
+}

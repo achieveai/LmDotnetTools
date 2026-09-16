@@ -3,6 +3,6 @@
   "split": "dev",
   "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
   "minCompactions": 1,
-  "timeoutMinutes": 30,
-  "windowPressure": "large log fixtures invite big tool results; many small edit/test cycles (R1/R2/RC1/RC2)"
+  "timeoutMinutes": 35,
+  "windowPressure": "twelve mandatory full-file Read results (1,575 lines, 55.2k tokens with line numbers, measured with o200k_base) land before any code is written; with the ~17k prefix+turn overhead measured on r1 and ~10k of edit/test cycles the Off-arm peak is predicted at ~80k (>= 70k target); the twelve per-day incident answers must then survive the cut (R3/RC1/RC2)"
 }

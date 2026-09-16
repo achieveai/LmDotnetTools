@@ -1,0 +1,69 @@
+{
+  "gates": {
+    "01-gateway.md": {
+      "gate": "GATE-17",
+      "retired": [
+        "GATE-9"
+      ]
+    },
+    "02-storage.md": {
+      "gate": "GATE-23",
+      "retired": [
+        "GATE-11",
+        "GATE-4"
+      ]
+    },
+    "03-pipeline.md": {
+      "gate": "GATE-31",
+      "retired": [
+        "GATE-12"
+      ]
+    },
+    "04-scheduler.md": {
+      "gate": "GATE-38",
+      "retired": [
+        "GATE-19",
+        "GATE-2"
+      ]
+    },
+    "05-identity.md": {
+      "gate": "GATE-42",
+      "retired": [
+        "GATE-26"
+      ]
+    },
+    "06-telemetry.md": {
+      "gate": "GATE-49",
+      "retired": [
+        "GATE-33"
+      ]
+    },
+    "07-billing.md": {
+      "gate": "GATE-56",
+      "retired": [
+        "GATE-7",
+        "GATE-41"
+      ]
+    },
+    "08-notifications.md": {
+      "gate": "GATE-63",
+      "retired": [
+        "GATE-58"
+      ]
+    }
+  },
+  "handoffs": {
+    "gateway": {
+      "code": "HANDOFF-gateway-K4TR",
+      "void": "HANDOFF-gateway-P9QM"
+    },
+    "storage": {
+      "code": "HANDOFF-storage-W7NC",
+      "void": "HANDOFF-storage-D2LH"
+    },
+    "pipeline": {
+      "code": "HANDOFF-pipeline-M3XV",
+      "void": "HANDOFF-pipeline-R8SB"
+    }
+  }
+}

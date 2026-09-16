@@ -3,7 +3,7 @@
   "split": "dev",
   "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
   "minCompactions": 1,
-  "timeoutMinutes": 30,
-  "steerAfterSeconds": 60,
-  "windowPressure": "per-document inspection output plus a mid-run correction that must survive the cut (R4/R5/RC7)"
+  "timeoutMinutes": 35,
+  "steerAfterSeconds": 90,
+  "windowPressure": "fourteen mandatory full-document Read results (45.5k words, 57.0k tokens with line numbers, measured with o200k_base) land before any code is written; with the ~17k prefix+turn overhead measured on r1 and ~8k of notes/code/test turns the Off-arm peak is predicted at ~82k (>= 70k target). The steer (sent at 90s, i.e. during or just after the read burst) re-keys all fourteen already-written notes and changes the word rule, so it must survive the cut and be obeyed after it (R4/R5/RC7); the fourteen station ids and verified counts must survive it too (R3)"
 }

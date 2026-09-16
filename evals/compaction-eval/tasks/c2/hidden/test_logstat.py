@@ -9,6 +9,14 @@ def run(*args):
     return subprocess.run([sys.executable, "logstat.py", *args], cwd=WS, capture_output=True, text=True, timeout=120)
 
 
+def write_dir(name, text):
+    d = os.path.join(WS, "tests", name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "x.log"), "w") as f:
+        f.write(text)
+    return "tests/" + name + "/"
+
+
 class LogStatTests(unittest.TestCase):
     def test_status_counts(self):
         r = run("status-counts", "logs/")
@@ -31,6 +39,18 @@ class LogStatTests(unittest.TestCase):
         got = [[p, round(float(v), 1)] for p, v in json.loads(r.stdout)]
         self.assertEqual(got, EXPECTED["slowest_3"])
 
+    def test_comment_lines_skipped(self):
+        d = write_dir(
+            "_comment_logs",
+            "# handover: quiet night\n"
+            "2026-03-04T08:12:09Z 10.1.4.77 GET /api/items/42 200 37ms\n"
+            "# INC-9999 opened 08:13: something; /api/items latency elevated\n"
+            "2026-03-04T08:14:09Z 10.1.4.78 GET /api/items/42 503 970ms\n",
+        )
+        r = run("status-counts", d)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"200": 1, "503": 1})
+
     def test_help_exits_zero(self):
         self.assertEqual(run("--help").returncode, 0)
 
@@ -41,11 +61,8 @@ class LogStatTests(unittest.TestCase):
         self.assertEqual(run("status-counts", "no-such-dir/").returncode, 2)
 
     def test_malformed_line_exits_two(self):
-        bad = os.path.join(WS, "tests", "_bad_logs")
-        os.makedirs(bad, exist_ok=True)
-        with open(os.path.join(bad, "x.log"), "w") as f:
-            f.write("2026-03-04T08:12:09Z 10.1.4.77 GET /api/items/42 200 37ms\nthis is not a log line\n")
-        self.assertEqual(run("status-counts", "tests/_bad_logs/").returncode, 2)
+        d = write_dir("_bad_logs", "2026-03-04T08:12:09Z 10.1.4.77 GET /api/items/42 200 37ms\nthis is not a log line\n")
+        self.assertEqual(run("status-counts", d).returncode, 2)
 
 
 if __name__ == "__main__":
