@@ -26,8 +26,8 @@
     },
     {
       // H0: the shipped summarizer (prompt v0 is byte-identical to the built-in), window clamped to
-      // 96k so every task compacts at least once inside the budget. (64k left ~37k usable after the
-      // reserve, which the prefix + tail alone exceeded: view_exceeds_window in smoke0.)
+      // 96k. Phase 1 finding: only r1 (Off peak ~61-63k) crosses the ~55k trigger; c2/m1/s1 peak at
+      // 23-38k and never compact, so their Compact cells are invalid at this clamp.
       "name": "compact-v0",
       "compacts": true,
       "extraArgs": [
@@ -43,6 +43,18 @@
         "--Compaction:Mode=Compact",
         "--Compaction:SummaryPrefixMode=CachedPrefix",
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+
+    {
+      // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
+      // crosses on some seeds. r1 may overflow after MaxCompactionsPerRun=2; an Errored run is a finding.
+      // (smoke0's view_exceeds_window at 64k was under the 30k superpowers prefix, since dropped.)
+      "name": "compact-v0-64k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
       ]
     },
 

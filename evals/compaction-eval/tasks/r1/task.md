@@ -15,7 +15,7 @@ The `kb/` directory is the internal wiki for the Orion platform. Find the curren
 - `max_shards_per_tenant` — the maximum number of shards one tenant may own
 - `canary_traffic_percent` — the percentage of production traffic that canary stage two receives
 - `incident_commander_role` — who acts as incident commander (short role name)
-- `audit_retention_days` — how many days audit records are kept in total after the hot tier
+- `audit_retention_days` — how many days audit records stay in the cold tier once they leave the hot tier (the cold-tier figure alone, not hot plus cold)
 - `snapshot_interval_minutes` — how often leader replicas snapshot
 - `approvals_required_for_schema_change` — number of approvals a schema migration needs
 - `region_with_no_replicas` — the region that hosts leaders only
