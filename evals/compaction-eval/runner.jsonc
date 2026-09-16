@@ -11,7 +11,10 @@
   "modeName": "compaction-eval",
   "modeFile": "mode.json",
   "workspaceName": "compaction-eval",
-  "workspacesRoot": "B:\\sandbox-workspaces\\workspaces",
+  // The gateway roots every workspace under a per-app folder, <slug>-<sha256 shorthash of app.id>
+  // (gateway issue #106). Fixtures and the checker must live where the agent actually works, so
+  // the root is that folder, not the bare WorkspaceBasePath (smoke1 finding: every checker read 0).
+  "workspacesRoot": "B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56",
 
   "models": ["gpt-5.6-terra"],
 
