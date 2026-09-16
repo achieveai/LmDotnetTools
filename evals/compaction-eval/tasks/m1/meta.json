@@ -1,0 +1,8 @@
+{
+  "family": "collab",
+  "split": "dev",
+  "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
+  "minCompactions": 1,
+  "timeoutMinutes": 40,
+  "windowPressure": "lead writes six long sections (read+append each) while three worker questions are open; the cut lands with exchanges open"
+}
