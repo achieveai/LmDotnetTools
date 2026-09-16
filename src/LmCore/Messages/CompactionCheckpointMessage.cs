@@ -69,6 +69,43 @@ public sealed record ArtifactRef
     public long? OriginSeq { get; init; }
 }
 
+/// <summary>
+///     An agent exchange still open at the cut (eval spec §4 RC3): a question or delegation nobody has
+///     answered yet, pinned so the checkpoint cannot hide work this agent still owes or awaits.
+/// </summary>
+public sealed record OpenExchangeRef
+{
+    /// <summary>The id of the message that opened the exchange.</summary>
+    [JsonPropertyName("message_id")]
+    public required string MessageId { get; init; }
+
+    /// <summary><c>inbound</c> (owed by this agent) or <c>outbound</c> (awaited by this agent).</summary>
+    [JsonPropertyName("direction")]
+    public required string Direction { get; init; }
+
+    /// <summary>Who asked.</summary>
+    [JsonPropertyName("from")]
+    public required string From { get; init; }
+
+    /// <summary>Who was asked, for an outbound exchange.</summary>
+    [JsonPropertyName("to")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? To { get; init; }
+
+    /// <summary>The row that opened it.</summary>
+    [JsonPropertyName("seq")]
+    public required long Seq { get; init; }
+
+    /// <summary>The run the exchange opened in.</summary>
+    [JsonPropertyName("asked_at_run")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AskedAtRun { get; init; }
+
+    /// <summary>At most 200 characters of the body.</summary>
+    [JsonPropertyName("summary")]
+    public required string Summary { get; init; }
+}
+
 /// <summary>One sub-agent of the compacted conversation, by ordinal id (§3.3, §10).</summary>
 public sealed record AgentRef
 {
@@ -242,6 +279,10 @@ public sealed record ContextManifest
     [JsonPropertyName("agents")]
     public IReadOnlyList<AgentRef> Agents { get; init; } = [];
 
+    /// <summary>Exchanges still unanswered at the cut (RC3). Empty unless the check is on.</summary>
+    [JsonPropertyName("open_exchanges")]
+    public IReadOnlyList<OpenExchangeRef> OpenExchanges { get; init; } = [];
+
     /// <summary>Index of compacted history: seq ranges to headlines, for the recall tool.</summary>
     [JsonPropertyName("index")]
     public IReadOnlyList<IndexEntry> Index { get; init; } = [];
@@ -275,8 +316,11 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     /// <summary>The <c>$type</c> discriminator the JSON converter writes for this row.</summary>
     public const string TypeDiscriminator = "compaction_checkpoint";
 
-    /// <summary>The persisted schema version this build writes.</summary>
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>
+    ///     The persisted schema version this build writes. 2 adds <c>open_exchanges</c> to the manifest; a
+    ///     version 1 row still deserializes, with that section empty.
+    /// </summary>
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>Checkpoint id, <c>cp-{thread-short}-{n}</c>. The key of the state machine entry.</summary>
     [JsonPropertyName("checkpoint_id")]
@@ -422,6 +466,17 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
             Manifest.Agents.Select(a =>
                 $"{a.AgentId}: {a.Template ?? "-"}; {a.Task ?? "-"}; {a.Status}"
                 + (a.Outcome is null ? string.Empty : $"; {a.Outcome}")
+            )
+        );
+
+        AppendLines(
+            sb,
+            "Open exchanges (still unanswered at this checkpoint; answer or resolve them)",
+            Manifest.OpenExchanges.Select(x =>
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{x.Direction} {x.MessageId} {(x.Direction == "outbound" ? "to " + (x.To ?? "-") : "from " + x.From)} [seq {x.Seq}]: {x.Summary}"
+                )
             )
         );
 

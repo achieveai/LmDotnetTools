@@ -114,7 +114,7 @@ public sealed class CheckpointValidatorTests
     [Fact]
     public void V1_UnknownSchemaVersion_IsRejected()
     {
-        ExpectRule(CheckpointValidator.Validate(Checkpoint() with { SchemaVersion = 2 }, Context()), "V1");
+        ExpectRule(CheckpointValidator.Validate(Checkpoint() with { SchemaVersion = 3 }, Context()), "V1");
     }
 
     [Fact]

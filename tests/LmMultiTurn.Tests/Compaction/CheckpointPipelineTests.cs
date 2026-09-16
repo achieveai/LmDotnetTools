@@ -254,7 +254,7 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
             .Should()
             .BeOfType<TextMessage>()
             .Which.Text.Should()
-            .StartWith("<context-checkpoint version=\"1\" id=\"cp-1\" covers_seq=\"1-7\"");
+            .StartWith("<context-checkpoint version=\"2\" id=\"cp-1\" covers_seq=\"1-7\"");
     }
 
     [Theory]

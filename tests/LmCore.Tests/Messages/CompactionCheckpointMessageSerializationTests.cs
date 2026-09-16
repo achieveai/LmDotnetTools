@@ -118,7 +118,7 @@ public class CompactionCheckpointMessageSerializationTests
             root.GetProperty("manifest").GetProperty("current_instruction")[0].GetProperty("quote").GetString()
         );
         var text = root.GetProperty("text").GetString()!;
-        Assert.Contains("<context-checkpoint version=\"1\" id=\"cp-abc-1\" covers_seq=\"1-41\"", text);
+        Assert.Contains("<context-checkpoint version=\"2\" id=\"cp-abc-1\" covers_seq=\"1-41\"", text);
         Assert.Contains("## Current instruction (verbatim, seq 40)\n- [seq 40] now fix the build", text);
         Assert.Contains("## What happened\nSetup, then the fix.", text);
         Assert.Contains("seq 21-41 (run-2): the fix", text);
