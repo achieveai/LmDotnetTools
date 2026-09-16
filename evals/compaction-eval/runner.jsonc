@@ -86,6 +86,31 @@
       ]
     },
     {
+      // H7 upper bound, no code change: the proactive clear at the trigger keeps 99 tool turns, so it never
+      // fires inside a run; only the forced clear on a real overflow (keepTurns 1) remains. c2 writes one
+      // note per tool turn, so the default of 3 drops its twelve-log burst after three notes and the rest
+      // are re-read (round 2: 14-30 re-reads per run even with the tokenizer).
+      "name": "compact-v0-tok-keep99",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H7 bound and the 128k clamp together: no proactive clear and no genuine overflow on the scaled tasks.
+      "name": "compact-v0-tok-keep99-128k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
+      ]
+    },
+    {
       // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
       // crosses on some seeds. r1 may overflow after MaxCompactionsPerRun=2; an Errored run is a finding.
       // (smoke0's view_exceeds_window at 64k was under the 30k superpowers prefix, since dropped.)
