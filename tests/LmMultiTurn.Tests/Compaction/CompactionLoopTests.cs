@@ -158,11 +158,15 @@ public class CompactionLoopTests
             Func<string, string>? echo = null,
             bool start = true,
             Func<Exception, bool>? overflowVerdict = null,
-            ILogger<MultiTurnAgentLoop>? logger = null
+            ILogger<MultiTurnAgentLoop>? logger = null,
+            string? extraTool = null
         )
         {
             Agent = new ScriptedAgent(script);
             Store = store ?? new InMemoryConversationStore();
+            Task<ToolHandlerResult> Handle(string args, ToolCallContext _, CancellationToken __) =>
+                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding));
+
             var registry = new FunctionRegistry().AddFunction(
                 new FunctionContract
                 {
@@ -170,9 +174,21 @@ public class CompactionLoopTests
                     Description = "Returns padding",
                     Parameters = [],
                 },
-                (args, _, _) =>
-                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding))
+                Handle
             );
+            // A second tool under a name the compaction tool-knowledge registry recognises (e.g. "Read").
+            if (extraTool is not null)
+            {
+                registry = registry.AddFunction(
+                    new FunctionContract
+                    {
+                        Name = extraTool,
+                        Description = "Returns padding",
+                        Parameters = [],
+                    },
+                    Handle
+                );
+            }
             Setup = new CompactionSetup
             {
                 Options = options,
@@ -409,6 +425,100 @@ public class CompactionLoopTests
         (await h.RunAsync("search the repository")).IsError.Should().BeFalse();
 
         ToolResults(h.Agent.Requests[1]).Single().Result.Should().Be(grep, $"{mode} never changes the provider input");
+    }
+
+    /// <summary>Reads the same file for the first <paramref name="calls"/> requests, then answers with text.</summary>
+    private static Func<int, IReadOnlyList<IMessage>> ReadThenDone(int calls) =>
+        call =>
+            call <= calls
+                ?
+                [
+                    new ToolCallMessage
+                    {
+                        ToolCallId = $"rd-{call}",
+                        FunctionName = "Read",
+                        FunctionArgs = """{"file_path":"a.md"}""",
+                        Role = Role.Assistant,
+                    },
+                ]
+                : [new TextMessage { Text = "done", Role = Role.Assistant }];
+
+    /// <summary>
+    /// Six reads of one file in an 8,000-token window, keeping one tool turn whole. Row seqs are only known
+    /// after the clear pass reconciles them with the store, which is when RC1 can name a newest copy at all.
+    /// </summary>
+    private static Harness RepeatedReads(CompactionChecks checks) =>
+        new(
+            ReadThenDone(6),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 1,
+                Checks = checks,
+            },
+            _ => 8_000,
+            echo: _ => "padding " + new string('e', 4_000),
+            extraTool: "Read"
+        );
+
+    [Fact]
+    public async Task Rc1_ReplacesOlderReadsOfTheSameFile_InTheProviderRequest()
+    {
+        await using var h = RepeatedReads(new CompactionChecks { Rc1ResourceDedupe = true });
+
+        var completed = await h.RunAsync("audit the file");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var reads = ToolResults(h.Agent.Requests[^1]).ToList();
+        reads
+            .Count(r => r.Result.Contains("padding", StringComparison.Ordinal))
+            .Should()
+            .Be(1, "only the newest read of a.md keeps its text");
+        reads
+            .Count(r => r.Result.StartsWith("[Tool result superseded", StringComparison.Ordinal))
+            .Should()
+            .BeGreaterThan(1, "every earlier read names the newest copy instead of the recall placeholder");
+    }
+
+    [Fact]
+    public async Task Rc1_Off_ShowsTheRecallPlaceholderForEveryClearedRead()
+    {
+        await using var h = RepeatedReads(CompactionChecks.None);
+
+        (await h.RunAsync("audit the file")).IsError.Should().BeFalse();
+
+        ToolResults(h.Agent.Requests[^1])
+            .Should()
+            .NotContain(r => r.Result.StartsWith("[Tool result superseded", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Rc2_TrimsAClearedShellResult_InsteadOfReplacingIt()
+    {
+        // Echo is not in the tool-knowledge registry, so RC2 treats it as a shell tool: not reproducible.
+        await using var h = new Harness(
+            EchoThenDone(8),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 2,
+                Checks = new CompactionChecks { Rc2ShellRetention = true },
+                ShellTrimChars = 500,
+            },
+            _ => 8_000,
+            echo: _ => new string('e', 4_000)
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var cleared = h.Agent.Requests.FindIndex(r => ToolResults(r).Any(x => x.Result.Length < 4_000));
+        cleared.Should().BePositive();
+        var shown = ToolResults(h.Agent.Requests[cleared]).ToList();
+        shown
+            .Take(shown.Count - 2)
+            .Should()
+            .OnlyContain(r =>
+                r.Result.Contains("elided from this tool result", StringComparison.Ordinal) && r.Result.Length <= 500
+            );
+        shown.TakeLast(2).Should().OnlyContain(r => r.Result.Length == 4_000, "the most recent turns stay whole");
     }
 
     [Fact]

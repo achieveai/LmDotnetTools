@@ -105,6 +105,7 @@ internal sealed class CompactionRuntime
     private readonly ICheckpointSummarizer _summarizer;
     private readonly CheckpointPipeline _pipeline;
     private readonly TimeProvider _clock;
+    private readonly ToolKnowledgeRegistry _registry;
     private readonly ConditionalWeakTable<IMessage, RowIdentity> _identities = [];
     private readonly List<Task> _inFlightPersists = [];
     private readonly object _gate = new();
@@ -688,6 +689,7 @@ internal sealed class CompactionRuntime
         _clock = setup.Clock ?? TimeProvider.System;
         var options = setup.Options;
         options.Validate();
+        _registry = ToolKnowledgeRegistry.Merge(options.ToolKnowledge);
         _policy = new CompactionPolicy(options);
         _summarizer =
             setup.Summarizer
@@ -858,25 +860,21 @@ internal sealed class CompactionRuntime
             return null;
         }
 
-        var shaping = ToolResultShaping();
-        if (Active is null && shaping is null)
+        // ShapesView is exactly the condition under which ToolResultShaping returns non-null.
+        if (Active is null && !ShapesView)
         {
             return null;
         }
 
         var history = _host.HistorySnapshot();
+        var rows = Sequence(history);
+        var shaping = ToolResultShaping(_tightened, rows);
         if (shaping is not null)
         {
             LogNewlyTrimmed(history, shaping.CapChars);
         }
 
-        return AgentContextProjection.Default.Build(
-            _host.SystemPrompt,
-            Sequence(history),
-            Active,
-            RenderOptions,
-            shaping
-        );
+        return AgentContextProjection.Default.Build(_host.SystemPrompt, rows, Active, RenderOptions, shaping);
     }
 
     /// <summary>
@@ -1702,7 +1700,7 @@ internal sealed class CompactionRuntime
                 history,
                 Active,
                 RenderOptions,
-                ToolResultShaping(tightening)
+                ToolResultShaping(tightening, history)
             );
             return (view, EstimateRequestTokens(view, ephemeral, tightening));
         }
@@ -1740,7 +1738,7 @@ internal sealed class CompactionRuntime
             return null; // A newer build owns the state; it decides what the view shows.
         }
 
-        var tightenedShaping = ToolResultShaping(chosen)!;
+        var tightenedShaping = ToolResultShaping(chosen, history)!;
         var trimmed = results.Where(r => r.Length > tightenedShaping.CapFor(r.Seq, r.Length)).ToList();
         _tightened = written.ToolResultsTightened ?? chosen;
         var tightenedView = BuildView() ?? Measure(chosen).View;
@@ -1894,20 +1892,77 @@ internal sealed class CompactionRuntime
         );
     }
 
-    private ToolResultViewOptions? ToolResultShaping() => ToolResultShaping(_tightened);
+    private ToolResultViewOptions? ToolResultShaping() => ToolResultShaping(_tightened, rows: null);
 
-    private ToolResultViewOptions? ToolResultShaping(ToolResultTightening? tightened) =>
-        ShapesView
-            ? new ToolResultViewOptions
+    /// <summary>
+    ///     How the view shows tool results, or null when nothing is shaped. The eval's row-level checks (RC1, RC2)
+    ///     need the rows; <paramref name="rows" /> lets a caller that already sequenced them avoid doing it again.
+    ///     With <see cref="CompactionOptions.Checks" /> off, both maps stay null and the view is byte-identical to
+    ///     what production builds.
+    /// </summary>
+    private ToolResultViewOptions? ToolResultShaping(
+        ToolResultTightening? tightened,
+        IReadOnlyList<SequencedMessage>? rows
+    )
+    {
+        if (!ShapesView)
+        {
+            return null;
+        }
+
+        var checks = Options.Checks;
+        if (checks.Rc1ResourceDedupe || checks.Rc2ShellRetention)
+        {
+            rows ??= Sequence(_host.HistorySnapshot());
+        }
+
+        return new ToolResultViewOptions
+        {
+            CapChars = Options.ToolResultViewCapChars(UsableTokens),
+            ClearedThroughSeq = _clearedThroughSeq,
+            RecallToolName = RecallConversationToolProvider.ToolName,
+            TightenedThroughSeq = tightened?.ThroughSeq ?? 0,
+            TightenedPartsPerMillion = tightened?.PartsPerMillion ?? ToolResultViewOptions.PartsPerMillion,
+            TightenedFloorChars = Options.ToolResultViewCapMinChars,
+            SupersededBy = checks.Rc1ResourceDedupe ? ResourceDedupe.Superseded(rows!, _registry) : null,
+            ShellSeqs = checks.Rc2ShellRetention ? ShellResultSeqs(rows!) : null,
+            ShellTrimChars = Options.ShellTrimChars,
+        };
+    }
+
+    /// <summary>RC2: the seqs of every non-deferred result whose call was a shell tool.</summary>
+    private HashSet<long> ShellResultSeqs(IReadOnlyList<SequencedMessage> rows)
+    {
+        var shellCalls = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            foreach (var call in ToolRows.CallsOf(row.Message))
             {
-                CapChars = Options.ToolResultViewCapChars(UsableTokens),
-                ClearedThroughSeq = _clearedThroughSeq,
-                RecallToolName = RecallConversationToolProvider.ToolName,
-                TightenedThroughSeq = tightened?.ThroughSeq ?? 0,
-                TightenedPartsPerMillion = tightened?.PartsPerMillion ?? ToolResultViewOptions.PartsPerMillion,
-                TightenedFloorChars = Options.ToolResultViewCapMinChars,
+                if (
+                    call.ToolCallId is { Length: > 0 } id
+                    && _registry.Resolve(call.FunctionName).Kind == ToolKind.Shell
+                )
+                {
+                    _ = shellCalls.Add(id);
+                }
             }
-            : null;
+        }
+
+        var seqs = new HashSet<long>();
+        foreach (var row in rows)
+        {
+            if (
+                ToolRows
+                    .ResultsOf(row.Message)
+                    .Any(r => !r.IsDeferred && r.ToolCallId is { Length: > 0 } id && shellCalls.Contains(id))
+            )
+            {
+                _ = seqs.Add(row.Seq);
+            }
+        }
+
+        return seqs;
+    }
 
     /// <summary>
     ///     The estimator the cut rules measure the tail with: in a shaped view a tool result costs what the model
@@ -1915,7 +1970,7 @@ internal sealed class CompactionRuntime
     /// </summary>
     private Func<IMessage, long> ViewEstimator(IReadOnlyList<SequencedMessage> rows)
     {
-        if (ToolResultShaping() is not { } shaping)
+        if (ToolResultShaping(_tightened, rows) is not { } shaping)
         {
             return CompactionTokenEstimate.Default;
         }

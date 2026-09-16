@@ -7,6 +7,13 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 /// </summary>
 internal static class ResourceDedupe
 {
+    /// <summary>
+    ///     The seq <c>CompactionRuntime.Sequence</c> gives a row appended since the last reconciliation. Such a row
+    ///     has no position yet, and several of them share this value, so it is neither superseded nor named as the
+    ///     newest copy — it would otherwise supersede itself and put the sentinel in a model-visible placeholder.
+    /// </summary>
+    private const long UnknownSeq = long.MaxValue;
+
     /// <summary>Older result seq → the newest result seq that read the same resource.</summary>
     public static IReadOnlyDictionary<long, long> Superseded(
         IReadOnlyList<SequencedMessage> rows,
@@ -41,6 +48,11 @@ internal static class ResourceDedupe
         var seqsByKey = new Dictionary<string, List<long>>(StringComparer.Ordinal);
         foreach (var row in rows)
         {
+            if (row.Seq == UnknownSeq)
+            {
+                continue;
+            }
+
             foreach (var result in ToolRows.ResultsOf(row.Message))
             {
                 if (

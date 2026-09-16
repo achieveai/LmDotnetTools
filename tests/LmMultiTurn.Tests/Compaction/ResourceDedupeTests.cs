@@ -82,6 +82,16 @@ public sealed class ResourceDedupeTests
     }
 
     [Fact]
+    public void RowsWithNoKnownSeqYet_AreNeitherSupersededNorTheNewestCopy()
+    {
+        // CompactionRuntime.Sequence gives every row appended since the last reconciliation the same sentinel.
+        var thread = Reads("a.md", "a.md");
+        var unknown = thread.Rows.Select(r => r.Seq >= 4 ? r with { Seq = long.MaxValue } : r).ToList();
+
+        ResourceDedupe.Superseded(unknown, ToolKnowledgeRegistry.Default).Should().BeEmpty();
+    }
+
+    [Fact]
     public void AHostOverride_MakesAShellToolDedupable()
     {
         var thread = new ThreadFixture()
