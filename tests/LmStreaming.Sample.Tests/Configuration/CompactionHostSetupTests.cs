@@ -62,6 +62,46 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void NoTextTokenizer_LeavesTheHeuristicInPlace()
+    {
+        var setup = Create(new Dictionary<string, string?> { ["Compaction:Mode"] = "compact" });
+
+        setup!.TextTokens.Should().BeNull("null keeps the library's length / 4 estimate");
+    }
+
+    [Fact]
+    public void O200kTextTokenizer_CountsWithTheRealEncoding()
+    {
+        var setup = Create(
+            new Dictionary<string, string?> { ["Compaction:Mode"] = "compact", ["Compaction:TextTokenizer"] = "o200k" }
+        );
+
+        setup!.TextTokens.Should().NotBeNull();
+        // 84 characters of line-numbered prose: the heuristic charges 21, the encoding far fewer.
+        const string LineNumberedProse =
+            "     1\tThe gateway's default per-request timeout is 30000 ms.\n     2\tIt was 45000 ms.";
+        var counted = setup.TextTokens!(LineNumberedProse);
+        counted.Should().BeInRange(20, 40, "o200k counts words and numbers, not quarters of characters");
+        setup.TextTokens!(null).Should().Be(0);
+        setup.TextTokens!("").Should().Be(0);
+    }
+
+    [Fact]
+    public void UnknownTextTokenizer_IsRefusedAtStartup()
+    {
+        var act = () =>
+            Create(
+                new Dictionary<string, string?>
+                {
+                    ["Compaction:Mode"] = "compact",
+                    ["Compaction:TextTokenizer"] = "cl100k",
+                }
+            );
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*cl100k*o200k*");
+    }
+
+    [Fact]
     public void NoCapacityResolver_LeavesTheWindowUnknown()
     {
         var setup = Create(new Dictionary<string, string?> { ["Compaction:Mode"] = "Warn" });

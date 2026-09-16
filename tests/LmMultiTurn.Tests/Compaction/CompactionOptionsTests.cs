@@ -89,6 +89,7 @@ public class CompactionOptionsTests
         o.ToolKnowledge.Should().BeNull();
         o.SummaryPromptPath.Should().BeNull();
         o.SummaryPrefixMode.Should().Be(SummaryPrefixMode.Cold);
+        o.TextTokenizer.Should().BeNull();
         o.ShellTrimChars.Should().Be(1_500);
     }
 

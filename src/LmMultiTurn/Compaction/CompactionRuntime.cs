@@ -106,6 +106,8 @@ internal sealed class CompactionRuntime
     private readonly CheckpointPipeline _pipeline;
     private readonly TimeProvider _clock;
     private readonly ToolKnowledgeRegistry _registry;
+    private readonly Func<string?, long> _text;
+    private readonly Func<IMessage, long> _estimator;
     private readonly ConditionalWeakTable<IMessage, RowIdentity> _identities = [];
     private readonly List<Task> _inFlightPersists = [];
     private readonly object _gate = new();
@@ -685,6 +687,8 @@ internal sealed class CompactionRuntime
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(providerAgent);
         _setup = setup;
+        _text = setup.TextTokens ?? CompactionTokenEstimate.EstimateText;
+        _estimator = CompactionTokenEstimate.Create(_text);
         _host = host;
         _clock = setup.Clock ?? TimeProvider.System;
         var options = setup.Options;
@@ -731,6 +735,7 @@ internal sealed class CompactionRuntime
                     // V9 scales with the window so a small window can still hold envelope + tail + prefix.
                     CheckpointTokenCap = options.EffectiveCheckpointTokenCap(UsableTokens),
                     OpenExchanges = options.Checks.Rc3OpenExchanges,
+                    TextEstimator = _text,
                 },
                 Assembler = new ManifestAssemblerOptions { OpenExchanges = options.Checks.Rc3OpenExchanges },
                 Render = RenderOptions,
@@ -2017,7 +2022,7 @@ internal sealed class CompactionRuntime
     {
         if (ToolResultShaping(_tightened, rows) is not { } shaping)
         {
-            return CompactionTokenEstimate.Default;
+            return _estimator;
         }
 
         var seqs = new Dictionary<IMessage, long>(ReferenceEqualityComparer.Instance);
@@ -2027,9 +2032,7 @@ internal sealed class CompactionRuntime
         }
 
         return message =>
-            CompactionTokenEstimate.Default(
-                ToolResultView.Apply(message, seqs.GetValueOrDefault(message, long.MaxValue), shaping)
-            );
+            _estimator(ToolResultView.Apply(message, seqs.GetValueOrDefault(message, long.MaxValue), shaping));
     }
 
     private void LogNewlyTrimmed(IReadOnlyList<IMessage> history, int capChars)
@@ -2244,11 +2247,7 @@ internal sealed class CompactionRuntime
         // the cut, so only the rest is the tail's to spend.
         var fixedTokens =
             _host.ToolSchemaTokens()
-            + (
-                _host.SystemPrompt is { } system
-                    ? CompactionTokenEstimate.PerMessageOverhead + CompactionTokenEstimate.EstimateText(system)
-                    : 0
-            );
+            + (_host.SystemPrompt is { } system ? CompactionTokenEstimate.PerMessageOverhead + _text(system) : 0);
         var cut = await SelectCutAsync(
                 rows,
                 Math.Max(0, targetTokens - fixedTokens),
@@ -2639,15 +2638,17 @@ internal sealed class CompactionRuntime
     private IReadOnlyList<IMessage> RawRequest() =>
         AgentContextProjection.Default.Build(_host.SystemPrompt, _host.HistorySnapshot(), null, RenderOptions);
 
-    /// <summary>The request-size estimate the policy uses (<see cref="CompactionTokenEstimate.Default"/> summed).</summary>
-    public static long EstimateTokens(IReadOnlyList<IMessage> messages) => Estimate(messages);
+    /// <summary>The request-size estimate with the default heuristic (<see cref="CompactionTokenEstimate.Default"/> summed).</summary>
+    public static long EstimateTokens(IReadOnlyList<IMessage> messages) =>
+        CompactionTokenEstimate.Estimate(messages, CompactionTokenEstimate.Default);
 
-    private static long Estimate(IReadOnlyList<IMessage> messages)
+    /// <summary>The request-size estimate the policy uses: this runtime's estimator summed.</summary>
+    private long Estimate(IReadOnlyList<IMessage> messages)
     {
         long total = 0;
         foreach (var message in messages)
         {
-            total += CompactionTokenEstimate.Default(message);
+            total += _estimator(message);
         }
 
         return total;

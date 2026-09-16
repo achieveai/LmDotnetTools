@@ -173,7 +173,8 @@ public class CompactionLoopTests
             Func<Exception, bool>? overflowVerdict = null,
             ILogger<MultiTurnAgentLoop>? logger = null,
             string? extraTool = null,
-            bool realSummarizer = false
+            bool realSummarizer = false,
+            Func<string?, long>? textTokens = null
         )
         {
             Agent = new ScriptedAgent(script);
@@ -215,6 +216,7 @@ public class CompactionLoopTests
                 ReadEnvironment = _ => KillSwitch,
                 // Unset by default: the tests exercise the built-in verdict a host such as the sample gets.
                 IsContextOverflow = overflowVerdict,
+                TextTokens = textTokens,
             };
             KillSwitch = killSwitch;
             Loop = new MultiTurnAgentLoop(
@@ -702,6 +704,33 @@ public class CompactionLoopTests
             .BeGreaterThanOrEqualTo(
                 5_000 + ResultTokens,
                 "the provider's own count of the previous request, plus what was appended since"
+            );
+    }
+
+    [Fact]
+    public async Task PolicyEstimate_SizesTextWithTheSetupsTokenizer_NotTheCharacterHeuristic()
+    {
+        // The heuristic overcounts prose by ~40% (r1: an 85k estimate for a 60k request), which is what pushed a
+        // fitting request into the fit escalation. A host with a real tokenizer hands it in through the setup and
+        // the policy's estimate follows it: here a counter that charges one token per run of text, so the 1,200
+        // character tool result the second request carries costs one token instead of 300.
+        await using var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Warn),
+            _ => 100_000,
+            textTokens: _ => 1
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var growth = h.Decisions[1].Tokens - h.Decisions[0].Tokens;
+        growth.Should().BePositive("the tool call and its result were appended");
+        growth.Should().BeLessThan(ResultTokens, "the result's text was sized by the tokenizer, not length / 4");
+        h.Decisions[0]
+            .Tokens.Should()
+            .BeGreaterThanOrEqualTo(
+                h.Agent.Requests[0].Count * CompactionTokenEstimate.PerMessageOverhead,
+                "the per-message framing is charged whatever sizes the text"
             );
     }
 

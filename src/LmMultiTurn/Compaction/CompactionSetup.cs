@@ -32,6 +32,14 @@ public sealed record CompactionSetup
     /// </summary>
     public Func<string?, long?>? ResolveWindowTokens { get; init; }
 
+    /// <summary>
+    ///     Counts the tokens of a run of text for the request estimate, the cut rules and the checkpoint
+    ///     caps; null keeps the length / 4 heuristic. The host resolves it from
+    ///     <see cref="CompactionOptions.TextTokenizer"/> (a real tokenizer), so the library takes no
+    ///     tokenizer dependency.
+    /// </summary>
+    public Func<string?, long>? TextTokens { get; init; }
+
     /// <summary>Provider id used with the model id to look up <see cref="CompactionOptions.ModeByRoute"/>.</summary>
     public string? ProviderId { get; init; }
 

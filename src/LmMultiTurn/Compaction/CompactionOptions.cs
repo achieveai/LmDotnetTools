@@ -300,6 +300,13 @@ public sealed record CompactionOptions
     /// <summary>How the summary request is built.</summary>
     public SummaryPrefixMode SummaryPrefixMode { get; init; } = SummaryPrefixMode.Cold;
 
+    /// <summary>
+    ///     Name of a host-supplied tokenizer that sizes text for the policy (for example <c>o200k</c>); null
+    ///     keeps the length / 4 heuristic. Read by the host, which fills <see cref="CompactionSetup.TextTokens"/>;
+    ///     never by the library.
+    /// </summary>
+    public string? TextTokenizer { get; init; }
+
     /// <summary>RC2: characters a cleared shell result keeps (head + tail); an error result keeps twice as many.</summary>
     public int ShellTrimChars { get; init; } = 1_500;
 

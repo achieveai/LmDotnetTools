@@ -64,10 +64,34 @@ public static class CompactionHostSetup
             Options = options,
             ProviderId = providerId,
             SummarySystemPrompt = summaryPrompt,
+            TextTokens = ResolveTextTokens(options.TextTokenizer),
             ResolveWindowTokens = capacityResolver is null
                 ? null
                 : modelId => string.IsNullOrEmpty(modelId) ? null : capacityResolver.Resolve(modelId)?.WindowTokens,
         };
+    }
+
+    /// <summary>
+    ///     The tokenizer <see cref="CompactionOptions.TextTokenizer"/> names, or null for the library's length / 4
+    ///     heuristic. <c>o200k</c> is the encoding of the GPT-4o and GPT-5 families, which the eval's routes use; the
+    ///     encoder is built once per process and is safe to share.
+    /// </summary>
+    internal static Func<string?, long>? ResolveTextTokens(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (!string.Equals(name.Trim(), "o200k", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Compaction:TextTokenizer '{name}' is not supported; use 'o200k' or leave it unset for the length / 4 heuristic."
+            );
+        }
+
+        var encoder = new Tiktoken.Encoder(new Tiktoken.Encodings.O200KBase());
+        return text => string.IsNullOrEmpty(text) ? 0 : encoder.CountTokens(text);
     }
 
     /// <summary>The text after a leading <c>---</c>…<c>---</c> block, trimmed; the whole text when there is none.</summary>
