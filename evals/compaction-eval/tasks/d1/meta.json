@@ -2,7 +2,7 @@
   "family": "data",
   "split": "dev",
   "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
-  "minCompactions": 1,
+  "minCompactions": 0,
   "timeoutMinutes": 30,
   "windowPressure": "shell output heavy: 9 scripted runs plus file inspection of a 2.7 MB CSV"
 }
