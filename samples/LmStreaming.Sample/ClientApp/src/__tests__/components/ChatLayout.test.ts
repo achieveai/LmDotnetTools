@@ -116,6 +116,7 @@ const sharedMocks = vi.hoisted(() => ({
   // The latest conversation_todo frame ref inside the useChat mock. The REAL useTodoBoard watches
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
+  cumulativeTotalTokens: 0,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -224,9 +225,14 @@ vi.mock('@/composables/useChat', async () => {
           promptTokens: 0,
           uncachedInputTokens: 0,
           completionTokens: 0,
-          totalTokens: 0,
+          totalTokens: sharedMocks.cumulativeTotalTokens,
           cachedTokens: 0,
           cacheCreationTokens: 0,
+        }),
+        cumulativeCost: ref({
+          estimatedCostMicros: null,
+          providerReportedCostMicros: null,
+          currency: 'USD',
         }),
         // Hoisted useTodoBoard(...) watches this eagerly to establish its dependency, so unlike the
         // lazily-read fields above it must actually be present here (#583).
@@ -361,6 +367,93 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       };
     },
   };
+});
+
+describe('ChatLayout view preference', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: { template: '<div data-test="message-list-probe">Transcript</div>' },
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ContextCostPanel: { template: '<div data-testid="context-cost-panel">Context</div>' },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.cumulativeTotalTokens = 123;
+    sharedMocks.disconnectWebSocket.mockReset();
+    sharedMocks.markStreamIdle.mockReset();
+    sharedMocks.markStreamLoading.mockReset();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    sharedMocks.cumulativeTotalTokens = 0;
+    window.history.pushState({}, '', '/');
+  });
+
+  it('defaults to Consumer and hides context and token diagnostics', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect((wrapper.get('[data-testid="view-preference-consumer"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(false);
+  });
+
+  it('restores Developer and reveals context and token diagnostics', async () => {
+    localStorage.setItem('lmstreaming:view-preference', 'developer');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect((wrapper.get('[data-testid="view-preference-developer"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(true);
+    expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(true);
+  });
+
+  it('keeps the preference switch out of focus mode', async () => {
+    window.history.pushState({}, '', '/?focus=1');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="view-preference-consumer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="view-preference-developer"]').exists()).toBe(false);
+  });
+
+  it('switches views without remounting chat state or touching the connection', async () => {
+    sharedMocks.chatLoading = true;
+    const wrapper = mountLayout();
+    await flushPromises();
+    const transcript = wrapper.get('[data-test="message-list-probe"]').element;
+    transcript.scrollTop = 41;
+    const composerWrapper = wrapper.get('[data-testid="chat-input-textarea"]');
+    await composerWrapper.setValue('unfinished draft');
+    const composer = composerWrapper.element;
+
+    await wrapper.get('[data-testid="view-preference-developer"]').setValue(true);
+    await wrapper.get('[data-testid="view-preference-consumer"]').setValue(true);
+
+    expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
+    expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
+    expect(wrapper.get('[data-test="message-list-probe"]').element.scrollTop).toBe(41);
+    expect((wrapper.get('[data-testid="chat-input-textarea"]').element as HTMLTextAreaElement).value).toBe('unfinished draft');
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.markStreamIdle).not.toHaveBeenCalled();
+    expect(sharedMocks.markStreamLoading).not.toHaveBeenCalled();
+    expect(localStorage.getItem('lmstreaming:view-preference')).toBe('consumer');
+  });
 });
 
 describe('ChatLayout mode switching', () => {

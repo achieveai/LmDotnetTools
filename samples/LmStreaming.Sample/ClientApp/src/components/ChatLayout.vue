@@ -25,6 +25,7 @@ import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useTodoBoard } from '@/composables/useTodoBoard';
 import { useContextReport } from '@/composables/useContextReport';
 import { useManualCompaction } from '@/composables/useManualCompaction';
+import { useViewPreference, type ViewPreference } from '@/composables/useViewPreference';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -101,6 +102,12 @@ const {
 } = useWorkspaces();
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const { viewPreference, selectViewPreference } = useViewPreference();
+const showDeveloperDiagnostics = computed(() => viewPreference.value === 'developer');
+
+function handleViewPreferenceChange(event: Event): void {
+  selectViewPreference((event.target as HTMLInputElement).value as ViewPreference);
+}
 
 // Initialize chat with getters for the current mode and provider ids.
 const {
@@ -842,7 +849,34 @@ onBeforeUnmount(() => {
           >
             =
           </button>
-          <h1>{{ headerTitle }}</h1>
+          <div class="header-heading">
+            <h1>{{ headerTitle }}</h1>
+            <fieldset v-if="!focusMode" class="view-preference" aria-label="Conversation view">
+              <legend class="sr-only">Conversation view</legend>
+              <label>
+                <input
+                  v-model="viewPreference"
+                  type="radio"
+                  name="view-preference"
+                  value="consumer"
+                  data-testid="view-preference-consumer"
+                  @change="handleViewPreferenceChange"
+                />
+                <span>Consumer</span>
+              </label>
+              <label>
+                <input
+                  v-model="viewPreference"
+                  type="radio"
+                  name="view-preference"
+                  value="developer"
+                  data-testid="view-preference-developer"
+                  @change="handleViewPreferenceChange"
+                />
+                <span>Developer</span>
+              </label>
+            </fieldset>
+          </div>
           <div v-if="!focusMode" class="header-actions">
             <WorkspaceSelector
               ref="workspaceSelectorRef"
@@ -977,6 +1011,7 @@ onBeforeUnmount(() => {
 
           <ContextCostPanel
             v-if="subAgentParentThreadId"
+            v-show="showDeveloperDiagnostics"
             :rows="contextRows"
             :total="contextTotal"
             :status="contextStatus"
@@ -987,6 +1022,7 @@ onBeforeUnmount(() => {
 
           <div
             v-if="cumulativeUsage.totalTokens > 0"
+            v-show="showDeveloperDiagnostics"
             class="usage-banner"
             data-testid="usage-banner"
             title="Total sums per-call input tokens, so the cached prompt prefix is re-counted every turn; it already includes usage spent inside sub-agents and workflow tasks. In = fresh (uncached) input this conversation."
@@ -1140,11 +1176,71 @@ onBeforeUnmount(() => {
   background: #e9ecef;
 }
 
+.header-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: min(100%, 300px);
+}
+
 .chat-header h1 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
   flex: 1;
+}
+
+.view-preference {
+  display: inline-flex;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid #cbd1d8;
+  border-radius: 7px;
+  background: #eef1f4;
+}
+
+.view-preference label {
+  position: relative;
+  cursor: pointer;
+}
+
+.view-preference input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.view-preference span {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: #59636e;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.view-preference input:checked + span {
+  color: #25313d;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+
+.view-preference input:focus-visible + span {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .header-actions {
