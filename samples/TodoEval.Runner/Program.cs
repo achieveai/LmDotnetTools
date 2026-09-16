@@ -88,14 +88,15 @@ internal static class EvalProgram
         foreach (var variant in config.Variants)
         {
             var instanceDir = Path.Combine(Path.GetTempPath(), $"todo-eval-host-{timestamp}-{variant.Name}");
-            log.WriteLine($"[sweep] variant '{variant.Name}': {Describe(variant)}");
+            var hostLogDir = HostLogDir(sweepDir, variant.Name);
+            log.WriteLine($"[sweep] variant '{variant.Name}': {Describe(variant)} (host logs: {hostLogDir})");
 
             await using (
                 var host = await EvalHostProcess.StartAsync(
                     config.Host.For(variant),
                     repoRoot,
                     instanceDir,
-                    sweepDir,
+                    hostLogDir,
                     log,
                     ct
                 )
@@ -148,7 +149,7 @@ internal static class EvalProgram
                 TranscriptRedactor.CopyRedacted(liveConversations, archivedConversations);
             }
 
-            TryDeleteTree(instanceDir, log);
+            RetireInstance(instanceDir, hostLogDir, log);
         }
 
         new SweepManifest
@@ -350,6 +351,37 @@ internal static class EvalProgram
 
             return board;
         };
+    }
+
+    /// <summary>
+    /// Where one variant's host diagnostics live: <c>{sweepDir}/hosts/{variant}/</c> holds the
+    /// launcher's <c>host-publish.log</c> / <c>host-stdout.log</c> / <c>host-stderr.log</c> and, once
+    /// the host is retired, its own <c>instance-logs/</c>. Per variant because each variant is its
+    /// own host process: written straight into the sweep dir, every variant overwrote the last one's
+    /// files and a failed sweep could only be diagnosed for whichever variant ran last.
+    /// </summary>
+    internal static string HostLogDir(string sweepDir, string variantName) =>
+        Path.Combine(sweepDir, "hosts", variantName);
+
+    /// <summary>
+    /// Retires a stopped host's temp instance dir: its own <c>logs/</c> (the Serilog files, which
+    /// hold the only server-side trace of WHY a run errored) are copied to
+    /// <c>{hostLogDir}/instance-logs/</c> FIRST, then the instance dir is deleted. Order matters —
+    /// the deletion is what used to take the logs with it.
+    /// </summary>
+    internal static void RetireInstance(string instanceDir, string hostLogDir, TextWriter log)
+    {
+        var instanceLogs = Path.Combine(instanceDir, "logs");
+        try
+        {
+            CopyTree(instanceLogs, Path.Combine(hostLogDir, "instance-logs"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log.WriteLine($"[warn] could not archive the host's own logs from '{instanceLogs}': {ex.Message}");
+        }
+
+        TryDeleteTree(instanceDir, log);
     }
 
     /// <summary>A variant's option-set for the sweep log, so a run's archive names what produced it.</summary>

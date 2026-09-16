@@ -116,8 +116,12 @@ internal sealed class SweepRunner(
             steerSentAt = steerAt;
 
             var ended = DateTimeOffset.UtcNow;
+            // A non-Completed terminal status is the HOST's verdict and is kept as-is; the host's own
+            // reason for it (when the status payload names one) rides along so the manifest row —
+            // and the console line — say why, exactly as the harness-error path does.
             log.WriteLine(
                 $"[run {runKey}] {status.Status} after {(ended - started).TotalSeconds:0}s (thread {threadId})"
+                    + (status.Error is { } hostError ? $": {hostError}" : "")
             );
             return Stamp(
                 new RunManifestEntry
@@ -135,6 +139,7 @@ internal sealed class SweepRunner(
                     StartedUtc = started,
                     EndedUtc = ended,
                     DurationMs = (long)(ended - started).TotalMilliseconds,
+                    Error = status.Error,
                 },
                 task,
                 workspacePath,

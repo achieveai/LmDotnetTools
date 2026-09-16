@@ -5,8 +5,12 @@ using System.Text.Json.Nodes;
 
 namespace TodoEval.Runner.Sweep;
 
-/// <summary>Terminal-status snapshot returned by the host's status-by-input endpoint.</summary>
-internal sealed record RunStatus(string Status, string? RunId);
+/// <summary>
+/// Terminal-status snapshot returned by the host's status-by-input endpoint. <paramref name="Error"/>
+/// is the host's own description of WHY a run ended <c>Errored</c>, when the payload carries one
+/// (an <c>error</c> string, or an object with a <c>message</c>); null when the host says nothing.
+/// </summary>
+internal sealed record RunStatus(string Status, string? RunId, string? Error = null);
 
 /// <summary>
 /// Thin REST client over the ISOLATED LmStreaming.Sample instance, following
@@ -219,7 +223,30 @@ internal sealed class EvalHostClient
             doc.RootElement.TryGetProperty("runId", out var runIdProp) && runIdProp.ValueKind == JsonValueKind.String
                 ? runIdProp.GetString()
                 : null;
-        return new RunStatus(status, runId);
+        return new RunStatus(status, runId, ReadError(doc.RootElement));
+    }
+
+    /// <summary>
+    /// The error text a status payload carries, if any. Tolerant of both shapes a host may emit — a
+    /// plain <c>error</c> string, or an <c>error</c> object with a <c>message</c> (the lifecycle
+    /// error's shape) — so the manifest row is populated whichever one lands.
+    /// </summary>
+    private static string? ReadError(JsonElement root)
+    {
+        if (!root.TryGetProperty("error", out var error))
+        {
+            return null;
+        }
+
+        return error.ValueKind switch
+        {
+            JsonValueKind.String => error.GetString() is { Length: > 0 } text ? text : null,
+            JsonValueKind.Object
+                when error.TryGetProperty("message", out var message)
+                    && message.ValueKind == JsonValueKind.String
+                    && message.GetString() is { Length: > 0 } text => text,
+            _ => null,
+        };
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────────────────────────

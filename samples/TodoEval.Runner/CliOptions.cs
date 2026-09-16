@@ -77,6 +77,9 @@ internal sealed record CliOptions
         A sweep writes runs-manifest.jsonl, runs.jsonl, summary.md and summary.json (one row per
         variant x task: valid runs, mean J1 score, pass rate, tokens, cost and compactions, averaged
         over the VALID runs only). --extract-only regenerates all but the manifest.
+        Per-variant host diagnostics land in hosts/<variant>/: host-publish.log, host-stdout.log,
+        host-stderr.log, and instance-logs/ (the host's own Serilog files, copied out before its
+        temp instance dir is deleted).
 
         Exit codes:
           0  the sweep produced at least one Completed run and no run hit a harness error
