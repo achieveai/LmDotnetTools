@@ -299,8 +299,9 @@ from the host PATH (checked by J0).
 | s2 | manual-focus | Operator triggers `POST /compaction {focus}` mid-run | focus terms present in the active envelope; outcome unaffected | manual path |
 
 Split: dev = {c1, c2, r1, d1, m1, s1}; held-out test = {c3, c4, r2, d2, m2, s2}. Seeds: 3 per
-task (Avg@3, HTR). Round-one budget (D2, ~$200): 4 strategies + off × 6 dev tasks × 3 seeds
-≈ 90 runs for exploration; held-out only for merge-gate candidates.
+task (Avg@3, HTR). Round-one budget (D2, $2000 — raised from $200 at plan approval 2026-09-16):
+allows ~5 seeds per cell and a second round of combined-axis children; held-out only for
+merge-gate candidates.
 
 Data fixtures: small public CSVs vendored under `fixtures/` with `SOURCE.md` (repo URL + commit).
 
@@ -326,7 +327,7 @@ Cycle (automated agent, D3; each cycle logged to UpdateWork):
 6. **Decide** — a node whose dev `O_f` beats `M_best` runs the **held-out** sweep; admitted only if
    `O_f(test)` improves. Prune subtrees falsified by an insight.
 
-Budget: round one = 6 cycles or $200, whichever first; each T2 dev sweep ≈ $15–25. The
+Budget: round one = $2000 (D2, revised); each T2 dev sweep ≈ $15–25, so ~60 sweeps. The
 coordinator reports spend after every sweep and stops at 75 % with a HITL question.
 
 Output: `M_best` strategy file, `strategy-router.json` (family → strategy, only where a family's
