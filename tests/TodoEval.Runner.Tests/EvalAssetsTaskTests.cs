@@ -27,7 +27,7 @@ public class EvalAssetsTaskTests : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private void WriteTask(string? id, string body, string? expectedBoard = null)
+    private string WriteTask(string? id, string body, string? expectedBoard = null, string? meta = null)
     {
         var dir = id is null ? _evalDir : Path.Combine(_evalDir, EvalAssets.TasksDirName, id);
         Directory.CreateDirectory(dir);
@@ -36,6 +36,13 @@ public class EvalAssetsTaskTests : IDisposable
         {
             File.WriteAllText(Path.Combine(dir, "expected-board.json"), expectedBoard);
         }
+
+        if (meta is not null)
+        {
+            File.WriteAllText(Path.Combine(dir, "meta.json"), meta);
+        }
+
+        return dir;
     }
 
     private const string MinimalBoard = """{"minTopLevel":1}""";
@@ -98,6 +105,95 @@ public class EvalAssetsTaskTests : IDisposable
         var act = () => EvalAssets.Load(_evalDir, "probe-eval", ["c1", "typo"]);
 
         act.Should().Throw<FileNotFoundException>().WithMessage("*typo*");
+    }
+
+    [Fact]
+    public void ATasksMetaJsonIsLoadedWithIt()
+    {
+        WriteTask(
+            "s1",
+            "docs\n---\nDo {SEED}.\n\n## steer\n\nCorrection: do it differently.",
+            meta: """
+            { "family": "steer", "split": "dev", "seeds": ["aurora", "basalt"],
+              "minCompactions": 1, "timeoutMinutes": 40, "steerAfterSeconds": 150 }
+            """
+        );
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["s1"]).Tasks.Single();
+
+        task.Meta!.Family.Should().Be("steer");
+        task.Meta.Seeds.Should().Equal("aurora", "basalt");
+        task.Meta.MinCompactions.Should().Be(1);
+        task.Meta.TimeoutMinutes.Should().Be(40);
+        task.Meta.SteerAfterSeconds.Should().Be(150);
+        task.Steer.Should().Be("Correction: do it differently.");
+    }
+
+    [Fact]
+    public void SeedWordsCycleWhenThereAreMoreRepeatsThanSeeds()
+    {
+        var meta = new TaskMeta { Seeds = ["aurora", "basalt"] };
+
+        meta.SeedForIndex(0).Should().Be("aurora");
+        meta.SeedForIndex(2).Should().Be("aurora", "repeat 2 wraps, exactly as the topic axis does");
+        meta.SeedForIndex(3).Should().Be("basalt");
+    }
+
+    [Fact]
+    public void ATaskWithNoMetaHasNoSeedAndNoFloor()
+    {
+        WriteTask("d1", "Do {TOPIC}.");
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["d1"]).Tasks.Single();
+
+        task.Meta.Should().BeNull();
+        task.Steer.Should().BeNull();
+    }
+
+    [Fact]
+    public void FixturesAndCheckerAreFoundNextToTheTask()
+    {
+        var dir = WriteTask("c1", "Do {TOPIC}.");
+        Directory.CreateDirectory(Path.Combine(dir, "fixtures"));
+        File.WriteAllText(Path.Combine(dir, "check.ps1"), "exit 0");
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["c1"]).Tasks.Single();
+
+        task.FixturesDir.Should().Be(Path.Combine(dir, "fixtures"));
+        task.CheckScript.Should().Be(Path.Combine(dir, "check.ps1"));
+    }
+
+    [Fact]
+    public void ATaskWithoutFixturesOrACheckerReportsNeither()
+    {
+        WriteTask("d1", "Do {TOPIC}.");
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["d1"]).Tasks.Single();
+
+        task.FixturesDir.Should().BeNull("no fixtures means the run keeps the sweep's shared workspace");
+        task.CheckScript.Should().BeNull("no checker means there is no J1 for this task at all");
+    }
+
+    [Fact]
+    public void TheModeFileNameIsConfigurable()
+    {
+        WriteTask("d1", "Do {TOPIC}.");
+        File.WriteAllText(
+            Path.Combine(_evalDir, "alt-mode.json"),
+            """{"name":"probe-eval","systemPrompt":"be helpful"}"""
+        );
+
+        var assets = EvalAssets.Load(_evalDir, "probe-eval", ["d1"], "alt-mode.json");
+
+        assets.ModeName.Should().Be("probe-eval");
+    }
+
+    [Fact]
+    public void AMissingModeFileNamesTheFileThatWasLookedFor()
+    {
+        var act = () => EvalAssets.Load(_evalDir, "probe-eval", null, "not-here.json");
+
+        act.Should().Throw<FileNotFoundException>().WithMessage("*not-here.json*");
     }
 
     [Fact]
@@ -180,10 +276,11 @@ public class EvalAssetsTaskTests : IDisposable
         entries.Should().OnlyContain(e => e.Task == null);
     }
 
-    private static EvalTaskAsset TaskAsset(string? id) =>
+    private EvalTaskAsset TaskAsset(string? id) =>
         new()
         {
             Id = id,
+            Dir = id is null ? _evalDir : Path.Combine(_evalDir, EvalAssets.TasksDirName, id),
             Template = "Do {TOPIC}.",
             ExpectedBoard = null,
         };

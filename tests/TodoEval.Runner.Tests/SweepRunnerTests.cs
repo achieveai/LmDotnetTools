@@ -31,6 +31,7 @@ public class SweepRunnerTests
                 new EvalTaskAsset
                 {
                     Id = null,
+                    Dir = Path.GetTempPath(),
                     Template = "Do {TOPIC}",
                     ExpectedBoard = null,
                 },
