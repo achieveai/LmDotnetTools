@@ -55,6 +55,12 @@ env:
   # this SDK — the SDK requires a release carrying the direct API, of which this tag is
   # the published one. Treat the image tag, not the commit, as the operative pin; the
   # commit records only the older wire shapes the SDK still speaks unchanged.
+  #
+  # 0.1.11 is also the first release carrying per-sandbox environment variables (upstream
+  # SandboxedOstoolsMcpServer #183), which the
+  # Env_CreateThenPatch_RoundTrips_AndReachesBash contract test requires. The tag already
+  # had to be at least this high for the retention reason above, so nothing moved here —
+  # but a future bump must not drop BELOW 0.1.11 or that test loses its route.
   IMAGE_TAG: '0.1.11'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent

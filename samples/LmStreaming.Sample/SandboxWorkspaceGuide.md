@@ -100,6 +100,59 @@ With the example above, the mounted workspace is `WorkspaceBasePath` + `Workspac
 Point `Workspace`/`WorkspaceBasePath` at a **dedicated** folder rather than a real source repo —
 the local backend runs unsandboxed, so the agent has read/write access to whatever you mount.
 
+### Per-sandbox environment variables
+
+The sample can set custom environment variables inside a sandbox session, layered from three
+places with later layers overriding earlier ones on a key-by-key basis:
+
+| Layer | Precedence | Edited via |
+| --- | --- | --- |
+| Workspace | lowest | Workspace form's env editor (client), or `Env` on the workspace record |
+| Mode | overrides workspace | Mode editor (client), or `Prompts.yaml`'s `env:` block on a system chat mode |
+| S2S provision | highest | `env` on `POST api/conversations` (server-to-server provisioning) |
+
+A key set in a higher layer wins; a key present only in a lower layer still applies. The three
+maps are merged with `SandboxEnvRules.Merge` (workspace < mode < provision, last write wins).
+
+**Shared-session rule.** When several conversation threads share one live sandbox session, the
+session's env always reflects the **most recently activated** thread — not a union of every
+thread that has ever touched it. Switching back to an older thread does not restore its env until
+that thread is activated again.
+
+**When a change applies.** Editing a workspace or mode's env does not rebuild the sandbox; the
+new merged map is diffed and `PATCH`ed into the live session on the **next tool call** for that
+thread. A `Bash` command sees the update immediately (it inherits the process environment at
+spawn time). PowerShell contexts that already set an in-session `$env:` variable keep that
+in-context value until the PowerShell process itself restarts — see the upstream gateway's
+`Docs/tools-and-api.md` ("Sandbox environment variables") for the exact PowerShell-state-directory
+semantics this sample doesn't reimplement.
+
+**Validation.** Every layer is validated with `SandboxEnvRules` before it is sent:
+
+- key grammar `^[A-Za-z_][A-Za-z0-9_]*$` (starts with a letter/underscore; letters, digits,
+  underscores only)
+- at most 256 keys per map, each key ≤256 UTF-8 bytes
+- each value ≤32 KiB (32 * 1024 bytes), combined map ≤128 KiB
+- a fixed list of **protected names** is always rejected (`SANDBOX_ALLOWED_PATHS`,
+  `SANDBOX_WORKSPACE`, `SANDBOX_HOME`, `PWSH_STATE_DIR`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+  `NODE_TLS_REJECT_UNAUTHORIZED`, `PYTHONHTTPSVERIFY`, `GIT_SSL_NO_VERIFY`, `REQUESTS_CA_BUNDLE`,
+  `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY`) — the sandbox
+  runtime owns these. **`PATH` is deliberately not protected** — it is a normal, caller-settable
+  variable.
+
+A map that fails validation, at any layer, is refused with `400 { code: "invalid_env", layer,
+keys }` — `layer` names which layer produced the bad map (`workspace`, `mode`, or `provision`) and
+`keys` lists every offending key. The response never includes a value.
+
+**Values are stored in plain text and never written to logs.** Env maps are persisted unencrypted
+alongside the workspace/mode/conversation record; application logs record key counts and, on a
+rejection, the offending key names — never a value.
+
+**Older gateways.** Per-sandbox env requires gateway `v0.1.11` or later (#183). Against an older
+gateway the session-env route doesn't exist; the sample detects this on first use (a code-less 404),
+logs one warning, and disables the feature silently for the rest of the process — every other
+sandbox capability keeps working.
+
 ### Gateway authentication
 
 Recent gateways enforce **per-app bearer authentication** (gateway ADR 0029). When `AUTH_ENFORCE` is on
