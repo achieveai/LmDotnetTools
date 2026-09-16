@@ -50,7 +50,7 @@ internal static class EvalProgram
     {
         var repoRoot = FindRepoRoot();
         var evalDir = ResolvePath(config.EvalDir, repoRoot);
-        var assets = EvalAssets.Load(evalDir, config.ModeName, config.Tasks);
+        var assets = EvalAssets.Load(evalDir, config.ModeName, config.Tasks, config.ModeFile);
         foreach (var task in assets.Tasks.Where(t => t.ExpectedBoard is null))
         {
             log.WriteLine(
@@ -125,7 +125,9 @@ internal static class EvalProgram
                     modeId,
                     variant,
                     assets.Tasks,
-                    log
+                    log,
+                    new PwshTaskChecker(log),
+                    Path.Combine(sweepDir, "scores")
                 );
                 manifest.AddRange(await runner.RunSweepAsync(manifestPath, ct));
             } // DisposeAsync waits the shutdown grace, then kills the host — this store is now quiescent.
@@ -298,6 +300,14 @@ internal static class EvalProgram
         var runsPath = Path.Combine(sweepDir, ResultsWriter.RunsFileName);
         ResultsWriter.WriteRunsJsonl(runsPath, metrics.Runs);
         log.WriteLine($"[sweep] wrote {runsPath}");
+
+        // The per-cell roll-up is written HERE rather than beside the comparison, because it is the
+        // sweep's own answer ("what did each strategy cost on each task?") and --extract-only must
+        // regenerate it from an archive with no baseline in sight.
+        var cells = CellSummary.Of(metrics.Runs);
+        CellSummaryWriter.Write(sweepDir, cells);
+        log.WriteLine($"[sweep] wrote {Path.Combine(sweepDir, CellSummaryWriter.FileName)}");
+        log.WriteLine(CellSummaryWriter.BuildTable(cells));
         if (metrics.UnattributedThreads.Count > 0)
         {
             log.WriteLine(

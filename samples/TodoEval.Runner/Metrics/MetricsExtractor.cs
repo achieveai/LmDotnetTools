@@ -217,6 +217,25 @@ internal sealed record RunMetrics
     /// </summary>
     public int Compactions { get; init; }
 
+    /// <summary>
+    /// The J0 layer: whether this run measured what it set out to measure. False for a run the harness
+    /// ended (timeout, harness error) or the host ended badly (errored, interrupted), and for a run of
+    /// a COMPACTING variant that never reached its task's <c>minCompactions</c> floor — such a run
+    /// never exercised the strategy, so its cost and outcome describe something else.
+    /// <para>
+    /// Distinct from <see cref="Validity"/>, which is the metrics spec's own preconditions about the
+    /// conversation store (thread attribution, sub-agent tool use). A run can satisfy one and not the
+    /// other, and the aggregates that exclude invalid rows use THIS one.
+    /// </para>
+    /// </summary>
+    public bool Valid { get; init; } = true;
+
+    /// <summary>The J1 layer: the task checker's verdict, or null when the task ships no checker.</summary>
+    public J1Result? J1 { get; init; }
+
+    /// <summary>When the task's mid-run correction was sent, or null when none was.</summary>
+    public DateTimeOffset? SteerSentAt { get; init; }
+
     /// <summary>Per-spawn cost the host measured, one row per sub-agent the run spawned.</summary>
     public IReadOnlyList<SpawnTiming> SpawnTimings { get; init; } = [];
 
@@ -374,6 +393,9 @@ internal static class MetricsExtractor
             ThreadId = entry.ThreadId,
             DurationMs = entry.DurationMs,
             Error = entry.Error,
+            J1 = entry.J1,
+            SteerSentAt = entry.SteerSentAt,
+            Valid = IsValid(entry, compactions: 0),
             PerTool = BuildPerTool(new Dictionary<string, ToolStats>(StringComparer.Ordinal)),
         };
 
@@ -459,6 +481,7 @@ internal static class MetricsExtractor
             Usage = usage,
             Cost = CostOf(usage.Cost, rootThread.CompactionCheckpoints),
             Compactions = rootThread.CompactionCheckpoints,
+            Valid = IsValid(entry, rootThread.CompactionCheckpoints),
             SpawnTimings = stamp.Timings,
             StartupWork = stamp.Work,
             RetryStormCount = storms.Count,
@@ -474,6 +497,20 @@ internal static class MetricsExtractor
             Validity = RunValidity.From(group.Count, subAgents.Count, withoutTaskTools, suspects),
         };
     }
+
+    /// <summary>
+    /// The J0 verdict for one run (see <see cref="RunMetrics.Valid"/>). Two independent reasons to
+    /// discard a run: it did not finish on its own terms, or — for a variant declared to compact — it
+    /// never reached the task's compaction floor, so whatever it cost is not the cost of compacting.
+    /// </summary>
+    /// <remarks>
+    /// Read from the MANIFEST rather than from the live config, because <c>--extract-only</c> judges an
+    /// archived sweep months later: the floor and the variant's intent are facts of the run, and taking
+    /// them from whatever config happens to be on disk now would re-judge old runs by new rules.
+    /// </remarks>
+    private static bool IsValid(RunManifestEntry entry, int compactions) =>
+        string.Equals(entry.Status, RunOutcomes.Completed, StringComparison.Ordinal)
+        && !(entry.VariantCompacts && entry.MinCompactions is { } floor && compactions < floor);
 
     /// <summary>
     /// The usage-derived cost block, cross-checked against what the STORE says happened. When the

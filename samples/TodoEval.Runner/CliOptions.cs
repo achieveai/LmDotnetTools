@@ -56,10 +56,13 @@ internal sealed record CliOptions
                                      because a typo would silently sweep the wrong option-sets.
           --tasks <t1,t2,...>        Task ids, each resolving to <eval-dir>/tasks/<id>/task.md. Filters
                                      the config's tasks when it has some, and sets them when it has
-                                     none. Unset keeps the single <eval-dir>/task.md layout.
+                                     none. Unset keeps the single <eval-dir>/task.md layout. A task
+                                     that also ships meta.json/fixtures/check.ps1 gets a per-run
+                                     workspace (config: workspacesRoot) and a J1 score.
           --seeds <n>                Seeds per model (default: 5)
           --parallel <n>             Max concurrent runs (default: 1 = sequential)
-          --timeout-min <n>          Hard per-run timeout in minutes (default: 20)
+          --timeout-min <n>          Hard per-run timeout in minutes (default: 20; a task's own
+                                     meta.timeoutMinutes wins where it sets one)
           --host-publish-dir <dir>   Pre-published LmStreaming.Sample binaries to copy instead of publishing
           --env-file <path>          .env handed to the host (LMSTREAMING_ENV_FILE) for provider keys
           --allow-missing-models     Skip models the host does not offer instead of failing the sweep
@@ -70,6 +73,10 @@ internal sealed record CliOptions
                                      comparison.json plus a Before/after section in summary.md.
                                      Works with a live sweep or with --extract-only.
           --help                     This text
+
+        A sweep writes runs-manifest.jsonl, runs.jsonl, summary.md and summary.json (one row per
+        variant x task: valid runs, mean J1 score, pass rate, tokens, cost and compactions, averaged
+        over the VALID runs only). --extract-only regenerates all but the manifest.
 
         Exit codes:
           0  the sweep produced at least one Completed run and no run hit a harness error

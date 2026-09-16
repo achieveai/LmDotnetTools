@@ -11,8 +11,16 @@
 // (task x model x seed) cell then runs against that host before the next variant starts.
 {
   "evalDir": "evals/compaction-eval",
-  "modeName": "compaction-eval", // must equal the "name" in evals/compaction-eval/mode.json
+  "modeName": "compaction-eval", // must equal the "name" in the mode file below
+  "modeFile": "mode.json", // posted verbatim to /api/chat-modes once per host
   "workspaceName": "compaction-eval",
+
+  // Every task that ships a fixtures/ tree gets its OWN directory here, named after its run key, and
+  // the conversation is bound to it. This MUST be the directory the host resolves a workspace leaf
+  // under — keep it equal to host.extraArgs' --SandboxGateway:WorkspaceBasePath below, or the agent
+  // will work in one tree while the checker judges another. Nothing here is ever deleted: the
+  // workspace a run leaves behind is the evidence J1 scores.
+  "workspacesRoot": "B:\\sandbox-workspaces\\workspaces",
 
   "models": ["gpt-5.6-terra"],
 
@@ -24,11 +32,18 @@
       // before. Its cost is the baseline every other variant is judged against.
       "name": "off",
       "extraArgs": ["--Compaction:Mode=Off"]
+      // "compacts" stays false: this arm is not expected to compact, so a task's minCompactions
+      // floor does not apply to it and its runs are never invalidated for taking zero checkpoints.
     },
     {
       // Checkpoints built, appended and activated; the execution view hides the compacted rows.
       "name": "compact-v0",
-      "extraArgs": ["--Compaction:Mode=Compact"]
+      "extraArgs": ["--Compaction:Mode=Compact"],
+
+      // Declares that this arm is SUPPOSED to compact. A run of it that stays below the task's
+      // minCompactions never exercised the strategy, so J0 marks it invalid and the aggregates skip
+      // it — its cost would otherwise be reported as the cost of compacting.
+      "compacts": true
       // Add further knobs here to make this a distinct arm, e.g.
       //   "--Compaction:TargetRatio=0.35", "--Compaction:SummaryModelId=<model>"
       // The sweep manifest records these verbatim, and --compare REFUSES to compare two sweeps whose
@@ -36,14 +51,16 @@
     }
   ],
 
-  // Task ids under evals/compaction-eval/tasks/. Each needs a task.md; expected-board.json is
-  // optional and its absence means the run has NO board gate, reported as not measurable rather
-  // than failed. The full suite is c1, c2, d1, m1, r1, s1 — start with two while calibrating.
+  // Task ids under evals/compaction-eval/tasks/, each with the task.md / meta.json / fixtures/ /
+  // hidden/ / check.ps1 contract in tasks/README.md. The seed word comes from that task's own
+  // meta.seeds, a "## steer" section is sent as a second message mid-run, and check.ps1 produces the
+  // J1 score. expected-board.json is optional; its absence means the run has NO board gate, reported
+  // as not measurable rather than failed. Full suite: c1, c2, d1, m1, r1, s1.
   "tasks": ["c1", "d1"],
 
-  "seeds": 2,
+  "seeds": 2, // repeats per (variant, task, model); repeat i uses meta.seeds[i % seeds.length]
   "maxParallelRuns": 2, // concurrent conversations against ONE variant's host
-  "perRunTimeoutMinutes": 30,
+  "perRunTimeoutMinutes": 30, // a task's own meta.timeoutMinutes wins where it sets one
 
   "host": {
     // A coding eval needs real file and shell tools, so the host stands up its sandbox gateway
@@ -51,6 +68,10 @@
     "sandbox": true,
     "extraArgs": [
       "--SandboxGateway:AutoSpawn=true",
+      // The base the host resolves each run's workspace leaf under. Keep it equal to
+      // "workspacesRoot" above — that pairing is what makes the directory the runner fills and the
+      // directory the agent mounts the same directory.
+      "--SandboxGateway:WorkspaceBasePath=B:\\sandbox-workspaces\\workspaces",
       // REPLACE both with the paths to your built gateway binaries.
       "--SandboxGateway:GatewayExePath=B:/sources/SandboxedOstoolsMcpServer/target/release/mcp-gateway.exe",
       "--SandboxGateway:AgentCliPath=B:/sources/SandboxedOstoolsMcpServer/target/release/agent-cli.exe"
