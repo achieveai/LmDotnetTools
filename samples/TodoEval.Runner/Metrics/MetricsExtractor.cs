@@ -236,6 +236,9 @@ internal sealed record RunMetrics
     /// <summary>When the task's mid-run correction was sent, or null when none was.</summary>
     public DateTimeOffset? SteerSentAt { get; init; }
 
+    /// <summary>True when the correction landed mid-run, false when it became a follow-up turn, null without a steer.</summary>
+    public bool? SteerMidRun { get; init; }
+
     /// <summary>Per-spawn cost the host measured, one row per sub-agent the run spawned.</summary>
     public IReadOnlyList<SpawnTiming> SpawnTimings { get; init; } = [];
 
@@ -395,6 +398,7 @@ internal static class MetricsExtractor
             Error = entry.Error,
             J1 = entry.J1,
             SteerSentAt = entry.SteerSentAt,
+            SteerMidRun = entry.SteerMidRun,
             Valid = IsValid(entry, compactions: 0),
             PerTool = BuildPerTool(new Dictionary<string, ToolStats>(StringComparer.Ordinal)),
         };

@@ -4,6 +4,6 @@
   "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
   "minCompactions": 1,
   "timeoutMinutes": 30,
-  "steerAfterSeconds": 150,
+  "steerAfterSeconds": 60,
   "windowPressure": "per-document inspection output plus a mid-run correction that must survive the cut (R4/R5/RC7)"
 }

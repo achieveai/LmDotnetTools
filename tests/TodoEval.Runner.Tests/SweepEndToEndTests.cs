@@ -122,20 +122,24 @@ public class SweepEndToEndTests : IDisposable
         host.Messages.Should().HaveCount(2);
         host.Messages[1].Should().Be("Correction: 15 rows.");
         entry.SteerSentAt.Should().NotBeNull();
+        entry.SteerMidRun.Should().BeTrue("the run was still going when the correction landed");
         entry.Status.Should().Be(RunOutcomes.Completed);
     }
 
     [Fact]
-    public async Task ARunThatFinishesBeforeTheCorrectionIsDue_NeverReceivesIt()
+    public async Task ARunThatFinishesBeforeTheCorrectionIsDue_StillReceivesItAsAFollowUp()
     {
-        // Not a failure: the model answered before the user changed their mind. Recording a steer
-        // that was never sent would corrupt every steer-family reading.
-        var host = new ScriptedHost();
+        // A fast model answers before the user changes their mind; the correction still has to be
+        // honoured, it just lands as the next turn instead of mid-run. The row records which.
+        var host = new ScriptedHost { CompleteAfterMessages = 1 };
 
         var entry = (await SweepAsync(WriteTask(steer: "Correction: 15 rows.", steerAfterSeconds: 60), host)).Single();
 
-        host.Messages.Should().ContainSingle();
-        entry.SteerSentAt.Should().BeNull();
+        host.Messages.Should().HaveCount(2);
+        host.Messages[1].Should().Be("Correction: 15 rows.");
+        entry.SteerSentAt.Should().NotBeNull();
+        entry.SteerMidRun.Should().BeFalse("the first answer was already terminal when it was sent");
+        entry.Status.Should().Be(RunOutcomes.Completed);
     }
 
     [Fact]

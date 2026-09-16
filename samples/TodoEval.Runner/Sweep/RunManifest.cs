@@ -46,10 +46,19 @@ internal sealed record RunManifestEntry
     public string? WorkspacePath { get; init; }
 
     /// <summary>
-    /// When the task's <c>## steer</c> correction was sent, or null when the task has none or the run
-    /// finished before the correction was due — which is a real outcome, not a harness failure.
+    /// When the task's <c>## steer</c> correction was sent, or null when the task has none. A steer
+    /// is always delivered: mid-run when the run is still going at <c>steerAfterSeconds</c>, otherwise
+    /// as the next turn right after the first answer (see <see cref="SteerMidRun"/>).
     /// </summary>
     public DateTimeOffset? SteerSentAt { get; init; }
+
+    /// <summary>
+    /// True when the correction landed while the run was still working (the cut had to survive a
+    /// goal change mid-run), false when the model had already answered and the correction became a
+    /// follow-up turn, null when the task has no steer. The two are different readings of the same
+    /// task, so a steer-family comparison must group on this.
+    /// </summary>
+    public bool? SteerMidRun { get; init; }
 
     /// <summary>The task checker's verdict, or null when the task ships no checker.</summary>
     public J1Result? J1 { get; init; }

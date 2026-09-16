@@ -88,6 +88,7 @@ internal sealed class SweepRunner(
         string? inputId = null;
         string? workspacePath = null;
         DateTimeOffset? steerSentAt = null;
+        bool? steerMidRun = null;
 
         log.WriteLine($"[run {runKey}] starting (topic: {topic})");
         try
@@ -112,8 +113,16 @@ internal sealed class SweepRunner(
             inputId = await client.SendMessageAsync(threadId, taskText, ct);
 
             var deadline = started + TimeSpan.FromMinutes(task.Meta?.TimeoutMinutes ?? config.PerRunTimeoutMinutes);
-            var (status, steerAt) = await PollWithOptionalSteerAsync(threadId, inputId, task, started, deadline, ct);
+            var (status, steerAt, midRun) = await PollWithOptionalSteerAsync(
+                threadId,
+                inputId,
+                task,
+                started,
+                deadline,
+                ct
+            );
             steerSentAt = steerAt;
+            steerMidRun = midRun;
 
             var ended = DateTimeOffset.UtcNow;
             // A non-Completed terminal status is the HOST's verdict and is kept as-is; the host's own
@@ -144,6 +153,7 @@ internal sealed class SweepRunner(
                 task,
                 workspacePath,
                 steerSentAt,
+                steerMidRun,
                 await JudgeAsync(task, runKey, workspacePath, ct)
             );
         }
@@ -192,6 +202,7 @@ internal sealed class SweepRunner(
                 task,
                 workspacePath,
                 steerSentAt,
+                steerMidRun,
                 await JudgeAsync(task, runKey, workspacePath, ct)
             );
         }
@@ -207,12 +218,14 @@ internal sealed class SweepRunner(
         EvalTaskAsset task,
         string? workspacePath,
         DateTimeOffset? steerSentAt,
+        bool? steerMidRun,
         J1Result? j1
     ) =>
         entry with
         {
             WorkspacePath = workspacePath,
             SteerSentAt = steerSentAt,
+            SteerMidRun = steerMidRun,
             J1 = j1,
             MinCompactions = task.Meta?.MinCompactions,
             VariantCompacts = variant.Compacts,
@@ -220,15 +233,18 @@ internal sealed class SweepRunner(
 
     /// <summary>
     /// Polls the task message to a terminal status, sending the task's <c>## steer</c> correction as a
-    /// second message once <c>steerAfterSeconds</c> has passed and the run is still going.
+    /// second message: mid-run once <c>steerAfterSeconds</c> has passed and the run is still going,
+    /// otherwise right after the first answer, as the next turn.
     /// </summary>
     /// <remarks>
-    /// The wait for the correction IS a poll to a shorter deadline: reaching a terminal status first
-    /// means the run answered before the user changed their mind, so there is nothing to correct and
-    /// no steer is sent. Once it IS sent, the run's completion is the SECOND input's — the first input
-    /// has its own terminal status that says nothing about whether the correction was honoured.
+    /// The wait for the correction IS a poll to a shorter deadline. Reaching a terminal status first
+    /// means the model answered before the user changed their mind; the correction is still owed (a
+    /// fast model must not skip the task's second half), it just lands as a follow-up turn, and the
+    /// row says so. Either way the run's completion is the SECOND input's — the first input has its
+    /// own terminal status that says nothing about whether the correction was honoured. A first
+    /// answer that is not Completed (errored, interrupted) is returned as-is: nothing can be steered.
     /// </remarks>
-    private async Task<(RunStatus Status, DateTimeOffset? SteerSentAt)> PollWithOptionalSteerAsync(
+    private async Task<(RunStatus Status, DateTimeOffset? SteerSentAt, bool? SteerMidRun)> PollWithOptionalSteerAsync(
         string threadId,
         string inputId,
         EvalTaskAsset task,
@@ -239,27 +255,34 @@ internal sealed class SweepRunner(
     {
         if (task.Steer is not { } steer)
         {
-            return (await client.PollToTerminalAsync(threadId, inputId, deadline, config.Poll, ct), null);
+            return (await client.PollToTerminalAsync(threadId, inputId, deadline, config.Poll, ct), null, null);
         }
 
-        // Poll to whichever comes first. Reaching a terminal status means the run answered before the
-        // correction was due, so there is nothing to correct. Running out of time at the RUN's own
-        // deadline is an ordinary timeout and propagates — a correction sent then could never land.
+        // Poll to whichever comes first. Running out of time at the RUN's own deadline is an ordinary
+        // timeout and propagates — a correction sent then could never land.
         var steerDue = started + TimeSpan.FromSeconds(task.Meta?.SteerAfterSeconds ?? 0);
         var firstDeadline = steerDue < deadline ? steerDue : deadline;
+        var midRun = false;
         try
         {
-            return (await client.PollToTerminalAsync(threadId, inputId, firstDeadline, config.Poll, ct), null);
+            var first = await client.PollToTerminalAsync(threadId, inputId, firstDeadline, config.Poll, ct);
+            if (first.Status != RunOutcomes.Completed)
+            {
+                return (first, null, null);
+            }
         }
         catch (TimeoutException) when (firstDeadline < deadline)
         {
-            // Still working, which is the point: the correction has to land mid-run.
+            // Still working, which is what the steer family exists to measure: the correction lands mid-run.
+            midRun = true;
         }
 
         var steerInputId = await client.SendMessageAsync(threadId, steer, ct);
         var sentAt = DateTimeOffset.UtcNow;
-        log.WriteLine($"[run] steer sent on thread {threadId} at {sentAt:O}");
-        return (await client.PollToTerminalAsync(threadId, steerInputId, deadline, config.Poll, ct), sentAt);
+        log.WriteLine(
+            $"[run] steer sent on thread {threadId} at {sentAt:O} ({(midRun ? "mid-run" : "after the first answer")})"
+        );
+        return (await client.PollToTerminalAsync(threadId, steerInputId, deadline, config.Poll, ct), sentAt, midRun);
     }
 
     /// <summary>
