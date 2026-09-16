@@ -52,10 +52,16 @@ public sealed partial class SandboxSessionRegistry
     /// touching the network — leaving <see cref="SessionEnvSupported"/> reporting true forever on a
     /// gateway that cannot do env at all.
     /// </param>
+    /// <param name="ConfirmReadFailed">
+    /// Whether the most recent confirming GET for this entry failed unexpectedly. Lets that failure be
+    /// logged at Warning once, on the transition, and at Debug on the per-turn retries that follow. Any
+    /// entry written from a gateway answer starts again at <see langword="false"/>.
+    /// </param>
     private sealed record SessionEnvState(
         IReadOnlyDictionary<string, string> LastApplied,
         string? LastActivatedThreadId,
-        bool Confirmed
+        bool Confirmed,
+        bool ConfirmReadFailed = false
     );
 
     /// <summary>
@@ -260,7 +266,11 @@ public sealed partial class SandboxSessionRegistry
                     // create, so carry on against that rather than failing the caller: this runs inside
                     // agent construction, and throwing here would stop a conversation starting over a
                     // reconciliation detail. The entry stays UNCONFIRMED, so the next activation retries.
-                    _logger.LogDebug(
+                    // Warning on the FIRST failure only: the retry runs every turn, so logging each one at
+                    // Warning is noise, but Debug alone left a gateway that persistently refuses GET /env
+                    // invisible at the default level while SessionEnvSupported kept reporting true.
+                    _logger.Log(
+                        state.ConfirmReadFailed ? LogLevel.Debug : LogLevel.Warning,
                         ex,
                         "Could not confirm sandbox session {SessionId} env against the gateway; using the create-time map for this reconcile",
                         sessionId
@@ -272,7 +282,8 @@ public sealed partial class SandboxSessionRegistry
                     // Keep whatever activation stamp the seed/previous entry carried; this read corrects
                     // the MAP, and says nothing about who last activated the session.
                     state?.LastActivatedThreadId,
-                    Confirmed: current is not null
+                    Confirmed: current is not null,
+                    ConfirmReadFailed: current is null
                 );
                 _sessionEnv[sessionId] = state;
             }

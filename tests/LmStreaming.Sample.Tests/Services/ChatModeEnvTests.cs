@@ -278,6 +278,151 @@ public sealed class ChatModeEnvTests : IDisposable
         payload.Should().Contain("invalid_env");
         payload.Should().Contain("HTTP_PROXY", "the caller needs to know WHICH key the gateway refused");
         payload.Should().Contain("was saved", "a partial success must not read as a rejected write");
+        payload.Should().Contain("\"saved\":true", "the client must be able to tell a landed write apart");
         payload.Should().NotContain("secret-value", "a value must never reach a response body");
+    }
+
+    /// <summary>
+    /// The pre-commit half of the same distinction: a rejection by the store's own validator happens
+    /// BEFORE anything is written, so its 400 must not claim the mode was saved.
+    /// </summary>
+    [Fact]
+    public async Task Controller_Update_InvalidEnvRejectedBeforeSave_Returns400_WithoutClaimingItWasSaved()
+    {
+        var store = CreateStore();
+        var created = await store.CreateModeAsync(new ChatModeCreateUpdate { Name = "M", SystemPrompt = "p" });
+        var controller = new ChatModesController(store, new NoOpSandboxEnvApplier());
+
+        var result = await controller.Update(
+            created.Id,
+            new ChatModeCreateUpdate
+            {
+                Name = "M",
+                SystemPrompt = "p",
+                Env = new Dictionary<string, string> { ["NO_PROXY"] = "secret-value" },
+            }
+        );
+
+        var payload = JsonSerializer.Serialize(result.Should().BeOfType<BadRequestObjectResult>().Subject.Value);
+        payload.Should().Contain("invalid_env").And.Contain("NO_PROXY");
+        payload.Should().NotContain("saved", "nothing was written, so nothing may be reported as saved");
+    }
+
+    /// <summary>
+    /// Once the mode is persisted, the reapply must not share the request's cancellation. ASP.NET binds
+    /// the action token to <c>RequestAborted</c>, so a client that disconnected right after the write used
+    /// to cancel the fan-out and leave the remaining live sessions on the old env with nothing recorded.
+    /// The store here cancels the request token the moment its write completes, which is the worst case.
+    /// </summary>
+    [Fact]
+    public async Task Controller_Update_RequestCancelledAfterTheSave_StillReappliesOnAnUncancelledToken()
+    {
+        using var requestAborted = new CancellationTokenSource();
+        var store = new CancelAfterUpdateStore(CreateStore(), requestAborted);
+        var created = await store.CreateModeAsync(new ChatModeCreateUpdate { Name = "M", SystemPrompt = "p" });
+        var applier = new TokenRecordingEnvApplier();
+        var controller = new ChatModesController(store, applier);
+
+        var result = await controller.Update(
+            created.Id,
+            new ChatModeCreateUpdate
+            {
+                Name = "M",
+                SystemPrompt = "p",
+                Env = new Dictionary<string, string> { ["FOO"] = "bar" },
+            },
+            requestAborted.Token
+        );
+
+        result.Should().BeOfType<OkObjectResult>();
+        requestAborted.IsCancellationRequested.Should().BeTrue("the fixture must actually cancel the request token");
+        applier.ModeReapplyTokens.Should().ContainSingle();
+        applier
+            .ModeReapplyTokens[0]
+            .IsCancellationRequested.Should()
+            .BeFalse("a committed edit must still reach every live session after the client goes away");
+    }
+
+    /// <summary>
+    /// The other side of that boundary: cancellation BEFORE the write still stops it, and nothing is
+    /// persisted or reapplied.
+    /// </summary>
+    [Fact]
+    public async Task Controller_Update_RequestCancelledBeforeTheSave_WritesNothing_AndReappliesNothing()
+    {
+        var store = CreateStore();
+        var created = await store.CreateModeAsync(
+            new ChatModeCreateUpdate
+            {
+                Name = "M",
+                SystemPrompt = "p",
+                Env = new Dictionary<string, string> { ["FOO"] = "old" },
+            }
+        );
+        var applier = new TokenRecordingEnvApplier();
+        var controller = new ChatModesController(store, applier);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        var act = async () =>
+            await controller.Update(
+                created.Id,
+                new ChatModeCreateUpdate
+                {
+                    Name = "M",
+                    SystemPrompt = "p",
+                    Env = new Dictionary<string, string> { ["FOO"] = "new" },
+                },
+                cancelled.Token
+            );
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        (await store.GetModeAsync(created.Id))!.Env.Should().Equal(new Dictionary<string, string> { ["FOO"] = "old" });
+        applier.ModeReapplyTokens.Should().BeEmpty();
+    }
+
+    /// <summary>Delegates to a real store, and cancels <paramref name="requestAborted"/> once an update has been written.</summary>
+    private sealed class CancelAfterUpdateStore(IChatModeStore inner, CancellationTokenSource requestAborted)
+        : IChatModeStore
+    {
+        public Task<IReadOnlyList<ChatMode>> GetAllModesAsync(CancellationToken ct = default) =>
+            inner.GetAllModesAsync(ct);
+
+        public Task<ChatMode?> GetModeAsync(string modeId, CancellationToken ct = default) =>
+            inner.GetModeAsync(modeId, ct);
+
+        public Task<ChatMode> CreateModeAsync(ChatModeCreateUpdate mode, CancellationToken ct = default) =>
+            inner.CreateModeAsync(mode, ct);
+
+        public async Task<ChatMode> UpdateModeAsync(
+            string modeId,
+            ChatModeCreateUpdate mode,
+            CancellationToken ct = default
+        )
+        {
+            var updated = await inner.UpdateModeAsync(modeId, mode, ct);
+            await requestAborted.CancelAsync();
+            return updated;
+        }
+
+        public Task DeleteModeAsync(string modeId, CancellationToken ct = default) => inner.DeleteModeAsync(modeId, ct);
+
+        public Task<ChatMode> CopyModeAsync(string modeId, string newName, CancellationToken ct = default) =>
+            inner.CopyModeAsync(modeId, newName, ct);
+    }
+
+    /// <summary>Records the token each mode reapply was handed, as it stood at the time of the call.</summary>
+    private sealed class TokenRecordingEnvApplier : NoOpSandboxEnvApplier
+    {
+        public List<CancellationToken> ModeReapplyTokens { get; } = [];
+
+        public override Task<LmStreaming.Sample.Services.SandboxEnvReapplyOutcome> ReapplyForModeAsync(
+            string modeId,
+            CancellationToken ct
+        )
+        {
+            ModeReapplyTokens.Add(ct);
+            return Task.FromResult(LmStreaming.Sample.Services.SandboxEnvReapplyOutcome.None);
+        }
     }
 }

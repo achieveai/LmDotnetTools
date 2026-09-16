@@ -305,6 +305,27 @@ describe('ModeEditor env', () => {
     expect(wrapper.emitted('save')).toBeUndefined();
   });
 
+  it('refuses to save when two rows share the exact same key', async () => {
+    // The record keeps one FOO, so the payload alone would look valid; only the row check sees the loss.
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('FOO');
+    await values[1].setValue('second');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
   // PAIRED POSITIVE: without it the two "no save" assertions above would still pass if the new guard
   // were unconditional — i.e. if it blocked every save, valid env included.
   it('still saves when the added row is valid', async () => {

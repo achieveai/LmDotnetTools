@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -140,10 +139,15 @@ public class SandboxEnvApplier(
     /// the most recently ACTIVATED thread; activation is a turn, not an object lifetime.
     /// </para>
     /// <para>
-    /// Failures are logged and swallowed. This runs on the turn path, where the user cannot act on the
-    /// error and did not ask for an env change: the edit that introduced a bad map already answered
-    /// <c>400 invalid_env</c> to whoever made it (see <see cref="CompleteReapply"/>), and refusing the
-    /// turn here would strand the conversation instead.
+    /// Failures are logged and swallowed, WHATEVER their type; only cancellation propagates. This runs on
+    /// the turn path, where the user did not ask for an env change and cannot act on the error, and
+    /// failing here fails their message: REST answers 500 and the WebSocket seam aborts the socket
+    /// without a frame. The failure domain is wider than the sandbox, too: the reconcile reads the
+    /// conversation metadata, the workspace catalog and the mode store, and a corrupt catalog raises
+    /// <c>WorkspaceCatalogCorruptException</c>, which is not a <see cref="SandboxException"/>. Nor can a
+    /// bad map be assumed to have been reported already: the 256-key ceiling and the case-insensitive
+    /// duplicate rule apply to the MERGED map, which can first break here with no edit ever rejected.
+    /// The session keeps the env it already had, and the next turn tries again.
     /// </para>
     /// </summary>
     public virtual async Task ApplyForActivationAsync(string threadId, CancellationToken ct)
@@ -162,7 +166,7 @@ public class SandboxEnvApplier(
             var modeId = await ReadModeIdAsync(threadId, ct).ConfigureAwait(false);
             await ApplyForThreadAsync(threadId, sessionId, binding.WorkspaceRef.Id, modeId, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is SandboxException or SandboxEnvValidationException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(
                 ex,
@@ -174,10 +178,14 @@ public class SandboxEnvApplier(
 
     /// <summary>Reapplies the merged env to every live session bound to <paramref name="workspaceId"/>.</summary>
     /// <remarks>
-    /// Every session is attempted; see <see cref="ApplyIsolatedAsync"/> for why one session's rejection
-    /// must not abandon the rest.
+    /// Never throws for a session's failure; see <see cref="ApplyIsolatedAsync"/>. Only cancellation
+    /// propagates, so a caller that has already committed the edit should pass a token that is NOT the
+    /// request's abort token.
     /// </remarks>
-    public virtual async Task ReapplyForWorkspaceAsync(string workspaceId, CancellationToken ct)
+    public virtual async Task<SandboxEnvReapplyOutcome> ReapplyForWorkspaceAsync(
+        string workspaceId,
+        CancellationToken ct
+    )
     {
         var report = new ReapplyReport();
 
@@ -199,16 +207,26 @@ public class SandboxEnvApplier(
                 continue;
             }
 
-            var modeId = await ReadModeIdAsync(threadId, ct).ConfigureAwait(false);
-            await ApplyIsolatedAsync(report, threadId, sessionId, workspaceId, modeId, ct).ConfigureAwait(false);
+            await ApplyIsolatedAsync(
+                    report,
+                    threadId,
+                    sessionId,
+                    async () =>
+                    {
+                        var modeId = await ReadModeIdAsync(threadId, ct).ConfigureAwait(false);
+                        await ApplyForThreadAsync(threadId, sessionId, workspaceId, modeId, ct).ConfigureAwait(false);
+                        return true;
+                    }
+                )
+                .ConfigureAwait(false);
         }
 
-        CompleteReapply(report, "workspace", workspaceId);
+        return CompleteReapply(report, "workspace", workspaceId);
     }
 
     /// <summary>Reapplies the merged env to every live session whose last-activated thread runs under <paramref name="modeId"/>.</summary>
-    /// <remarks>See <see cref="ReapplyForWorkspaceAsync"/> for the per-session isolation contract.</remarks>
-    public virtual async Task ReapplyForModeAsync(string modeId, CancellationToken ct)
+    /// <remarks>See <see cref="ReapplyForWorkspaceAsync"/> for the failure and cancellation contract.</remarks>
+    public virtual async Task<SandboxEnvReapplyOutcome> ReapplyForModeAsync(string modeId, CancellationToken ct)
     {
         var report = new ReapplyReport();
 
@@ -224,17 +242,30 @@ public class SandboxEnvApplier(
                 continue;
             }
 
-            var threadModeId = await ReadModeIdAsync(threadId, ct).ConfigureAwait(false);
-            if (!string.Equals(threadModeId, modeId, StringComparison.Ordinal))
-            {
-                continue;
-            }
+            // The mode read decides whether this session is in scope at all, so a failure to read it is
+            // recorded against the session rather than skipped: the thread MAY be on this mode, and the
+            // loop cannot tell.
+            await ApplyIsolatedAsync(
+                    report,
+                    threadId,
+                    sessionId,
+                    async () =>
+                    {
+                        var threadModeId = await ReadModeIdAsync(threadId, ct).ConfigureAwait(false);
+                        if (!string.Equals(threadModeId, modeId, StringComparison.Ordinal))
+                        {
+                            return false;
+                        }
 
-            await ApplyIsolatedAsync(report, threadId, sessionId, session.WorkspaceId, modeId, ct)
+                        await ApplyForThreadAsync(threadId, sessionId, session.WorkspaceId, modeId, ct)
+                            .ConfigureAwait(false);
+                        return true;
+                    }
+                )
                 .ConfigureAwait(false);
         }
 
-        CompleteReapply(report, "mode", modeId);
+        return CompleteReapply(report, "mode", modeId);
     }
 
     /// <summary>What the two reapply loops observed, so the aggregate can be logged and reported once.</summary>
@@ -244,42 +275,43 @@ public class SandboxEnvApplier(
 
         public int Succeeded { get; set; }
 
-        public List<(string SessionId, Exception Error)> Failures { get; } = [];
+        public List<SandboxEnvReapplyFailure> Failures { get; } = [];
     }
 
     /// <summary>
-    /// Runs <see cref="ApplyForThreadAsync"/> for one session and records the outcome instead of letting
-    /// it end the loop.
+    /// Runs one session's reapply and records the outcome instead of letting it end the loop.
+    /// <paramref name="apply"/> returns <see langword="false"/> when the session turned out to be out of
+    /// scope, which counts as neither an attempt nor a failure.
     /// <para>
-    /// The loop body used to be unguarded, so the FIRST session whose merged map the gateway rejected
-    /// (<see cref="SandboxErrorKind.InvalidEnv"/>) or whose effective map failed validation
-    /// (<see cref="SandboxEnvValidationException"/>) aborted the whole reapply — every session after it
-    /// silently kept the old env. Which sessions those were depended on the iteration order of a
-    /// <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey, TValue}"/>'s keys, so the same
-    /// edit could leave a different subset stale each time. A bad map belongs to ONE thread's layers; it
-    /// says nothing about the other sessions sharing the workspace or mode.
+    /// The loop body used to be unguarded, so the FIRST session that failed aborted the whole reapply —
+    /// every session after it silently kept the old env. Which sessions those were depended on the
+    /// iteration order of a <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey, TValue}"/>'s
+    /// keys, so the same edit could leave a different subset stale each time. Containment covers every
+    /// failure type, not only sandbox ones: the reapply also reads the conversation, workspace and mode
+    /// stores, and a store fault escaping here would abandon the remaining sessions just the same.
     /// </para>
     /// <para>
-    /// Cancellation is deliberately NOT caught: <see cref="OperationCanceledException"/> is not a
-    /// sandbox failure and must stop the loop.
+    /// Cancellation is deliberately NOT caught: it is not a session's failure and must stop the loop.
     /// </para>
     /// </summary>
     private async Task ApplyIsolatedAsync(
         ReapplyReport report,
         string threadId,
         string sessionId,
-        string workspaceId,
-        string modeId,
-        CancellationToken ct
+        Func<Task<bool>> apply
     )
     {
-        report.Attempted++;
         try
         {
-            await ApplyForThreadAsync(threadId, sessionId, workspaceId, modeId, ct).ConfigureAwait(false);
+            if (!await apply().ConfigureAwait(false))
+            {
+                return;
+            }
+
+            report.Attempted++;
             report.Succeeded++;
         }
-        catch (Exception ex) when (ex is SandboxException or SandboxEnvValidationException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // ApplyForThreadAsync has already logged the key names for the InvalidEnv case; this line is
             // about WHICH session was left behind. Still no values.
@@ -289,22 +321,13 @@ public class SandboxEnvApplier(
                 sessionId,
                 threadId
             );
-            report.Failures.Add((sessionId, ex));
+            report.Attempted++;
+            report.Failures.Add(new SandboxEnvReapplyFailure(sessionId, ex));
         }
     }
 
-    /// <summary>
-    /// Logs the aggregate and then rethrows the first failure, if any, preserving its original type and
-    /// stack.
-    /// <para>
-    /// The rethrow is not vestigial: <c>WorkspacesController</c> and <c>ChatModesController</c> both turn
-    /// a <see cref="SandboxErrorKind.InvalidEnv"/> escape into <c>400 { code: "invalid_env" }</c>, which
-    /// the client treats as a PARTIAL success — the record was saved, the sandbox was not fully updated.
-    /// Swallowing every failure here to "isolate" them would answer 200 and tell the user their env is
-    /// live in sandboxes where it is not.
-    /// </para>
-    /// </summary>
-    private void CompleteReapply(ReapplyReport report, string scope, string id)
+    /// <summary>Logs the aggregate and returns it; the caller decides what the user is told.</summary>
+    private SandboxEnvReapplyOutcome CompleteReapply(ReapplyReport report, string scope, string id)
     {
         logger.LogInformation(
             "Sandbox env reapply for {Scope} {Id}: {Succeeded}/{Attempted} sessions updated, {FailedCount} failed ({FailedSessions})",
@@ -316,10 +339,7 @@ public class SandboxEnvApplier(
             string.Join(", ", report.Failures.Select(f => f.SessionId))
         );
 
-        if (report.Failures.Count > 0)
-        {
-            ExceptionDispatchInfo.Capture(report.Failures[0].Error).Throw();
-        }
+        return new SandboxEnvReapplyOutcome(report.Attempted, report.Succeeded, report.Failures);
     }
 
     /// <summary>
@@ -336,5 +356,72 @@ public class SandboxEnvApplier(
                 : null;
 
         return persistedModeId ?? SystemChatModes.DefaultModeId;
+    }
+}
+
+/// <summary>One live session a reapply could not bring up to date, and why.</summary>
+/// <param name="SessionId">The session left on its previous env.</param>
+/// <param name="Error">The failure. Never carries an env VALUE.</param>
+public sealed record SandboxEnvReapplyFailure(string SessionId, Exception Error);
+
+/// <summary>
+/// What a post-edit reapply did. The edit itself has already been persisted by the time this exists, so
+/// a failure here is a PARTIAL success, never a rejected write.
+/// </summary>
+/// <param name="Attempted">Sessions that were in scope for the edit.</param>
+/// <param name="Succeeded">Sessions now carrying the new merged env.</param>
+/// <param name="Failures">Sessions left on their previous env, in no particular order.</param>
+public sealed record SandboxEnvReapplyOutcome(
+    int Attempted,
+    int Succeeded,
+    IReadOnlyList<SandboxEnvReapplyFailure> Failures
+)
+{
+    /// <summary>A reapply that found nothing to do.</summary>
+    public static SandboxEnvReapplyOutcome None { get; } = new(0, 0, []);
+
+    /// <summary>
+    /// The failure the caller should report, chosen by what the caller can ACT on rather than by
+    /// position. <see cref="Failures"/> follows the unordered iteration of the live-session registry, so
+    /// taking the first entry made the same edit answer with a key list on one run and with nothing
+    /// useful on the next. A local validation failure names its keys and layer; a gateway
+    /// <see cref="SandboxErrorKind.InvalidEnv"/> names the keys it refused. Anything else (a transport
+    /// fault, a store fault) is not the caller's to fix, and the next turn on that session retries it.
+    /// <see langword="null"/> when no failure names invalid keys.
+    /// </summary>
+    public SandboxEnvReapplyFailure? InvalidEnvFailure =>
+        Failures.FirstOrDefault(f => f.Error is SandboxEnvValidationException)
+        ?? Failures.FirstOrDefault(f => f.Error is SandboxException { Kind: SandboxErrorKind.InvalidEnv });
+
+    /// <summary>The offending key NAMES of <see cref="InvalidEnvFailure"/>; empty when there is none.</summary>
+    public IReadOnlyList<string> InvalidKeys =>
+        InvalidEnvFailure?.Error switch
+        {
+            SandboxEnvValidationException v => v.Keys,
+            SandboxException s => s.InvalidKeys ?? [],
+            _ => [],
+        };
+
+    /// <summary>
+    /// The <c>400 invalid_env</c> body for an edit that WAS persisted but whose env could not be applied
+    /// to every live session. It keeps the <c>invalid_env</c> code and <c>keys</c> the client already
+    /// handles as a partial success, and says in words and in <c>saved: true</c> that the write landed.
+    /// A pre-commit validation rejection never produces this body, so the two are distinguishable.
+    /// Carries key NAMES only, never values.
+    /// </summary>
+    /// <param name="subject">How the error message names the edited record, e.g. <c>Workspace 'ws-1'</c>.</param>
+    /// <param name="editedLayer">The layer the edit changed, reported when the failure names no layer of its own.</param>
+    public object ToSavedButNotAppliedBody(string subject, string editedLayer)
+    {
+        var failure =
+            InvalidEnvFailure ?? throw new InvalidOperationException("There is no invalid-env failure to report.");
+        return new
+        {
+            error = $"{subject} was saved, but its environment could not be applied to {Failures.Count} of {Attempted} live sandbox session(s): {failure.Error.Message}",
+            code = "invalid_env",
+            saved = true,
+            layer = failure.Error is SandboxEnvValidationException v ? v.Layer : editedLayer,
+            keys = InvalidKeys,
+        };
     }
 }

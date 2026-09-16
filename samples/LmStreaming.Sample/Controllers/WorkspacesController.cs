@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -188,7 +187,14 @@ public sealed class WorkspacesController(
 
             if (updateData.Env.IsSet)
             {
-                await envApplier.ReapplyForWorkspaceAsync(id, ct);
+                // The workspace is persisted from here on. Reapply on a token that is NOT RequestAborted:
+                // a client disconnecting now must not leave a suffix of live sessions on the old env.
+                // Each gateway call is still bounded by the SDK's own transport timeout.
+                var reapply = await envApplier.ReapplyForWorkspaceAsync(id, CancellationToken.None);
+                if (reapply.InvalidEnvFailure is not null)
+                {
+                    return BadRequest(reapply.ToSavedButNotAppliedBody($"Workspace '{id}'", "workspace"));
+                }
             }
 
             return Ok(workspace.ToView(await compatibility.EvaluateAsync(workspace, ct)));
@@ -297,21 +303,6 @@ public sealed class WorkspacesController(
                     code = "invalid_env",
                     layer = ex.Layer,
                     keys = ex.Keys,
-                }
-            );
-        }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.InvalidEnv)
-        {
-            // The workspace write already succeeded by the time reapply runs; the gateway, not the
-            // store, is what rejected the merged env. Say so, so the caller does not assume nothing
-            // was persisted.
-            return BadRequest(
-                new
-                {
-                    error = $"Workspace '{id}' was saved, but the sandbox gateway rejected its environment: {ex.Message}",
-                    code = "invalid_env",
-                    layer = "workspace",
-                    keys = ex.InvalidKeys ?? [],
                 }
             );
         }

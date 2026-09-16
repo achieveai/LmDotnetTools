@@ -1916,6 +1916,30 @@ describe('WorkspaceSelector refuses a save the env editor already flags', () => 
     expect(wrapper.emitted('create-workspace')).toBeUndefined();
   });
 
+  // The exact-duplicate case, separately: the record can hold only one TOKEN, so the emitted payload
+  // would look valid on its own. Only the row check can catch it.
+  it('blocks create when two rows share the exact same key', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Dup Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[0].setValue('TOKEN');
+    await values[0].setValue('first');
+    await keys[1].setValue('TOKEN');
+    await values[1].setValue('second');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('create-workspace')).toBeUndefined();
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
   it('blocks edit when a key is protected by the sandbox', async () => {
     const wrapper = mountSelector({ workspaces: editable });
     await openEditForm(wrapper, 'ws-user');

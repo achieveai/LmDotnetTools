@@ -127,7 +127,7 @@ describe('EnvEditor disabled state', () => {
 
 describe('EnvEditor duplicate keys', () => {
   it('flags both rows when the same key is entered twice, and reports the form as invalid', async () => {
-    // buildRecord() writes into a plain object, so the second row silently overwrote the first and
+    // buildRecord() writes every row into one record, so the second row silently overwrote the first and
     // the payload simply lost a variable the user had typed. Nothing anywhere told them.
     const wrapper = mountEditor({});
     await wrapper.get('[data-testid="test-env-add"]').trigger('click');
@@ -178,6 +178,22 @@ describe('EnvEditor positive emission', () => {
     await wrapper.get('[data-testid="test-env-value"]').setValue('/usr/bin');
 
     expect(lastEmitted(wrapper)).toEqual({ PATH: '/usr/bin' });
+  });
+
+  // `__proto__` is a well-formed name, so no row error fires — which made its loss invisible. On a `{}`
+  // record the assignment hit the inherited setter and the key never reached the payload.
+  it('emits a key named __proto__ as an own property that survives serialisation', async () => {
+    const wrapper = mountEditor({});
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="test-env-key"]').setValue('__proto__');
+    await wrapper.get('[data-testid="test-env-value"]').setValue('kept');
+
+    const record = lastEmitted(wrapper);
+    expect(Object.prototype.hasOwnProperty.call(record, '__proto__')).toBe(true);
+    expect(Object.keys(record)).toEqual(['__proto__']);
+    // What a parent actually sends: a spread copy, serialised.
+    expect(JSON.stringify({ ...record })).toBe('{"__proto__":"kept"}');
+    expect(wrapper.find('[data-testid="test-env-error"]').exists()).toBe(false);
   });
 
   // The `lastEmitted` echo guard had no direct test: the parent reflecting our own emission back as

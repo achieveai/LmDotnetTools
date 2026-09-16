@@ -80,7 +80,10 @@ watch(
 );
 
 function buildRecord(): Record<string, string> {
-  const record: Record<string, string> = {};
+  // A null-prototype record, because the key is user input: on a `{}` literal, `record['__proto__'] = v`
+  // hits the inherited accessor instead of creating a property, so a row named `__proto__` vanished
+  // from the payload with no error. Spreads and JSON.stringify both keep it as an own property.
+  const record = Object.create(null) as Record<string, string>;
   for (const row of rows.value) {
     const key = row.key.trim();
     if (!key) continue;
@@ -150,7 +153,7 @@ function rowError(row: EnvRow): string {
     return 'This name is protected by the sandbox and cannot be set.';
   }
   if (duplicateKeys.value.has(key.toUpperCase())) {
-    // buildRecord() writes into a plain object, so duplicates do not survive to the payload — the
+    // buildRecord() writes every row into one record, so duplicates do not survive to the payload — the
     // last row silently wins and the other rows the user typed simply vanish on save. Flagging it is
     // the only way they find out; `hasErrors` below is what lets the parent form refuse the save,
     // but only because each parent actually reads it (ModeEditor.validate, WorkspaceSelector's two

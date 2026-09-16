@@ -1,3 +1,6 @@
+using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
+
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
@@ -123,6 +126,41 @@ public class SandboxSessionRegistryEnvTests
 
         second.Should().Be(SandboxEnvApplyResult.Unchanged);
         captured.GetEnvCalls.Should().Be(2);
+    }
+
+    /// <summary>
+    /// The fallback above retries the confirming GET on every activation. Logged only at Debug, a gateway
+    /// that keeps refusing GET /env was invisible at the default level; logged at Warning every time, it
+    /// becomes per-turn noise. So: Warning on the transition into the failed state, Debug for repeats.
+    /// </summary>
+    [Fact]
+    public async Task Ensure_ConfirmingGetKeepsFailing_WarnsOnTheFirstFailure_AndLogsRepeatsAtDebug()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        var logger = new CapturingLogger<SandboxSessionRegistry>();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured, logger);
+
+        var session = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws", Env: new Dictionary<string, string> { ["FOO"] = "1" })
+        );
+        captured.GetEnvStatus = System.Net.HttpStatusCode.InternalServerError;
+        captured.GetEnvBody = null;
+
+        foreach (var thread in new[] { "t1", "t2", "t3" })
+        {
+            _ = await registry.EnsureSessionEnvAsync(
+                session.SessionId,
+                new Dictionary<string, string> { ["FOO"] = "1" },
+                thread
+            );
+        }
+
+        captured.GetEnvCalls.Should().Be(3, "the entry stays unconfirmed, so every activation retries");
+        logger
+            .Entries.Where(e => e.Message.StartsWith("Could not confirm sandbox session", StringComparison.Ordinal))
+            .Select(e => e.Level)
+            .Should()
+            .Equal(LogLevel.Warning, LogLevel.Debug, LogLevel.Debug);
     }
 
     [Fact]
@@ -353,6 +391,76 @@ public class SandboxSessionRegistryEnvTests
         captured
             .MaxConcurrentEnvCalls.Should()
             .Be(1, "the read-diff-PATCH-write sequence for one session must not interleave");
+    }
+
+    /// <summary>
+    /// What the gate is FOR, rather than the mutual exclusion that implements it: after two concurrent
+    /// reconciles, the gateway map, the registry's cache and the activation stamp all agree on whichever
+    /// call was admitted last. Asserted without fixing the order, because the claim holds for either.
+    /// Interleaved, both calls diff against the same empty baseline, neither unsets the other's key, and
+    /// the gateway ends up holding A and B while the stamp names only one of them.
+    /// </summary>
+    [Fact]
+    public async Task Ensure_TwoConcurrentCallsForTheSameSession_ConvergeOnTheLastAdmittedMap()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+        captured.StatefulEnv = true;
+
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws"));
+        captured.EnvCallDelay = TimeSpan.FromMilliseconds(200);
+        var desiredByThread = new Dictionary<string, Dictionary<string, string>>
+        {
+            ["t1"] = new() { ["A"] = "1" },
+            ["t2"] = new() { ["B"] = "2" },
+        };
+
+        await Task.WhenAll(
+            desiredByThread.Select(kv =>
+                Task.Run(() => registry.EnsureSessionEnvAsync(session.SessionId, kv.Value, kv.Key))
+            )
+        );
+
+        registry.TryGetLastActivatedThread(session.SessionId, out var lastThread).Should().BeTrue();
+        lastThread.Should().BeOneOf("t1", "t2");
+        captured
+            .GatewayEnvFor(session.SessionId)
+            .Should()
+            .Equal(desiredByThread[lastThread!], "the gateway must hold exactly the last admitted map");
+
+        // The cache agrees with the gateway: the same map again diffs to nothing and sends nothing.
+        captured.EnvCallDelay = TimeSpan.Zero;
+        var patchesBefore = captured.PatchedSessionIds.Count;
+        var again = await registry.EnsureSessionEnvAsync(session.SessionId, desiredByThread[lastThread!], "t3");
+        again.Should().Be(SandboxEnvApplyResult.Unchanged);
+        captured.PatchedSessionIds.Should().HaveCount(patchesBefore);
+    }
+
+    /// <summary>
+    /// The no-unremovable-key guarantee rests on <c>LastApplied</c> being what the GATEWAY reported, not
+    /// what create asked for. Here the gateway carries a key the create-time seed does not know about.
+    /// Treating the seed as confirmed would diff {B} against {} and never unset A, which would then
+    /// outlive every later edit for the life of the session.
+    /// </summary>
+    [Fact]
+    public async Task Ensure_GatewayCarriesAKeyTheCreateSeedDoesNot_UnsetsIt()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+        captured.StatefulEnv = true;
+
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws"));
+        captured.GatewayEnvFor(session.SessionId)["A"] = "1";
+
+        var result = await registry.EnsureSessionEnvAsync(
+            session.SessionId,
+            new Dictionary<string, string> { ["B"] = "2" },
+            "t1"
+        );
+
+        result.Should().Be(SandboxEnvApplyResult.Patched);
+        captured.LastPatchBody!.Value.GetProperty("A").ValueKind.Should().Be(JsonValueKind.Null);
+        captured.GatewayEnvFor(session.SessionId).Should().Equal(new Dictionary<string, string> { ["B"] = "2" });
     }
 
     /// <summary>

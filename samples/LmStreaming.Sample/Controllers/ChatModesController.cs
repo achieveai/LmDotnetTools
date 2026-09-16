@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -99,7 +98,13 @@ public class ChatModesController(IChatModeStore modeStore, Services.SandboxEnvAp
 
             if (updateData.EnvIsSet)
             {
-                await envApplier.ReapplyForModeAsync(modeId, ct);
+                // The mode is persisted from here on; see WorkspacesController.Update for why the reapply
+                // runs on CancellationToken.None and how a partial failure is reported.
+                var reapply = await envApplier.ReapplyForModeAsync(modeId, CancellationToken.None);
+                if (reapply.InvalidEnvFailure is not null)
+                {
+                    return BadRequest(reapply.ToSavedButNotAppliedBody($"Mode '{modeId}'", "mode"));
+                }
             }
 
             return Ok(mode);
@@ -113,22 +118,6 @@ public class ChatModesController(IChatModeStore modeStore, Services.SandboxEnvAp
                     code = "invalid_env",
                     layer = ex.Layer,
                     keys = ex.Keys,
-                }
-            );
-        }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.InvalidEnv)
-        {
-            // The mode write already succeeded by the time ReapplyForModeAsync runs; the gateway, not
-            // the store, is what rejected the merged env. Say so, so the caller does not assume
-            // nothing was persisted. Without this the identical trigger answered 400 on the workspace
-            // route (WorkspacesController) and 500 here.
-            return BadRequest(
-                new
-                {
-                    error = $"Mode '{modeId}' was saved, but the sandbox gateway rejected its environment: {ex.Message}",
-                    code = "invalid_env",
-                    layer = "mode",
-                    keys = ex.InvalidKeys ?? [],
                 }
             );
         }

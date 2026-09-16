@@ -310,9 +310,9 @@ public class SandboxEnvApplierTests
     /// strand a different subset each time. A rejection belongs to one thread's merged map; it says
     /// nothing about the other sessions running under the same mode.
     /// <para>
-    /// The failure must still SURFACE — both controllers turn an escaping <c>InvalidEnv</c> into
-    /// <c>400 { code: "invalid_env" }</c>, which the client renders as a partial success. Isolating the
-    /// loop must not quietly become a 200.
+    /// The failure must still SURFACE, in the returned outcome rather than as an exception: both
+    /// controllers turn <see cref="SandboxEnvReapplyOutcome.InvalidEnvFailure"/> into a
+    /// <c>400 { code: "invalid_env", saved: true }</c>. Isolating the loop must not quietly become a 200.
     /// </para>
     /// </summary>
     [Fact]
@@ -365,12 +365,144 @@ public class SandboxEnvApplierTests
             }
         );
 
-        var act = async () => await applier.ReapplyForModeAsync("m", CancellationToken.None);
+        var outcome = await applier.ReapplyForModeAsync("m", CancellationToken.None);
 
-        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.InvalidEnv);
         captured
             .PatchedSessionIds.Should()
             .BeEquivalentTo(sessions, "every session under the mode must be attempted, rejection or not");
+        outcome.Attempted.Should().Be(3);
+        outcome.Succeeded.Should().Be(0);
+        outcome.Failures.Select(f => f.SessionId).Should().BeEquivalentTo(sessions);
+        outcome.InvalidEnvFailure.Should().NotBeNull("the controllers report the rejection from this");
+        outcome.InvalidKeys.Should().Equal("BAD");
+    }
+
+    /// <summary>
+    /// The mixed case the all-rejected test above cannot show: when ONE session is rejected, the others
+    /// are not merely attempted but actually UPDATED, and only the rejected one is reported.
+    /// <para>
+    /// Order-independent by construction. A loop that rethrows returns no outcome at all, wherever the
+    /// rejected session falls in the iteration, so the <c>Succeeded</c> and <c>Failures</c> assertions
+    /// cannot pass by luck.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ReapplyForModeAsync_OneOfThreeSessionsRejected_UpdatesTheOtherTwo_AndReportsOnlyThatOne()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var modes = new InMemoryChatModeStoreFake();
+        var conversations = new InMemoryConversationStore();
+        var applier = CreateApplier(registry, workspaces, modes, conversations);
+        var sessions = await SeedThreeSessionsUnderModeAsync(registry, workspaces, modes, conversations);
+
+        captured.InvalidEnvSessionIds.Add(sessions[1]);
+
+        var outcome = await applier.ReapplyForModeAsync("m", CancellationToken.None);
+
+        outcome.Attempted.Should().Be(3);
+        outcome.Succeeded.Should().Be(2);
+        outcome.Failures.Should().ContainSingle().Which.SessionId.Should().Be(sessions[1]);
+        outcome.InvalidKeys.Should().Equal("BAD");
+    }
+
+    /// <summary>
+    /// A failure that is NOT a sandbox failure must not abandon the remaining sessions either. The
+    /// reapply reads the workspace catalog, the mode store and the conversation metadata for every
+    /// session, and a corrupt catalog raises an <see cref="InvalidOperationException"/>, not a
+    /// <see cref="SandboxException"/>. Containment filtered on the two sandbox types let that escape
+    /// the loop mid-way and skip the aggregate entirely.
+    /// </summary>
+    [Fact]
+    public async Task ReapplyForModeAsync_AStoreFaultOnOneSession_StillUpdatesTheOthers_AndIsNotReportedAsInvalidEnv()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var modes = new InMemoryChatModeStoreFake();
+        var conversations = new InMemoryConversationStore();
+        var applier = CreateApplier(registry, workspaces, modes, conversations);
+        var sessions = await SeedThreeSessionsUnderModeAsync(registry, workspaces, modes, conversations);
+
+        workspaces.FaultingIds.Add("w2");
+
+        var outcome = await applier.ReapplyForModeAsync("m", CancellationToken.None);
+
+        outcome.Attempted.Should().Be(3);
+        outcome.Succeeded.Should().Be(2);
+        outcome.Failures.Should().ContainSingle().Which.SessionId.Should().Be(sessions[1]);
+        outcome
+            .InvalidEnvFailure.Should()
+            .BeNull("a store fault is not the caller's to fix and must not be reported as invalid env keys");
+        captured.PatchedSessionIds.Should().BeEquivalentTo([sessions[0], sessions[2]]);
+    }
+
+    /// <summary>
+    /// When several sessions fail for different reasons, the reported failure is the one the caller can
+    /// act on, not whichever the unordered session registry happened to yield first. Otherwise the same
+    /// edit answered with the offending keys on one run and with an unrelated fault on the next.
+    /// </summary>
+    [Fact]
+    public void ReapplyOutcome_PrefersTheInvalidEnvFailure_OverAnEarlierUnrelatedOne()
+    {
+        var outcome = new SandboxEnvReapplyOutcome(
+            Attempted: 3,
+            Succeeded: 0,
+            Failures:
+            [
+                new SandboxEnvReapplyFailure("s-store", new InvalidOperationException("catalog unreadable")),
+                new SandboxEnvReapplyFailure(
+                    "s-gateway",
+                    new SandboxException(SandboxErrorKind.InvalidEnv, "refused", 400) { InvalidKeys = ["GW_KEY"] }
+                ),
+                new SandboxEnvReapplyFailure("s-local", new SandboxEnvValidationException("effective", ["LOCAL_KEY"])),
+            ]
+        );
+
+        outcome.InvalidEnvFailure!.SessionId.Should().Be("s-local", "a local validation failure names its layer too");
+        outcome.InvalidKeys.Should().Equal("LOCAL_KEY");
+
+        var withoutLocal = outcome with { Failures = [.. outcome.Failures.Take(2)] };
+        withoutLocal.InvalidEnvFailure!.SessionId.Should().Be("s-gateway");
+        withoutLocal.InvalidKeys.Should().Equal("GW_KEY");
+    }
+
+    /// <summary>Three sessions in three workspaces, each last activated by a thread on mode <c>m</c>.</summary>
+    private static async Task<List<string>> SeedThreeSessionsUnderModeAsync(
+        SandboxSessionRegistry registry,
+        InMemoryWorkspaceStoreFake workspaces,
+        InMemoryChatModeStoreFake modes,
+        InMemoryConversationStore conversations
+    )
+    {
+        var sessions = new List<string>();
+        foreach (var (workspaceId, threadId) in new[] { ("w1", "t1"), ("w2", "t2"), ("w3", "t3") })
+        {
+            workspaces.Seed(
+                new Workspace
+                {
+                    Id = workspaceId,
+                    Name = workspaceId,
+                    DirectoryRelPath = workspaceId,
+                }
+            );
+            var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef(workspaceId, workspaceId));
+            await SetModeAsync(conversations, threadId, "m");
+            _ = await registry.EnsureSessionEnvAsync(session.SessionId, new Dictionary<string, string>(), threadId);
+            sessions.Add(session.SessionId);
+        }
+
+        modes.Seed(
+            new ChatMode
+            {
+                Id = "m",
+                Name = "Mode",
+                SystemPrompt = "prompt",
+                Env = new Dictionary<string, string> { ["M"] = "new" },
+            }
+        );
+        return sessions;
     }
 
     /// <summary>
@@ -472,8 +604,7 @@ public class SandboxEnvApplierTests
     }
 
     /// <summary>
-    /// The turn path must survive a gateway rejection. The edit that introduced the bad map already
-    /// answered <c>400 invalid_env</c> to whoever made it; refusing the turn here would strand the
+    /// The turn path must survive a gateway rejection. Refusing the turn here would strand the
     /// conversation over an env change its user never asked for.
     /// </summary>
     [Fact]
@@ -512,6 +643,70 @@ public class SandboxEnvApplierTests
 
         await act.Should().NotThrowAsync();
         captured.PatchedSessionIds.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The turn path must survive a failure that is not a SANDBOX failure. The reconcile reads the
+    /// workspace catalog on every turn, and a corrupt catalog raises an
+    /// <see cref="InvalidOperationException"/>. Filtering the catch on the sandbox exception types let it
+    /// escape, which answered 500 on REST and aborted the WebSocket without a frame, over a reconcile the
+    /// user never asked for.
+    /// </summary>
+    [Fact]
+    public async Task ApplyForActivationAsync_WorkspaceStoreFault_DoesNotThrow_AndCallsNoGateway()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var applier = CreateApplier(registry, workspaces);
+
+        var workspaceRef = new WorkspaceRef("ws-1", "ws1");
+        var session = await registry.GetOrCreateSessionAsync(workspaceRef);
+        registry.PublishEstablishedBinding(
+            "t1",
+            new SandboxEstablishedBinding(
+                workspaceRef,
+                registry.DefaultCredential,
+                CallerCredential: null,
+                session.SessionId
+            )
+        );
+        workspaces.FaultingIds.Add("ws-1");
+
+        var act = async () => await applier.ApplyForActivationAsync("t1", CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        captured.PatchedSessionIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Containment must not swallow cancellation: a turn the caller cancelled stops here rather than
+    /// carrying on as though the reconcile had merely failed.
+    /// </summary>
+    [Fact]
+    public async Task ApplyForActivationAsync_CancelledToken_Propagates()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out _);
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var applier = CreateApplier(registry, workspaces);
+
+        var workspaceRef = new WorkspaceRef("ws-1", "ws1");
+        var session = await registry.GetOrCreateSessionAsync(workspaceRef);
+        registry.PublishEstablishedBinding(
+            "t1",
+            new SandboxEstablishedBinding(
+                workspaceRef,
+                registry.DefaultCredential,
+                CallerCredential: null,
+                session.SessionId
+            )
+        );
+        workspaces.CancellingIds.Add("ws-1");
+
+        var act = async () => await applier.ApplyForActivationAsync("t1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
