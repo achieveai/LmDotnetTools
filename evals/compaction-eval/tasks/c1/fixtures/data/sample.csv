@@ -1,0 +1,9 @@
+region,rep,product,units,price,returned
+north,ana,widget,10,2.5,no
+north,ana,gadget,3,10,no
+south,bo,widget,7,2.5,yes
+south,cy,gizmo,,4.75,no
+east,dee,widget,12,2.5,no
+east,dee,gadget,1,10,yes
+north,ana,gizmo,4,n/a,no
+south,bo,gadget,2,10,no

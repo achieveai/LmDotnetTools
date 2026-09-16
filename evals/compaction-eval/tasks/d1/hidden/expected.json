@@ -1,0 +1,11 @@
+{
+  "diamonds_rows": { "value": 53940, "tolerance": 0 },
+  "diamonds_mean_price": { "value": 3932.7997, "tolerance": 0.001 },
+  "diamonds_median_price": { "value": 2401, "tolerance": 0.001 },
+  "diamonds_premium_mean_price": { "value": 4584.2577, "tolerance": 0.001 },
+  "diamonds_max_price_per_carat": { "value": 17828.8462, "tolerance": 0.001 },
+  "diamonds_if_2ct_count": { "value": 4, "tolerance": 0 },
+  "penguins_gentoo_mean_mass": { "value": 5076.02, "tolerance": 0.01 },
+  "flights_top_year": { "value": 1960, "tolerance": 0 },
+  "tips_best_day": { "value": "Fri" }
+}

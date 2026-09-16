@@ -1,0 +1,8 @@
+{
+  "family": "coding-py",
+  "split": "dev",
+  "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
+  "minCompactions": 1,
+  "timeoutMinutes": 30,
+  "windowPressure": "many Read/Write/Bash rounds; test-first loop re-reads the same files"
+}
