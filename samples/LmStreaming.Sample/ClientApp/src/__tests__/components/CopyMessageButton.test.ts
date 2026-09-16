@@ -89,17 +89,42 @@ describe('CopyMessageButton', () => {
     const wrapper = mount(CopyMessageButton, { props: { text: MARKDOWN } });
 
     const button = wrapper.get('[data-testid="copy-message-button"]');
-    expect(button.attributes('aria-label')).toBe('Copy message');
+    // Icon-only: the accessible name is a visually hidden label, never visible text next to the icon.
+    expect(button.attributes('aria-label')).toBeUndefined();
+    expect(button.get('.copy-message-label').text()).toBe('Copy message');
+    expect(button.attributes('data-state')).toBe('idle');
     await button.trigger('click');
     await flushPromises();
 
     expect(writeText).toHaveBeenCalledWith(MARKDOWN);
-    expect(button.text()).toContain('Copied');
+    expect(button.attributes('data-state')).toBe('copied');
+    expect(button.get('.copy-message-label').text()).toBe('Copied');
 
     vi.advanceTimersByTime(2000);
     await flushPromises();
-    expect(button.text()).toContain('Copy');
-    expect(button.text()).not.toContain('Copied');
+    expect(button.attributes('data-state')).toBe('idle');
+    expect(button.get('.copy-message-label').text()).toBe('Copy message');
+  });
+
+  it('draws the result as an icon swap, so the button keeps one footprint in every state', async () => {
+    vi.useFakeTimers();
+    stubClipboard(vi.fn().mockResolvedValue(undefined));
+    setSecureContext(true);
+    const wrapper = mount(CopyMessageButton, { props: { text: 'x' } });
+    const button = wrapper.get('[data-testid="copy-message-button"]');
+
+    const idleIcon = button.get('svg').html();
+    await button.trigger('click');
+    await flushPromises();
+    const copiedIcon = button.get('svg').html();
+    expect(copiedIcon).not.toBe(idleIcon);
+    // Exactly one icon at a time, and the icon itself is presentational: the label carries the name.
+    expect(button.findAll('svg')).toHaveLength(1);
+    expect(button.get('svg').attributes('aria-hidden')).toBe('true');
+
+    vi.advanceTimersByTime(2000);
+    await flushPromises();
+    expect(button.get('svg').html()).toBe(idleIcon);
   });
 
   it('announces the result through a polite live region outside the button, and keeps attrs on the button', async () => {
@@ -140,6 +165,8 @@ describe('CopyMessageButton', () => {
     await wrapper.get('[data-testid="copy-message-button"]').trigger('click');
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="copy-message-button"]').text()).toContain('Copy failed');
+    const button = wrapper.get('[data-testid="copy-message-button"]');
+    expect(button.attributes('data-state')).toBe('failed');
+    expect(button.get('.copy-message-label').text()).toBe('Copy failed');
   });
 });
