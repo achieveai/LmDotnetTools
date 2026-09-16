@@ -93,6 +93,24 @@ public class DefaultContextTokenEstimatorTests
     }
 
     [Fact]
+    public void EncryptedReasoningMessage_CountsOnlyItsFraming()
+    {
+        // An encrypted blob has no readable text (ReasoningMessage.GetText() is null), the same thing the
+        // compaction estimate sees; counting its ciphertext put the display at twice the measured request.
+        Estimator
+            .Estimate([
+                new ReasoningMessage
+                {
+                    Reasoning = new string('e', 8_000),
+                    Visibility = ReasoningVisibility.Encrypted,
+                    Role = Role.Assistant,
+                },
+            ])
+            .Should()
+            .Be(DefaultContextTokenEstimator.PerMessageOverheadTokens);
+    }
+
+    [Fact]
     public void ImageMessage_UsesTheFixedImageBudget()
     {
         var image = new ImageMessage { ImageData = BinaryData.FromBytes(new byte[16]), Role = Role.User };

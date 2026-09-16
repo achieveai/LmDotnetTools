@@ -549,6 +549,82 @@ public sealed class LmStreamingS2SClientTests
         status.ResponseText.Should().BeNull("the final assistant text is absent until the run is terminal");
     }
 
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"manualCompaction\":true}", HttpStatusCode.OK, true)]
+    [InlineData("{\"schemaVersion\":1,\"manualCompaction\":false}", HttpStatusCode.OK, false)]
+    [InlineData("{\"schemaVersion\":1,\"messageIdempotency\":true}", HttpStatusCode.OK, false)]
+    [InlineData("{}", HttpStatusCode.NotFound, false)]
+    public async Task SupportsManualCompactionAsync_reads_the_capability_and_treats_an_old_host_as_unsupported(
+        string json,
+        HttpStatusCode status,
+        bool expected
+    )
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "conversations/capabilities", json, status);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        (await client.SupportsManualCompactionAsync(CancellationToken.None)).Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task RequestCompactionAsync_posts_the_focus_with_the_auth_headers_and_reads_the_accepted_request()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/compaction",
+            "{\"requestId\":\"req-1\",\"status\":\"queued\"}",
+            HttpStatusCode.Accepted
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "codereview-daemon", "sbx-key");
+
+        var result = await client.RequestCompactionAsync("thread/1", "the failing tests", CancellationToken.None);
+
+        result.Should().Be(new S2SCompactionResult("req-1", "queued", null));
+        result.Accepted.Should().BeTrue();
+        var recorded = handler.Requests.Should().ContainSingle().Subject;
+        recorded.Uri.ToString().Should().Be("http://localhost:5051/api/conversations/thread%2F1/compaction");
+        recorded.Body.Should().Be("{\"focus\":\"the failing tests\"}");
+        recorded.SbxAppId.Should().Be("codereview-daemon");
+        recorded.SbxAppKey.Should().Be("sbx-key");
+    }
+
+    [Fact]
+    public async Task RequestCompactionAsync_returns_a_409_as_a_refusal_with_the_hosts_reason()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/compaction",
+            "{\"reason\":\"already_pending\"}",
+            HttpStatusCode.Conflict
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var result = await client.RequestCompactionAsync("thread-1", focus: null, CancellationToken.None);
+
+        result.Should().Be(S2SCompactionResult.Refused("already_pending"));
+        result.Accepted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RequestCompactionAsync_throws_on_a_404_rather_than_reading_it_as_a_refusal()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/compaction",
+            "{\"error\":\"unknown_thread\"}",
+            HttpStatusCode.NotFound
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.RequestCompactionAsync("thread-1", focus: null, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
     [Fact]
     public async Task DeleteConversationAsync_discards_the_conversation_and_carries_the_auth_headers()
     {
@@ -696,6 +772,27 @@ public sealed class LmStreamingS2SClientTests
         capturedS2SAuth.Should().Be("s2s-secret");
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_ReadsTheFailureCode_OfAChildRefusedForSize()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents?recursive=true",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"error\",\"terminalAtUtc\":\"2026-01-01T00:05:00Z\","
+                + "\"failureCode\":\"view_exceeds_window\"}]}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.Status.Should().Be(ReviewSubAgentStatus.Error);
+        node.FailureCode.Should().Be("view_exceeds_window");
     }
 
     [Fact]

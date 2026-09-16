@@ -82,11 +82,52 @@ export interface ContextObservation {
   decision?: CompactionDecisionSummary | null;
 }
 
+/** The policy's most recent recorded decision for a loop, and how old it is (`LastCompactionDecision`). */
+export interface LastCompactionDecision {
+  decision: CompactionDecisionSummary;
+  generationOrdinal: number;
+  generationId: string;
+  decidedAtUtc: string;
+  /** Whole seconds between the decision and the report; never negative. */
+  ageSeconds: number;
+}
+
 /** One agent's compaction state (`AgentCompactionStatus`). */
 export interface AgentCompactionStatus {
   state: CompactionState;
   checkpointId?: string | null;
   reason?: string | null;
+  /** The newest generation the policy decided on; null when no recorded generation carries a decision. */
+  lastDecision?: LastCompactionDecision | null;
+  /** A manual request the host accepted but has not started yet; absent on hosts that predate it. */
+  pendingManualCompaction?: PendingManualCompaction | null;
+  /** The active checkpoint's size figures; absent on hosts that predate it, null when none is active. */
+  activeCheckpoint?: ActiveCheckpointStatus | null;
+}
+
+/** The active checkpoint as the report shows it (`agents[].compaction.activeCheckpoint`). */
+export interface ActiveCheckpointStatus {
+  checkpointId: string;
+  /** The request estimate the cut started from; same basis as the after figure. */
+  estimatedTokensBefore: number;
+  /** The request the compacted view sends: tool definitions, system prompt, checkpoint and kept tail. */
+  estimatedTokensAfter: number;
+  /** The loop generation the checkpoint was activated in; the cut's own decision carries the same ordinal. */
+  generationOrdinal: number;
+  /**
+   * The summary failure this checkpoint was built without the model to replace (e.g.
+   * `validation_failed:V3`); null for a model summary, absent on hosts that predate it.
+   */
+  summaryFallback?: string | null;
+}
+
+/**
+ * A queued manual compaction request (`agents[].compaction.pendingManualCompaction`). Content-free like the
+ * rest of the report: the focus text is not sent.
+ */
+export interface PendingManualCompaction {
+  requestId: string;
+  requestedAtUtc: string;
 }
 
 /** One execution's spend, folded from the root ledger (`ExecutionUsageRow`). */

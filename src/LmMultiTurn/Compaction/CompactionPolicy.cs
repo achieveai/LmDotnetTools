@@ -25,6 +25,15 @@ public static class CompactionSkipReasons
     public const string NoSafeBoundary = CompactionReasons.NoSafeBoundary;
     public const string BelowThreshold = "below_threshold";
     public const string MaxPerRun = "max_per_run";
+
+    /// <summary>The legal cut would newly cover less than <c>MinCompactionGainRatio</c> of the usable window.</summary>
+    public const string InsufficientGain = "insufficient_gain";
+
+    /// <summary>The thread already made <c>MaxCompactionsPerThreadWindow</c> attempts within the window.</summary>
+    public const string RateLimited = "rate_limited";
+
+    /// <summary>A recent compaction failed and the backoff has not run out.</summary>
+    public const string FailureBackoff = "failure_backoff";
 }
 
 /// <summary>Failure vocabulary of spec §5.6 that #683's reason classes do not already name.</summary>
@@ -80,6 +89,12 @@ internal sealed record CompactionPolicyInput
     public long? NewTokensSinceCheckpoint { get; init; }
 
     public int CompactionsThisRun { get; init; }
+
+    /// <summary>The generation ordinal a failure backoff runs until (exclusive), when one is active.</summary>
+    public long? FailureBackoffUntilGenerationOrdinal { get; init; }
+
+    /// <summary>Automatic compaction attempts this thread made within <c>ThreadCompactionWindow</c>, across runs.</summary>
+    public int CompactionsInThreadWindow { get; init; }
 
     public CacheTemperature CacheTemperature { get; init; } = CacheTemperature.Unknown;
 
@@ -193,10 +208,33 @@ internal sealed class CompactionPolicy(CompactionOptions options)
             _ => CompactionDecisionKinds.Compact,
         };
 
+        // Anti-thrash holds, like the per-run cap, even for the hard row — but only where the answer would
+        // be a summary call, so a quiet thread keeps reporting its band rather than a stale backoff.
+        CompactionDecision CompactUnlessHeld(string reason, long? savings = null)
+        {
+            if (compactKind != CompactionDecisionKinds.Warn)
+            {
+                if (input.FailureBackoffUntilGenerationOrdinal is { } backoff && backoff > input.GenerationOrdinal)
+                {
+                    return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.FailureBackoff);
+                }
+
+                if (
+                    Options.MaxCompactionsPerThreadWindow > 0
+                    && input.CompactionsInThreadWindow >= Options.MaxCompactionsPerThreadWindow
+                )
+                {
+                    return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.RateLimited);
+                }
+            }
+
+            return Decide(compactKind, reason, target, savings);
+        }
+
         // Row 4: hard threshold — economics and cooldown ignored.
         if (tokens + reserve >= window!.Value * Options.HardRatio)
         {
-            return Decide(compactKind, HardReason, target);
+            return CompactUnlessHeld(HardReason);
         }
 
         // Row 5: cooldown by generations or by the new-token floor (only meaningful after a checkpoint).
@@ -228,7 +266,7 @@ internal sealed class CompactionPolicy(CompactionOptions options)
                 return Decide(CompactionDecisionKinds.Skipped, CompactionSkipReasons.CacheHot, savings: savings);
             }
 
-            return Decide(compactKind, EconomicReason, target, savings);
+            return CompactUnlessHeld(EconomicReason, savings);
         }
 
         // Row 7: warn band.

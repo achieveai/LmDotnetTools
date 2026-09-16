@@ -5,14 +5,18 @@ import type {
   ToolsCallMessage,
   ToolCallMessage,
   AgentMessage,
+  CheckpointQuote,
+  CompactionCheckpointMessage,
   NotifyMessage,
   NotificationDisplayData,
   DisplayItem,
   MessageStatus,
 } from '@/types';
+import type { CompactionState } from '@/types/context';
 import {
   MessageType,
   isAgentMessage,
+  isCompactionCheckpointMessage,
   isNotifyMessage,
   isTextMessage,
   isReasoningMessage,
@@ -81,6 +85,53 @@ export function agentToDisplayData(msg: AgentMessage): NotificationDisplayData {
   };
 }
 
+/** The {@link NotificationDisplayData.notifyKind} a compaction checkpoint divider renders under (#721). */
+export const COMPACTION_NOTIFY_KIND = 'compaction';
+
+/**
+ * Injection key for `checkpointId → CompactionState | null`, provided by `ChatLayout` from the context
+ * report. The row cannot know it was rolled back — that lives in the thread's `compaction.state` — so the
+ * divider asks (spec 679 §7.3 "rolled back" badge). Absent provider ⇒ no badge.
+ */
+export const GET_CHECKPOINT_STATE = 'getCheckpointState';
+export type CheckpointStateLookup = (checkpointId: string) => CompactionState | null;
+
+function quoteLines(heading: string, quotes: CheckpointQuote[] | undefined): string[] {
+  return quotes && quotes.length > 0 ? [`## ${heading}`, ...quotes.map((q) => `- [seq ${q.seq}] ${q.quote}`)] : [];
+}
+
+/**
+ * Normalize a {@link CompactionCheckpointMessage} into the divider the notification pill renders: the
+ * header says how much was folded away, the body is the manifest a human can check against the rows
+ * above it (current instruction, decisions, open work, agents, narrative).
+ */
+export function checkpointToDisplayData(msg: CompactionCheckpointMessage): NotificationDisplayData {
+  const rows = msg.stats?.rows_covered ?? msg.boundary?.seq ?? 0;
+  const before = msg.stats?.estimated_tokens_before;
+  const after = msg.stats?.estimated_tokens_after;
+  const saved = before != null && after != null && before > after ? before - after : null;
+  const label = saved != null ? `${rows} rows · ~${saved.toLocaleString('en-US')} tokens saved` : `${rows} rows`;
+
+  const m = msg.manifest ?? {};
+  const focus = msg.focus?.trim();
+  const detail = [
+    ...(focus ? ['## Focus', focus] : []),
+    ...quoteLines('Current instruction', m.current_instruction),
+    ...quoteLines('Standing instructions', m.instructions),
+    ...(m.goals && m.goals.length > 0 ? ['## Goals', ...m.goals.map((g) => `- ${g}`)] : []),
+    ...quoteLines('Decisions', m.decisions),
+    ...(m.tasks && m.tasks.length > 0 ? ['## Open work', ...m.tasks.map((t) => `- [${t.status}] ${t.title}`)] : []),
+    ...(m.agents && m.agents.length > 0
+      ? ['## Agents', ...m.agents.map((a) => `- ${a.agent_id}: ${a.status}${a.outcome ? `; ${a.outcome}` : ''}`)]
+      : []),
+    '## What happened',
+    msg.narrative,
+    `(checkpoint ${msg.checkpoint_id}, ${msg.trigger}, covers seq 1-${msg.boundary?.seq ?? '?'})`,
+  ].join('\n');
+
+  return { notifyKind: COMPACTION_NOTIFY_KIND, checkpointId: msg.checkpoint_id, label, detail };
+}
+
 /**
  * Transform an ordered list of indexed messages into display items with pill grouping. Extracted
  * verbatim from useChat's `displayItems` computed body so both the parent chat and the sub-agent
@@ -138,6 +189,16 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
           contextTruncated: content.context_discovery.truncated,
           text: content.text,
         },
+        runId: msg.runId,
+      });
+    } else if (isCompactionCheckpointMessage(content)) {
+      // A compaction checkpoint (#721) is a divider, never a user bubble: the row serializes as Role.User
+      // so an unrendered copy lands on the side every provider accepts, hence this precedes the role check.
+      flushPill();
+      items.push({
+        type: 'notification',
+        id: msg.id,
+        notification: checkpointToDisplayData(content),
         runId: msg.runId,
       });
     } else if (isAgentMessage(content)) {

@@ -57,8 +57,8 @@ internal sealed record CheckpointValidationResult
 /// </summary>
 /// <remarks>
 ///     V3 is where R5 (human rows are never summarised) is enforced: every quote must be a substring of
-///     the row it cites, and <c>CurrentInstruction</c> is recomputed from the rows and compared whole,
-///     never trusted from the summarizer.
+///     the row it cites, and <c>CurrentInstruction</c> is recomputed from the rows and compared whole (or, over its
+///     budget, as the <see cref="CurrentInstructionQuotes" /> trim), never trusted from the summarizer.
 /// </remarks>
 internal static class CheckpointValidator
 {
@@ -124,6 +124,12 @@ internal static class CheckpointValidator
             );
         }
 
+        // A current instruction over its budget is quoted trimmed; the trim is recomputed here, never trusted.
+        var bounded = CurrentInstructionQuotes.Quote(
+            expected,
+            CurrentInstructionQuotes.Budget(options.CheckpointTokenCap),
+            options.TextEstimator
+        );
         for (var i = 0; i < expected.Count; i++)
         {
             var quoted = manifest.CurrentInstruction[i];
@@ -135,11 +141,14 @@ internal static class CheckpointValidator
                 );
             }
 
-            if (!string.Equals(quoted.Quote, expected[i].Text, StringComparison.Ordinal))
+            if (
+                !string.Equals(quoted.Quote, expected[i].Text, StringComparison.Ordinal)
+                && !string.Equals(quoted.Quote, bounded[i].Quote, StringComparison.Ordinal)
+            )
             {
                 return CheckpointValidationResult.Fail(
                     "V3",
-                    $"CurrentInstruction[{i}] is not the whole text of seq {quoted.Seq}"
+                    $"CurrentInstruction[{i}] is neither the whole text of seq {quoted.Seq} nor its trim within the budget"
                 );
             }
         }
@@ -206,11 +215,17 @@ internal static class CheckpointValidator
         return CheckpointValidationResult.Valid;
     }
 
-    private static CheckpointValidationResult? CheckSubstringQuote(
+    /// <summary>
+    ///     V3 for one standing quote: null when it cites a row at or before <paramref name="boundary" /> and is a
+    ///     non-empty substring of that row's text, or a substring with one elision in the exact
+    ///     <see cref="CurrentInstructionQuotes.IsTrimOf" /> form. The assembler drops the model quotes this fails before
+    ///     validation.
+    /// </summary>
+    internal static CheckpointValidationResult? CheckSubstringQuote(
         QuotedItem item,
         string section,
         long boundary,
-        Dictionary<long, SequencedMessage> bySeq
+        IReadOnlyDictionary<long, SequencedMessage> bySeq
     )
     {
         if (item.Seq > boundary)
@@ -231,9 +246,19 @@ internal static class CheckpointValidator
             return CheckpointValidationResult.Fail("V3", $"{section} quote of seq {item.Seq} is empty");
         }
 
-        if (row.Text is null || !row.Text.Contains(item.Quote, StringComparison.Ordinal))
+        // Verbatim, or verbatim with one exactly counted elision (a carried quote the envelope budget shrank).
+        if (
+            row.Text is null
+            || (
+                !row.Text.Contains(item.Quote, StringComparison.Ordinal)
+                && !CurrentInstructionQuotes.IsTrimOf(item.Quote, item.Seq, row.Text)
+            )
+        )
         {
-            return CheckpointValidationResult.Fail("V3", $"{section} quote is not a substring of seq {item.Seq}");
+            return CheckpointValidationResult.Fail(
+                "V3",
+                $"{section} quote is neither a substring of seq {item.Seq} nor its exact trim"
+            );
         }
 
         return null;

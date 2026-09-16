@@ -1,8 +1,10 @@
 import type {
   AgentContextRow,
   CacheTemperature,
+  CompactionDecisionSummary,
   CompactionState,
   ContextFreshness,
+  ContextObservation,
   ConversationContextReport,
   CostCompleteness,
   CostProvenance,
@@ -22,17 +24,26 @@ import type { ContextPressureMessage } from '@/types/messages';
  * identical rows from identical inputs, and so the state labels can be pinned in one place.
  */
 
+export type CapacityScope = 'request' | 'history';
+
 /** How full the model's window is, when the panel can say. */
 export type CapacityView =
   | {
       kind: 'known';
-      /** Measured when the provider reported it, else the pre-send estimate. */
+      /** The policy's full-request estimate when it decided, else the history's measured or estimated size. */
       used: number;
       window: number;
       reserve: number;
       /** `used / (window - reserve)`, the server's formula. */
       utilization: number;
       provenance: MeasurementProvenance;
+      /**
+       * `request`: the whole request the compaction policy measured, tool definitions and system prompt
+       * included, so the gauge matches what compaction reacts to. `history`: the conversation rows only.
+       */
+      scope: CapacityScope;
+      /** The active checkpoint's after figure, shown until the policy decides on a later generation. */
+      afterCompaction?: true;
     }
   | {
       kind: 'unknown';
@@ -64,6 +75,8 @@ export type CostView =
 export interface DecisionView {
   decision: string;
   reason: string | null;
+  /** Seconds between the decision and the report; absent when only the observation's decision was read. */
+  ageSeconds?: number | null;
 }
 
 export interface CompactionView {
@@ -72,6 +85,8 @@ export interface CompactionView {
   reason: string | null;
   /** The policy's latest decision for this loop, when the policy ran (§5.5). */
   decision: DecisionView | null;
+  /** The summary failure the active checkpoint replaced by keeping turns without a summary; null otherwise. */
+  summaryFallback?: string | null;
 }
 
 export interface ContextRowView {
@@ -119,13 +134,56 @@ function capacityFromNumbers(
   used: number,
   window: number | null | undefined,
   reserve: number,
-  provenance: MeasurementProvenance
+  provenance: MeasurementProvenance,
+  scope: CapacityScope = 'history'
 ): CapacityView {
   const utilization = utilizationOf(used, window, reserve);
   if (utilization === null || window == null) {
     return { kind: 'unknown', reason: 'no-window' };
   }
-  return { kind: 'known', used, window, reserve, utilization, provenance };
+  return { kind: 'known', used, window, reserve, utilization, provenance, scope };
+}
+
+/**
+ * The size the compaction policy reacted to: its decision's `tokens` cover the whole request, tool
+ * definitions and system prompt included. The observation's own estimate leaves that fixed prefix out
+ * (≈190 against ≈10,000 on a first turn), so a gauge built from it disagrees with every threshold.
+ */
+function capacityFromDecision(
+  decision: CompactionDecisionSummary | null | undefined,
+  observation: ContextObservation
+): CapacityView | null {
+  if (typeof decision?.tokens !== 'number') return null;
+  const window = decision.window ?? observation.window_tokens;
+  const reserve = decision.reserve ?? observation.reserve_tokens;
+  const capacity = capacityFromNumbers(decision.tokens, window, reserve, 'Estimated', 'request');
+  if (capacity.kind === 'known' && typeof decision.utilization === 'number') {
+    capacity.utilization = decision.utilization;
+  }
+  return capacity;
+}
+
+/**
+ * The compacted view's size, while it is still the newest figure. The cut's own decision is recorded after
+ * the cut with the pre-cut tokens and a later timestamp, so time cannot order the two; the generation can.
+ * That decision shares the checkpoint's ordinal, and only a later turn's decision supersedes the after figure.
+ */
+function capacityAfterCompaction(row: AgentContextRow, observation: ContextObservation): CapacityView | null {
+  const checkpoint = row.compaction?.activeCheckpoint;
+  if (!checkpoint) return null;
+  const last = row.compaction?.lastDecision;
+  const decidedOrdinal = last ? last.generationOrdinal : observation.decision ? observation.generation_ordinal : null;
+  if (decidedOrdinal !== null && decidedOrdinal > checkpoint.generationOrdinal) return null;
+
+  const decision = last?.decision ?? observation.decision;
+  const capacity = capacityFromNumbers(
+    checkpoint.estimatedTokensAfter,
+    decision?.window ?? observation.window_tokens,
+    decision?.reserve ?? observation.reserve_tokens,
+    'Estimated',
+    'request'
+  );
+  return capacity.kind === 'known' ? { ...capacity, afterCompaction: true } : capacity;
 }
 
 function asProvenance(value: string | null | undefined): MeasurementProvenance {
@@ -143,12 +201,15 @@ export function rowFromWire(row: AgentContextRow): ContextRowView {
   } else if (!observation) {
     capacity = { kind: 'unknown', reason: 'no-observation' };
   } else {
-    capacity = capacityFromNumbers(
-      observation.measured_input_tokens ?? observation.estimated_input_tokens,
-      observation.window_tokens,
-      observation.reserve_tokens,
-      asProvenance(observation.provenance)
-    );
+    capacity =
+      capacityAfterCompaction(row, observation) ??
+      capacityFromDecision(row.compaction?.lastDecision?.decision ?? observation.decision, observation) ??
+      capacityFromNumbers(
+        observation.measured_input_tokens ?? observation.estimated_input_tokens,
+        observation.window_tokens,
+        observation.reserve_tokens,
+        asProvenance(observation.provenance)
+      );
   }
 
   const tokens: TokensView = usage
@@ -174,9 +235,14 @@ export function rowFromWire(row: AgentContextRow): ContextRowView {
           completeness: usage.estimatedCostCompleteness,
         };
 
-  const decision = observation?.decision
-    ? { decision: observation.decision.decision, reason: observation.decision.reason ?? null }
-    : null;
+  // `lastDecision` is the decision the compaction state rests on: the shown observation's, else the newest
+  // persisted one. The observation alone is only a fallback for a report that predates the field.
+  const last = row.compaction?.lastDecision;
+  const decision: DecisionView | null = last
+    ? { decision: last.decision.decision, reason: last.decision.reason ?? null, ageSeconds: last.ageSeconds }
+    : observation?.decision
+      ? { decision: observation.decision.decision, reason: observation.decision.reason ?? null }
+      : null;
 
   return {
     agentId: row.agentId,
@@ -194,6 +260,7 @@ export function rowFromWire(row: AgentContextRow): ContextRowView {
       checkpointId: row.compaction?.checkpointId ?? null,
       reason: row.compaction?.reason ?? null,
       decision,
+      summaryFallback: row.compaction?.activeCheckpoint?.summaryFallback ?? null,
     },
     generationOrdinal: observation?.generation_ordinal ?? null,
     observedAtUtc: observation?.observed_at_utc ?? null,
@@ -299,7 +366,9 @@ export function applyPressureFrame(
   next[index] = {
     ...current,
     modelId: frame.effectiveModelId ?? current.modelId,
-    capacity,
+    // A frame sizes the history only. Replacing the policy's full-request figure with it would drop the
+    // tool definitions and system prompt from the gauge until the next hydrate.
+    capacity: current.capacity.kind === 'known' && current.capacity.scope === 'request' ? current.capacity : capacity,
     freshness: 'Fresh',
     generationOrdinal: frame.generationOrdinal,
     observedAtUtc: frame.observedAtUtc ?? current.observedAtUtc,
@@ -334,7 +403,8 @@ const PROVENANCE_LABEL: Record<MeasurementProvenance, string> = {
 
 export function capacityLabel(capacity: CapacityView): string {
   if (capacity.kind === 'known') {
-    return `${formatPercent(capacity.utilization)} of ${formatTokens(capacity.window)} tokens (${PROVENANCE_LABEL[capacity.provenance]})`;
+    const after = capacity.afterCompaction ? ', after compaction' : '';
+    return `${formatPercent(capacity.utilization)} of ${formatTokens(capacity.window)} tokens (${PROVENANCE_LABEL[capacity.provenance]}${after})`;
   }
   switch (capacity.reason) {
     case 'no-window':
@@ -344,6 +414,14 @@ export function capacityLabel(capacity: CapacityView): string {
     case 'unsupported':
       return 'Unsupported (provider-owned session)';
   }
+}
+
+/** What the figure covers, when it is more than the conversation rows; null otherwise. */
+export function capacityScopeNote(capacity: CapacityView): string | null {
+  if (capacity.kind !== 'known' || capacity.scope !== 'request') return null;
+  return capacity.afterCompaction
+    ? 'After compaction. Includes tool definitions and the system prompt'
+    : 'Includes tool definitions and the system prompt';
 }
 
 const COST_PROVENANCE_LABEL: Record<CostProvenance, string> = {
@@ -415,24 +493,42 @@ export function compactionLabel(compaction: CompactionView): string {
   return compaction.reason ? `${base}: ${compaction.reason}` : base;
 }
 
-export function decisionLabel(decision: DecisionView | null): string {
-  if (!decision) return 'No decision yet';
+/** A compact "how long ago": `just now`, `45s ago`, `2m ago`, `2h ago`, `2d ago`. */
+export function formatAge(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s === 0) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3_600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86_400) return `${Math.floor(s / 3_600)}h ago`;
+  return `${Math.floor(s / 86_400)}d ago`;
+}
+
+function decisionWords(decision: DecisionView): string {
+  // A cut that kept the turns without a model summary, after the summary failed during the fit check.
+  if (decision.reason === 'summary_fallback') return 'Compacted (no summary)';
+  // The server sends CompactionDecisionKinds (CompactionPolicy.cs): snake_case strings, not enum names.
   switch (decision.decision) {
-    case 'NoAction':
+    case 'no_action':
       return 'No action';
-    case 'Warn':
+    case 'warn':
       return 'Warning: nearing the window';
-    case 'Shadow':
+    case 'shadow':
       return 'Shadow compaction';
-    case 'Compact':
+    case 'compact':
       return 'Compaction recommended';
-    case 'Skipped':
+    case 'skipped':
       return `Skipped: ${decision.reason ?? 'unspecified'}`;
-    case 'Failed':
+    case 'failed':
       return `Failed: ${decision.reason ?? 'unspecified'}`;
     default:
       return decision.reason ? `${decision.decision}: ${decision.reason}` : decision.decision;
   }
+}
+
+export function decisionLabel(decision: DecisionView | null): string {
+  if (!decision) return 'No decision yet';
+  const words = decisionWords(decision);
+  return typeof decision.ageSeconds === 'number' ? `${words} · ${formatAge(decision.ageSeconds)}` : words;
 }
 
 const USAGE_COMPLETENESS_LABEL: Record<UsageCompleteness, string> = {

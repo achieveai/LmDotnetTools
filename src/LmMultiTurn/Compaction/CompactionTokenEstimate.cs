@@ -1,3 +1,5 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
@@ -37,6 +39,33 @@ internal static class CompactionTokenEstimate
         };
 
         return PerMessageOverhead + body;
+    }
+
+    /// <summary>
+    ///     Estimated tokens of the tool definitions sent with every request: name, description and parameter
+    ///     schema JSON per tool, plus framing. Measured runs put this prefix at ~17.6k tokens; leaving it out
+    ///     made the policy believe a 32k window had 28k of room when it had 10k.
+    /// </summary>
+    public static long EstimateToolSchemas(IEnumerable<FunctionContract> contracts)
+    {
+        ArgumentNullException.ThrowIfNull(contracts);
+        return contracts.Sum(contract =>
+        {
+            string schema;
+            try
+            {
+                schema = JsonSerializer.Serialize(contract.GetJsonSchema());
+            }
+            catch (Exception ex) when (ex is NotSupportedException or JsonException or InvalidOperationException)
+            {
+                schema = string.Join(' ', (contract.Parameters ?? []).Select(p => p.Name + " " + p.Description));
+            }
+
+            return PerMessageOverhead
+                + EstimateText(contract.Name)
+                + EstimateText(contract.Description)
+                + EstimateText(schema);
+        });
     }
 
     /// <summary>Estimated tokens of a message list.</summary>

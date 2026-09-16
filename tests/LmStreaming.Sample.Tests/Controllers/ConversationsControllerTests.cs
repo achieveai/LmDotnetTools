@@ -51,7 +51,9 @@ public class ConversationsControllerTests
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
             new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
-            sandboxSessionRegistry
+            // Named, not positional: the controller has more than one optional trailing parameter, so a
+            // positional argument here silently binds to whichever one happens to come first.
+            sandboxSessionRegistry: sandboxSessionRegistry
         );
     }
 

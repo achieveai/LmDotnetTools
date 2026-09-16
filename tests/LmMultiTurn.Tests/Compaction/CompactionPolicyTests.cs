@@ -1,5 +1,7 @@
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Xunit;
 
@@ -304,6 +306,119 @@ public class CompactionPolicyTests
 
         decision.Decision.Should().Be(CompactionDecisionKinds.Skipped);
         decision.Reason.Should().Be(CompactionSkipReasons.MaxPerRun);
+    }
+
+    [Fact]
+    public void FailureBackoff_IsSkippedFailureBackoff_EvenAtHardThreshold_UntilItRunsOut()
+    {
+        var held = Evaluate(Input(AtHard) with { FailureBackoffUntilGenerationOrdinal = 11 });
+        var released = Evaluate(Input(AtHard) with { FailureBackoffUntilGenerationOrdinal = 10 });
+
+        held.Decision.Should().Be(CompactionDecisionKinds.Skipped);
+        held.Reason.Should().Be(CompactionSkipReasons.FailureBackoff);
+        released.Decision.Should().Be(CompactionDecisionKinds.Compact, "the stored ordinal is exclusive");
+    }
+
+    [Fact]
+    public void ThreadRateLimit_IsSkippedRateLimited_EvenAtHardThreshold()
+    {
+        var limited = Evaluate(
+            Input(AtHard) with
+            {
+                CompactionsInThreadWindow = Options.MaxCompactionsPerThreadWindow,
+            }
+        );
+        var off = Evaluate(
+            Input(AtHard) with
+            {
+                CompactionsInThreadWindow = 100,
+            },
+            Options with
+            {
+                MaxCompactionsPerThreadWindow = 0,
+            }
+        );
+
+        limited.Decision.Should().Be(CompactionDecisionKinds.Skipped);
+        limited.Reason.Should().Be(CompactionSkipReasons.RateLimited);
+        off.Decision.Should().Be(CompactionDecisionKinds.Compact, "0 turns the thread limit off");
+    }
+
+    [Fact]
+    public void AntiThrashHolds_OnlyReplaceACompaction_NotAQuietBand()
+    {
+        var decision = Evaluate(
+            Input(BelowWarn) with
+            {
+                FailureBackoffUntilGenerationOrdinal = 50,
+                CompactionsInThreadWindow = 50,
+            }
+        );
+
+        decision.Decision.Should().Be(CompactionDecisionKinds.NoAction);
+    }
+
+    [Fact]
+    public void CompactionsWithin_CountsAutomaticAttemptsByWhenTheyWerePrepared_AndIgnoresManualOnes()
+    {
+        var now = new DateTimeOffset(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        CheckpointEntry Entry(
+            CompactionTrigger trigger,
+            TimeSpan prepared,
+            TimeSpan changed,
+            CheckpointStatus status
+        ) =>
+            new()
+            {
+                CheckpointId = Guid.NewGuid().ToString("N"),
+                Status = status,
+                BoundarySeq = 1,
+                WatermarkAtPrepare = 1,
+                Trigger = trigger,
+                PreparedAt = now - prepared,
+                At = now - changed,
+            };
+        var minute = TimeSpan.FromMinutes(1);
+        var state = new CompactionState
+        {
+            History =
+            [
+                // Attempted 11 minutes ago; superseded a minute ago. The status change is not a new attempt.
+                Entry(CompactionTrigger.Preemptive, 11 * minute, minute, CheckpointStatus.Superseded),
+                Entry(CompactionTrigger.Preemptive, 9 * minute, 9 * minute, CheckpointStatus.Rejected),
+                Entry(CompactionTrigger.Reactive, 2 * minute, minute, CheckpointStatus.Superseded),
+                Entry(CompactionTrigger.Manual, minute, minute, CheckpointStatus.Active),
+            ],
+        };
+
+        CompactionRuntime.CompactionsWithin(state, now, TimeSpan.FromMinutes(10)).Should().Be(2);
+        CompactionRuntime.CompactionsWithin(null, now, TimeSpan.FromMinutes(10)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CompactionsWithin_AnActivationThatSupersedesAnOlderAttempt_DoesNotCountTheOlderOneAgain()
+    {
+        var store = new InMemoryConversationStore();
+        const string thread = "rate-limit";
+        var now = new DateTimeOffset(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        async Task ActivateAsync(string id, CompactionTrigger trigger, DateTimeOffset at)
+        {
+            _ = await CompactionStateProjection.PrepareAsync(store, thread, id, 1, 0, trigger, at);
+            _ = await CompactionStateProjection.MarkValidatedAsync(store, thread, id, at);
+            _ = await CompactionStateProjection.TryCommitAsync(store, thread, id, at);
+            _ = await CompactionStateProjection.ActivateAsync(store, thread, id, 1, at);
+        }
+
+        await ActivateAsync("cp-old", CompactionTrigger.Preemptive, now.AddMinutes(-11));
+        await ActivateAsync("cp-recent", CompactionTrigger.Preemptive, now.AddMinutes(-5));
+        await ActivateAsync("cp-manual", CompactionTrigger.Manual, now.AddMinutes(-1));
+
+        var state = await CompactionStateProjection.LoadAsync(store, thread);
+        state!.History.Select(e => e.Status).Should().Contain(CheckpointStatus.Superseded);
+        CompactionRuntime
+            .CompactionsWithin(state, now, TimeSpan.FromMinutes(10))
+            .Should()
+            .Be(1, "one automatic attempt was made in the window; supersession re-stamps, it does not attempt");
     }
 
     [Fact]

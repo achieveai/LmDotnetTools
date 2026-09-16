@@ -49,6 +49,18 @@ describe('ConversationTabs', () => {
     expect(dot.attributes('style')).toContain('background');
   });
 
+  it('names an errored tab\'s failure code in its tooltip, and only an errored one', () => {
+    const tabs: ConversationTab[] = [
+      { id: 'e1', label: 'Reviewer', kind: 'subagent', color: '#2563eb', status: 'error', failureCode: 'view_exceeds_window' },
+      { id: 'e2', label: 'Fixer', kind: 'subagent', color: '#0d9488', status: 'error', failureCode: null },
+      { id: 'r1', label: 'Runner', kind: 'subagent', color: '#7c3aed', status: 'running', failureCode: 'stale' },
+    ];
+    const wrapper = mount(ConversationTabs, { props: { tabs, activeTabId: 'main' } });
+    expect(wrapper.get('[data-tab-id="e1"]').attributes('title')).toBe('Reviewer · error (view_exceeds_window)');
+    expect(wrapper.get('[data-tab-id="e2"]').attributes('title')).toBe('Fixer · error');
+    expect(wrapper.get('[data-tab-id="r1"]').attributes('title')).toBe('Runner · running');
+  });
+
   it('emits select with the tab id on click', async () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
     await wrapper.get('[data-tab-id="a2"]').trigger('click');

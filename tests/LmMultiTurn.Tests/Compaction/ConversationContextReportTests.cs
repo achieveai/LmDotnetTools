@@ -170,6 +170,95 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ALiveObservationOfTheSameGeneration_KeepsThePersistedDecisionAndCheckpoint()
+    {
+        // The loop's in-memory observation is written by the measurement alone; the policy stamps its
+        // decision and the active checkpoint on the persisted record of the same generation. A live row
+        // must not blank them, or the panel shows no decision for as long as the loop is alive.
+        var store = _harness.Open("memory");
+        await SeedAsync(store);
+        var decision = new CompactionDecisionSummary
+        {
+            Decision = CompactionDecisionKinds.Compact,
+            Reason = "hard",
+            Tokens = 6_940,
+            Window = 200_000,
+            Reserve = 8_000,
+        };
+        await ContextObservationProjection.RecordAsync(
+            store,
+            Observation(Root, "root", 5) with
+            {
+                ActiveCheckpointId = "cp-1",
+                Decision = decision,
+            }
+        );
+        var live = Observation(Root, "root", 5, measured: 9_000);
+        var options = new ConversationContextReportOptions
+        {
+            TimeProvider = new FixedClock(DateTimeOffset.UtcNow),
+            LiveObservation = threadId => threadId == Root ? live : null,
+        };
+
+        var report = await ConversationContextReport.BuildAsync(store, Root, Roster(), options);
+
+        var root = report.Agents[0];
+        root.Freshness.Should().Be(ContextFreshness.Fresh);
+        root.Observation!.MeasuredInputTokens.Should().Be(9_000, "the live measurement still wins");
+        root.Observation.Decision.Should().BeEquivalentTo(decision);
+        root.Observation.ActiveCheckpointId.Should().Be("cp-1");
+        root.Compaction.LastDecision!.GenerationOrdinal.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task NewerGenerationsWithoutADecision_StillReportTheLastRealDecision_WithItsGenerationAndAge()
+    {
+        // A wrap-up turn, or a live measurement ahead of the policy's stamp, carries no decision. The panel must
+        // show what the compaction state rests on rather than "No decision yet" beside "Compacted".
+        var store = _harness.Open("memory");
+        await SeedAsync(store);
+        var decision = new CompactionDecisionSummary
+        {
+            Decision = CompactionDecisionKinds.Compact,
+            Reason = "economic",
+            Tokens = 180_000,
+            Window = 200_000,
+            Reserve = 8_000,
+        };
+        await ContextObservationProjection.RecordAsync(
+            store,
+            Observation(Root, "root", 5) with
+            {
+                Decision = decision,
+            }
+        );
+        await ContextObservationProjection.RecordAsync(store, Observation(Root, "root", 6));
+        var live = Observation(Root, "root", 7, measured: 9_000);
+        var options = new ConversationContextReportOptions
+        {
+            TimeProvider = new FixedClock(T0.AddSeconds(65)),
+            LiveObservation = threadId => threadId == Root ? live : null,
+        };
+
+        var report = await ConversationContextReport.BuildAsync(store, Root, Roster(), options);
+
+        var root = report.Agents[0];
+        root.Observation!.Decision.Should().BeNull("the shown generation was not decided on");
+        root.Compaction.LastDecision.Should()
+            .BeEquivalentTo(
+                new LastCompactionDecision
+                {
+                    Decision = decision,
+                    GenerationOrdinal = 5,
+                    GenerationId = $"{Root}-gen-5",
+                    DecidedAtUtc = T0.AddSeconds(5),
+                    AgeSeconds = 60,
+                }
+            );
+        report.Agents[1].Compaction.LastDecision.Should().BeNull("no generation of that loop was decided on");
+    }
+
+    [Fact]
     public async Task CacheTemperature_FollowsDurableActivityAgainstTheTtl_AndIsUnknownWithoutCaching()
     {
         var store = _harness.Open("memory");
@@ -211,6 +300,151 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
         child.Freshness.Should().Be(ContextFreshness.None);
         child.CacheTemperature.Should().Be(CacheTemperature.Unknown);
         child.Usage!.InputTokens.Should().Be(200, "spend is still spend");
+    }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task AQueuedManualCompaction_IsReportedFromThePersistedRequest_UntilALoopClaimsIt(string kind)
+    {
+        // A manual request can wait for the loop's next step; without this field a client that lost its frames
+        // can only see InFlight, which a queued request never is.
+        var store = _harness.Open(kind);
+        await SeedAsync(store);
+        static PendingManualCompaction Pending(string id, string? focus) =>
+            new()
+            {
+                RequestId = id,
+                Focus = focus,
+                RequestedAt = T0.AddSeconds(30),
+            };
+        _ = await CompactionStateProjection.UpdateAsync(
+            store,
+            Root,
+            s => s with { PendingManual = Pending("cmp-1", "keep the API decisions") }
+        );
+        // A thread with no checkpoint history yet still reports its queued request.
+        _ = await CompactionStateProjection.UpdateAsync(
+            store,
+            "fresh-thread",
+            s => s with { PendingManual = Pending("cmp-2", null) }
+        );
+        IReadOnlyList<AgentExecutionRef> roster =
+        [
+            .. Roster(),
+            new AgentExecutionRef(
+                Root,
+                "fresh-thread",
+                "agent-2",
+                AgentExecutionRef.RootAgentId,
+                UsageExecutionKind.SubAgent
+            ),
+        ];
+        var options = new ConversationContextReportOptions { TimeProvider = new FixedClock(T0.AddSeconds(60)) };
+
+        var report = await ConversationContextReport.BuildAsync(_harness.Reopen(kind), Root, roster, options);
+
+        var root = report.Agents[0].Compaction;
+        root.State.Should().Be(CompactionStates.Active, "a queued request does not change the checkpoint state");
+        root.PendingManualCompaction.Should()
+            .BeEquivalentTo(
+                new PendingManualCompactionStatus { RequestId = "cmp-1", RequestedAtUtc = T0.AddSeconds(30) }
+            );
+        report.Agents[1].Compaction.PendingManualCompaction.Should().BeNull("nothing is queued for that loop");
+        var fresh = report.Agents[2].Compaction;
+        fresh.State.Should().Be(CompactionStates.None);
+        fresh.PendingManualCompaction!.RequestId.Should().Be("cmp-2");
+
+        using var json = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(
+                report,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
+            )
+        );
+        var wire = json
+            .RootElement.GetProperty("agents")[0]
+            .GetProperty("compaction")
+            .GetProperty("pendingManualCompaction");
+        wire.GetProperty("requestId").GetString().Should().Be("cmp-1");
+        wire.GetProperty("requestedAtUtc").GetDateTimeOffset().Should().Be(T0.AddSeconds(30));
+        wire.TryGetProperty("focus", out _)
+            .Should()
+            .BeFalse("the report is content-free: a Read principal never sees the operator's focus (#774 F-010)");
+        json.RootElement.GetRawText()
+            .Should()
+            .NotContain("keep the API decisions", "the focus stays on the persisted request");
+
+        // Claimed by a loop: the field goes away.
+        _ = await CompactionStateProjection.UpdateAsync(store, Root, s => s with { PendingManual = null });
+        (await ConversationContextReport.BuildAsync(store, Root, Roster(), options))
+            .Agents[0]
+            .Compaction.PendingManualCompaction.Should()
+            .BeNull();
+    }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task AnInFlightCheckpoint_OlderThanItsLongestAttempt_IsReportedAbandoned_WithoutWritingIt(string kind)
+    {
+        // A process that dies mid-summary leaves the entry Prepared; only a loop that restores the thread reconciles
+        // it, and a sub-agent may never run again. Past the longest an attempt can take it cannot still be running.
+        var store = _harness.Open(kind);
+        await SeedAsync(store);
+        _ = await CompactionStateProjection.PrepareAsync(
+            store,
+            Child,
+            "cp-dead",
+            1,
+            0,
+            CompactionTrigger.Preemptive,
+            T0
+        );
+        var limit = ConversationContextReportOptions.DefaultInFlightAbandonedAfter;
+        var defaults = new CompactionOptions();
+        limit.Should().BeGreaterThan(defaults.SummaryTimeout * defaults.SummaryAttempts);
+
+        async Task<AgentCompactionStatus> ChildAt(DateTimeOffset now, TimeSpan? abandonedAfter = null) =>
+            (
+                await ConversationContextReport.BuildAsync(
+                    _harness.Reopen(kind),
+                    Root,
+                    Roster(),
+                    new ConversationContextReportOptions
+                    {
+                        TimeProvider = new FixedClock(now),
+                        InFlightAbandonedAfter = abandonedAfter ?? limit,
+                    }
+                )
+            )
+                .Agents[1]
+                .Compaction;
+
+        (await ChildAt(T0 + limit))
+            .Should()
+            .BeEquivalentTo(
+                new
+                {
+                    State = CompactionStates.InFlight,
+                    CheckpointId = "cp-dead",
+                    Reason = (string?)null,
+                }
+            );
+        (await ChildAt(T0 + limit + TimeSpan.FromSeconds(1)))
+            .Should()
+            .BeEquivalentTo(
+                new
+                {
+                    State = CompactionStates.Rejected,
+                    CheckpointId = "cp-dead",
+                    Reason = CheckpointReasons.Abandoned,
+                }
+            );
+        (await ChildAt(T0.AddSeconds(11), TimeSpan.FromSeconds(10)))
+            .State.Should()
+            .Be(CompactionStates.Rejected, "the host's own attempt limit applies");
+        (await CompactionStateProjection.LoadAsync(store, Child))!
+            .Find("cp-dead")!
+            .Status.Should()
+            .Be(CheckpointStatus.Prepared, "the report only reads; a restoring loop reconciles");
     }
 
     [Fact]

@@ -229,6 +229,7 @@ vi.mock('@/composables/useChat', async () => {
       const threadId = ref<string | null>(sharedMocks.currentThreadId);
       const conversationTodo = ref<unknown>(null);
       const contextPressure = ref<unknown>(null);
+      const compactionStatus = ref<unknown>(null);
       // Published (like providerSelectionRef) so a test can mutate them after mount.
       sharedMocks.chatThreadIdRef = threadId;
       sharedMocks.conversationTodoRef = conversationTodo;
@@ -251,6 +252,9 @@ vi.mock('@/composables/useChat', async () => {
         conversationTodo,
         // Same for the hoisted useContextReport(...) (#685).
         contextPressure,
+        // Same for the hoisted useManualCompaction(...).
+        compactionStatus,
+        connectionEpoch: ref(0),
         pendingMessages: ref([]),
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
@@ -346,6 +350,9 @@ vi.mock('@/api/conversationsApi', () => ({
 // this the hoisted useContextReport would hit real fetch on every started conversation.
 vi.mock('@/api/contextApi', () => ({
   getConversationContext: vi.fn(async () => null),
+  requestCompaction: vi.fn(),
+  supportsManualCompaction: vi.fn(async () => 'unsupported'),
+  MAX_COMPACTION_FOCUS_LENGTH: 2000,
 }));
 
 // The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
