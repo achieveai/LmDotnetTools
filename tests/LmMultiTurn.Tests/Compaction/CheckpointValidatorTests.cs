@@ -7,9 +7,9 @@ using Xunit;
 namespace LmMultiTurn.Tests.Compaction;
 
 /// <summary>
-/// One rejected fixture per validation rule V1–V9 (#683; spec 679 §3.4, §12.2), each a single mutation
+/// One rejected fixture per validation rule V1–V10 (#683; spec 679 §3.4, §12.2), each a single mutation
 /// of one valid checkpoint, so a rule that stops firing fails exactly its own fixture. V3 carries the
-/// R5 mutation: a paraphrased human row must be rejected.
+/// R5 mutation: a paraphrased human row must be rejected. V10 is off by default and needs its own thread.
 /// </summary>
 public sealed class CheckpointValidatorTests
 {
@@ -560,5 +560,55 @@ public sealed class CheckpointValidatorTests
             .Validate(Checkpoint(), Context(), options with { Render = CheckpointRenderOptions.Default })
             .IsValid.Should()
             .BeTrue();
+    }
+
+    [Fact]
+    public void V10_RejectsACheckpoint_MissingAnOpenExchangeTheRowsShow()
+    {
+        // The shared fixture has no agent rows, so this rule needs a thread that opens an exchange.
+        var thread = new ThreadFixture()
+            .Human("fix the flaky test")
+            .Agent(AgentMessageType.Question, "which db?")
+            .ToolTurns(2);
+        var boundary = thread.LastSeq;
+        var manifest = new ContextManifest
+        {
+            CurrentInstruction = [new QuotedItem { Seq = 1, Quote = "fix the flaky test" }],
+            Index =
+            [
+                new IndexEntry
+                {
+                    FromSeq = 1,
+                    ToSeq = boundary,
+                    RunId = "run-1",
+                    Headline = "h",
+                },
+            ],
+        };
+        var checkpoint = new CompactionCheckpointMessage
+        {
+            CheckpointId = "cp-10",
+            Boundary = new CheckpointBoundary { Seq = boundary, MessageId = $"m{boundary}" },
+            Trigger = CompactionTrigger.Preemptive,
+            Manifest = manifest,
+            Narrative = "Asked which db, then reran the tests.",
+        };
+        var context = Context(rows: thread.Rows, withBoard: false);
+        var options = new CheckpointValidationOptions { OpenExchanges = true };
+
+        var missing = CheckpointValidator.Validate(checkpoint, context, options);
+        ExpectRule(missing, "V10");
+        missing.Detail.Should().Contain("msg-2");
+
+        var pinned = checkpoint with
+        {
+            Manifest = manifest with { OpenExchanges = OpenExchanges.Find(thread.Rows, boundary) },
+        };
+        CheckpointValidator.Validate(pinned, context, options).IsValid.Should().BeTrue();
+
+        CheckpointValidator
+            .Validate(checkpoint, context)
+            .IsValid.Should()
+            .BeTrue("V10 only runs when the host turns the check on");
     }
 }

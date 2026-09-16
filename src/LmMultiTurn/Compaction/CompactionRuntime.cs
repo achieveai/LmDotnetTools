@@ -707,7 +707,9 @@ internal sealed class CompactionRuntime
                     NarrativeTokenCap = options.NarrativeTokenCap,
                     // V9 scales with the window so a small window can still hold envelope + tail + prefix.
                     CheckpointTokenCap = options.EffectiveCheckpointTokenCap(UsableTokens),
+                    OpenExchanges = options.Checks.Rc3OpenExchanges,
                 },
+                Assembler = new ManifestAssemblerOptions { OpenExchanges = options.Checks.Rc3OpenExchanges },
                 Render = RenderOptions,
                 SummaryTimeout = options.SummaryTimeout,
                 SummaryAttempts = options.SummaryAttempts,

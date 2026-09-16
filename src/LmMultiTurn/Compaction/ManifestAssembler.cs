@@ -18,6 +18,9 @@ internal sealed record ManifestAssemblerOptions
 
     /// <summary>Argument names, tried in order, that carry the artifact path in a file-tool call.</summary>
     public IReadOnlyList<string> PathArgumentNames { get; init; } = ["file_path", "path", "notebook_path"];
+
+    /// <summary>RC3: pin the exchanges still open at the cut.</summary>
+    public bool OpenExchanges { get; init; }
 }
 
 /// <summary>
@@ -140,6 +143,8 @@ internal static class ManifestAssembler
             Tasks = board is null ? [.. summary.Tasks.Select(t => t with { Id = null })] : Flatten(board.Tasks),
             Artifacts = MergeArtifacts(previous?.Artifacts, ArtifactsFromRows(covered, options), summary.Artifacts),
             Agents = BoundAgents(rows, cut.Seq, roster, summary, MaxAgentOutcomeChars),
+            // Namespace-qualified: inside the initializer the property name shadows the class.
+            OpenExchanges = options.OpenExchanges ? Compaction.OpenExchanges.Find(rows, cut.Seq) : [],
             Index = BuildIndex(previous?.Index, previousBoundary, covered, cut.Seq, summary.Headlines, options),
             Recovery = cut.Recovery,
         };
