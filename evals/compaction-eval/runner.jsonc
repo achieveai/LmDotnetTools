@@ -45,6 +45,30 @@
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
+    {
+      // H6: same strategy, but the policy sizes text with the real o200k tokenizer instead of
+      // length / 4. Phase 1b finding: the heuristic put r1's ten-page read at 85k for a request the
+      // provider measured at 60k, which forced the fit escalation to trim results the model had not
+      // read yet; every compact arm then re-read the pages (11-88 re-reads per run).
+      "name": "compact-v0-tok",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H3 + H6 together: accurate estimate and the cached-prefix summary request.
+      "name": "compact-v0-tok-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
 
     {
       // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
