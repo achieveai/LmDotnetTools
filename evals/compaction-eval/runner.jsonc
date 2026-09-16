@@ -110,6 +110,119 @@
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
       ]
     },
+    // The `sum-*` family (round 3b): tool-result clearing OFF (empty ClearToolResultsKeepTurns binds to null), so
+    // the summariser is the only way to make room. Round 3 showed the proactive clear runs before the cut and removes
+    // exactly the results the cut would free, so on r2 the cut fell under the 10% minimum gain and no summary ran
+    // on any arm. Every arm here carries the real tokenizer; they differ only in the summary prompt / model / checks.
+    {
+      // Built-in prompt, terra summariser.
+      "name": "sum-v0",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Built-in prompt, summary request replays the cached agent prefix (H3).
+      "name": "sum-v0-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v1 (H1/H2), see prompts/v1.md.
+      "name": "sum-v1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v1.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v2 (H1/H2), see prompts/v2.md.
+      "name": "sum-v2",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v2.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v3 (H1/H2), see prompts/v3.md.
+      "name": "sum-v3",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v3.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v4 (H1/H2), see prompts/v4.md.
+      "name": "sum-v4",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryPromptPath=B:\sources\LmDotnetTools\.worktrees\WT3\evals\compaction-eval\prompts\v4.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // All post-summary checks on (H4).
+      "name": "sum-checks",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:Checks:Rc1ResourceDedupe=true",
+        "--Compaction:Checks:Rc2ShellRetention=true",
+        "--Compaction:Checks:Rc3OpenExchanges=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Cheaper summariser (H5).
+      "name": "sum-luna",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryModelId=gpt-5.6-luna",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Stronger summariser (H5).
+      "name": "sum-sol",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=",
+        "--Compaction:SummaryModelId=gpt-5.6-sol",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
     {
       // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
       // crosses on some seeds. r1 may overflow after MaxCompactionsPerRun=2; an Errored run is a finding.
