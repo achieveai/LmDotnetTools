@@ -52,6 +52,31 @@ public class ElapsedTimeNoticeTests
     }
 
     [Fact]
+    public async Task ExactlyTheInterval_InjectsANotice_AndKeepsTheCadence()
+    {
+        var clock = new FakeTimeProvider(RunStart);
+        var harness = new ThreeTurnHarness(clock, advanceBeforeEachTurn: TimeSpan.FromSeconds(60));
+
+        var (requests, _, _) = await harness.RunAsync(
+            new ElapsedTimeNoticeOptions { Interval = TimeSpan.FromSeconds(60), Clock = clock }
+        );
+
+        // The comparison is >=: exactly one interval since the run start fires, and exactly one interval
+        // since that notice fires again. A strict > would silently skip both.
+        requests[0].Where(ElapsedTimeNotice.IsNotice).Should().BeEmpty();
+        var second = requests[1].Where(ElapsedTimeNotice.IsNotice).ToList();
+        second.Should().ContainSingle();
+        ((TextMessage)second[0])
+            .Text.Should()
+            .Contain("for 1m 0s")
+            .And.Contain("Current time: 2026-09-15 14:03:19 UTC");
+        requests[2]
+            .Count(ElapsedTimeNotice.IsNotice)
+            .Should()
+            .Be(2, "60s since the last notice reaches the interval again");
+    }
+
+    [Fact]
     public async Task IntervalReached_InjectsANoticeBeforeTheNextTurn_AndPersistsIt()
     {
         var clock = new FakeTimeProvider(RunStart);
