@@ -124,3 +124,85 @@ describe('EnvEditor disabled state', () => {
     ).toBe(true);
   });
 });
+
+describe('EnvEditor duplicate keys', () => {
+  it('flags both rows when the same key is entered twice, and reports the form as invalid', async () => {
+    // buildRecord() writes into a plain object, so the second row silently overwrote the first and
+    // the payload simply lost a variable the user had typed. Nothing anywhere told them.
+    const wrapper = mountEditor({});
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="test-env-key"]');
+    await keys[0].setValue('FOO');
+    await keys[1].setValue('FOO');
+
+    const errors = wrapper.findAll('[data-testid="test-env-error"]');
+    expect(errors).toHaveLength(2);
+    expect(errors[0].text()).toContain('already set above');
+    expect(wrapper.vm.hasErrors).toBe(true);
+  });
+
+  it('flags a case-only collision, because the gateway compares names case-insensitively', async () => {
+    const wrapper = mountEditor({});
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="test-env-key"]');
+    await keys[0].setValue('foo');
+    await keys[1].setValue('FOO');
+
+    expect(wrapper.findAll('[data-testid="test-env-error"]')).toHaveLength(2);
+    expect(wrapper.vm.hasErrors).toBe(true);
+  });
+
+  it('reports no error for two DIFFERENT keys, so the duplicate check is not simply always on', async () => {
+    const wrapper = mountEditor({});
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="test-env-key"]');
+    await keys[0].setValue('FOO');
+    await keys[1].setValue('BAR');
+
+    expect(wrapper.find('[data-testid="test-env-error"]').exists()).toBe(false);
+    expect(wrapper.vm.hasErrors).toBe(false);
+  });
+});
+
+describe('EnvEditor positive emission', () => {
+  // The paired POSITIVE case for "shows no error for a well-formed, unprotected key such as PATH",
+  // which asserts only an absence and passes with the whole component deleted. This one fails unless
+  // the editor actually emits what was typed.
+  it('emits the entered key and value', async () => {
+    const wrapper = mountEditor({});
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="test-env-key"]').setValue('PATH');
+    await wrapper.get('[data-testid="test-env-value"]').setValue('/usr/bin');
+
+    expect(lastEmitted(wrapper)).toEqual({ PATH: '/usr/bin' });
+  });
+
+  // The `lastEmitted` echo guard had no direct test: the parent reflecting our own emission back as
+  // a prop must NOT reset the rows, or an in-progress blank/invalid draft row is wiped mid-typing.
+  it('keeps an in-progress blank row when the parent echoes the emitted record back', async () => {
+    const wrapper = mountEditor({ FOO: 'bar' });
+    await wrapper.get('[data-testid="test-env-add"]').trigger('click');
+    expect(wrapper.findAll('[data-testid="test-env-row"]')).toHaveLength(2);
+
+    // Exactly what a v-model parent does: hand back the record we just emitted.
+    await wrapper.setProps({ modelValue: lastEmitted(wrapper) });
+
+    expect(wrapper.findAll('[data-testid="test-env-row"]')).toHaveLength(2);
+  });
+
+  it('DOES reseed when the parent supplies a genuinely different record', async () => {
+    // Over-refusal bound on the echo guard: it must not turn into "never accept a prop change",
+    // which would strand the form on the previous workspace's variables.
+    const wrapper = mountEditor({ FOO: 'bar' });
+
+    await wrapper.setProps({ modelValue: { OTHER: 'x' } });
+
+    const keys = wrapper
+      .findAll('[data-testid="test-env-key"]')
+      .map((k) => (k.element as HTMLInputElement).value);
+    expect(keys).toEqual(['OTHER']);
+  });
+});

@@ -3,6 +3,7 @@ import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue';
 import { listMarketplaces } from '@/api/marketplacesApi';
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import type { Workspace } from '@/types/workspace';
 
 // The selector now sources its marketplace options from the gateway catalog. Mock the API so the
@@ -72,6 +73,13 @@ const uncapableCatalog = {
 vi.mock('@/api/marketplacesApi', () => ({
   MarketplaceGatewayUnavailableError: class extends Error {},
   listMarketplaces: vi.fn(async () => catalog.value),
+}));
+
+// The env editor is gated on the live gateway reporting support (see `getConversationCapabilities`,
+// which fails closed). Default it to supported so the pre-existing env cases still exercise the
+// editor; the gating itself is asserted in its own case below.
+vi.mock('@/api/conversationsApi', () => ({
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
 }));
 
 const workspaces: Workspace[] = [
@@ -1750,5 +1758,100 @@ describe('WorkspaceSelector env', () => {
       env?: Record<string, string>;
     };
     expect('env' in payload).toBe(false);
+  });
+
+  /**
+   * PAIRED POSITIVE for the two `'env' in payload === false` cases above. Both assert a pure absence,
+   * so both still pass with the entire env feature deleted from the component. These two pin the
+   * other half: the save still happened and still carried everything else, which is what makes
+   * "env was omitted" mean "env SPECIFICALLY was omitted" rather than "nothing was sent".
+   */
+  it('still sends the rest of the workspace when an unchanged env is omitted from the PUT', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('update-workspace')!;
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0][0]).toBe('ws-user');
+    const payload = emitted[0][1] as UpdatePayload;
+    expect('env' in payload).toBe(false);
+    expect(payload.marketplaces).toBeDefined();
+  });
+
+  it('still sends the name on create when an empty env is omitted', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('No Env');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('create-workspace')!;
+    expect(emitted).toHaveLength(1);
+    const payload = emitted[0][0] as CreatePayload & { env?: Record<string, string> };
+    expect('env' in payload).toBe(false);
+    expect(payload.name).toBe('No Env');
+  });
+});
+
+/**
+ * Finding D. Per-sandbox env needs gateway image 0.1.11+; on anything older the gateway has no
+ * `/env` route and every value the user types here is silently dropped on provision. Offering the
+ * editor there is worse than not offering it: the user believes a secret reached the sandbox. The
+ * capability probe (`getConversationCapabilities`) reports what the registry actually observed and
+ * fails closed, so an unreachable probe hides the editor rather than promising support.
+ */
+describe('WorkspaceSelector env editor is gated on observed gateway support', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: [],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
+      env: { FOO: 'bar' },
+    },
+  ];
+
+  it('hides the env editor in the edit form when the gateway does not support it', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
+  });
+
+  it('hides the env editor in the create form when the gateway does not support it', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
+  });
+
+  it('shows it when the gateway does support it, so the gate is not simply always off', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(true);
+  });
+
+  /** Fails closed: a probe that rejects must hide the editor, not default it on. */
+  it('hides the env editor when the capability probe itself fails', async () => {
+    vi.mocked(getConversationCapabilities).mockRejectedValueOnce(new Error('offline'));
+
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
   });
 });

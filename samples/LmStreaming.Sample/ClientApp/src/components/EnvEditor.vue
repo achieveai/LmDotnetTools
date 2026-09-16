@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 /**
  * A row-editor for a `Record<string,string>` of environment variables, used by both the workspace
@@ -123,8 +123,23 @@ function updateValue(id: number, value: string): void {
   emitRows();
 }
 
+/**
+ * Keys entered more than once, compared case-insensitively because that is how the gateway compares
+ * them (`SandboxEnvRules` server-side). Two rows that differ only in case are a collision there even
+ * though they are distinct rows here.
+ */
+const duplicateKeys = computed<Set<string>>(() => {
+  const seen = new Map<string, number>();
+  for (const row of rows.value) {
+    const key = row.key.trim().toUpperCase();
+    if (!key) continue;
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+  }
+  return new Set([...seen.entries()].filter(([, count]) => count > 1).map(([key]) => key));
+});
+
 /** Inline validation text for one row, mirroring the gateway's rule. Empty when the key is blank
- * (blank rows are silently dropped, not flagged as errors) or well-formed and unprotected. */
+ * (blank rows are silently dropped, not flagged as errors) or well-formed, unprotected and unique. */
 function rowError(row: EnvRow): string {
   const key = row.key.trim();
   if (!key) return '';
@@ -134,8 +149,22 @@ function rowError(row: EnvRow): string {
   if (PROTECTED_KEYS.has(key.toUpperCase())) {
     return 'This name is protected by the sandbox and cannot be set.';
   }
+  if (duplicateKeys.value.has(key.toUpperCase())) {
+    // buildRecord() writes into a plain object, so duplicates do not survive to the payload — the
+    // last row silently wins and the other rows the user typed simply vanish on save. Flagging it is
+    // the only way they find out, and `hasErrors` below stops the save until they resolve it.
+    return 'This name is already set above. Keys are case-insensitive.';
+  }
   return '';
 }
+
+/**
+ * Whether ANY row is invalid. Exposed so the parent form can block its submit rather than sending a
+ * payload the gateway will reject — or worse, one that silently drops a duplicate row.
+ */
+const hasErrors = computed<boolean>(() => rows.value.some((row) => rowError(row) !== ''));
+
+defineExpose({ hasErrors });
 </script>
 
 <template>

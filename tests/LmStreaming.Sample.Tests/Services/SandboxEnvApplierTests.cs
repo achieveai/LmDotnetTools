@@ -102,6 +102,91 @@ public class SandboxEnvApplierTests
             );
     }
 
+    /// <summary>
+    /// The merged map is validated, not merely each layer as it was stored.
+    /// <para>
+    /// This is the case per-layer validation structurally cannot catch: a workspace holding <c>foo</c>
+    /// and a mode holding <c>FOO</c> are each perfectly valid on their own, and Merge keeps them as
+    /// two distinct Ordinal entries — but the gateway compares names case-insensitively and rejects
+    /// the pair. It rejects it at CREATE, so the failure landed on the agent build and the
+    /// conversation simply would not start, far from the edit that caused it and naming nothing the
+    /// user could act on.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ComputeEffectiveAsync_CrossLayerCaseDuplicate_ThrowsNamingBothKeys()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out _);
+
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var modes = new InMemoryChatModeStoreFake();
+        var applier = CreateApplier(registry, workspaces, modes);
+
+        workspaces.Seed(
+            new Workspace
+            {
+                Id = "ws-1",
+                Name = "WS",
+                DirectoryRelPath = "ws1",
+                Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["foo"] = "ws" },
+            }
+        );
+        modes.Seed(
+            new ChatMode
+            {
+                Id = "m",
+                Name = "Mode",
+                SystemPrompt = "prompt",
+                Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["FOO"] = "mode" },
+            }
+        );
+
+        var act = async () => await applier.ComputeEffectiveAsync("t1", "ws-1", "m", CancellationToken.None);
+
+        var ex = (await act.Should().ThrowAsync<SandboxEnvValidationException>()).Which;
+        ex.Keys.Should().Contain(["foo", "FOO"], "the collision belongs to the group, not to one side of it");
+        ex.Layer.Should().Be("effective", "no single stored layer is at fault — each one is valid alone");
+    }
+
+    /// <summary>
+    /// Over-refusal bound on the test above: layers that merge cleanly must still merge, so the new
+    /// validation cannot be satisfied by simply rejecting every multi-layer map.
+    /// </summary>
+    [Fact]
+    public async Task ComputeEffectiveAsync_ValidLayers_StillMerge()
+    {
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out _);
+
+        var workspaces = new InMemoryWorkspaceStoreFake();
+        var modes = new InMemoryChatModeStoreFake();
+        var applier = CreateApplier(registry, workspaces, modes);
+
+        workspaces.Seed(
+            new Workspace
+            {
+                Id = "ws-1",
+                Name = "WS",
+                DirectoryRelPath = "ws1",
+                Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["FOO"] = "ws" },
+            }
+        );
+        modes.Seed(
+            new ChatMode
+            {
+                Id = "m",
+                Name = "Mode",
+                SystemPrompt = "prompt",
+                Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["BAR"] = "mode" },
+            }
+        );
+
+        var effective = await applier.ComputeEffectiveAsync("t1", "ws-1", "m", CancellationToken.None);
+
+        effective.Should().BeEquivalentTo(new Dictionary<string, string> { ["FOO"] = "ws", ["BAR"] = "mode" });
+    }
+
     [Fact]
     public async Task ReapplyForWorkspaceAsync_PatchesTheLastActivatedThreadsSession_WithTheNewWorkspaceEnv()
     {

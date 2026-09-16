@@ -11,6 +11,7 @@ import {
   createWorkspace as apiCreateWorkspace,
   updateWorkspace as apiUpdateWorkspace,
   WorkspaceRevisionConflictError,
+  InvalidEnvError,
 } from '@/api/workspacesApi';
 
 /**
@@ -257,6 +258,21 @@ export function useWorkspaces() {
         error.value = refreshed.message;
         console.error('Failed to update workspace:', e);
         throw refreshed;
+      }
+      if (e instanceof InvalidEnvError) {
+        // PARTIAL SUCCESS, and the reason this needs the same treatment as a revision conflict: the
+        // store already wrote the workspace and the GATEWAY is what refused the env, so the server's
+        // state has moved on while our cached copy has not. Leaving the catalog stale let the editor
+        // reseed from pre-save data, and the next save sends a REPLACEMENT env map with no CAS token
+        // — silently deleting whatever the server did keep. Reload so the reseed sees what was
+        // actually stored.
+        await loadWorkspaces();
+        if (!(await settleCatalog())) {
+          console.warn(
+            'Workspace catalog did not settle after an invalid_env rejection; the form may be '
+              + 'reseeded from a superseded list.'
+          );
+        }
       }
       error.value = e instanceof Error ? e.message : 'Failed to update workspace';
       console.error('Failed to update workspace:', e);

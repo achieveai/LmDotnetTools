@@ -454,11 +454,15 @@ async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate)
     workspaceSelectorRef.value?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
-    if (e instanceof WorkspaceRevisionConflictError) {
-      // updateWorkspace has already re-listed, so the next save would carry a FRESH compare-and-swap
-      // token while the form still held the pre-conflict selection — one more click would pass CAS
-      // and silently overwrite whoever changed it. Re-seed the form from the refreshed workspace so
-      // the pending change is dropped rather than the other writer's. `await nextTick()` first: the
+    if (e instanceof WorkspaceRevisionConflictError || e instanceof InvalidEnvError) {
+      // Two different causes, one required response: the server's copy has moved on and the form has
+      // not. On a CONFLICT, updateWorkspace has already re-listed, so the next save would carry a
+      // FRESH compare-and-swap token while the form still held the pre-conflict selection — one more
+      // click would pass CAS and silently overwrite whoever changed it. On an INVALID_ENV, the write
+      // PARTIALLY succeeded (the store took it, the gateway refused the env), and the env map is sent
+      // as a wholesale REPLACEMENT with no CAS token at all — so a reseed from stale rows would
+      // delete keys the server had actually kept. Re-seed from the refreshed workspace either way, so
+      // the pending change is dropped rather than the stored one. `await nextTick()` first: the
       // refreshed list reaches the child as a prop only after the parent re-renders.
       await nextTick();
       workspaceSelectorRef.value?.reseedEditForm();

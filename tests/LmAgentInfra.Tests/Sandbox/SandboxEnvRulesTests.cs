@@ -266,4 +266,34 @@ public class SandboxEnvRulesTests
 
         diff.Should().BeEmpty();
     }
+
+    /// <summary>
+    /// A null VALUE is reachable from the wire even though the map's value type is non-nullable:
+    /// <c>{"env":{"K":null}}</c> deserializes to exactly this, on workspace create/update, mode
+    /// create/update and S2S provision alike. It must be reported as an invalid key like any other
+    /// rule violation. Before the null guard, <c>Encoding.UTF8.GetByteCount(null)</c> threw
+    /// <see cref="ArgumentNullException"/> from inside the validator — past every controller's
+    /// <c>invalid_env</c> handling, so the caller got a 500 with no indication of which key was bad.
+    /// </summary>
+    [Fact]
+    public void FindInvalidKeys_NullValue_IsReportedAsInvalidRatherThanThrowing()
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal) { ["GOOD"] = "v", ["BAD"] = null! };
+
+        var invalid = SandboxEnvRules.FindInvalidKeys(env);
+
+        invalid.Should().Contain("BAD");
+        invalid.Should().NotContain("GOOD", "a null value condemns only its own key");
+    }
+
+    /// <summary>The same condition through the throwing entry point the controllers actually call.</summary>
+    [Fact]
+    public void Validate_NullValue_ThrowsSandboxEnvValidationException_NotArgumentNullException()
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal) { ["BAD"] = null! };
+
+        var act = () => SandboxEnvRules.Validate(env, "workspace");
+
+        act.Should().Throw<SandboxEnvValidationException>().Which.Keys.Should().Contain("BAD");
+    }
 }

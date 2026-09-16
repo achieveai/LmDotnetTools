@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -262,7 +263,7 @@ internal sealed class InMemoryChatModeStoreFake : IChatModeStore
 /// hooks are overridden to a no-op, so the base class's real dependencies (wired here to harmless
 /// throwaway fakes and one shared, never-invoked registry) are never actually exercised.
 /// </summary>
-internal sealed class NoOpSandboxEnvApplier : SandboxEnvApplier
+internal class NoOpSandboxEnvApplier : SandboxEnvApplier
 {
     // Shared across every instance: the underlying registry is never invoked (both reapply methods are
     // overridden below), so one lazily-built throwaway instance is enough for the whole test run rather
@@ -289,4 +290,20 @@ internal sealed class NoOpSandboxEnvApplier : SandboxEnvApplier
     public override Task ReapplyForWorkspaceAsync(string workspaceId, CancellationToken ct) => Task.CompletedTask;
 
     public override Task ReapplyForModeAsync(string modeId, CancellationToken ct) => Task.CompletedTask;
+}
+
+/// <summary>
+/// A <see cref="SandboxEnvApplier"/> whose mode reapply fails the way a GATEWAY rejection fails —
+/// after the store write has already succeeded. Used to pin the controllers' partial-success
+/// <c>invalid_env</c> response, which is a different situation from a validator rejection: there,
+/// nothing was persisted; here, the mode was saved and only the env was refused.
+/// </summary>
+internal sealed class GatewayRejectsEnvApplier(params string[] invalidKeys) : NoOpSandboxEnvApplier
+{
+    public override Task ReapplyForModeAsync(string modeId, CancellationToken ct) =>
+        throw new SandboxException(SandboxErrorKind.InvalidEnv, "gateway refused the environment", 400)
+        {
+            ErrorCode = "invalid_env",
+            InvalidKeys = invalidKeys,
+        };
 }

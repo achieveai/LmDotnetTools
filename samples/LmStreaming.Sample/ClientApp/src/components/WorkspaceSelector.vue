@@ -10,7 +10,16 @@ import type {
 } from '@/types/workspace';
 import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import EnvEditor from './EnvEditor.vue';
+
+/**
+ * Whether the running gateway can apply per-sandbox env at all. False on a pre-0.1.11 gateway, and
+ * false whenever the capability report cannot be read — see `getConversationCapabilities`. The env
+ * editor is hidden entirely rather than disabled: a disabled editor still shows variables as though
+ * they were in effect, and on this deployment nothing the user types would ever reach the sandbox.
+ */
+const sandboxEnvSupported = ref(false);
 
 /**
  * Tooltip for one workspace row. Three distinct sentences for three distinct states, because the
@@ -609,6 +618,17 @@ onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   document.addEventListener('keydown', handleKeydown);
   void loadAvailableMarketplaces();
+  // `getConversationCapabilities` already fails closed internally, but the `.catch` is not
+  // redundant: it keeps that guarantee a property of THIS call site rather than of the API helper's
+  // current implementation. Without it a helper that ever throws leaves an unhandled rejection, and
+  // the editor's visibility would depend on a contract nothing here enforces.
+  void getConversationCapabilities()
+    .then((c) => {
+      sandboxEnvSupported.value = c.sandboxEnv;
+    })
+    .catch(() => {
+      sandboxEnvSupported.value = false;
+    });
 });
 
 onUnmounted(() => {
@@ -837,7 +857,7 @@ watch(
               </p>
             </div>
           </div>
-          <div class="field">
+          <div v-if="sandboxEnvSupported" class="field">
             <span class="field-label">Environment Variables</span>
             <EnvEditor
               v-model="createEnv"
@@ -967,7 +987,7 @@ watch(
               </p>
             </div>
           </div>
-          <div class="field">
+          <div v-if="sandboxEnvSupported" class="field">
             <span class="field-label">Environment Variables</span>
             <EnvEditor
               v-model="editEnv"

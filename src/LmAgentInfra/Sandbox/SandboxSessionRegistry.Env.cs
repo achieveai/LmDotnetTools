@@ -64,6 +64,41 @@ public sealed partial class SandboxSessionRegistry
     public bool SessionEnvSupported => !_sessionEnvUnsupported;
 
     /// <summary>
+    /// Whether <paramref name="ex"/> says the session-env ROUTE does not exist (gateway older than
+    /// v0.1.11), as opposed to the session being gone.
+    /// <para>
+    /// A genuinely missing session always carries <c>error_code=session_not_found</c> (the same
+    /// distinction <see cref="SandboxException.IsDefiniteMissingPath"/> draws elsewhere in the SDK), so a
+    /// 404 WITHOUT that code is the route itself missing. A 405 means the path exists but not the verb,
+    /// which is the same "this gateway cannot do env" conclusion and, before this predicate existed,
+    /// escaped as an unhandled failure because the catch matched only <see cref="SandboxErrorKind.NotFound"/>.
+    /// </para>
+    /// </summary>
+    private static bool IsEnvRouteAbsent(SandboxException ex) =>
+        (
+            ex.Kind == SandboxErrorKind.NotFound
+            && !string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal)
+        )
+        || ex.StatusCode == 405;
+
+    /// <summary>
+    /// Trips the sticky "this gateway has no env routes" flag and logs the single warning the feature is
+    /// allowed (spec §6). Idempotent, so it is safe on every path that can observe the condition.
+    /// </summary>
+    private SandboxEnvApplyResult MarkEnvUnsupported()
+    {
+        if (!_sessionEnvUnsupported)
+        {
+            _sessionEnvUnsupported = true;
+            _logger.LogWarning(
+                "Sandbox gateway has no session env route; per-sandbox env is disabled for this process"
+            );
+        }
+
+        return SandboxEnvApplyResult.Unsupported;
+    }
+
+    /// <summary>
     /// Seeds the env cache for a just-created session with exactly what was sent on create — called from
     /// <c>CreateSessionAsync</c> right after the session's maps are published. <paramref name="applied"/>
     /// is defensively copied so a later mutation of the caller's dictionary can never corrupt the cache.
@@ -151,23 +186,17 @@ public sealed partial class SandboxSessionRegistry
             {
                 current = await client.GetEnvAsync(sessionId, ct).ConfigureAwait(false);
             }
-            catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
+            catch (SandboxException ex) when (IsEnvRouteAbsent(ex))
             {
-                if (string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal))
-                {
-                    ForgetSessionEnvState(sessionId);
-                    return SandboxEnvApplyResult.SessionGone;
-                }
-
-                // A code-less 404: the route itself doesn't exist (gateway older than v0.1.11), not a
-                // missing session — a genuinely missing session always carries error_code=session_not_found
-                // (see SandboxException.IsDefiniteMissingPath for the identical distinction elsewhere in
-                // the SDK). Sticky for the rest of the process so this warning logs exactly once.
-                _sessionEnvUnsupported = true;
-                _logger.LogWarning(
-                    "Sandbox gateway has no session env route; per-sandbox env is disabled for this process"
-                );
-                return SandboxEnvApplyResult.Unsupported;
+                return MarkEnvUnsupported();
+            }
+            catch (SandboxException ex)
+                when (ex.Kind == SandboxErrorKind.NotFound
+                    && string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal)
+                )
+            {
+                ForgetSessionEnvState(sessionId);
+                return SandboxEnvApplyResult.SessionGone;
             }
 
             state = new SessionEnvState(new Dictionary<string, string>(current, StringComparer.Ordinal), null);
@@ -190,6 +219,15 @@ public sealed partial class SandboxSessionRegistry
         {
             patched = await client.PatchEnvAsync(sessionId, diff, ct).ConfigureAwait(false);
         }
+        catch (SandboxException ex) when (IsEnvRouteAbsent(ex))
+        {
+            // The seeding GET above is not the only way to meet an old gateway: a session created
+            // before this process decided env was supported reaches PATCH with a cache entry and no
+            // probe, and a gateway that serves GET /env but not PATCH answers 405 here. Without this
+            // the failure escaped to the caller — a 500 on workspace edit, and a throw out of the
+            // agent build, which calls this synchronously.
+            return MarkEnvUnsupported();
+        }
         catch (SandboxException ex)
             when (ex.Kind == SandboxErrorKind.NotFound
                 && string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal)
@@ -199,7 +237,7 @@ public sealed partial class SandboxSessionRegistry
             return SandboxEnvApplyResult.SessionGone;
         }
 
-        // Every other SandboxException (InvalidEnv, transport, a differently-coded NotFound, ...)
+        // Every other SandboxException (InvalidEnv, transport, ...)
         // deliberately propagates uncaught — the caller is expected to catch and decide (e.g. InvalidEnv
         // means ITS desired map is malformed, which retrying here could never fix).
         _sessionEnv[sessionId] = new SessionEnvState(

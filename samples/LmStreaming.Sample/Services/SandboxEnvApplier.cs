@@ -40,7 +40,21 @@ public class SandboxEnvApplier(
     /// Computes the effective env for a thread: workspace layer &lt; mode layer &lt; the thread's own
     /// provisioned (conversation) layer, later layers winning key-for-key (see
     /// <see cref="SandboxEnvRules.Merge"/>).
+    /// <para>
+    /// The MERGED map is validated before it is returned, and not only each layer as it was stored.
+    /// Two of the rules are map-level and so cannot be enforced one layer at a time: the 256-key
+    /// ceiling (three layers of 100 keys each are individually fine and together are not) and the
+    /// case-insensitive duplicate rule (a workspace's <c>foo</c> and a mode's <c>FOO</c> survive
+    /// <see cref="SandboxEnvRules.Merge"/> as two Ordinal entries that the gateway treats as one
+    /// name). The gateway rejects either at CREATE, which is the worst place to find out: the
+    /// conversation simply cannot start, with the failure surfacing from the agent build rather than
+    /// from the edit that caused it. Failing here reports the offending keys instead.
+    /// </para>
     /// </summary>
+    /// <exception cref="SandboxEnvValidationException">
+    /// The merged map breaks a rule. <see cref="SandboxEnvValidationException.Layer"/> is
+    /// <c>"effective"</c> — the individual layers may each be valid, so no single one can be blamed.
+    /// </exception>
     public virtual async Task<IReadOnlyDictionary<string, string>> ComputeEffectiveAsync(
         string threadId,
         string workspaceId,
@@ -52,7 +66,9 @@ public class SandboxEnvApplier(
         var mode = await modes.GetModeAsync(modeId, ct).ConfigureAwait(false);
         var provision = await ConversationSandboxEnv.ReadAsync(conversations, threadId, ct).ConfigureAwait(false);
 
-        return SandboxEnvRules.Merge(workspace?.Env, mode?.Env, provision);
+        var merged = SandboxEnvRules.Merge(workspace?.Env, mode?.Env, provision);
+        SandboxEnvRules.Validate(merged, "effective");
+        return merged;
     }
 
     /// <summary>

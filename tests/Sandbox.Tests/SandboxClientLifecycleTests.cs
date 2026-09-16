@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -222,6 +223,42 @@ public class SandboxClientLifecycleTests
         sandboxException.Kind.Should().Be(SandboxErrorKind.InvalidEnv);
         sandboxException.StatusCode.Should().Be(400);
         sandboxException.InvalidKeys.Should().Equal("SANDBOX_HOME");
+    }
+
+    /// <summary>
+    /// A 400 whose body is NOT JSON — a reverse proxy's HTML error page is the everyday example —
+    /// must still surface as a <see cref="SandboxException"/>.
+    /// <para>
+    /// <c>ReadFromJsonAsync</c> raises <see cref="NotSupportedException"/>, not
+    /// <see cref="JsonException"/>, when the Content-Type is not JSON, and the 400 reader caught only
+    /// the latter. The NotSupportedException therefore escaped the SDK's own error mapping entirely,
+    /// so every caller — all of which catch SandboxException — saw an exception type they do not
+    /// handle instead of a classified failure.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_400WithNonJsonBody_StillSurfacesAsSandboxException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        _ = handler.On(
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri is not null
+                && req.RequestUri.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("<html><body>400 Bad Request</body></html>", Encoding.UTF8, "text/html"),
+            }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("ws")));
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception;
+        sandboxException.StatusCode.Should().Be(400);
+        sandboxException
+            .Kind.Should()
+            .Be(SandboxErrorKind.Protocol, "an unreadable body cannot be classified as invalid_env");
     }
 
     [Fact]

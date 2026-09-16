@@ -245,4 +245,39 @@ public sealed class ChatModeEnvTests : IDisposable
         var payload = JsonSerializer.Serialize(bad.Value);
         payload.Should().Contain("invalid_env").And.Contain(key).And.NotContain("secret-value");
     }
+
+    /// <summary>
+    /// A GATEWAY rejection during the post-save reapply must answer 400 <c>invalid_env</c>, exactly as
+    /// the workspace route already did.
+    /// <para>
+    /// This is a different failure from the validator rejection above: the mode HAS been written by
+    /// the time <c>ReapplyForModeAsync</c> runs, so the store and the gateway now disagree. Without
+    /// the catch, the identical user action returned 400 on the workspace route and 500 here — and a
+    /// 500 tells the caller nothing about which keys were refused, nor that the save partly landed.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Controller_Update_GatewayRejectsEnv_Returns400WithKeys_AndSaysTheModeWasSaved()
+    {
+        var store = CreateStore();
+        var created = await store.CreateModeAsync(new ChatModeCreateUpdate { Name = "M", SystemPrompt = "p" });
+        var controller = new ChatModesController(store, new GatewayRejectsEnvApplier("HTTP_PROXY"));
+
+        var result = await controller.Update(
+            created.Id,
+            new ChatModeCreateUpdate
+            {
+                Name = "M",
+                SystemPrompt = "p",
+                Env = new Dictionary<string, string> { ["FOO"] = "secret-value" },
+            }
+        );
+
+        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        var payload = JsonSerializer.Serialize(bad.Value);
+        payload.Should().Contain("invalid_env");
+        payload.Should().Contain("HTTP_PROXY", "the caller needs to know WHICH key the gateway refused");
+        payload.Should().Contain("was saved", "a partial success must not read as a rejected write");
+        payload.Should().NotContain("secret-value", "a value must never reach a response body");
+    }
 }

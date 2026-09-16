@@ -4966,6 +4966,15 @@ public partial class Program
     ///     may have no stored workspace (the implicit "default"). That case yields a bare ref, which
     ///     is exactly the pre-existing behaviour: every optional field falls back to its own default.
     ///     </para>
+    ///     <para>
+    ///     <see cref="WorkspaceRef.Env"/> carries the WORKSPACE layer only, which is all this function
+    ///     can see. The first-create path overwrites it moments later with the fully merged map; the
+    ///     reload callback cannot, so the workspace layer is what a recreated session is born with and
+    ///     the mode/provision layers are topped up by the <c>EnsureSessionEnvAsync</c> call that
+    ///     follows. Omitting it here left a gateway-404 replacement with NO env at all until some
+    ///     later edit happened to PATCH it — every variable the user set silently absent for the rest
+    ///     of the conversation.
+    ///     </para>
     /// </summary>
     internal static WorkspaceRef BuildWorkspaceRef(
         string workspaceId,
@@ -4975,7 +4984,8 @@ public partial class Program
             workspaceId,
             workspace?.DirectoryRelPath,
             workspace?.Marketplaces,
-            ToSandboxPluginRefs(workspace?.PluginSelection)
+            ToSandboxPluginRefs(workspace?.PluginSelection),
+            workspace?.Env
         );
 
     /// <summary>

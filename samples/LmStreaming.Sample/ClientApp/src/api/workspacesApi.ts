@@ -37,17 +37,9 @@ export class UnsupportedPluginsError extends Error {
   }
 }
 
-/** Raised on HTTP 400 `invalid_env`: one or more `env` keys are malformed or protected by the sandbox. */
-export class InvalidEnvError extends Error {
-  readonly keys: string[];
-  readonly layer: string | null;
-  constructor(message: string, keys: string[] = [], layer: string | null = null) {
-    super(message);
-    this.name = 'InvalidEnvError';
-    this.keys = keys;
-    this.layer = layer;
-  }
-}
+// Re-exported, not redeclared: see `@/api/envErrors` for why there is exactly one of these.
+export { InvalidEnvError } from '@/api/envErrors';
+import { InvalidEnvError } from '@/api/envErrors';
 
 /** Best-effort parse of a JSON error body; returns null when unreadable. */
 async function readBody(response: Response): Promise<Record<string, unknown> | null> {

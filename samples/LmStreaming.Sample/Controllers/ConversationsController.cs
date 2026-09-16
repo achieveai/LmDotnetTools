@@ -215,7 +215,11 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner
+    ConversationDescendantScanner descendantScanner,
+    // Optional, and last, so the six tests that construct this controller directly keep compiling and
+    // a host with no sandbox registry still starts. A null registry reports the capability as
+    // unsupported, which is the honest answer when there is nothing that could apply env.
+    SandboxSessionRegistry? sandboxSessionRegistry = null
 ) : ControllerBase
 {
     /// <summary>
@@ -1062,7 +1066,12 @@ public class ConversationsController(
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
                 RootReasoningEffort = true,
-                SandboxEnv = true,
+                // Reported, not asserted. The registry trips this to false the first time the gateway
+                // answers that it has no session-env route (a pre-0.1.11 image), which is exactly the
+                // deployment where a client that offered env editors would collect variables the
+                // gateway will never apply. Hardcoding true made SessionEnvSupported dead code and
+                // made the capability a claim about the build rather than about the running gateway.
+                SandboxEnv = sandboxSessionRegistry?.SessionEnvSupported ?? false,
             }
         );
 

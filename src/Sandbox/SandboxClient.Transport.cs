@@ -413,10 +413,15 @@ public sealed partial class SandboxClient
         {
             throw;
         }
-        catch (Exception ex) when (ex is JsonException or OperationCanceledException)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or OperationCanceledException)
         {
             // The read deadline fired, or the body was malformed — fall back to status-only
-            // classification below (errorCode stays null).
+            // classification below (errorCode stays null). NotSupportedException belongs here with
+            // JsonException: ReadFromJsonAsync raises it when the response carries a non-JSON
+            // Content-Type (a proxy's HTML error page, say), and without it that escaped this method
+            // as a bare NotSupportedException — so a caller catching SandboxException, as every
+            // caller does, saw nothing at all. The sibling reader in SandboxClient.Env.cs already
+            // handles both.
         }
 
         var kind = string.Equals(errorCode, "invalid_env", StringComparison.Ordinal)

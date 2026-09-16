@@ -124,7 +124,13 @@ watch(
   (isDisabled) => {
     if (isDisabled) {
       closeDropdown();
-      modalOpen.value = false;
+      // The MODAL is deliberately left open. `disabled` folds in socket-driven, self-reversing
+      // conditions — `modeSwitchDisabled` includes `hasPendingClientQuestion` — so an agent asking a
+      // question while the user is mid-save flipped this true and tore the form down, discarding
+      // every row they had typed AND the error that was about to be shown. Closing the dropdown is
+      // still right (picking a different mode while a switch is inflight is not), but the edit form
+      // is the user's own in-progress work and nothing here is entitled to throw it away. The
+      // workspace side reached the same conclusion — see `workspaceSelectorDisabled` in ChatLayout.
     }
   }
 );

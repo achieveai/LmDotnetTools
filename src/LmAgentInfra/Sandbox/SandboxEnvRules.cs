@@ -92,6 +92,19 @@ public static partial class SandboxEnvRules
         foreach (var (key, value) in env)
         {
             var keyBytes = Encoding.UTF8.GetByteCount(key);
+
+            // The value is declared non-nullable, but this map is deserialized straight off the wire:
+            // `{"env":{"K":null}}` puts a real null in it and no amount of nullable annotation stops
+            // that. Treat it as an invalid entry rather than letting GetByteCount throw — the throw
+            // escaped every controller's invalid_env handling and surfaced as a 500 on workspace
+            // create/update, mode create/update and S2S provision alike.
+            if (value is null)
+            {
+                _ = invalid.Add(key);
+                totalBytes += keyBytes;
+                continue;
+            }
+
             var valueBytes = Encoding.UTF8.GetByteCount(value);
             totalBytes += keyBytes + valueBytes;
 
@@ -105,7 +118,7 @@ public static partial class SandboxEnvRules
                 || ProtectedNamesLookup.Contains(key)
             )
             {
-                invalid.Add(key);
+                _ = invalid.Add(key);
             }
         }
 

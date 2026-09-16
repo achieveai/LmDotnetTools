@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
+using LmStreaming.Sample.Tests.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Controllers;
@@ -31,7 +32,8 @@ public class ConversationsControllerTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null
+        ConversationStatusResolver? statusResolver = null,
+        SandboxSessionRegistry? sandboxSessionRegistry = null
     )
     {
         return new ConversationsController(
@@ -48,7 +50,8 @@ public class ConversationsControllerTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
+            sandboxSessionRegistry
         );
     }
 
@@ -927,8 +930,59 @@ public class ConversationsControllerTests
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
-        response.SandboxEnv.Should().BeTrue();
+        // No sandbox registry is wired into this controller, so nothing here could apply env to a
+        // session. It used to report true regardless — a claim about the BUILD rather than about the
+        // running gateway, which is what a client gates its env editors on. See
+        // GetCapabilities_SandboxEnv_FollowsTheRegistrysObservedGatewaySupport below for the pair
+        // that pins both answers.
+        response.SandboxEnv.Should().BeFalse();
     }
+
+    /// <summary>
+    /// <c>sandboxEnv</c> reports what the REGISTRY has observed about the live gateway, in both
+    /// directions.
+    /// <para>
+    /// The registry trips its flag the first time the gateway answers that it has no session-env
+    /// route (a pre-0.1.11 image). A client that trusted a hardcoded <c>true</c> would offer env
+    /// editors on exactly that deployment and collect variables the gateway can never apply —
+    /// silently, since nothing downstream fails.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task GetCapabilities_SandboxEnv_FollowsTheRegistrysObservedGatewaySupport()
+    {
+        await using var pool = CreatePool();
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+
+        var supported = CreateController(
+            new InMemoryConversationStore(),
+            pool,
+            Mock.Of<IChatModeStore>(),
+            sandboxSessionRegistry: registry
+        );
+
+        ReadCapabilities(supported.GetCapabilities())
+            .SandboxEnv.Should()
+            .BeTrue("nothing has yet contradicted the gateway supporting env");
+
+        // Drive the registry into the unsupported state the same way a real pre-0.1.11 gateway does.
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws"));
+        captured.PatchEnvStatus = System.Net.HttpStatusCode.NotFound;
+        _ = await registry.EnsureSessionEnvAsync(
+            session.SessionId,
+            new Dictionary<string, string> { ["A"] = "1" },
+            "t1"
+        );
+        registry.SessionEnvSupported.Should().BeFalse("guard: the arrangement must actually have tripped it");
+
+        ReadCapabilities(supported.GetCapabilities())
+            .SandboxEnv.Should()
+            .BeFalse("the report must follow the gateway, not the build");
+    }
+
+    private static ConversationCapabilitiesResponse ReadCapabilities(IActionResult result) =>
+        Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(result).Value);
 
     [Fact]
     public async Task SwitchProvider_ReturnsConflict_WhenRunIsInProgress()

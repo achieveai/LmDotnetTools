@@ -104,7 +104,9 @@ const sharedMocks = vi.hoisted(() => ({
   // Mode create/update, routed through sharedMocks for the same reason — a test can make them
   // REJECT with InvalidEnvError and assert it reaches ModeEditor's form-error text.
   createMode: vi.fn(async () => {}),
-  updateMode: vi.fn(async () => {}),
+  // Parameters declared (and unused) so `mock.calls[0][0]` is typed — a test asserts WHICH mode id
+  // the update was routed to, and a zero-arity mock types its call tuple as empty.
+  updateMode: vi.fn(async (_modeId: string, _data: unknown) => {}),
   // The WorkspaceSelector methods ChatLayout reaches through its template ref.
   showFormError: vi.fn(),
   closeForm: vi.fn(),
@@ -167,6 +169,18 @@ vi.mock('@/composables/useChatModes', async () => {
       systemPrompt: 'Use calculate',
       enabledTools: ['calculate'],
       isSystemDefined: true,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    // A USER-defined mode, so the management modal renders an Edit button and the update path
+    // (`ChatLayout.handleUpdateMode`) is reachable at all. System modes offer only Copy.
+    {
+      id: 'custom',
+      name: 'Custom Mode',
+      description: 'User made',
+      systemPrompt: 'Be custom',
+      enabledTools: undefined,
+      isSystemDefined: false,
       createdAt: 0,
       updatedAt: 0,
     },
@@ -323,6 +337,9 @@ vi.mock('@/composables/useWorkspaces', async () => {
 vi.mock('@/api/conversationsApi', () => ({
   updateConversationMetadata: vi.fn(async () => {}),
   conversationExists: (threadId: string) => sharedMocks.conversationExists(threadId),
+  // WorkspaceSelector probes this on mount to decide whether to offer the env editor at all.
+  // Supported by default here so these cases keep exercising the full form.
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
 }));
 
 // The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
@@ -1176,6 +1193,36 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
     expect(sharedMocks.closeForm).toHaveBeenCalledTimes(1);
     expect(sharedMocks.showFormError).not.toHaveBeenCalled();
   });
+
+  /**
+   * `invalid_env` is a PARTIAL success on the workspace path: the store saved the workspace and only
+   * the gateway refused the env, so `useWorkspaces` reloads the catalog — which is exactly the
+   * lost-update setup the 409 re-seed exists for. The open form still holds pre-save values; the next
+   * save would send a REPLACEMENT env map built from them and delete what the server kept. So the
+   * re-seed must cover this branch too.
+   *
+   * RED if the catch narrows back to `e instanceof WorkspaceRevisionConflictError`: 0 re-seeds.
+   */
+  it('re-seeds the edit form after a workspace invalid_env rejection too', async () => {
+    sharedMocks.updateWorkspace.mockRejectedValueOnce(
+      new InvalidEnvError('Invalid environment variable names: 1BAD.', ['1BAD'])
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.reseedEditForm).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.showFormError).toHaveBeenCalledTimes(1);
+    // The offending name still reaches the user; a re-seed that swallowed it would leave them with a
+    // silently reverted form and no idea which row was wrong.
+    expect(sharedMocks.showFormError.mock.calls[0][0]).toContain('1BAD');
+    expect(sharedMocks.closeForm).not.toHaveBeenCalled();
+    expect(
+      sharedMocks.reseedEditForm.mock.invocationCallOrder[0]
+    ).toBeLessThan(sharedMocks.showFormError.mock.invocationCallOrder[0]);
+  });
 });
 
 /**
@@ -1606,6 +1653,66 @@ describe('ChatLayout surfaces mode invalid_env failures inline', () => {
     expect(sharedMocks.createMode).toHaveBeenCalledTimes(1);
     expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain('HTTP_PROXY');
+
+    wrapper.unmount();
+  });
+
+  /**
+   * `handleUpdateMode` is a separate catch from `handleCreateMode` and was previously uncovered, so
+   * the create test above proved nothing about editing an existing mode — the far more common way to
+   * hit an env rejection, since that is where an already-saved variable gets changed.
+   */
+  it('leaves the EDIT form mounted with the offending keys visible after a rejected mode update', async () => {
+    sharedMocks.updateMode.mockRejectedValueOnce(
+      new InvalidEnvError(
+        'One or more environment variable names are invalid. (HTTP_PROXY)',
+        ['HTTP_PROXY'],
+        'mode'
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-edit-custom"]').trigger('click');
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.updateMode).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.updateMode.mock.calls[0][0]).toBe('custom');
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain('HTTP_PROXY');
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The SUCCESS path, which the two rejection cases cannot establish: they only show the form is
+   * still there, which a handler that never closes anything also satisfies. This pins that the form
+   * does close when the save works, so "stays open" is a decision and not the only behaviour.
+   */
+  it('closes the manage form when the mode update succeeds', async () => {
+    sharedMocks.updateMode.mockResolvedValueOnce(undefined);
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-edit-custom"]').trigger('click');
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.updateMode).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(false);
+    // The modal itself stays up (the user is still managing modes); only the form closed.
+    expect(wrapper.find('[data-testid="mode-management-modal"]').exists()).toBe(true);
 
     wrapper.unmount();
   });

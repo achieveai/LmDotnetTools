@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { describe, expect, it, vi } from 'vitest';
+import { mount, flushPromises } from '@vue/test-utils';
 import ModeEditor from '@/components/ModeEditor.vue';
+
+// The env editor is gated on the live gateway reporting support (see `getConversationCapabilities`,
+// which fails closed). Default it to supported so the pre-existing env cases still exercise the
+// editor; the gating itself is asserted in its own case below.
+vi.mock('@/api/conversationsApi', () => ({
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
+}));
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 
 const baseMode: ChatMode = {
@@ -147,10 +155,12 @@ describe('ModeEditor description', () => {
 });
 
 describe('ModeEditor env', () => {
-  it('renders an EnvEditor seeded from the mode\'s stored env', () => {
+  it('renders an EnvEditor seeded from the mode\'s stored env', async () => {
     const wrapper = mount(ModeEditor, {
       props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
     });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
 
     const key = wrapper.get<HTMLInputElement>('[data-testid="mode-env-key"]');
     const value = wrapper.get<HTMLInputElement>('[data-testid="mode-env-value"]');
@@ -162,16 +172,70 @@ describe('ModeEditor env', () => {
     const wrapper = mount(ModeEditor, {
       props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
     });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
 
     await wrapper.get('form').trigger('submit');
 
     expect('env' in lastSave(wrapper)).toBe(false);
   });
 
+  // The PAIRED positive case. The assertion above is a pure absence: it passes with the whole env
+  // feature deleted. This one fails unless an unchanged save still carries every other field, which
+  // is what makes "env was omitted" mean "env specifically was omitted".
+  it('still sends the rest of the mode when env is omitted as unchanged', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+
+    const saved = lastSave(wrapper);
+    expect('env' in saved).toBe(false);
+    expect(saved.name).toBe(baseMode.name);
+    expect(saved.systemPrompt).toBe(baseMode.systemPrompt);
+  });
+
+  // Finding D: the client must not offer env editing on a gateway that cannot apply it.
+  it('hides the env editor entirely when the gateway does not support sandbox env', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(false);
+  });
+
+  /** Fails closed: a probe that rejects must hide the editor, not default it on. */
+  it('hides the env editor when the capability probe itself fails', async () => {
+    vi.mocked(getConversationCapabilities).mockRejectedValueOnce(new Error('offline'));
+
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(false);
+  });
+
+  it('shows the env editor when the gateway does support it', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(true);
+  });
+
   it('includes the changed env in the save payload', async () => {
     const wrapper = mount(ModeEditor, {
       props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
     });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
 
     await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
     const keys = wrapper.findAll('[data-testid="mode-env-key"]');
@@ -187,6 +251,8 @@ describe('ModeEditor env', () => {
     const wrapper = mount(ModeEditor, {
       props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
     });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
 
     await wrapper.get('[data-testid="mode-env-remove"]').trigger('click');
     await wrapper.get('form').trigger('submit');

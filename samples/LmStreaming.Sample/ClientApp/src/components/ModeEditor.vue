@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import { BUILT_IN_TOOL_GROUP, SANDBOX_TOOL_GROUP } from '@/types/chatMode';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 import { selectionFromMode, selectionToModeFields, toolGroup, toolId } from '@/utils/modeToolSelection';
@@ -11,6 +12,26 @@ const props = defineProps<{
   tools: ToolDefinition[];
   isLoading?: boolean;
 }>();
+
+/**
+ * Whether the running gateway can apply per-sandbox env at all — see `getConversationCapabilities`,
+ * which fails closed. Hidden rather than disabled for the same reason as the workspace form: on a
+ * gateway without the env routes, nothing typed here would ever reach the sandbox, and an editor
+ * showing variables implies otherwise.
+ */
+const sandboxEnvSupported = ref(false);
+
+onMounted(() => {
+  // The `.catch` keeps failing-closed a property of this call site rather than of the API helper's
+  // current internals — see the matching note in `WorkspaceSelector.vue`.
+  void getConversationCapabilities()
+    .then((c) => {
+      sandboxEnvSupported.value = c.sandboxEnv;
+    })
+    .catch(() => {
+      sandboxEnvSupported.value = false;
+    });
+});
 
 const emit = defineEmits<{
   save: [data: ChatModeCreateUpdate];
@@ -309,7 +330,7 @@ function handleCancel(): void {
         />
       </div>
 
-      <div class="form-group" data-testid="mode-editor-env">
+      <div v-if="sandboxEnvSupported" class="form-group" data-testid="mode-editor-env">
         <label class="form-label">Environment Variables</label>
         <p class="field-hint">
           Sandbox environment variables layered onto every session opened in this mode.
