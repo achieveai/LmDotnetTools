@@ -74,6 +74,18 @@
     },
 
     {
+      // H6 at a 128k clamp (~101k usable, trigger ~81k): the scaled tasks' one-turn bursts (55-57k real
+      // tokens plus the 14k prefix) sit at the 69k usable line at 96k, so part of their fit escalation is
+      // genuine overflow. This arm separates that from the clearing leak H7 targets.
+      "name": "compact-v0-tok-128k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
+      ]
+    },
+    {
       // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
       // crosses on some seeds. r1 may overflow after MaxCompactionsPerRun=2; an Errored run is a finding.
       // (smoke0's view_exceeds_window at 64k was under the 30k superpowers prefix, since dropped.)
