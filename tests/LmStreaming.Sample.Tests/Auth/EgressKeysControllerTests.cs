@@ -33,6 +33,9 @@ public sealed class EgressKeysControllerTests
     }
 
     private static EgressKeyRequest CustomReq(string host, params (string name, string value)[] headers) =>
+        CustomReq(host, port: null, headers);
+
+    private static EgressKeyRequest CustomReq(string host, int? port, params (string name, string value)[] headers) =>
         new(
             Id: null,
             Host: host,
@@ -43,8 +46,62 @@ public sealed class EgressKeysControllerTests
             ClientId: null,
             ClientSecret: null,
             RefreshToken: null,
-            Scopes: null
+            Scopes: null,
+            Port: port
         );
+
+    private static EgressKeyView View(IActionResult result) =>
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EgressKeyView>().Subject;
+
+    [Fact]
+    public async Task Post_defaults_the_port_to_443_and_round_trips_an_explicit_port()
+    {
+        var (controller, registry, dir) = NewController();
+        try
+        {
+            View(await controller.Upsert(CustomReq("api.example.com", ("Cookie", "sid=abc")))).Port.Should().Be(443);
+
+            var explicitPort = View(
+                await controller.Upsert(CustomReq("host.docker.internal", 8443, ("Authorization", "Bearer t")))
+            );
+            explicitPort.Port.Should().Be(8443);
+            registry.Find(explicitPort.Id)!.Port.Should().Be(8443);
+
+            // Edit that omits the port keeps the stored one (same preserve semantics as the secrets).
+            var edited = View(
+                await controller.Upsert(
+                    CustomReq("host.docker.internal", ("Authorization", "")) with
+                    {
+                        Id = explicitPort.Id,
+                    }
+                )
+            );
+            edited.Port.Should().Be(8443);
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(70000)]
+    [InlineData(-1)]
+    public async Task Post_rejects_a_port_outside_1_to_65535(int port)
+    {
+        var (controller, _, dir) = NewController();
+        try
+        {
+            var result = await controller.Upsert(CustomReq("api.example.com", port, ("Cookie", "sid=abc")));
+
+            result.Should().BeOfType<BadRequestObjectResult>();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
 
     [Fact]
     public async Task Post_creates_custom_headers_entry_and_masks_secrets()
@@ -152,7 +209,8 @@ public sealed class EgressKeysControllerTests
                 ClientId: "cid",
                 ClientSecret: "the-secret",
                 RefreshToken: null,
-                Scopes: null
+                Scopes: null,
+                Port: 8443
             );
             var created = (await controller.Upsert(create))
                 .Should()
@@ -177,7 +235,10 @@ public sealed class EgressKeysControllerTests
 
             updated.Host.Should().Be("api2.example.com");
             updated.HasClientSecret.Should().BeTrue();
+            // The OAuth builder writes the port too (the custom-headers tests cover the other builder).
+            updated.Port.Should().Be(8443);
             registry.Find(created.Id)!.ClientSecret.Should().Be("the-secret");
+            registry.Find(created.Id)!.Port.Should().Be(8443);
         }
         finally
         {

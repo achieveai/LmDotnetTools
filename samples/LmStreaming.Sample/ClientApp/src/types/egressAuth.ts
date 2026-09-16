@@ -23,6 +23,8 @@ export interface EgressHeaderPair {
 export interface EgressKeyView {
   id: string;
   host: string;
+  /** Destination TCP port (443 unless the entry targets a non-standard TLS port). */
+  port: number;
   kind: EgressKeyKind;
   headerName: string;
   headerNames: string[];
@@ -41,6 +43,11 @@ export interface EgressKeyView {
 export interface EgressKeyRequest {
   id?: string | null;
   host: string;
+  /**
+   * Destination TCP port (1..65535). Omitted = 443 on create, keep the stored port on update.
+   * The egress proxy is TLS-only on every port, so the target must still be HTTPS.
+   */
+  port?: number | null;
   kind: EgressKeyKind;
   headers?: EgressHeaderPair[] | null;
   headerName?: string | null;

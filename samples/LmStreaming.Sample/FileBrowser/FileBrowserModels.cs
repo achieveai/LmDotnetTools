@@ -40,6 +40,9 @@ public sealed record NoSessionStateDto(string State, string? WorkspaceId)
 /// <summary>A text-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded).</summary>
 public sealed record PreviewResultDto(bool Previewable, string? Reason, string? Text, int? LineCount);
 
+/// <summary>A chat file link resolved to a real workspace entry: its server <see cref="Path"/>, lowercase gateway <see cref="Type"/>, and listed <see cref="Size"/>.</summary>
+public sealed record ResolvedLinkDto(string Path, string Type, long? Size);
+
 /// <summary>The per-file upload outcome (one file per request). <see cref="Name"/> echoes the relative path when the upload carried one, otherwise the base file name.</summary>
 public sealed record UploadResultDto(string Name, long Size);
 

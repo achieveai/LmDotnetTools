@@ -2,6 +2,7 @@ import type {
   DirectoryListing,
   NoSessionState,
   PreviewResult,
+  ResolvedWorkspaceLink,
   UploadOutcome,
 } from '@/types/fileBrowser';
 import { apiFetch } from '@/api/http';
@@ -128,17 +129,48 @@ export async function previewFile(
 }
 
 /**
+ * Resolves a raw file link from a chat message (an absolute host path, a `file://` URI or a relative path)
+ * to a workspace-relative path. Only the server knows the workspace's host path, so it does the mapping
+ * and confirms the entry exists.
+ * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on 400 `outside_workspace` / `invalid_path`, 404 `not_found`, and others.
+ */
+export async function resolveWorkspaceLink(
+  threadId: string,
+  target: string,
+  signal?: AbortSignal
+): Promise<ResolvedWorkspaceLink> {
+  const url = `/api/conversations/${encodeURIComponent(threadId)}/files/resolve?target=${encodeURIComponent(target)}`;
+  const response = await apiFetch(url, { signal });
+  if (response.ok) {
+    return (await response.json()) as ResolvedWorkspaceLink;
+  }
+  throw await classifyFailure(response, 'resolve link');
+}
+
+/**
+ * Fetches a file's bytes (the download endpoint, 64 MiB cap) without saving them — for in-page viewers.
+ * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on other non-ok statuses.
+ */
+export async function fetchFileBlob(threadId: string, path: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await apiFetch(filesUrl(threadId, path, '/download'), { signal });
+  if (!response.ok) {
+    throw await classifyFailure(response, 'download file');
+  }
+  return response.blob();
+}
+
+/**
  * Downloads a file, triggering a browser "save" via a temporary object-URL anchor.
  * @throws {NoSessionError} on 409 no_session_yet.
  * @throws {CredentialConflictError} on 409 caller_credential_conflict.
  * @throws {FileBrowserError} on other non-ok statuses.
  */
 export async function downloadFile(threadId: string, path: string, signal?: AbortSignal): Promise<void> {
-  const response = await apiFetch(filesUrl(threadId, path, '/download'), { signal });
-  if (!response.ok) {
-    throw await classifyFailure(response, 'download file');
-  }
-  const blob = await response.blob();
+  const blob = await fetchFileBlob(threadId, path, signal);
   triggerBrowserDownload(blob, fileNameFromPath(path));
 }
 

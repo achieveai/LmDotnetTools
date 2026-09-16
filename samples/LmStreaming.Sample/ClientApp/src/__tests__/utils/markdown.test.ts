@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseMarkdown } from '@/utils/markdown';
+import { parseWorkspaceLinkHref } from '@/utils/workspaceLinks';
 
 /**
  * `parseMarkdown` re-runs for a streaming message on EVERY delta, and highlighting a fence is
@@ -138,11 +139,18 @@ describe('parseMarkdown sanitization', () => {
     }
   });
 
-  it('strips data-* and target attributes', () => {
+  it('strips data-* attributes and any target/rel the markdown chose itself', () => {
     expect(parseMarkdown('<p data-track="1">hi</p>')).not.toContain('data-track');
-    expect(parseMarkdown('<a href="https://x.example" target="_blank">x</a>')).not.toContain(
-      'target'
-    );
+    // Raw HTML cannot pick its own target or rel: a non-web link keeps neither...
+    const anchor = parseMarkdown('<a href="#top" target="_top" rel="opener">x</a>');
+    expect(anchor).not.toContain('target');
+    expect(anchor).not.toContain('rel=');
+    // ...and a web link gets OUR target/rel, never the document's.
+    const web = parseMarkdown('<a href="https://x.example" target="_top" rel="opener">x</a>');
+    expect(web).toContain('target="_blank"');
+    expect(web).toContain('rel="noopener noreferrer"');
+    expect(web).not.toContain('_top');
+    expect(web).not.toContain('"opener"');
   });
 
   it('keeps GFM table column alignment', () => {
@@ -179,3 +187,122 @@ describe('parseMarkdown sanitization', () => {
 });
 
 const FENCE_FOR_SANITIZE = ['```csharp', 'var s = "a";', '```'].join('\n');
+
+/** Every `<a>` in the output as { href, cls, target, rel }, read through the DOM rather than regex. */
+function anchors(html: string) {
+  const host = document.createElement('div');
+  host.innerHTML = html;
+  return [...host.querySelectorAll('a')].map((a) => ({
+    href: a.getAttribute('href'),
+    cls: a.getAttribute('class'),
+    target: a.getAttribute('target'),
+    rel: a.getAttribute('rel'),
+    text: a.textContent,
+  }));
+}
+
+describe('parseMarkdown web links open in a new tab', () => {
+  it.each(['https://x.example/a', 'http://x.example/a', 'HTTPS://X.EXAMPLE'])(
+    '%s gets target=_blank and rel=noopener noreferrer',
+    (url) => {
+      const [a] = anchors(parseMarkdown(`[x](${url})`));
+      expect(a.target).toBe('_blank');
+      expect(a.rel).toBe('noopener noreferrer');
+    }
+  );
+
+  it.each([
+    ['a protocol-relative link', '[x](//x.example/a)', '//x.example/a'],
+    ['a raw-HTML href padded with whitespace', '<a href="  https://x.example/a ">x</a>', '  https://x.example/a '],
+  ])('%s stays a web link in a new tab, never a workspace link', (_, source, href) => {
+    const [a] = anchors(parseMarkdown(source, { workspaceLinks: { threadId: 't1' } }));
+    // The sanitizer may trim the attribute; the destination itself is unchanged.
+    expect(a.href?.trim()).toBe(href.trim());
+    expect(a.cls).toBeNull();
+    expect(a.target).toBe('_blank');
+    expect(a.rel).toBe('noopener noreferrer');
+  });
+
+  it('applies with and without workspace links and on the un-highlighted path', () => {
+    for (const html of [
+      parseMarkdown('[x](https://x.example)', { highlight: false }),
+      parseMarkdown('[x](https://x.example)', { workspaceLinks: { threadId: 't1' } }),
+    ]) {
+      expect(anchors(html)[0].target).toBe('_blank');
+    }
+  });
+
+  it.each(['mailto:a@b.example', 'tel:+123', '#section'])('%s stays in place (no target)', (href) => {
+    const [a] = anchors(parseMarkdown(`[x](${href})`));
+    expect(a.href).toBe(href);
+    expect(a.target).toBeNull();
+  });
+});
+
+describe('parseMarkdown workspace links (opt-in)', () => {
+  const opts = { workspaceLinks: { threadId: 'thread-123' } };
+
+  it.each([
+    ['windows host path', 'B:\\ws\\docs\\a.md'],
+    ['forward-slash drive path', 'B:/ws/docs/a.md'],
+    ['file URI', 'file:///B:/ws/docs/a.md'],
+    ['posix absolute', '/workspace/docs/a.md'],
+    ['relative', 'docs/a.md'],
+    ['dot relative', './docs/a.md'],
+    ['with fragment', 'docs/a.md#L10'],
+  ])('%s becomes a workspace link carrying thread and target', (_, target) => {
+    const [a] = anchors(parseMarkdown(`[Report](${target})`, opts));
+    expect(a.cls).toBe('workspace-link');
+    expect(a.target).toBeNull();
+    const parsed = parseWorkspaceLinkHref(a.href ?? '');
+    expect(parsed?.threadId).toBe('thread-123');
+    // marked percent-encodes the destination (`\` -> %5C); the raw decoded target is what reaches the
+    // server, which decodes exactly once.
+    expect(decodeURI(parsed?.target ?? '')).toBe(target);
+    expect(a.text).toBe('Report');
+  });
+
+  it('keeps a path with spaces as one percent-encoded target when written in angle brackets', () => {
+    const [a] = anchors(parseMarkdown('[Notes](<docs/my notes.md>)', opts));
+    expect(a.cls).toBe('workspace-link');
+    // The server's resolver decodes %20 back to a space (WorkspaceLinkResolverTests).
+    expect(parseWorkspaceLinkHref(a.href ?? '')?.target).toBe('docs/my%20notes.md');
+  });
+
+  it('does not rewrite web, mailto, tel or in-page anchor links', () => {
+    const html = parseMarkdown(
+      '[w](https://x.example) [m](mailto:a@b.example) [t](tel:1) [h](#top)',
+      opts
+    );
+    expect(anchors(html).map((a) => a.cls)).toEqual([null, null, null, null]);
+  });
+
+  it('re-encodes a model-authored #workspace-file anchor instead of trusting its thread', () => {
+    const forged = '#workspace-file?thread=other-thread&target=secret.md';
+    const [a] = anchors(parseMarkdown(`[x](${forged})`, opts));
+    expect(parseWorkspaceLinkHref(a.href ?? '')?.threadId).toBe('thread-123');
+  });
+
+  it('is off by default: a host path is still dropped and no workspace-link class appears', () => {
+    const html = parseMarkdown('[a](B:\\ws\\a.md) [b](docs/a.md)');
+    const [a, b] = anchors(html);
+    expect(a.href).toBeNull();
+    expect(b.href).toBe('docs/a.md');
+    expect(html).not.toContain('workspace-link');
+  });
+
+  it('strips a raw-HTML workspace-link class when the option is off', () => {
+    const html = parseMarkdown('<a class="workspace-link" href="#workspace-file?thread=t&target=x">x</a>');
+    expect(html).not.toContain('workspace-link');
+  });
+
+  it('strips only the forged workspace-link class, keeping the anchor\'s other classes', () => {
+    const html = parseMarkdown('<a class="workspace-link note" href="https://x.example">x</a>', opts);
+    expect(anchors(html)[0].cls).toBe('note');
+  });
+
+  it('leaves no hook behind: a later plain parse is unaffected', () => {
+    parseMarkdown('[a](docs/a.md)', opts);
+    expect(anchors(parseMarkdown('[a](docs/a.md)'))[0].href).toBe('docs/a.md');
+  });
+});

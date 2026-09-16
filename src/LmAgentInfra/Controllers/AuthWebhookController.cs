@@ -99,7 +99,13 @@ public sealed class AuthWebhookController(
         // rules misconfiguration must not turn this endpoint into an open token-minting oracle —
         // only inject the credential toward that provider's/entry's own hosts. Predefined keys carry
         // their own (user-entered) host, so they gate on the entry's host, not the managed OAuth list.
-        if (!IsDestinationAllowed(tokenProvider, body.DestinationHost, body.DestinationPort))
+        //
+        // A predefined key's entry is mutable (an edit swaps it in place). Snapshot ONE revision here
+        // and use it for both the destination gate and the header build below; if the provider has
+        // moved to a different revision by the time a token is in hand, deny rather than pair the
+        // new revision's credential with a destination only the old revision admitted.
+        var keyRevision = (tokenProvider as PredefinedKeyProvider)?.Entry;
+        if (!IsDestinationAllowed(tokenProvider, keyRevision, body.DestinationHost, body.DestinationPort))
         {
             logger.LogWarning(
                 "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
@@ -121,12 +127,22 @@ public sealed class AuthWebhookController(
         try
         {
             var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
+            if (KeyRevisionChanged(tokenProvider, keyRevision))
+            {
+                logger.LogWarning(
+                    "Auth-webhook deny for provider {ProviderId} (host {DestinationHost}): the key was edited during evaluation.",
+                    tokenProvider.ProviderId,
+                    body.DestinationHost
+                );
+                return Ok(AuthWebhookResponse.Deny(KeyEditedReason(tokenProvider)));
+            }
+
             logger.LogInformation(
                 "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost
             );
-            return Ok(BuildAllow(tokenProvider, body.DestinationHost, token));
+            return Ok(BuildAllow(tokenProvider, keyRevision, body.DestinationHost, token));
         }
         catch (InvalidOperationException ex)
         {
@@ -183,6 +199,21 @@ public sealed class AuthWebhookController(
         try
         {
             var resolved = await authPolicy.ResolveAsync(tokenProvider, body.RequiredScopes, ct);
+            if (resolved is not null && KeyRevisionChanged(tokenProvider, keyRevision))
+            {
+                logger.LogWarning(
+                    "Auth-webhook deny for provider {ProviderId} (host {DestinationHost}): the key was edited during evaluation.",
+                    tokenProvider.ProviderId,
+                    body.DestinationHost
+                );
+                await TryNotifyAuthDeniedAsync(
+                    capturedTarget,
+                    tokenProvider.ProviderId,
+                    "key edited during evaluation"
+                );
+                return Ok(AuthWebhookResponse.Deny(KeyEditedReason(tokenProvider)));
+            }
+
             if (resolved is not null)
             {
                 logger.LogInformation(
@@ -191,7 +222,7 @@ public sealed class AuthWebhookController(
                     body.DestinationHost
                 );
                 await TryNotifyAuthCompletedAsync(capturedTarget, tokenProvider.ProviderId);
-                return Ok(BuildAllow(tokenProvider, body.DestinationHost, resolved));
+                return Ok(BuildAllow(tokenProvider, keyRevision, body.DestinationHost, resolved));
             }
 
             logger.LogInformation(
@@ -348,15 +379,11 @@ public sealed class AuthWebhookController(
             return AuthWebhookResponse.Deny("provider mismatch");
         }
 
-        // HTTPS/443 only and inside the provider's declared host scope — a configured secret must never
-        // egress in cleartext, nor toward a host the provider does not declare.
-        if (
-            body.DestinationPort != 443
-            || !EgressHostMatcher.IsAllowed(
-                SandboxEgressPolicyCompiler.ParseList(configured.Hosts),
-                body.DestinationHost
-            )
-        )
+        // Inside the provider's declared host scope — a configured secret must never go toward a host
+        // the provider does not declare. The PORT is gated by the rule re-match below (the request must
+        // land on a port the admitting rule lists), not pinned to 443: the egress proxy refuses plain
+        // HTTP on every port, so TLS is guaranteed regardless of port number.
+        if (!EgressHostMatcher.IsAllowed(SandboxEgressPolicyCompiler.ParseList(configured.Hosts), body.DestinationHost))
         {
             logger.LogWarning(
                 "Auth-webhook deny for configured provider {Provider}: destination {DestinationHost}:{DestinationPort} is outside its allowlist.",
@@ -370,6 +397,9 @@ public sealed class AuthWebhookController(
         // Re-run the gateway's own first-match-wins evaluation over the CONFIGURED rules. The winning
         // rule must be the allow rule that names this provider AND the rule the gateway reported —
         // otherwise a higher-priority deny (or a different rule entirely) governs this destination.
+        // The rule must also LIST the port explicitly: MatchesRule treats an empty port list as "any
+        // port" (the gateway's routing semantics), which Validate rejects for authenticated rules, but a
+        // programmatic consumer that skipped Validate must not turn that into inject-on-every-port.
         var match = SandboxEgressPolicyCompiler.FirstMatchingRule(
             gatewayOptions,
             body.DestinationHost,
@@ -379,6 +409,7 @@ public sealed class AuthWebhookController(
         );
         if (
             match is null
+            || match.Ports.Count == 0
             || !string.Equals(match.Action, "allow", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(match.AuthProvider, provider, StringComparison.Ordinal)
             || !string.Equals(match.Id, body.RuleId, StringComparison.OrdinalIgnoreCase)
@@ -416,32 +447,53 @@ public sealed class AuthWebhookController(
         ?? predefinedKeys?.TryResolve(provider);
 
     /// <summary>
-    /// The defense-in-depth destination gate. Predefined keys gate on their own user-entered host(s)
-    /// AND on port 443 — the generated rule is HTTPS/443-only, so a malformed/misbehaving gateway must
-    /// not extract the credential for the same host on another (cleartext) port. Managed OAuth providers
-    /// gate on their compile-time host allowlist.
+    /// The defense-in-depth destination gate. Predefined keys gate on the snapshotted revision's own
+    /// user-entered host AND port — the generated rule lists exactly that port, so a
+    /// malformed/misbehaving gateway must not extract the credential for the same host on another
+    /// port. (TLS is not what the port check protects: the egress proxy refuses plain HTTP on every
+    /// port.) Managed OAuth providers gate on their compile-time host allowlist.
     /// </summary>
     private static bool IsDestinationAllowed(
         IOAuthTokenProvider provider,
+        PredefinedKeyEntry? keyRevision,
         string? destinationHost,
         int destinationPort
     ) =>
-        provider is PredefinedKeyProvider pk
-            ? destinationPort == 443 && EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
+        provider is PredefinedKeyProvider
+            ? keyRevision is not null
+                && destinationPort == keyRevision.Port
+                && EgressHostMatcher.IsAllowed([keyRevision.Host], destinationHost)
             : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
 
     /// <summary>
-    /// Builds the allow decision: a predefined key injects its custom header list (or a minted
-    /// <c>Bearer</c> token, with the token's real expiry); a managed OAuth provider injects the
-    /// <c>Authorization</c> header as before.
+    /// True when a predefined key's live entry is no longer the revision the destination was gated
+    /// on. Reference identity is the right test: an edit always publishes a fresh record, and every
+    /// read of the entry inside <see cref="PredefinedKeyProvider.GetAccessTokenAsync"/> is serialized
+    /// with edits, so an unchanged reference across the await proves the token, the gate, and the
+    /// headers all come from one revision.
+    /// </summary>
+    private static bool KeyRevisionChanged(IOAuthTokenProvider provider, PredefinedKeyEntry? keyRevision) =>
+        provider is PredefinedKeyProvider pk && !ReferenceEquals(pk.Entry, keyRevision);
+
+    private static string KeyEditedReason(IOAuthTokenProvider provider) =>
+        $"key '{provider.ProviderId}' was edited during evaluation; retry";
+
+    /// <summary>
+    /// Builds the allow decision: a predefined key injects the snapshotted revision's custom header
+    /// list (or a minted <c>Bearer</c> token, with the token's real expiry); a managed OAuth provider
+    /// injects the <c>Authorization</c> header as before.
     /// </summary>
     private static AuthWebhookResponse BuildAllow(
         IOAuthTokenProvider provider,
+        PredefinedKeyEntry? keyRevision,
         string? destinationHost,
         OAuthAccessToken token
     ) =>
-        provider is PredefinedKeyProvider pk
-            ? AuthWebhookResponse.AllowCustom(pk.BuildHeaders(token), pk.IncludeExpiry ? token.ExpiresAtUtc : null)
+        provider is PredefinedKeyProvider && keyRevision is not null
+            ? AuthWebhookResponse.AllowCustom(
+                PredefinedKeyProvider.BuildHeaders(keyRevision, token),
+                PredefinedKeyProvider.IncludesExpiry(keyRevision) ? token.ExpiresAtUtc : null
+            )
             : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token);
 }
 

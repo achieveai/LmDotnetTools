@@ -95,6 +95,41 @@ public sealed class PredefinedKeyRegistryTests
     }
 
     [Fact]
+    public void Persisted_entry_without_a_port_loads_as_443()
+    {
+        // predefined-keys.json files written before the Port field existed carry no "Port" member. They
+        // are operator-owned state outside the repo, so the no-migration promise is: absent → 443. This
+        // pins the System.Text.Json behaviour the default relies on (a non-required init property keeps
+        // its initializer); making Port `required` or [JsonRequired] would fail this test.
+        var dir = Directory.CreateTempSubdirectory("egr-reg");
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(dir.FullName, "predefined-keys.json"),
+                """
+                [
+                  {
+                    "Id": "legacy",
+                    "Host": "api.example.com",
+                    "Kind": "CustomHeaders",
+                    "Headers": [ { "Name": "X-Key", "Value": "v" } ]
+                  }
+                ]
+                """
+            );
+
+            var entry = NewRegistry(dir.FullName).Find("legacy");
+
+            entry.Should().NotBeNull();
+            entry!.Port.Should().Be(443);
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Update_keeps_the_same_provider_instance()
     {
         var dir = Directory.CreateTempSubdirectory("egr-reg");

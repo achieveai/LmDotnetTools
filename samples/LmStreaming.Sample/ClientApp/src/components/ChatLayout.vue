@@ -33,6 +33,7 @@ import {
   type AgentRoutingLookup,
 } from '@/utils/agentColors';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
+import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -253,15 +254,29 @@ const {
   () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
 );
 
-// Artifact preview (#583, PR 5): the board panel bubbles a chip's workspace-relative path up here,
-// because the modal needs the thread id and the panel deliberately never learns it. The path is the
-// whole modal state — null means closed. Keyed to the BOARD's thread (subAgentParentThreadId), the
-// same conversation whose task carries the chip.
-const artifactPreviewPath = ref<string | null>(null);
+// File preview (#583, PR 5; chat file links): two openers bubble a file up here, because the modal
+// needs the thread id and neither opener owns it. The board panel passes a chip's workspace-relative
+// `path`; an assistant message's file link passes its raw `target`, which the modal resolves on the
+// server. This object is the whole modal state — null means closed. Keyed to the BOARD's thread
+// (subAgentParentThreadId): the conversation whose task carries the chip and whose workspace the
+// message's links point into (sub-agent transcripts share it).
+type FilePreviewRequest = { path: string; target?: undefined } | { path?: undefined; target: string };
+const artifactPreview = ref<FilePreviewRequest | null>(null);
 
 function openArtifactPreview(path: string): void {
-  artifactPreviewPath.value = path;
+  artifactPreview.value = { path };
 }
+
+// Provided to every TextMessage below (main chat and sub-agent transcripts). A link rendered for an
+// earlier conversation that is somehow still clicked after a switch carries the OLD thread id, so it is
+// ignored rather than resolved against the new conversation's workspace.
+provide<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS, {
+  threadId: subAgentParentThreadId,
+  open: (link) => {
+    if (link.threadId !== subAgentParentThreadId.value) return;
+    artifactPreview.value = { target: link.target };
+  },
+});
 
 // A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
 // against the NEW thread's workspace. This is also the second half of the #594 D6 fix: with the
@@ -269,7 +284,7 @@ function openArtifactPreview(path: string): void {
 // ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
 // watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
-  artifactPreviewPath.value = null;
+  artifactPreview.value = null;
 });
 
 const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
@@ -1038,12 +1053,13 @@ onBeforeUnmount(() => {
          but a reused instance would keep the first file's body under the second file's title
          (`onMounted` fetches once), so the guard is kept for whatever opens a preview next. -->
     <ArtifactPreviewModal
-      v-if="artifactPreviewPath && subAgentParentThreadId"
-      :key="artifactPreviewPath"
+      v-if="artifactPreview && subAgentParentThreadId"
+      :key="artifactPreview.path ?? `link:${artifactPreview.target}`"
       :thread-id="subAgentParentThreadId"
-      :path="artifactPreviewPath"
+      :path="artifactPreview.path"
+      :target="artifactPreview.target"
       :beside-sidebar="!sidebarCollapsed && !focusMode"
-      @close="artifactPreviewPath = null"
+      @close="artifactPreview = null"
     />
 
     <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a

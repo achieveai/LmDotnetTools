@@ -23,6 +23,7 @@ import {
 const keyA: EgressKeyView = {
   id: 'a',
   host: 'a.example.com',
+  port: 443,
   kind: 'custom-headers',
   headerName: 'Authorization',
   headerNames: ['Authorization'],
@@ -34,6 +35,7 @@ const keyA: EgressKeyView = {
 const keyB: EgressKeyView = {
   id: 'b',
   host: 'b.example.com',
+  port: 443,
   kind: 'refresh-token',
   headerName: 'Authorization',
   headerNames: [],

@@ -99,10 +99,10 @@ public sealed class PredefinedKeyProviderTests
         var (provider, _, handler) = NewProvider(CustomEntry(("Cookie", "sid=abc"), ("X-API-Key", "k")), () => "{}");
 
         var token = await provider.GetAccessTokenAsync();
-        var headers = provider.BuildHeaders(token);
+        var headers = PredefinedKeyProvider.BuildHeaders(provider.Entry, token);
 
         headers.Select(h => (h.Key, h.Value)).Should().Equal(("Cookie", "sid=abc"), ("X-API-Key", "k"));
-        provider.IncludeExpiry.Should().BeFalse();
+        PredefinedKeyProvider.IncludesExpiry(provider.Entry).Should().BeFalse();
         handler.Calls.Should().Be(0);
     }
 
@@ -135,8 +135,12 @@ public sealed class PredefinedKeyProviderTests
         var token = await provider.GetAccessTokenAsync();
 
         token.Value.Should().Be("AT");
-        provider.IncludeExpiry.Should().BeTrue();
-        provider.BuildHeaders(token).Select(h => (h.Key, h.Value)).Should().Equal(("Authorization", "Bearer AT"));
+        PredefinedKeyProvider.IncludesExpiry(provider.Entry).Should().BeTrue();
+        PredefinedKeyProvider
+            .BuildHeaders(provider.Entry, token)
+            .Select(h => (h.Key, h.Value))
+            .Should()
+            .Equal(("Authorization", "Bearer AT"));
         handler.Bodies[0].Should().Contain("grant_type=refresh_token").And.Contain("refresh_token=rt0");
         (await store.GetAsync("predefined-r1"))!.AccessToken.Should().Be("AT");
 

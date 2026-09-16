@@ -518,8 +518,10 @@ change**. Two `SandboxGateway` blocks drive it:
   The gateway also lets `*.example.com` match the bare `example.com`, but this app's credential webhook
   does not — list the apex host explicitly (in both the rule and the provider) if a credential must
   reach it.
-- **`Ports`** — `1..65535`. An **authenticated** rule (one with an `AuthProvider`) is **443 only**,
-  so an injected credential never egresses in cleartext.
+- **`Ports`** — `1..65535`, for authenticated rules too. The egress proxy **refuses plain-HTTP
+  proxying on every port** (it only tunnels `CONNECT` + TLS), so an injected credential never
+  egresses in cleartext whatever the port — a service on `host.docker.internal:8443` is as safe as
+  one on 443. The webhook still injects only on a port the admitting rule lists.
 - **`Methods`** — `GET HEAD POST PUT PATCH DELETE OPTIONS`, or `*` for any. Case-insensitive.
 - **`Paths`** — the gateway grammar is **only** `*` (any), a **trailing `/*`** inclusive prefix
   (`/v1/*` matches `/v1` and `/v1/...`), or an **exact, case-sensitive** path. Empty means any path.
@@ -540,6 +542,62 @@ change**. Two `SandboxGateway` blocks drive it:
 - **Wire ids are `cfg-`-prefixed.** `partner-headers` is sent to the gateway as `cfg-partner-headers`,
   so a configured identity can never collide with a managed one (`github-auth`, `predefined-*`, …).
   Rules reference the **un-prefixed** key; the prefix is added on the wire.
+
+### Reaching a service on the Docker host
+
+A service running on your machine (outside Docker) is reachable from the sandbox as
+`host.docker.internal`. Three things have to line up, and only the first is this app's configuration.
+
+**1. This app — a rule plus a `headers` provider (or an Egress Auth key with a `port`).**
+
+```jsonc
+"SandboxGateway": {
+  "Network": {
+    "Rules": {
+      "local-api": {
+        "Action": "allow",
+        "Hosts": "host.docker.internal",
+        "Ports": "8443",
+        "Methods": "*",
+        "Paths": "*",
+        "AuthProvider": "local-api-auth",
+        "Priority": 100
+      }
+    }
+  },
+  "AuthProviders": {
+    "local-api-auth": {
+      "Type": "headers",
+      "Hosts": "host.docker.internal",
+      "CacheTtlSeconds": 30,
+      "Headers": {
+        "Authorization": { "Value": "" }   // REQUIRED: an empty Value fails startup validation. Set it before start via
+                                           // SandboxGateway__AuthProviders__local-api-auth__Headers__Authorization__Value
+      }
+    }
+  }
+}
+```
+
+The same thing from the **Egress Auth** dialog: host `host.docker.internal`, port `8443`, kind
+`custom-headers`, header `Authorization`.
+
+**2. The target must be HTTPS.** The egress proxy only tunnels `CONNECT` + TLS; a plain
+`http://host.docker.internal:<port>` request is answered `400 Plain HTTP proxy not supported` by the
+proxy itself, before any rule is consulted. Put a TLS listener (Kestrel `https://`, a dev cert,
+Caddy, …) in front of a plain-HTTP service.
+
+**3. The gateway's egress-proxy container needs three env vars** (set in the gateway repo's `.env`
+and recreate the `egress-proxy` service). None of them are LmStreaming settings.
+
+| Env var (egress-proxy) | Why |
+| --- | --- |
+| `DNS_OVERRIDE=host.docker.internal:<host-gateway IP>` | `host.docker.internal` resolves to a private IP (`192.168.65.254` on Docker Desktop; `ip route \| grep default` inside the proxy container shows yours). The proxy's dial-time SSRF guard blocks private ranges unless the host is an **explicit operator pin**. |
+| `SSRF_ALLOW_PRIVATE_DNS_OVERRIDE=1` | Lets a pinned host resolve to an RFC-1918 / loopback address. Narrow: only pinned hosts, never link-local / metadata ranges. The gateway documents this as a **dev/test-only** switch. |
+| `UPSTREAM_DANGER_ACCEPT_INVALID_CERT_HOSTS=host.docker.internal` | Only for a self-signed / dev certificate. Waives chain and name checks for that one host; TLS itself and the handshake signature are still verified. Prefer `UPSTREAM_CA_CERT_PATH` with a properly-named cert when you can. |
+
+If the proxy denies the request with `proxy_ssrf_blocked`, step 3's first two vars are missing;
+`certificate` / `UnknownIssuer` errors mean the third.
 
 ### Overriding values
 
@@ -605,8 +663,8 @@ provider to the sandbox-create request:
   Custom-header entries use a short 30-second cache TTL so an edited/rotated key takes effect
   promptly; the token-minting kinds carry the minted token's **real expiry** so the gateway caches on
   it.
-- **`network.rules`** — a single `action: "allow"` rule scoping **only that entry's host** (**port
-  443 only**) through the matching `predefined-<id>` auth provider.
+- **`network.rules`** — a single `action: "allow"` rule scoping **only that entry's host and port**
+  (`port` defaults to 443) through the matching `predefined-<id>` auth provider.
 
 When the gateway intercepts a sandboxed request to that host, it calls back
 `Controllers/AuthWebhookController.cs`, which returns the entry's **header list** (custom-headers) or
@@ -633,6 +691,7 @@ Returns every configured entry with all secret material masked or omitted:
   {
     "id": "3f2c…",
     "host": "api.example.com",
+    "port": 443,
     "kind": "client-credentials",
     "headerName": "Authorization",
     "headerNames": [],
@@ -661,6 +720,7 @@ OAuth fields fall back to the stored entry when omitted on an update.
 | --- | --- | --- |
 | `id` | — | Null/omitted = create; set = update an existing entry (404 if unknown). |
 | `host` | all | Exact host or `*.suffix` — SSRF-validated (see Security). |
+| `port` | — | Destination TCP port `1..65535`. Omitted = **443** on create, keep the stored port on update. The target must still be HTTPS (see [Reaching a service on the Docker host](#reaching-a-service-on-the-docker-host)). |
 | `kind` | all | `custom-headers` \| `refresh-token` \| `client-credentials`. |
 | `headers` | custom-headers | List of `{ name, value }`. Omit on an update to keep the stored list. |
 | `headerName` | oauth kinds (optional) | Header the minted `Bearer` is injected under. Defaults to `Authorization`. |
@@ -762,8 +822,9 @@ curl -s -X DELETE http://127.0.0.1:5000/api/auth/egress-keys/<id> -o /dev/null -
   hop-by-hop / framing header — `Host`, `Content-Length`, `Connection`, `Transfer-Encoding`,
   `Content-Type` are rejected; `Cookie` and `Authorization` are allowed. Header **values** may not
   contain CR/LF or control characters (a header-injection guard).
-- **HTTPS/443 only.** Every allow rule is scoped to port 443, so an injected secret never egresses in
-  cleartext.
+- **HTTPS only, any port.** Every allow rule is scoped to the entry's single `port` (default 443),
+  and the webhook injects only on that port. TLS is guaranteed by the egress proxy itself — it
+  refuses plain-HTTP proxying on every port — so a non-443 port never means cleartext.
 - **The headless daemon fails closed.** `CodeReviewDaemon` constructs the registry as **absent**
   (`predefinedKeys: null`) — no entries, no dialog, no prompt. Pre-defined keys are an
   attended-app-only feature.

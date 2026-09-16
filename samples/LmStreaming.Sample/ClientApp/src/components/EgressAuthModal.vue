@@ -11,6 +11,8 @@ const { egressKeys, isLoading, loadEgressKeys, saveEgressKey, removeEgressKey } 
 const editorOpen = ref(false);
 const editingId = ref<string | null>(null);
 const host = ref('');
+const DEFAULT_PORT = 443;
+const port = ref<number>(DEFAULT_PORT);
 const kind = ref<EgressKeyKind>('custom-headers');
 const headerName = ref('Authorization');
 const tokenEndpoint = ref('');
@@ -21,6 +23,7 @@ const scopesText = ref('');
 const headerRows = ref<EgressHeaderPair[]>([{ name: '', value: '' }]);
 
 const hostError = ref('');
+const portError = ref('');
 const serverError = ref('');
 const saving = ref(false);
 
@@ -38,9 +41,14 @@ function kindLabel(k: EgressKeyKind): string {
   return KIND_OPTIONS.find((o) => o.value === k)?.label ?? k;
 }
 
+function hostLabel(key: EgressKeyView): string {
+  return key.port === DEFAULT_PORT ? key.host : `${key.host}:${key.port}`;
+}
+
 function resetForm(): void {
   editingId.value = null;
   host.value = '';
+  port.value = DEFAULT_PORT;
   kind.value = 'custom-headers';
   headerName.value = 'Authorization';
   tokenEndpoint.value = '';
@@ -50,6 +58,7 @@ function resetForm(): void {
   scopesText.value = '';
   headerRows.value = [{ name: '', value: '' }];
   hostError.value = '';
+  portError.value = '';
   serverError.value = '';
 }
 
@@ -65,6 +74,7 @@ function startEdit(view: EgressKeyView): void {
   resetForm();
   editingId.value = view.id;
   host.value = view.host;
+  port.value = view.port || DEFAULT_PORT;
   kind.value = view.kind;
   headerName.value = view.headerName || 'Authorization';
   scopesText.value = view.scopes.join(' ');
@@ -101,6 +111,11 @@ function parseScopes(text: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+function validatePort(): string {
+  const p = Number(port.value);
+  return Number.isInteger(p) && p >= 1 && p <= 65535 ? '' : 'Port must be a whole number from 1 to 65535';
+}
+
 /**
  * Builds the upsert request. Blank optional fields are OMITTED (not sent as null),
  * so on update the server preserves the stored value — this is what keeps secrets
@@ -112,6 +127,12 @@ function buildRequest(): EgressKeyRequest {
     host: host.value.trim(),
     kind: kind.value,
   };
+
+  // The port is always sent explicitly (the input is prefilled with the stored / default value), so
+  // an edit that changes 8443 back to 443 actually lands rather than being read as "keep stored".
+  // handleSave has already rejected anything outside 1..65535 — never substitute a default here, or a
+  // typo would silently save the key on 443 and the list would hide it.
+  req.port = Number(port.value);
 
   if (kind.value === 'custom-headers') {
     req.headers = headerRows.value
@@ -139,10 +160,16 @@ function buildRequest(): EgressKeyRequest {
 
 async function handleSave(): Promise<void> {
   hostError.value = '';
+  portError.value = '';
   serverError.value = '';
 
   if (!host.value.trim()) {
     hostError.value = 'Host is required';
+    return;
+  }
+
+  portError.value = validatePort();
+  if (portError.value) {
     return;
   }
 
@@ -246,7 +273,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown));
               :data-key-id="key.id"
             >
               <div class="key-main">
-                <span class="key-host">{{ key.host }}</span>
+                <span class="key-host">{{ hostLabel(key) }}</span>
                 <span class="kind-badge">{{ kindLabel(key.kind) }}</span>
               </div>
               <div class="key-meta">
@@ -318,6 +345,23 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown));
                 :disabled="saving"
               />
               <span v-if="hostError" class="error-message">{{ hostError }}</span>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="egress-port">Port</label>
+              <input
+                id="egress-port"
+                v-model.number="port"
+                type="number"
+                min="1"
+                max="65535"
+                class="form-input"
+                :class="{ error: portError }"
+                data-testid="egress-port-input"
+                :disabled="saving"
+              />
+              <span v-if="portError" class="error-message" data-testid="egress-port-error">{{ portError }}</span>
+              <span class="muted">HTTPS only — the egress proxy refuses plain HTTP on every port.</span>
             </div>
 
             <!-- Custom headers -->
