@@ -1,0 +1,8 @@
+{
+  "family": "code",
+  "split": "dev",
+  "seeds": ["aurora", "basalt", "cascade", "delta", "ember"],
+  "minCompactions": 1,
+  "timeoutMinutes": 30,
+  "windowPressure": "large log fixtures invite big tool results; many small edit/test cycles (R1/R2/RC1/RC2)"
+}
