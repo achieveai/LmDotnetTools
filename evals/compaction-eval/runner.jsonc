@@ -169,7 +169,7 @@
     }
   ],
 
-  "tasks": ["c1", "d1", "c2", "r1", "s1", "m1"],
+  "tasks": ["c1", "d1", "c2", "r1", "r2", "s1", "m1"],
   "seeds": 3,
   "maxParallelRuns": 2,
   "perRunTimeoutMinutes": 30,
