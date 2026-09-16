@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -646,6 +647,13 @@ public class ConversationsController(
                         return m;
                     }
 
+                    // The experimental elapsed-time notice is for the model only: it is persisted so it
+                    // stays in future context, but the browser never renders it, live or on reload.
+                    if (ElapsedTimeNotice.IsNotice(msg))
+                    {
+                        return null;
+                    }
+
                     // Fix legacy "{}{"query":"..."}" args from the content_block_start bug.
                     msg = FixLegacyDoubledArgs(msg);
 
@@ -657,6 +665,7 @@ public class ConversationsController(
                     return m;
                 }
             })
+            .Where(m => m is not null)
             .ToList();
 
         return Ok(normalized);
