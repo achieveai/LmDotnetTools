@@ -18,6 +18,36 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 internal sealed class HostGitCommandRunner : ISandboxCommandRunner
 {
     /// <summary>
+    /// Environment variables that SCOPE git to a repository. Stripped from every command this class runs.
+    /// <para>
+    /// git exports these into hook processes, and a hook's children inherit them: a <c>dotnet test</c>
+    /// started by a pre-commit hook hands every git it spawns a <c>GIT_DIR</c> pointing at the developer's
+    /// repository. The command then ignores its own <see cref="ProcessStartInfo.WorkingDirectory"/> and
+    /// operates on that repository instead. Both halves of that were observed on 2026-09-15: a fixture's
+    /// <c>git init --bare</c> re-initialised the live checkout (writing <c>core.bare=true</c>, which makes
+    /// every worktree in it refuse working-tree commands), and a fixture's <c>push</c> reached the real
+    /// origin and put five fixture commits on the shared default branch. The daemon itself has the same
+    /// exposure whenever it is launched from a hook or any other git-invoked process.
+    /// </para>
+    /// <para>
+    /// The scrub is unconditional because this class always names its repository — by working directory or
+    /// by explicit argv. It has never had a caller that means to inherit an ambient one, so there is
+    /// nothing here for an inherited value to be right about.
+    /// </para>
+    /// </summary>
+    internal static readonly string[] InheritedRepositoryScope =
+    [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ];
+
+    /// <summary>
     /// Git verbs that talk to a remote. Only these are announced and only these get <c>--progress</c>:
     /// they are the only commands that can take minutes, and they are a rounding error in the volume of
     /// git the daemon runs. Announcing <c>rev-parse</c> as well would bury the one line worth reading.
@@ -233,6 +263,14 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
         for (var i = 1; i < argv.Count; i++)
         {
             psi.ArgumentList.Add(argv[i]);
+        }
+
+        // Drop any repository scoping this process inherited (see InheritedRepositoryScope). This runs for
+        // every command, not only git: a scoping variable is meaningless to the fs commands and actively
+        // wrong for git, and a conditional here would only be one more thing to get wrong later.
+        foreach (var name in InheritedRepositoryScope)
+        {
+            _ = psi.Environment.Remove(name);
         }
 
         // Inject each signed-in provider's credential only when this is a git command (the sole
