@@ -35,6 +35,35 @@ public sealed record RecallLimits
     public int RowCharCap { get; init; } = 1_500;
 }
 
+/// <summary>Which of the eval's deterministic pre-summary checks run (eval spec §4). All off in production.</summary>
+public sealed record CompactionChecks
+{
+    /// <summary>RC1 + RC6: only the newest result per resource identity stays in the view.</summary>
+    public bool Rc1ResourceDedupe { get; init; }
+
+    /// <summary>RC2: a cleared shell result is trimmed, never replaced by a placeholder.</summary>
+    public bool Rc2ShellRetention { get; init; }
+
+    /// <summary>RC3: unanswered agent exchanges are pinned in the manifest and checked by V10.</summary>
+    public bool Rc3OpenExchanges { get; init; }
+
+    /// <summary>Every check off: what production runs.</summary>
+    public static CompactionChecks None => new();
+
+    /// <summary>True when at least one check is on.</summary>
+    public bool Any => Rc1ResourceDedupe || Rc2ShellRetention || Rc3OpenExchanges;
+}
+
+/// <summary>How the summary request is shaped (eval spec §5.2).</summary>
+public enum SummaryPrefixMode
+{
+    /// <summary>Own system prompt, rows re-rendered with seq tags, no tools: today's call.</summary>
+    Cold = 0,
+
+    /// <summary>The agent's own request prefix byte for byte, then one appended summary instruction.</summary>
+    CachedPrefix = 1,
+}
+
 /// <summary>
 /// Per-host configuration of the just-in-time compaction policy (spec §8.1). One instance is handed to
 /// the primary <see cref="MultiTurnAgentLoop"/> and travels unchanged to every owned child loop through
@@ -256,6 +285,24 @@ public sealed record CompactionOptions
     /// <summary>The least summary prompt budget window scaling produces.</summary>
     public const int SummaryPromptMinChars = 20_000;
 
+    /// <summary>Eval checks (spec §4); every flag defaults to off.</summary>
+    public CompactionChecks Checks { get; init; } = new();
+
+    /// <summary>Host overrides merged over <see cref="ToolKnowledgeRegistry.Default" />; null keeps the defaults.</summary>
+    public IReadOnlyDictionary<string, ToolKnowledgeEntry>? ToolKnowledge { get; init; }
+
+    /// <summary>
+    ///     A file whose text replaces the summarizer's built-in system prompt; null keeps the built-in. Read by the
+    ///     host, never by the library.
+    /// </summary>
+    public string? SummaryPromptPath { get; init; }
+
+    /// <summary>How the summary request is built.</summary>
+    public SummaryPrefixMode SummaryPrefixMode { get; init; } = SummaryPrefixMode.Cold;
+
+    /// <summary>RC2: characters a cleared shell result keeps (head + tail); an error result keeps twice as many.</summary>
+    public int ShellTrimChars { get; init; } = 1_500;
+
     /// <summary>
     ///     Generations to back off after <paramref name="consecutiveFailures"/> failures in a row:
     ///     <c>FailureBackoffGenerations × 2^(failures − 1)</c>, capped at <see cref="MaxFailureBackoffGenerations"/>.
@@ -385,6 +432,7 @@ public sealed record CompactionOptions
             nameof(SummaryPromptMaxChars),
             $"must be at least {nameof(SummaryRowCharCap)}"
         );
+        Require(ShellTrimChars >= 1, ShellTrimChars, nameof(ShellTrimChars), "must be positive");
     }
 
     private static void Require(bool valid, object value, string name, string message)
