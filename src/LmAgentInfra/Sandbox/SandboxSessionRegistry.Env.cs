@@ -38,18 +38,50 @@ public sealed partial class SandboxSessionRegistry
     /// thread that last activated/touched it — so a caller resuming a conversation can tell whether it
     /// was the last one to shape this session's env.
     /// </summary>
+    /// <param name="LastApplied">The env map the registry believes the session currently carries.</param>
+    /// <param name="LastActivatedThreadId">
+    /// The thread that most recently activated this session, or <see langword="null"/> when the entry was
+    /// seeded at create and no thread has reconciled it since.
+    /// </param>
+    /// <param name="Confirmed">
+    /// Whether <paramref name="LastApplied"/> came from the GATEWAY (a GET, or a PATCH response) rather
+    /// than from what this process merely ASKED for on create. An unconfirmed entry is treated as no
+    /// entry by <see cref="EnsureSessionEnvAsync"/>, which is what makes the "older gateway" probe
+    /// actually run: a pre-v0.1.11 gateway silently ignores <c>env</c> on create, so seeding the request
+    /// map as though it were applied made the first reconcile diff to zero and return without ever
+    /// touching the network — leaving <see cref="SessionEnvSupported"/> reporting true forever on a
+    /// gateway that cannot do env at all.
+    /// </param>
     private sealed record SessionEnvState(
         IReadOnlyDictionary<string, string> LastApplied,
-        string? LastActivatedThreadId
+        string? LastActivatedThreadId,
+        bool Confirmed
     );
 
     /// <summary>
-    /// Per-session env cache. Reads/writes of a single entry are LAST-WRITE-WINS — there is no per-session
-    /// lock — which is acceptable: <see cref="EnsureSessionEnvAsync"/> is a best-effort reconciler a caller
-    /// re-invokes on its own cadence (e.g. once per turn), so a lost update under concurrent callers for the
-    /// SAME session id self-heals on the next call rather than needing to be prevented here.
+    /// Per-session env cache. Every read-diff-PATCH-write sequence for one session id runs under that
+    /// session's entry in <see cref="_sessionEnvLocks"/>, so an entry is never written back from a
+    /// snapshot another caller has already superseded.
     /// </summary>
     private readonly ConcurrentDictionary<string, SessionEnvState> _sessionEnv = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// One mutex per session id, serialising <see cref="EnsureSessionEnvAsync"/> for that session.
+    /// <para>
+    /// This is not defensive tidiness. The reconcile reads the cache, diffs, awaits a PATCH, then writes
+    /// the result back; two threads activating the SAME session concurrently (two conversations sharing a
+    /// workspace, or a turn overlapping a workspace edit) would interleave read-read-patch-patch-write-write
+    /// and leave <c>LastApplied</c> holding the LOSER's map. That is not a stale activation stamp that
+    /// self-heals — the next diff is computed against a map the gateway never has, so it under- or
+    /// over-patches, and the drift persists until the session dies.
+    /// </para>
+    /// <para>
+    /// Entries are removed (never disposed) in <see cref="ForgetSessionEnvState"/>: that runs while the
+    /// caller still HOLDS the semaphore in the <c>session_not_found</c> branch, and disposing it under the
+    /// holder would turn the release into an <see cref="ObjectDisposedException"/>.
+    /// </para>
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionEnvLocks = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Set once the gateway is observed to have no session-env route at all (a bare 404 with no
@@ -102,19 +134,32 @@ public sealed partial class SandboxSessionRegistry
     /// Seeds the env cache for a just-created session with exactly what was sent on create — called from
     /// <c>CreateSessionAsync</c> right after the session's maps are published. <paramref name="applied"/>
     /// is defensively copied so a later mutation of the caller's dictionary can never corrupt the cache.
+    /// <para>
+    /// The seed is deliberately UNCONFIRMED (<see cref="SessionEnvState.Confirmed"/>): it records what
+    /// this process asked for, and an older gateway accepts the create while ignoring the field entirely.
+    /// The first <see cref="EnsureSessionEnvAsync"/> therefore still reads the session's real env once,
+    /// which is both the support probe and the correction. What the seed still buys is a
+    /// <see cref="TryGetLastActivatedThread"/> entry from the moment the session exists.
+    /// </para>
     /// </summary>
     private void SeedSessionEnvState(string sessionId, IReadOnlyDictionary<string, string> applied) =>
         _sessionEnv[sessionId] = new SessionEnvState(
             new Dictionary<string, string>(applied, StringComparer.Ordinal),
-            null
+            null,
+            Confirmed: false
         );
 
     /// <summary>
-    /// Drops a session's env cache entry. Called from every session-teardown path (create rollback,
-    /// <c>EvictSessionStateAsync</c>, disposal) so a dead session never leaves a stale entry behind, and
-    /// from <see cref="EnsureSessionEnvAsync"/> itself when the gateway reports the session gone.
+    /// Drops a session's env cache entry and its reconcile mutex. Called from every session-teardown path
+    /// (create rollback, <c>EvictSessionStateAsync</c>, disposal) so a dead session never leaves a stale
+    /// entry behind, and from <see cref="EnsureSessionEnvAsync"/> itself when the gateway reports the
+    /// session gone. The mutex is removed but NOT disposed — see <see cref="_sessionEnvLocks"/>.
     /// </summary>
-    private void ForgetSessionEnvState(string sessionId) => _ = _sessionEnv.TryRemove(sessionId, out _);
+    private void ForgetSessionEnvState(string sessionId)
+    {
+        _ = _sessionEnv.TryRemove(sessionId, out _);
+        _ = _sessionEnvLocks.TryRemove(sessionId, out _);
+    }
 
     /// <summary>TEST-ONLY: forces the next <see cref="EnsureSessionEnvAsync"/> call for a session to fall
     /// back to a GET, simulating a process restart (the in-memory cache is gone but the gateway session
@@ -177,17 +222,84 @@ public sealed partial class SandboxSessionRegistry
         // refcount-reservation helper.
         var client = ClientFor(CredentialFor(sessionId));
 
-        if (!_sessionEnv.TryGetValue(sessionId, out var state))
+        // Serialise the whole read-diff-PATCH-write for THIS session; see _sessionEnvLocks for why the
+        // interleaving is corrupting rather than merely stale. Different sessions never contend.
+        var gate = _sessionEnvLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            // No cache entry — e.g. the process restarted and this session predates it. Read the
-            // session's actual current env from the gateway to seed the cache before diffing.
-            IReadOnlyDictionary<string, string> current;
+            // An UNCONFIRMED entry is treated exactly like a missing one: it holds what create asked for,
+            // which an older gateway never applied. See SessionEnvState.Confirmed.
+            if (!_sessionEnv.TryGetValue(sessionId, out var state) || !state.Confirmed)
+            {
+                // No usable cache entry — the process restarted and this session predates it, or the
+                // session was just created and its env has not been confirmed against the gateway yet.
+                // Read the session's actual current env to seed the cache before diffing.
+                IReadOnlyDictionary<string, string>? current = null;
+                try
+                {
+                    current = await client.GetEnvAsync(sessionId, ct).ConfigureAwait(false);
+                }
+                catch (SandboxException ex) when (IsEnvRouteAbsent(ex))
+                {
+                    return MarkEnvUnsupported();
+                }
+                catch (SandboxException ex)
+                    when (ex.Kind == SandboxErrorKind.NotFound
+                        && string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal)
+                    )
+                {
+                    ForgetSessionEnvState(sessionId);
+                    return SandboxEnvApplyResult.SessionGone;
+                }
+                catch (SandboxException ex) when (state is not null)
+                {
+                    // The confirming read failed for a reason that is neither "no such route" nor "no such
+                    // session" — a timeout, a 5xx, a malformed body. This read is a CORRECTION, not the
+                    // operation the caller asked for, and this session already has a seed from its own
+                    // create, so carry on against that rather than failing the caller: this runs inside
+                    // agent construction, and throwing here would stop a conversation starting over a
+                    // reconciliation detail. The entry stays UNCONFIRMED, so the next activation retries.
+                    _logger.LogDebug(
+                        ex,
+                        "Could not confirm sandbox session {SessionId} env against the gateway; using the create-time map for this reconcile",
+                        sessionId
+                    );
+                }
+
+                state = new SessionEnvState(
+                    new Dictionary<string, string>(current ?? state!.LastApplied, StringComparer.Ordinal),
+                    // Keep whatever activation stamp the seed/previous entry carried; this read corrects
+                    // the MAP, and says nothing about who last activated the session.
+                    state?.LastActivatedThreadId,
+                    Confirmed: current is not null
+                );
+                _sessionEnv[sessionId] = state;
+            }
+
+            var diff = SandboxEnvRules.Diff(state.LastApplied, desired);
+            if (diff.Count == 0)
+            {
+                // Under the gate, `state` is still the current entry, so this cannot write back a
+                // superseded LastApplied. Only the activation stamp changes here.
+                _sessionEnv[sessionId] = state with
+                {
+                    LastActivatedThreadId = threadId,
+                };
+                return SandboxEnvApplyResult.Unchanged;
+            }
+
+            IReadOnlyDictionary<string, string> patched;
             try
             {
-                current = await client.GetEnvAsync(sessionId, ct).ConfigureAwait(false);
+                patched = await client.PatchEnvAsync(sessionId, diff, ct).ConfigureAwait(false);
             }
             catch (SandboxException ex) when (IsEnvRouteAbsent(ex))
             {
+                // The seeding GET above is not the only way to meet an old gateway: a gateway that
+                // serves GET /env but not PATCH answers 405 here. Without this the failure escaped to
+                // the caller — a 500 on workspace edit, and a throw out of the agent build, which calls
+                // this synchronously.
                 return MarkEnvUnsupported();
             }
             catch (SandboxException ex)
@@ -199,60 +311,28 @@ public sealed partial class SandboxSessionRegistry
                 return SandboxEnvApplyResult.SessionGone;
             }
 
-            state = new SessionEnvState(new Dictionary<string, string>(current, StringComparer.Ordinal), null);
-            _sessionEnv[sessionId] = state;
-        }
+            // Every other SandboxException (InvalidEnv, transport, ...)
+            // deliberately propagates uncaught — the caller is expected to catch and decide (e.g. InvalidEnv
+            // means ITS desired map is malformed, which retrying here could never fix).
+            _sessionEnv[sessionId] = new SessionEnvState(
+                new Dictionary<string, string>(patched, StringComparer.Ordinal),
+                threadId,
+                Confirmed: true
+            );
 
-        var diff = SandboxEnvRules.Diff(state.LastApplied, desired);
-        if (diff.Count == 0)
+            _logger.LogInformation(
+                "Sandbox session {SessionId} env patched by thread {ThreadId}: set {SetKeys}; unset {UnsetKeys}",
+                sessionId,
+                threadId,
+                string.Join(", ", diff.Where(kv => kv.Value is not null).Select(kv => kv.Key)),
+                string.Join(", ", diff.Where(kv => kv.Value is null).Select(kv => kv.Key))
+            );
+
+            return SandboxEnvApplyResult.Patched;
+        }
+        finally
         {
-            // Last-write-wins (see _sessionEnv doc comment): only the activation stamp changes here.
-            _sessionEnv[sessionId] = state with
-            {
-                LastActivatedThreadId = threadId,
-            };
-            return SandboxEnvApplyResult.Unchanged;
+            gate.Release();
         }
-
-        IReadOnlyDictionary<string, string> patched;
-        try
-        {
-            patched = await client.PatchEnvAsync(sessionId, diff, ct).ConfigureAwait(false);
-        }
-        catch (SandboxException ex) when (IsEnvRouteAbsent(ex))
-        {
-            // The seeding GET above is not the only way to meet an old gateway: a session created
-            // before this process decided env was supported reaches PATCH with a cache entry and no
-            // probe, and a gateway that serves GET /env but not PATCH answers 405 here. Without this
-            // the failure escaped to the caller — a 500 on workspace edit, and a throw out of the
-            // agent build, which calls this synchronously.
-            return MarkEnvUnsupported();
-        }
-        catch (SandboxException ex)
-            when (ex.Kind == SandboxErrorKind.NotFound
-                && string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal)
-            )
-        {
-            ForgetSessionEnvState(sessionId);
-            return SandboxEnvApplyResult.SessionGone;
-        }
-
-        // Every other SandboxException (InvalidEnv, transport, ...)
-        // deliberately propagates uncaught — the caller is expected to catch and decide (e.g. InvalidEnv
-        // means ITS desired map is malformed, which retrying here could never fix).
-        _sessionEnv[sessionId] = new SessionEnvState(
-            new Dictionary<string, string>(patched, StringComparer.Ordinal),
-            threadId
-        );
-
-        _logger.LogInformation(
-            "Sandbox session {SessionId} env patched by thread {ThreadId}: set {SetKeys}; unset {UnsetKeys}",
-            sessionId,
-            threadId,
-            string.Join(", ", diff.Where(kv => kv.Value is not null).Select(kv => kv.Key)),
-            string.Join(", ", diff.Where(kv => kv.Value is null).Select(kv => kv.Key))
-        );
-
-        return SandboxEnvApplyResult.Patched;
     }
 }

@@ -413,15 +413,17 @@ public sealed partial class SandboxClient
         {
             throw;
         }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException or OperationCanceledException)
+        catch (Exception ex)
+            when (ex
+                    is JsonException
+                        or InvalidOperationException
+                        or NotSupportedException
+                        or OperationCanceledException
+            )
         {
-            // The read deadline fired, or the body was malformed — fall back to status-only
-            // classification below (errorCode stays null). NotSupportedException belongs here with
-            // JsonException: ReadFromJsonAsync raises it when the response carries a non-JSON
-            // Content-Type (a proxy's HTML error page, say), and without it that escaped this method
-            // as a bare NotSupportedException — so a caller catching SandboxException, as every
-            // caller does, saw nothing at all. The sibling reader in SandboxClient.Env.cs already
-            // handles both.
+            // The read deadline fired, or the body was unreadable — fall back to status-only
+            // classification below (errorCode stays null). See MapDirectErrorAsync's sibling catch for
+            // why the non-JSON cases need three types rather than JsonException alone.
         }
 
         var kind = string.Equals(errorCode, "invalid_env", StringComparison.Ordinal)
@@ -605,11 +607,27 @@ public sealed partial class SandboxClient
             // as a SandboxException.
             throw;
         }
-        catch (Exception ex) when (ex is JsonException or OperationCanceledException)
+        catch (Exception ex)
+            when (ex
+                    is JsonException
+                        or InvalidOperationException
+                        or NotSupportedException
+                        or OperationCanceledException
+            )
         {
-            // The caller did NOT cancel: the read deadline fired, or the body was malformed — fall back to
+            // The caller did NOT cancel: the read deadline fired, or the body was unreadable — fall back to
             // status-only classification (errorCode stays null). An already-received gateway error is never
             // lost to an SDK-internal timeout.
+            //
+            // The non-JSON cases are the reason this catch is not JsonException alone. A proxy's error page
+            // arrives with its own headers, and which exception that produces depends on WHICH header is
+            // wrong (verified against the runtime, not assumed): a non-JSON media type such as text/html
+            // still reaches the parser and fails as JsonException, but a Content-Type naming a charset the
+            // runtime does not know (`charset=windows-1252`) throws InvalidOperationException before any
+            // parsing. NotSupportedException is the shape the media-type-validating HttpClient overloads
+            // raise. Any of them escaping here would pass every caller's `catch (SandboxException)`
+            // untouched — and on the env routes that also means the old-gateway 404/405 degradation never
+            // runs, so the session faults instead of quietly reporting the feature unsupported.
         }
 
         // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later

@@ -91,8 +91,11 @@ public sealed partial class SandboxClient
                 .Content.ReadFromJsonAsync<SandboxEnvResponseDto>(SandboxJson.RestOptions, ct)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
         {
+            // InvalidOperationException is not defensive padding: ReadFromJsonAsync raises it, before any
+            // parsing, when Content-Type names a charset the runtime does not know. See the matching catch
+            // in MapDirectErrorAsync.
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned a malformed response for {operation}.",

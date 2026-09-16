@@ -33,7 +33,8 @@ public class ConversationsControllerTests
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
         ConversationStatusResolver? statusResolver = null,
-        SandboxSessionRegistry? sandboxSessionRegistry = null
+        SandboxSessionRegistry? sandboxSessionRegistry = null,
+        SandboxEnvApplier? envApplier = null
     )
     {
         return new ConversationsController(
@@ -53,7 +54,8 @@ public class ConversationsControllerTests
             new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
             // Named, not positional: the controller has more than one optional trailing parameter, so a
             // positional argument here silently binds to whichever one happens to come first.
-            sandboxSessionRegistry: sandboxSessionRegistry
+            sandboxSessionRegistry: sandboxSessionRegistry,
+            envApplier: envApplier
         );
     }
 
@@ -1813,6 +1815,68 @@ public class ConversationsControllerTests
                 "an accepted turn the agent has not started is work in hand, and the send is the only "
                     + "place that knows it was accepted"
             );
+    }
+
+    /// <summary>
+    /// F-002's wiring half. A workspace's sandbox session is shared by every conversation in it, so
+    /// "whose env is live" changes underneath a POOLED agent that is never rebuilt. Applying env only at
+    /// agent construction therefore left the first conversation running with the second's variables; the
+    /// turn path has to reconcile. What the reconcile does is covered in <c>SandboxEnvApplierTests</c> —
+    /// this pins that the dispatch surface calls it at all, for the thread being dispatched.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ReconcilesTheThreadsSandboxEnv_BeforeDispatch()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-send-env";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
+
+        var envApplier = new RecordingActivationEnvApplier();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes(), envApplier: envApplier);
+
+        var result = await controller.SendMessage(
+            ThreadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
+
+        Assert.IsType<AcceptedResult>(result);
+        envApplier.ActivatedThreadIds.Should().Equal(ThreadId);
+    }
+
+    /// <summary>
+    /// The non-vacuity partner: a send that never reaches dispatch must not reconcile either. Without
+    /// this, an unconditional call at the top of the method would satisfy the test above.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotReconcileEnv_WhenTheThreadIsUnknown()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+
+        var envApplier = new RecordingActivationEnvApplier();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes(), envApplier: envApplier);
+
+        var result = await controller.SendMessage(
+            "thread-that-was-never-provisioned",
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
+
+        Assert.IsType<NotFoundObjectResult>(result);
+        envApplier.ActivatedThreadIds.Should().BeEmpty();
     }
 
     [Fact]

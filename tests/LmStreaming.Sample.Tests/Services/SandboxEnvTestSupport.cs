@@ -85,6 +85,29 @@ internal static class SandboxEnvTestSupport
             var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
             var sessionId = segments[^2];
 
+            captured.EnterEnvCall();
+            try
+            {
+                return RespondToEnv(request, captured, sessionId);
+            }
+            finally
+            {
+                captured.ExitEnvCall();
+            }
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    }
+
+    /// <summary>The GET/PATCH .../env half of <see cref="Respond"/>, split out so every exit path is
+    /// wrapped by the concurrency accounting in <see cref="CapturedEnvRequests.EnterEnvCall"/>.</summary>
+    private static HttpResponseMessage RespondToEnv(
+        HttpRequestMessage request,
+        CapturedEnvRequests captured,
+        string sessionId
+    )
+    {
+        {
             if (request.Method == HttpMethod.Get)
             {
                 captured.GetEnvCalls++;
@@ -109,6 +132,18 @@ internal static class SandboxEnvTestSupport
                 var bodyJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 captured.LastPatchBody = JsonDocument.Parse(bodyJson).RootElement.Clone();
                 captured.PatchedSessionIds.Add(sessionId);
+
+                if (captured.InvalidEnvSessionIds.Contains(sessionId))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                    {
+                        Content = new StringContent(
+                            """{"error":"invalid env","error_code":"invalid_env","keys":["BAD"]}""",
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    };
+                }
 
                 return new HttpResponseMessage(captured.PatchEnvStatus)
                 {
@@ -149,9 +184,54 @@ internal static class SandboxEnvTestSupport
         /// <summary>Body the next PATCH .../env response returns — the resulting full env map.</summary>
         public string PatchEnvJson { get; set; } = """{"env":{}}""";
 
+        /// <summary>
+        /// Session ids whose PATCH .../env is answered <c>400 { error_code: "invalid_env" }</c> regardless
+        /// of <see cref="PatchEnvStatus"/>. Lets a test reject ONE session out of several, which is the
+        /// only way to observe whether a reapply loop carries on past a failure.
+        /// </summary>
+        public HashSet<string> InvalidEnvSessionIds { get; } = new(StringComparer.Ordinal);
+
         /// <summary>When true, the next PATCH .../env request throws <see cref="HttpRequestException"/>
         /// instead of responding — the SDK maps that to <c>SandboxErrorKind.TransportTimeout</c>.</summary>
         public bool ThrowTransportErrorOnPatchEnv { get; set; }
+
+        /// <summary>
+        /// How long each GET/PATCH .../env handler stays "in flight". Widens the window in which two
+        /// callers could overlap, so <see cref="MaxConcurrentEnvCalls"/> measures something. Default zero,
+        /// so every other test is unaffected.
+        /// </summary>
+        public TimeSpan EnvCallDelay { get; set; } = TimeSpan.Zero;
+
+        private int _concurrentEnvCalls;
+        private int _maxConcurrentEnvCalls;
+
+        /// <summary>
+        /// The highest number of GET/PATCH .../env handlers that were ever in flight at the same instant.
+        /// <c>1</c> means the registry serialised them.
+        /// </summary>
+        public int MaxConcurrentEnvCalls => Volatile.Read(ref _maxConcurrentEnvCalls);
+
+        internal void EnterEnvCall()
+        {
+            var depth = Interlocked.Increment(ref _concurrentEnvCalls);
+            int seen;
+            while (depth > (seen = Volatile.Read(ref _maxConcurrentEnvCalls)))
+            {
+                if (Interlocked.CompareExchange(ref _maxConcurrentEnvCalls, depth, seen) == seen)
+                {
+                    break;
+                }
+            }
+
+            if (EnvCallDelay > TimeSpan.Zero)
+            {
+                // The stub handler is synchronous by design, so a plain sleep is the honest way to hold
+                // the call open; there is no async continuation to await here.
+                Thread.Sleep(EnvCallDelay);
+            }
+        }
+
+        internal void ExitEnvCall() => Interlocked.Decrement(ref _concurrentEnvCalls);
     }
 
     // Local mirrors of the registry's private snake_case JSON contract — same probes
@@ -290,6 +370,25 @@ internal class NoOpSandboxEnvApplier : SandboxEnvApplier
     public override Task ReapplyForWorkspaceAsync(string workspaceId, CancellationToken ct) => Task.CompletedTask;
 
     public override Task ReapplyForModeAsync(string modeId, CancellationToken ct) => Task.CompletedTask;
+
+    public override Task ApplyForActivationAsync(string threadId, CancellationToken ct) => Task.CompletedTask;
+}
+
+/// <summary>
+/// A no-op applier that records which threads were reconciled at activation, so a test can pin that a
+/// dispatch surface actually calls the hook. The reconcile itself is covered in
+/// <c>SandboxEnvApplierTests</c>; what this double is for is the WIRING, which is the half that was
+/// missing.
+/// </summary>
+internal sealed class RecordingActivationEnvApplier : NoOpSandboxEnvApplier
+{
+    public List<string> ActivatedThreadIds { get; } = [];
+
+    public override Task ApplyForActivationAsync(string threadId, CancellationToken ct)
+    {
+        ActivatedThreadIds.Add(threadId);
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

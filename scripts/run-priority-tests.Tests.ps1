@@ -208,7 +208,7 @@ try {
     # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
     # Bump it in the same commit that adds the rows, or this fails with the message below while the
     # manifest itself is perfectly in sync.
-    Assert-True ($repositoryPlan.declarationSummary.known -eq 10239 -and $repositoryPlan.declarationSummary.reviewed -eq 10239) "Every known .NET/script declaration must have exactly one reviewed policy row."
+    Assert-True ($repositoryPlan.declarationSummary.known -eq 10251 -and $repositoryPlan.declarationSummary.reviewed -eq 10251) "Every known .NET/script declaration must have exactly one reviewed policy row."
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -225,7 +225,7 @@ try {
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
     # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 342), @("P1", 7815), @("P2", 1951), @("P3", 131))) {
+    foreach ($tier in @(@("P0", 344), @("P1", 7825), @("P2", 1951), @("P3", 131))) {
         Assert-True (@($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count -eq $tier[1]) "Checked-in declaration count for $($tier[0]) must match the reviewed corpus."
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
@@ -235,7 +235,7 @@ try {
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count -eq 9610) "Manifest integration must preserve every measured coverage classification whose declaration still exists."
-    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count -eq 182) "Manifest integration must preserve approved projects without coverage capture."
+    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count -eq 194) "Manifest integration must preserve approved projects without coverage capture."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count -eq 447) "Manifest integration must preserve declarations absent from the frozen capture."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {

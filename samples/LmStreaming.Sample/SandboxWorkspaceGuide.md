@@ -114,14 +114,22 @@ places with later layers overriding earlier ones on a key-by-key basis:
 A key set in a higher layer wins; a key present only in a lower layer still applies. The three
 maps are merged with `SandboxEnvRules.Merge` (workspace < mode < provision, last write wins).
 
-**Shared-session rule.** When several conversation threads share one live sandbox session, the
-session's env always reflects the **most recently activated** thread — not a union of every
-thread that has ever touched it. Switching back to an older thread does not restore its env until
-that thread is activated again.
+**Shared-session rule.** A live sandbox session is shared by everything in one workspace (the
+session is keyed by workspace and app, not by conversation), so several conversations routinely run
+inside the **same** sandbox and therefore share **one** env map — while each conversation's own
+effective map differs, because the mode layer follows whichever mode that conversation is on and the
+provision layer is per-conversation. The session's env always reflects the **most recently
+activated** thread, never a union.
+
+**Activation is a turn.** Each conversation reconciles its own merged map immediately before every
+turn it takes, so switching back to an older conversation restores that conversation's variables on
+its next message. It is not enough to apply env when a conversation's agent is first built: agents
+are pooled and long-lived, so an agent built before a sibling conversation started would otherwise
+keep running against the sibling's variables for the rest of its life.
 
 **When a change applies.** Editing a workspace or mode's env does not rebuild the sandbox; the
-new merged map is diffed and `PATCH`ed into the live session on the **next tool call** for that
-thread. A `Bash` command sees the update immediately (it inherits the process environment at
+new merged map is diffed and `PATCH`ed into the live sessions of the affected conversations right
+away, and again on the **next turn** for the thread taking it. A `Bash` command sees the update immediately (it inherits the process environment at
 spawn time). PowerShell contexts that already set an in-session `$env:` variable keep that
 in-context value until the PowerShell process itself restarts — see the upstream gateway's
 `Docs/tools-and-api.md` ("Sandbox environment variables") for the exact PowerShell-state-directory
@@ -149,9 +157,20 @@ alongside the workspace/mode/conversation record; application logs record key co
 rejection, the offending key names — never a value.
 
 **Older gateways.** Per-sandbox env requires gateway `v0.1.11` or later (#183). Against an older
-gateway the session-env route doesn't exist; the sample detects this on first use (a code-less 404),
-logs one warning, and disables the feature silently for the rest of the process — every other
-sandbox capability keeps working.
+gateway the session-env route doesn't exist, so the sample probes for it: the first time a session's
+env is reconciled it reads the session's real env once (`GET .../env`), and a code-less 404 or a 405
+there — or on a later `PATCH` — means the route is absent. It then logs one warning and disables the
+feature for the rest of the process; every other sandbox capability keeps working, and
+`GET /api/conversations/capabilities` reports `sandboxEnv: false` so the client stops offering the
+editor.
+
+That confirming read is why the create-time env map is not simply trusted. An older gateway accepts
+the create and ignores `env`, so a sample that believed its own request would diff the map against
+itself, send nothing, and never discover the route was missing — reporting `sandboxEnv: true` on a
+gateway that cannot set a single variable. The read happens once per session; after it, the map is
+cached and only differences are `PATCH`ed. A gateway that is merely *unwell* (a 5xx, a timeout, a
+malformed body) is not treated as an old one: the create-time map is used for that reconcile and the
+probe is retried on the next activation.
 
 ### Gateway authentication
 

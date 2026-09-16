@@ -222,7 +222,11 @@ public class ConversationsController(
     // registry still starts. A null registry reports the capability as unsupported, which is the
     // honest answer when there is nothing that could apply env.
     CompactionOptions? compactionOptions = null,
-    SandboxSessionRegistry? sandboxSessionRegistry = null
+    SandboxSessionRegistry? sandboxSessionRegistry = null,
+    // THREE optional trailing parameters now. Pass them BY NAME from any hand-written call site: a
+    // positional argument here binds to whichever one comes first, and when the types happen to be
+    // compatible that is a silent mis-binding rather than a compile error.
+    SandboxEnvApplier? envApplier = null
 ) : ControllerBase
 {
     /// <summary>
@@ -1274,6 +1278,15 @@ public class ConversationsController(
                         }
                     )
                 );
+            }
+
+            // Reconcile this conversation's sandbox env before the turn is dispatched. The agent is
+            // pooled and had its env applied when it was BUILT; a sibling conversation sharing this
+            // workspace's session may have replaced that env since. Null only in tests that construct
+            // this controller without the applier. See SandboxEnvApplier.ApplyForActivationAsync.
+            if (envApplier is not null)
+            {
+                await envApplier.ApplyForActivationAsync(threadId, ct);
             }
 
             return (refresh.Agent, null);
