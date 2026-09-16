@@ -225,6 +225,23 @@ public sealed record CompactionOptions
     /// </summary>
     public int? ClearToolResultsKeepTurns { get; init; } = 3;
 
+    /// <summary>
+    ///     When true, the pre-emptive clear (<see cref="ClearToolResultsKeepTurns"/>) only clears tool results
+    ///     the model has already answered on: rows before the latest human input. The results of the exchange
+    ///     in progress stay whole until the fit check forces the question. Clearing a result the model has not
+    ///     finished with makes it re-read the page; with clearing scoped this way the re-reads halved on the
+    ///     scaled tasks at the same cost (eval round 4).
+    /// </summary>
+    public bool ClearAnsweredToolResultsOnly { get; init; }
+
+    /// <summary>
+    ///     When true, <see cref="MinCompactionGainRatio"/> is measured on the stored rows a cut would summarise
+    ///     rather than on the view after clearing. Once the view shows placeholders, a cut over the same rows
+    ///     frees almost nothing and the summary never runs (eval round 3: nine of ten arms produced no summary),
+    ///     so what the placeholders point at is lost the moment it cannot be re-read.
+    /// </summary>
+    public bool MeasureCompactionGainOnStoredRows { get; init; }
+
     /// <summary><see cref="MinTailTokens"/> never exceeds this fraction of the usable window.</summary>
     public double MinTailRatio { get; init; } = 0.15;
 

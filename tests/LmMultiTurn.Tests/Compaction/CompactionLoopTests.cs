@@ -578,6 +578,35 @@ public class CompactionLoopTests
     }
 
     [Fact]
+    public async Task ClearAnsweredToolResultsOnly_LeavesTheExchangeInProgressWhole_AndSummarizesInstead()
+    {
+        // The same window and turns as the test above, where clearing all but the last two turns alone reached
+        // the target. Every one of those turns belongs to the single exchange the model is still working on, so
+        // with the guard on there is nothing it may clear and the summariser has to make the room.
+        await using var h = new Harness(
+            EchoThenDone(8),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 2,
+                ClearAnsweredToolResultsOnly = true,
+            },
+            _ => 8_000,
+            echo: _ => new string('e', 4_000)
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var state = await h.StateAsync();
+        state!.ToolResultsClearedThroughSeq.Should().BeNull("the model has not answered on any of these results");
+        h.Decisions.Select(d => d.Reason).Should().NotContain(CompactionReasons.ToolResultsCleared);
+        h.Summarizer.Requests.Should().NotBeEmpty("the room has to come from a summary instead");
+        ToolResults(h.Agent.Requests[^1])
+            .Should()
+            .OnlyContain(r => r.Result.Length == 4_000, "no result the model is still using was replaced");
+    }
+
+    [Fact]
     public async Task ClearedAndTrimmedView_IsRebuiltIdenticallyByALoopRestartedOverTheSameStore()
     {
         var options = Options(CompactionMode.Compact) with { ClearToolResultsKeepTurns = 2 };

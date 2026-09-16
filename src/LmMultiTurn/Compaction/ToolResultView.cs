@@ -154,13 +154,35 @@ internal static class ToolResultView
     /// <summary>
     ///     The clear watermark that keeps the <paramref name="keepTurns" /> most recent tool turns whole: the
     ///     seq just before the first row of the oldest kept turn, or 0 when there are no older turns. A tool
-    ///     turn is the call and result rows of one generation; an unstamped row is its own turn.
+    ///     turn is the call and result rows of one generation; an unstamped row is its own turn. With
+    ///     <paramref name="answeredOnly" /> the watermark also stops before the latest human input, so the
+    ///     exchange in progress keeps every result whole.
     /// </summary>
-    public static long ClearedThroughSeq(IReadOnlyList<SequencedMessage> rows, int keepTurns)
+    public static long ClearedThroughSeq(IReadOnlyList<SequencedMessage> rows, int keepTurns, bool answeredOnly = false)
     {
         ArgumentNullException.ThrowIfNull(rows);
         ArgumentOutOfRangeException.ThrowIfLessThan(keepTurns, 1);
 
+        var through = OldestKeptTurnWatermark(rows, keepTurns);
+        if (!answeredOnly)
+        {
+            return through;
+        }
+
+        long? latestHuman = null;
+        foreach (var row in rows)
+        {
+            if (row.IsHumanRow)
+            {
+                latestHuman = row.Seq;
+            }
+        }
+
+        return latestHuman is { } human ? Math.Min(through, human - 1) : through;
+    }
+
+    private static long OldestKeptTurnWatermark(IReadOnlyList<SequencedMessage> rows, int keepTurns)
+    {
         var turnStarts = new List<long>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in rows)

@@ -1120,7 +1120,9 @@ internal sealed class CompactionRuntime
             // Clear older tool results first: no summary call, and often enough on its own (phase 1).
             if (
                 Options.ClearToolResultsKeepTurns is { } keepTurns
-                && await AdvanceClearingAsync(keepTurns, ct).ConfigureAwait(false) is { } cleared
+                && await AdvanceClearingAsync(keepTurns, ct, answeredOnly: Options.ClearAnsweredToolResultsOnly)
+                    .ConfigureAwait(false)
+                    is { } cleared
             )
             {
                 acted = true;
@@ -1829,9 +1831,15 @@ internal sealed class CompactionRuntime
     /// <summary>
     ///     Advances the persisted clear watermark so all but the <paramref name="keepTurns"/> most recent tool
     ///     turns show placeholders, and returns the new view; null when nothing new would be cleared, the view
-    ///     is not shaped, or the rows cannot be placed.
+    ///     is not shaped, or the rows cannot be placed. <paramref name="answeredOnly"/> keeps the exchange in
+    ///     progress whole (<see cref="CompactionOptions.ClearAnsweredToolResultsOnly"/>); the forced clears of
+    ///     the fit check never pass it.
     /// </summary>
-    private async Task<IReadOnlyList<IMessage>?> AdvanceClearingAsync(int keepTurns, CancellationToken ct)
+    private async Task<IReadOnlyList<IMessage>?> AdvanceClearingAsync(
+        int keepTurns,
+        CancellationToken ct,
+        bool answeredOnly = false
+    )
     {
         if (!ShapesView || _host.Store is not { } store)
         {
@@ -1844,7 +1852,7 @@ internal sealed class CompactionRuntime
             return null;
         }
 
-        var through = ToolResultView.ClearedThroughSeq(rows, keepTurns);
+        var through = ToolResultView.ClearedThroughSeq(rows, keepTurns, answeredOnly);
         if (through <= _clearedThroughSeq)
         {
             return null;
@@ -2266,9 +2274,12 @@ internal sealed class CompactionRuntime
         if (requireGain && usable is { } room && Options.MinCompactionGainRatio > 0)
         {
             // A cut that newly covers a sliver buys a summary call, a cache rewrite and a cooldown for nothing.
+            // Measured on the view by default; on the stored rows when the option says the placeholders' referents
+            // are what the summary is for.
+            var gainEstimator = Options.MeasureCompactionGainOnStoredRows ? _estimator : estimator;
             var previousBoundary = ActiveBoundarySeq ?? 0;
             var freed = rows.Where(r => !r.IsCheckpointRow && r.Seq > previousBoundary && r.Seq <= legal.Seq)
-                .Sum(r => estimator(r.Message));
+                .Sum(r => gainEstimator(r.Message));
             var needed = (long)(Options.MinCompactionGainRatio * room);
             if (freed < needed)
             {

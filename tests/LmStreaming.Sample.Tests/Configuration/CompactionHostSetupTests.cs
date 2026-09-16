@@ -135,6 +135,8 @@ public class CompactionHostSetupTests
                 ["Compaction:CacheTtl"] = "00:00:00",
                 ["Compaction:KillSwitch"] = "true",
                 ["Compaction:Recall:DefaultLimit"] = "3",
+                ["Compaction:ClearAnsweredToolResultsOnly"] = "true",
+                ["Compaction:MeasureCompactionGainOnStoredRows"] = "true",
             }
         );
 
@@ -145,6 +147,8 @@ public class CompactionHostSetupTests
         options.CacheTtl.Should().Be(TimeSpan.Zero);
         options.KillSwitch.Should().BeTrue();
         options.Recall.DefaultLimit.Should().Be(3);
+        options.ClearAnsweredToolResultsOnly.Should().BeTrue();
+        options.MeasureCompactionGainOnStoredRows.Should().BeTrue();
         options.WarnRatio.Should().Be(0.70, "unset knobs keep the library defaults");
     }
 

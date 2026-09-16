@@ -72,6 +72,31 @@
         "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
       ]
     },
+    {
+      // H7: the pre-emptive clear only touches results the model has already answered on (rows before the
+      // latest human input); the exchange in progress stays whole until the fit check forces it.
+      "name": "compact-v0-tok-answered",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearAnsweredToolResultsOnly=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H7 + H8: as above, and the minimum-gain gate measures the stored rows a cut would summarise, so a
+      // head already cleared to placeholders still earns its summary.
+      "name": "compact-v0-tok-answered-gain",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearAnsweredToolResultsOnly=true",
+        "--Compaction:MeasureCompactionGainOnStoredRows=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
 
     {
       // H6 at a 128k clamp (~101k usable, trigger ~81k): the scaled tasks' one-turn bursts (55-57k real
