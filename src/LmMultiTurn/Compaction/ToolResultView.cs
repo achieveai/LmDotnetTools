@@ -33,6 +33,37 @@ internal sealed record ToolResultViewOptions
     /// </summary>
     public IReadOnlyDictionary<long, long>? SupersededBy { get; init; }
 
+    /// <summary>
+    ///     RC2: the seqs of results whose call was a shell tool. A cleared one of these is trimmed to
+    ///     <see cref="ShellTrimChars" /> instead of replaced, because a command's output cannot be re-read.
+    /// </summary>
+    public IReadOnlySet<long>? ShellSeqs { get; init; }
+
+    /// <summary>
+    ///     RC2: characters a cleared shell result keeps (head + tail around the elision marker); an error result
+    ///     (<see cref="IsErrorResult" />) keeps twice as many, because a failure is what the next turn reasons about.
+    /// </summary>
+    public int ShellTrimChars { get; init; } = 1_500;
+
+    /// <summary>A result that starts with "Error" (any case) or reports a non-zero exit code.</summary>
+    internal static bool IsErrorResult(string text)
+    {
+        if (text.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        const string Marker = "exit code";
+        var at = text.LastIndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            return false;
+        }
+
+        var digits = new string([.. text[(at + Marker.Length)..].TrimStart(':', ' ').TakeWhile(char.IsDigit)]);
+        return digits.Length > 0 && digits.Trim('0').Length > 0;
+    }
+
     /// <summary>True when no transform can change a message.</summary>
     public bool IsIdentity =>
         CapChars == int.MaxValue
@@ -174,6 +205,13 @@ internal static class ToolResultView
 
         if (seq <= options.ClearedThroughSeq)
         {
+            if (options.ShellSeqs?.Contains(seq) == true)
+            {
+                // RC2: a command's output is not reproducible, so clearing it trims instead of replacing.
+                var keep = options.ShellTrimChars * (ToolResultViewOptions.IsErrorResult(text) ? 2 : 1);
+                return text.Length > keep ? Trim(text, toolCallId, keep, options.RecallToolName) : null;
+            }
+
             var placeholder = Placeholder(text.Length, toolCallId, seq, options.RecallToolName);
             return placeholder.Length < text.Length ? placeholder : null;
         }
