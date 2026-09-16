@@ -693,7 +693,11 @@ internal sealed class CompactionRuntime
         _policy = new CompactionPolicy(options);
         _summarizer =
             setup.Summarizer
-            ?? new ProviderCheckpointSummarizer(providerAgent, options.SummaryModelId ?? host.DefaultOptions.ModelId);
+            ?? new ProviderCheckpointSummarizer(
+                providerAgent,
+                options.SummaryModelId ?? host.DefaultOptions.ModelId,
+                setup.SummarySystemPrompt
+            );
         _pipeline = new CheckpointPipeline(
             _summarizer,
             new CheckpointPipelineOptions

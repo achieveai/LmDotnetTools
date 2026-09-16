@@ -77,6 +77,79 @@ public sealed class ProviderCheckpointSummarizerTests
     }
 
     [Fact]
+    public void BuildPrompt_DescribesAgentMessages_WithTypeSenderIdAndCorrelation()
+    {
+        var thread = new ThreadFixture().Human("go").Agent(AgentMessageType.Question, "which db?");
+        var question = (AgentMessage)thread.Rows[1].Message;
+        var answer = AgentMessage.Create(
+            "msg-9",
+            AgentMessageType.Response,
+            "agent-2",
+            "worker",
+            "postgres",
+            inResponseTo: question.MessageId
+        );
+        var rows = new List<SequencedMessage>(thread.Rows) { new(3, "m3", "run-1", answer) };
+
+        var prompt = ProviderCheckpointSummarizer.BuildPrompt(Request(thread) with { Rows = rows });
+
+        prompt
+            .Should()
+            .Contain($"[seq 2] (run-1) agent-message Question from=agent-parent id={question.MessageId}: which db?");
+        prompt
+            .Should()
+            .Contain(
+                $"[seq 3] (run-1) agent-message Response from=agent-2 id=msg-9 in_response_to={question.MessageId}: postgres"
+            );
+    }
+
+    [Fact]
+    public void BuildPrompt_DescribesADescendantQuestionNotification_AsAnOpenQuestion()
+    {
+        var thread = new ThreadFixture()
+            .Human("go")
+            .Notify(
+                kind: NotifyKinds.DescendantQuestion,
+                label: "agent-3 asks",
+                detail: "may I delete x?",
+                sourceToolCallId: "agent-3"
+            );
+
+        var prompt = ProviderCheckpointSummarizer.BuildPrompt(Request(thread));
+
+        prompt
+            .Should()
+            .Contain("[seq 2] (run-1) descendant-question from=agent-3 (unanswered until resolved): may I delete x?");
+    }
+
+    [Fact]
+    public async Task SummarizeAsync_UsesTheInjectedSystemPrompt()
+    {
+        var agent = new FakeAgent((_, _) => [new TextMessage { Text = Json, Role = Role.Assistant }]);
+
+        _ = await new ProviderCheckpointSummarizer(agent, systemPrompt: "custom prompt v1").SummarizeAsync(
+            Request(new ThreadFixture().Human("go"))
+        );
+
+        agent.Sent[0].Should().BeOfType<TextMessage>().Which.Text.Should().Be("custom prompt v1");
+    }
+
+    [Fact]
+    public async Task SummarizeAsync_WithNoInjectedPrompt_KeepsTheBuiltInOne()
+    {
+        var agent = new FakeAgent((_, _) => [new TextMessage { Text = Json, Role = Role.Assistant }]);
+
+        _ = await new ProviderCheckpointSummarizer(agent).SummarizeAsync(Request(new ThreadFixture().Human("go")));
+
+        agent
+            .Sent[0]
+            .Should()
+            .BeOfType<TextMessage>()
+            .Which.Text.Should()
+            .Be(ProviderCheckpointSummarizer.SystemPrompt);
+    }
+
+    [Fact]
     public void BuildPrompt_CapsLongToolRows_ButKeepsHumanRowsWhole()
     {
         var instruction = "keep " + new string('h', 5_000);

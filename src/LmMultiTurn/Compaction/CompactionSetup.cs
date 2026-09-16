@@ -19,6 +19,13 @@ public sealed record CompactionSetup
     public ICheckpointSummarizer? Summarizer { get; init; }
 
     /// <summary>
+    ///     Replaces the built-in summarizer's system prompt; null keeps it. The host resolves it from
+    ///     <see cref="CompactionOptions.SummaryPromptPath"/>, so the library does no file IO. Ignored when
+    ///     <see cref="Summarizer"/> is supplied.
+    /// </summary>
+    public string? SummarySystemPrompt { get; init; }
+
+    /// <summary>
     ///     Context window in tokens for a model id, or null when unknown (§5.3 row 2). The capacity
     ///     resolver of #681 adapts into this delegate; a host without one leaves it null and the policy
     ///     answers <c>capacity_unknown</c>.

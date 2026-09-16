@@ -18,9 +18,20 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 ///     validator, not this class, is what makes a paraphrase fail (V3). A reply that carries no
 ///     parseable JSON object is a failed call (<c>summary_call_failed</c>), never an empty manifest.
 /// </remarks>
-public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? defaultModelId = null)
-    : ICheckpointSummarizer
+/// <param name="providerAgent">The loop's provider agent, called directly.</param>
+/// <param name="defaultModelId">The model a request without its own <c>ModelId</c> runs on.</param>
+/// <param name="systemPrompt">
+///     Replaces <see cref="SystemPrompt" /> for this summarizer; null or blank keeps the built-in one. The eval
+///     varies the instruction here (spec §5.2) without touching what the validator checks.
+/// </param>
+public sealed class ProviderCheckpointSummarizer(
+    IAgent providerAgent,
+    string? defaultModelId = null,
+    string? systemPrompt = null
+) : ICheckpointSummarizer
 {
+    private readonly string _systemPrompt = string.IsNullOrWhiteSpace(systemPrompt) ? SystemPrompt : systemPrompt;
+
     /// <summary>The fixed instruction every summary pass runs under.</summary>
     public const string SystemPrompt = """
         You compact an agent conversation into a checkpoint. You are given the rows being compacted, each
@@ -64,7 +75,7 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
 
         var messages = new IMessage[]
         {
-            new TextMessage { Text = SystemPrompt, Role = Role.System },
+            new TextMessage { Text = _systemPrompt, Role = Role.System },
             new TextMessage { Text = BuildPrompt(request), Role = Role.User },
         };
         var options = new GenerateReplyOptions
@@ -278,6 +289,15 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
                 $"tool result {result.ToolName}{(result.IsDeferred ? " (deferred)" : "")}: {result.Result}",
             ToolsCallResultMessage results => "tool results: "
                 + string.Join("; ", results.ToolCallResults.Select(r => $"{r.ToolName}: {r.Result}")),
+            // RC5: a collaboration row is described structurally, so the summarizer reads its type, sender and
+            // correlation rather than having to parse the envelope text the receiver sees.
+            AgentMessage agent =>
+                $"agent-message {agent.AgentMessageType} from={agent.FromAgentId} id={agent.MessageId}"
+                    + (agent.InResponseTo is null ? "" : $" in_response_to={agent.InResponseTo}")
+                    + $": {agent.Body}",
+            NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } question =>
+                $"descendant-question from={question.SourceToolCallId ?? "-"} (unanswered until resolved): "
+                    + (question.Detail ?? question.Label),
             NotifyMessage notify => $"notification {notify.NotifyKind}: {notify.GetText()}",
             CompactionCheckpointMessage checkpoint => $"checkpoint {checkpoint.CheckpointId} (already compacted)",
             ICanGetText text => $"{message.Role.ToString().ToLowerInvariant()}: {text.GetText()}",

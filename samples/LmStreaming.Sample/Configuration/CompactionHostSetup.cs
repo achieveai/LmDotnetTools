@@ -52,13 +52,33 @@ public static class CompactionHostSetup
             return null;
         }
 
+        string? summaryPrompt = null;
+        if (!string.IsNullOrWhiteSpace(options.SummaryPromptPath))
+        {
+            // The eval's prompt files carry YAML front matter (id, parent, hypothesis); the model sees only the body.
+            summaryPrompt = StripFrontMatter(File.ReadAllText(options.SummaryPromptPath));
+        }
+
         return new CompactionSetup
         {
             Options = options,
             ProviderId = providerId,
+            SummarySystemPrompt = summaryPrompt,
             ResolveWindowTokens = capacityResolver is null
                 ? null
                 : modelId => string.IsNullOrEmpty(modelId) ? null : capacityResolver.Resolve(modelId)?.WindowTokens,
         };
+    }
+
+    /// <summary>The text after a leading <c>---</c>…<c>---</c> block, trimmed; the whole text when there is none.</summary>
+    internal static string StripFrontMatter(string text)
+    {
+        if (!text.StartsWith("---", StringComparison.Ordinal))
+        {
+            return text.Trim();
+        }
+
+        var end = text.IndexOf("\n---", 3, StringComparison.Ordinal);
+        return end < 0 ? text.Trim() : text[(end + 4)..].Trim();
     }
 }

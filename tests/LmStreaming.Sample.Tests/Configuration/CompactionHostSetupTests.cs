@@ -109,6 +109,52 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void SummaryPromptFile_IsReadIntoTheSetup_WithoutItsFrontMatter()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"prompt-{Guid.NewGuid():N}.md");
+        File.WriteAllText(path, "---\nid: v1\n---\nSummarize briefly.");
+        try
+        {
+            var setup = Create(
+                new Dictionary<string, string?>
+                {
+                    ["Compaction:Mode"] = "Compact",
+                    ["Compaction:SummaryPromptPath"] = path,
+                }
+            );
+
+            setup!.SummarySystemPrompt.Should().Be("Summarize briefly.");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void NoSummaryPromptPath_LeavesTheBuiltInPrompt()
+    {
+        Create(new Dictionary<string, string?> { ["Compaction:Mode"] = "Compact" })!
+            .SummarySystemPrompt.Should()
+            .BeNull();
+    }
+
+    [Fact]
+    public void AMissingSummaryPromptFile_Throws()
+    {
+        var act = () =>
+            Create(
+                new Dictionary<string, string?>
+                {
+                    ["Compaction:Mode"] = "Compact",
+                    ["Compaction:SummaryPromptPath"] = "nope.md",
+                }
+            );
+
+        act.Should().Throw<FileNotFoundException>();
+    }
+
+    [Fact]
     public void UnknownMode_FailsAtBind()
     {
         var configuration = new ConfigurationBuilder()
