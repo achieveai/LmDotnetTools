@@ -59,8 +59,26 @@ internal sealed record EvalRunnerConfig
     /// <summary>Display name identifying the eval mode among the host's chat modes (create-or-update key; never a system mode).</summary>
     public string ModeName { get; init; } = "todo-eval";
 
+    /// <summary>
+    /// The chat-mode payload file inside <see cref="EvalDir"/>, posted verbatim to
+    /// <c>/api/chat-modes</c> once per host. Its <c>name</c> must equal <see cref="ModeName"/>.
+    /// </summary>
+    public string ModeFile { get; init; } = EvalAssets.DefaultModeFileName;
+
     /// <summary>Name of the workspace the runner creates (or reuses) on the isolated host.</summary>
     public string WorkspaceName { get; init; } = "todo-eval";
+
+    /// <summary>
+    /// Where a per-run workspace directory is created, for tasks that ship a <c>fixtures/</c> tree.
+    /// Each run gets <c>{WorkspacesRoot}/{leaf}</c>, the leaf derived from its run key.
+    /// <para>
+    /// This MUST be the same directory the host resolves a workspace leaf under — its
+    /// <c>SandboxGateway:WorkspaceBasePath</c> — or the agent would work in one tree while the J1
+    /// checker judges another. A task with no fixtures ignores this entirely and keeps using the one
+    /// shared <see cref="WorkspaceName"/> workspace, which is what the todo-eval layout does.
+    /// </para>
+    /// </summary>
+    public string WorkspacesRoot { get; init; } = @"B:\sandbox-workspaces\workspaces";
 
     public HostConfig Host { get; init; } = new();
 
@@ -223,17 +241,28 @@ internal sealed record VariantConfig
     public IReadOnlyDictionary<string, string> ExtraEnv { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Whether this option-set is expected to COMPACT. Only then does a task's
+    /// <c>minCompactions</c> floor apply, and a run below it is J0-invalid because it never exercised
+    /// the strategy under test. Declared rather than inferred from the arguments: reading intent out
+    /// of an argument string would silently mislabel every knob spelling the parser did not expect.
+    /// </summary>
+    public bool Compacts { get; init; }
+
     /// <summary>True for the untouched default variant — the shape a pre-variant sweep had.</summary>
     public bool IsDefault =>
         string.Equals(Name, DefaultName, StringComparison.Ordinal) && ExtraArgs.Count == 0 && ExtraEnv.Count == 0;
 
     /// <summary>
     /// The variant's identity for a comparison: name, then its arguments in order (order decides which
-    /// wins), then its environment sorted by key (a dictionary has no order to preserve).
+    /// wins), then its environment sorted by key (a dictionary has no order to preserve), and finally
+    /// <see cref="Compacts"/> — which changes which of its runs count as valid, so two sweeps that
+    /// disagree about it are not judging the same thing even when they ran the same arguments.
     /// </summary>
     public string Signature() =>
         $"{Name}[{string.Join(" ", ExtraArgs)}]"
-        + $"{{{string.Join(" ", ExtraEnv.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase).Select(kvp => $"{kvp.Key}={kvp.Value}"))}}}";
+        + $"{{{string.Join(" ", ExtraEnv.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase).Select(kvp => $"{kvp.Key}={kvp.Value}"))}}}"
+        + (Compacts ? "+compacts" : "");
 }
 
 /// <summary>How the isolated LmStreaming.Sample host instance is obtained and launched.</summary>

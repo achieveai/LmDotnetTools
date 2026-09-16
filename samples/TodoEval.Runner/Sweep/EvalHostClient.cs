@@ -122,8 +122,18 @@ internal sealed class EvalHostClient
 
     // ── Workspaces ───────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Returns the id of the workspace with the given name, creating it when absent.</summary>
-    public async Task<string> EnsureWorkspaceAsync(string workspaceName, CancellationToken ct)
+    /// <summary>
+    /// Returns the id of the workspace with the given name, creating it when absent.
+    /// <paramref name="directoryRelPath"/> names the directory leaf the session mounts under the
+    /// host's workspace base path; null lets the host derive it from the name. A run that needs its
+    /// OWN directory passes the leaf explicitly, because that is the only way the runner and the host
+    /// can agree on which tree the agent is working in.
+    /// </summary>
+    public async Task<string> EnsureWorkspaceAsync(
+        string workspaceName,
+        CancellationToken ct,
+        string? directoryRelPath = null
+    )
     {
         var listBody = await SendReadAsync(HttpMethod.Get, "api/workspaces", body: null, ct);
         using var listDoc = JsonDocument.Parse(listBody);
@@ -145,7 +155,12 @@ internal sealed class EvalHostClient
             }
         }
 
-        var createBody = await SendReadAsync(HttpMethod.Post, "api/workspaces", new { Name = workspaceName }, ct);
+        var createBody = await SendReadAsync(
+            HttpMethod.Post,
+            "api/workspaces",
+            new { Name = workspaceName, DirectoryRelPath = directoryRelPath },
+            ct
+        );
         return ReadStringProperty(createBody, "id");
     }
 

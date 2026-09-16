@@ -42,6 +42,27 @@ internal sealed record RunManifestEntry
     public long DurationMs { get; init; }
     public string? Error { get; init; }
 
+    /// <summary>The sandbox workspace this run worked in, or null when it used the sweep's shared one.</summary>
+    public string? WorkspacePath { get; init; }
+
+    /// <summary>
+    /// When the task's <c>## steer</c> correction was sent, or null when the task has none or the run
+    /// finished before the correction was due — which is a real outcome, not a harness failure.
+    /// </summary>
+    public DateTimeOffset? SteerSentAt { get; init; }
+
+    /// <summary>The task checker's verdict, or null when the task ships no checker.</summary>
+    public J1Result? J1 { get; init; }
+
+    /// <summary>
+    /// The task's <c>minCompactions</c> floor, carried here so an offline re-extraction judges validity
+    /// exactly as the sweep did, without re-reading a corpus that may since have moved.
+    /// </summary>
+    public int? MinCompactions { get; init; }
+
+    /// <summary>Whether the variant this run came from was expected to compact (see the floor above).</summary>
+    public bool VariantCompacts { get; init; }
+
     /// <summary>
     /// The run's stable identity across the whole sweep. A segment appears only when it distinguishes
     /// something: the default variant and the unnamed task contribute nothing, so a single-variant
