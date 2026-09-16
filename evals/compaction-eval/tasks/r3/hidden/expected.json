@@ -1,0 +1,10 @@
+{
+  "default_request_timeout_ms": "4500",
+  "max_shards_per_tenant": "48",
+  "canary_traffic_percent": "12",
+  "incident_commander_role": "primary on-call",
+  "audit_retention_days": "400",
+  "snapshot_interval_minutes": "90",
+  "approvals_required_for_schema_change": "2",
+  "region_with_no_replicas": "ap-south-3"
+}
