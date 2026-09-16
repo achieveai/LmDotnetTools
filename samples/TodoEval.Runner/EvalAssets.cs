@@ -5,6 +5,21 @@ using TodoEval.Runner.Metrics;
 namespace TodoEval.Runner;
 
 /// <summary>
+/// One task in the sweep's task axis: the user message template (with its <c>{TOPIC}</c> placeholder)
+/// and the board shape its runs are judged against.
+/// </summary>
+internal sealed record EvalTaskAsset
+{
+    /// <summary>The task id, or null for the single unnamed task of the <c>{EvalDir}/task.md</c> layout.</summary>
+    public required string? Id { get; init; }
+
+    public required string Template { get; init; }
+
+    /// <summary>Null when the task ships no <c>expected-board.json</c>: the run has no board gate.</summary>
+    public required BoardShapeExpectation? ExpectedBoard { get; init; }
+}
+
+/// <summary>
 /// The eval asset set owned by the Testing Mode work item (#618): <c>mode.json</c> (a
 /// ChatModeCreateUpdate payload), <c>task.md</c> (with a <c>{TOPIC}</c> placeholder) and
 /// <c>expected-board.json</c> (the shape the final todo board must satisfy). The runner treats
@@ -14,16 +29,21 @@ namespace TodoEval.Runner;
 /// </summary>
 internal sealed class EvalAssets
 {
+    /// <summary>The subdirectory a multi-task eval keeps its per-task assets under.</summary>
+    public const string TasksDirName = "tasks";
+
     public required JsonObject ModePayload { get; init; }
     public required string ModeName { get; init; }
-    public required string TaskTemplate { get; init; }
-    public required BoardShapeExpectation? ExpectedBoard { get; init; }
 
-    public static EvalAssets Load(string evalDir, string expectedModeName)
+    /// <summary>
+    /// The tasks this sweep runs: exactly one unnamed entry in the single-task layout, or one entry
+    /// per configured task id in the <c>tasks/</c> layout.
+    /// </summary>
+    public required IReadOnlyList<EvalTaskAsset> Tasks { get; init; }
+
+    public static EvalAssets Load(string evalDir, string expectedModeName, IReadOnlyList<string>? taskIds = null)
     {
         var modePath = Path.Combine(evalDir, "mode.json");
-        var taskPath = Path.Combine(evalDir, "task.md");
-        var expectedBoardPath = Path.Combine(evalDir, "expected-board.json");
 
         if (!File.Exists(modePath))
         {
@@ -32,11 +52,6 @@ internal sealed class EvalAssets
                     + "expected-board.json) is delivered by the todo-eval mode work item; point --eval-dir at it.",
                 modePath
             );
-        }
-
-        if (!File.Exists(taskPath))
-        {
-            throw new FileNotFoundException($"task.md not found in eval dir '{evalDir}'.", taskPath);
         }
 
         var modePayload =
@@ -55,19 +70,55 @@ internal sealed class EvalAssets
             );
         }
 
-        BoardShapeExpectation? expectedBoard = null;
-        if (File.Exists(expectedBoardPath))
-        {
-            expectedBoard = BoardShapeExpectation.Load(expectedBoardPath);
-        }
-
         return new EvalAssets
         {
             ModePayload = modePayload,
             ModeName = modeName,
-            TaskTemplate = ExtractTaskMessage(File.ReadAllText(taskPath), taskPath),
-            ExpectedBoard = expectedBoard,
+            Tasks = LoadTasks(evalDir, taskIds),
         };
+    }
+
+    /// <summary>
+    /// The configured tasks, or the single unnamed task of the original layout when none is configured.
+    /// A task's <c>task.md</c> is required (a typo'd id must not silently sweep nothing); its
+    /// <c>expected-board.json</c> is optional and its absence means the run has NO board gate — the
+    /// completion criterion is then reported as not measurable rather than failed.
+    /// </summary>
+    private static IReadOnlyList<EvalTaskAsset> LoadTasks(string evalDir, IReadOnlyList<string>? taskIds)
+    {
+        if (taskIds is not { Count: > 0 })
+        {
+            return [Read(id: null, evalDir, $"task.md not found in eval dir '{evalDir}'.")];
+        }
+
+        return
+        [
+            .. taskIds.Select(id =>
+                Read(
+                    id,
+                    Path.Combine(evalDir, TasksDirName, id),
+                    $"task.md not found for task '{id}': expected "
+                        + $"'{Path.Combine(evalDir, TasksDirName, id, "task.md")}'."
+                )
+            ),
+        ];
+
+        static EvalTaskAsset Read(string? id, string dir, string missingMessage)
+        {
+            var taskPath = Path.Combine(dir, "task.md");
+            if (!File.Exists(taskPath))
+            {
+                throw new FileNotFoundException(missingMessage, taskPath);
+            }
+
+            var boardPath = Path.Combine(dir, "expected-board.json");
+            return new EvalTaskAsset
+            {
+                Id = id,
+                Template = ExtractTaskMessage(File.ReadAllText(taskPath), taskPath),
+                ExpectedBoard = File.Exists(boardPath) ? BoardShapeExpectation.Load(boardPath) : null,
+            };
+        }
     }
 
     /// <summary>

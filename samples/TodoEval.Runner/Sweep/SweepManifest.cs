@@ -41,8 +41,24 @@ internal sealed record SweepManifest
     public required FingerprintSet ExtractedUnder { get; init; }
 
     public IReadOnlyList<string> Models { get; init; } = [];
+
+    /// <summary>
+    /// The host option-sets swept, with the arguments and environment that DEFINED them. The names
+    /// alone would not do: two sweeps can both call a variant <c>compact-v0</c> and configure a
+    /// different target ratio, and comparing those two is comparing two different experiments.
+    /// </summary>
+    public IReadOnlyList<VariantConfig> Variants { get; init; } = [];
+
+    /// <summary>The task ids swept; empty in the single-task layout.</summary>
+    public IReadOnlyList<string> Tasks { get; init; } = [];
+
     public int Seeds { get; init; }
     public int PerRunTimeoutMinutes { get; init; }
+
+    /// <summary>
+    /// Summed over the sweep's hosts — one per variant — so it stays the fixed cost of producing
+    /// these numbers rather than one host's share of it.
+    /// </summary>
     public HostStartupWork StartupWork { get; init; } = new();
     public DateTimeOffset StartedUtc { get; init; }
     public DateTimeOffset FinishedUtc { get; init; }
@@ -67,6 +83,22 @@ internal sealed record SweepManifest
         );
 
     /// <summary>Reads the manifest of an archived sweep, or null when it predates this file.</summary>
+    /// <summary>
+    /// The sweep's axes as one comparable string. Both axes are CANONICALIZED, not compared field by
+    /// field: an archive written before these fields existed carries empty lists, which is exactly the
+    /// single default variant and the single unnamed task it actually ran — without that equivalence
+    /// the axis refusal would reject every pre-existing baseline. Variants and tasks are sorted
+    /// because sweeping two cells in the other order measures the same thing; the arguments WITHIN a
+    /// variant keep their order, because a later one overrides an earlier one.
+    /// </summary>
+    public string AxisSignature()
+    {
+        var variants = Variants.Count == 0 ? [VariantConfig.Default] : Variants;
+        return string.Join(",", variants.Select(v => v.Signature()).Order(StringComparer.Ordinal))
+            + "|"
+            + string.Join(",", Tasks.Order(StringComparer.Ordinal));
+    }
+
     public static SweepManifest? Read(string sweepDir)
     {
         var path = Path.Combine(sweepDir, FileName);

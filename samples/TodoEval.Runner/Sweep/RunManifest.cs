@@ -25,6 +25,15 @@ internal sealed record RunManifestEntry
     public required int SeedIndex { get; init; }
     public required string Topic { get; init; }
     public required string Status { get; init; }
+
+    /// <summary>
+    /// The host option-set this run was produced under. Absent on an archive written before the
+    /// variant axis existed, which is read as the <c>default</c> variant.
+    /// </summary>
+    public string? Variant { get; init; }
+
+    /// <summary>The task id, or null in the single-task layout.</summary>
+    public string? Task { get; init; }
     public string? ThreadId { get; init; }
     public string? InputId { get; init; }
     public string? RunId { get; init; }
@@ -32,6 +41,29 @@ internal sealed record RunManifestEntry
     public DateTimeOffset EndedUtc { get; init; }
     public long DurationMs { get; init; }
     public string? Error { get; init; }
+
+    /// <summary>
+    /// The run's stable identity across the whole sweep. A segment appears only when it distinguishes
+    /// something: the default variant and the unnamed task contribute nothing, so a single-variant
+    /// single-task sweep keeps the original <c>{model}/seed{n}</c> key and stays diffable against
+    /// every archived baseline. Variant names are unique by validation and the task layout is
+    /// all-or-nothing, so the key is unique in every combination.
+    /// </summary>
+    public static string MakeRunKey(VariantConfig variant, string? taskId, string model, int seedIndex)
+    {
+        var prefix = new List<string>(2);
+        if (!string.Equals(variant.Name, VariantConfig.DefaultName, StringComparison.Ordinal))
+        {
+            prefix.Add(variant.Name);
+        }
+
+        if (taskId is not null)
+        {
+            prefix.Add(taskId);
+        }
+
+        return string.Join("/", prefix.Append($"{model}/seed{seedIndex}"));
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

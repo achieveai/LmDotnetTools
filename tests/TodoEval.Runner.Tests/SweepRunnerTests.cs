@@ -21,7 +21,22 @@ public class SweepRunnerTests
             PerRunTimeoutMinutes = 1,
         };
         using var http = new HttpClient(new ScriptedHostHandler()) { BaseAddress = new Uri("http://127.0.0.1:9/") };
-        var runner = new SweepRunner(new EvalHostClient(http), config, "ws-1", "mode-1", "Do {TOPIC}", TextWriter.Null);
+        var runner = new SweepRunner(
+            new EvalHostClient(http),
+            config,
+            "ws-1",
+            "mode-1",
+            VariantConfig.Default,
+            [
+                new EvalTaskAsset
+                {
+                    Id = null,
+                    Template = "Do {TOPIC}",
+                    ExpectedBoard = null,
+                },
+            ],
+            TextWriter.Null
+        );
         var manifestPath = Path.Combine(Path.GetTempPath(), $"todo-eval-manifest-{Guid.NewGuid():N}.jsonl");
 
         try

@@ -159,6 +159,13 @@ internal sealed record RunMetrics
     public required int SeedIndex { get; init; }
     public required string Topic { get; init; }
     public required string Status { get; init; }
+
+    /// <summary>The host option-set the run was produced under; null on a pre-variant archive.</summary>
+    public string? Variant { get; init; }
+
+    /// <summary>The task id, or null in the single-task layout.</summary>
+    public string? Task { get; init; }
+
     public string? ThreadId { get; init; }
     public long DurationMs { get; init; }
     public string? Error { get; init; }
@@ -197,6 +204,18 @@ internal sealed record RunMetrics
 
     /// <summary>Token attribution from the persisted usage records (metrics-spec.md, "Usage").</summary>
     public UsageReport Usage { get; init; } = new();
+
+    /// <summary>
+    /// The run's cache-aware cost, derived from the same deduplicated usage records as
+    /// <see cref="Usage"/>. All zeros with <c>records = 0</c> means the run persisted no usage at all.
+    /// </summary>
+    public RunCost Cost { get; init; } = RunCost.Absent;
+
+    /// <summary>
+    /// Compaction checkpoints applied to the run's ROOT thread. Zero in every mode below
+    /// <c>Compact</c>, and a genuine measured zero in <c>Compact</c> when nothing crossed the ratio.
+    /// </summary>
+    public int Compactions { get; init; }
 
     /// <summary>Per-spawn cost the host measured, one row per sub-agent the run spawned.</summary>
     public IReadOnlyList<SpawnTiming> SpawnTimings { get; init; } = [];
@@ -288,10 +307,15 @@ internal sealed record SweepMetrics
 /// </summary>
 internal static class MetricsExtractor
 {
+    /// <remarks>
+    /// <c>expectedBoard</c> resolves the board shape a given run is judged against, returning null for
+    /// no board gate at all. It is a DELEGATE rather than one fixture because the task axis gives each
+    /// task its own <c>expected-board.json</c>; a null delegate means no run in the sweep has one.
+    /// </remarks>
     public static SweepMetrics Extract(
         string conversationsDir,
         IReadOnlyList<RunManifestEntry> manifest,
-        BoardShapeExpectation? expectedBoard,
+        Func<RunManifestEntry, BoardShapeExpectation?>? expectedBoard,
         FingerprintSet? fingerprints = null
     )
     {
@@ -332,10 +356,11 @@ internal static class MetricsExtractor
     private static RunMetrics ExtractRun(
         RunManifestEntry entry,
         IReadOnlyDictionary<string, IReadOnlyList<ConversationStoreReader.ThreadData>> groups,
-        BoardShapeExpectation? expectedBoard,
+        Func<RunManifestEntry, BoardShapeExpectation?>? expectedBoardFor,
         FingerprintSet? fingerprints
     )
     {
+        var expectedBoard = expectedBoardFor?.Invoke(entry);
         var baseMetrics = new RunMetrics
         {
             Fingerprints = fingerprints,
@@ -343,6 +368,8 @@ internal static class MetricsExtractor
             Model = entry.Model,
             SeedIndex = entry.SeedIndex,
             Topic = entry.Topic,
+            Variant = entry.Variant,
+            Task = entry.Task,
             Status = entry.Status,
             ThreadId = entry.ThreadId,
             DurationMs = entry.DurationMs,
@@ -430,6 +457,8 @@ internal static class MetricsExtractor
                 group.Sum(t => t.OpenObligationResults)
             ),
             Usage = usage,
+            Cost = CostOf(usage.Cost, rootThread.CompactionCheckpoints),
+            Compactions = rootThread.CompactionCheckpoints,
             SpawnTimings = stamp.Timings,
             StartupWork = stamp.Work,
             RetryStormCount = storms.Count,
@@ -445,6 +474,20 @@ internal static class MetricsExtractor
             Validity = RunValidity.From(group.Count, subAgents.Count, withoutTaskTools, suspects),
         };
     }
+
+    /// <summary>
+    /// The usage-derived cost block, cross-checked against what the STORE says happened. When the
+    /// thread carries checkpoints but no usage record is marked as a summary pass, the attribution
+    /// failed rather than finding nothing, so the summary tokens are reported as unknown: a 0 beside a
+    /// non-zero checkpoint count would read as "compaction summarised for free".
+    /// </summary>
+    private static RunCost CostOf(RunCost cost, int compactionCheckpoints) =>
+        compactionCheckpoints > 0 && cost.CompactionSummaryRecords == 0
+            ? cost with
+            {
+                CompactionSummaryTokens = null,
+            }
+            : cost;
 
     /// <summary>
     /// Every task tool and every coordination tool gets a row - zero-call tools included - in the

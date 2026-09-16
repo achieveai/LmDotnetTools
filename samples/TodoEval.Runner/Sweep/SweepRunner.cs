@@ -3,29 +3,38 @@ using System.Text.Json;
 namespace TodoEval.Runner.Sweep;
 
 /// <summary>
-/// Drives the N-seeds x M-models sweep against an already-ready isolated host: one conversation per
-/// (model, seed), completion gated on the host's run-state machinery (status-by-input polled to a
-/// terminal status — never a UI/idle heuristic), a hard per-run wall-clock timeout, and sequential
-/// execution by default with opt-in bounded parallelism. Each finished run is appended to the
-/// manifest immediately so a crashed sweep still leaves a usable partial record.
+/// Drives the tasks x models x seeds sweep for ONE variant against an already-ready isolated host:
+/// one conversation per cell, completion gated on the host's run-state machinery (status-by-input
+/// polled to a terminal status — never a UI/idle heuristic), a hard per-run wall-clock timeout, and
+/// sequential execution by default with opt-in bounded parallelism. Each finished run is appended to
+/// the manifest immediately so a crashed sweep still leaves a usable partial record.
 /// </summary>
+/// <remarks>
+/// The variant axis is deliberately NOT here: every compaction knob is bound onto a host-level DI
+/// singleton, so varying one means launching another host. <c>EvalProgram</c> owns that loop and
+/// hands each host its own runner.
+/// </remarks>
 internal sealed class SweepRunner(
     EvalHostClient client,
     EvalRunnerConfig config,
     string workspaceId,
     string modeId,
-    string taskTemplate,
+    VariantConfig variant,
+    IReadOnlyList<EvalTaskAsset> tasks,
     TextWriter log
 )
 {
     public async Task<IReadOnlyList<RunManifestEntry>> RunSweepAsync(string manifestPath, CancellationToken ct)
     {
-        var specs = new List<(string Model, int SeedIndex)>();
-        foreach (var model in config.Models)
+        var specs = new List<(EvalTaskAsset Task, string Model, int SeedIndex)>();
+        foreach (var task in tasks)
         {
-            for (var seed = 0; seed < config.Seeds; seed++)
+            foreach (var model in config.Models)
             {
-                specs.Add((model, seed));
+                for (var seed = 0; seed < config.Seeds; seed++)
+                {
+                    specs.Add((task, model, seed));
+                }
             }
         }
 
@@ -33,12 +42,12 @@ internal sealed class SweepRunner(
         var manifestLock = new object();
         using var throttle = new SemaphoreSlim(config.MaxParallelRuns);
 
-        var tasks = specs.Select(async spec =>
+        var running = specs.Select(async spec =>
         {
             await throttle.WaitAsync(ct);
             try
             {
-                var entry = await RunOneAsync(spec.Model, spec.SeedIndex, ct);
+                var entry = await RunOneAsync(spec.Task, spec.Model, spec.SeedIndex, ct);
                 lock (manifestLock)
                 {
                     entries.Add(entry);
@@ -53,14 +62,25 @@ internal sealed class SweepRunner(
             }
         });
 
-        _ = await Task.WhenAll(tasks);
-        return [.. entries.OrderBy(e => e.Model, StringComparer.Ordinal).ThenBy(e => e.SeedIndex)];
+        _ = await Task.WhenAll(running);
+        return
+        [
+            .. entries
+                .OrderBy(e => e.Task, StringComparer.Ordinal)
+                .ThenBy(e => e.Model, StringComparer.Ordinal)
+                .ThenBy(e => e.SeedIndex),
+        ];
     }
 
-    private async Task<RunManifestEntry> RunOneAsync(string model, int seedIndex, CancellationToken ct)
+    private async Task<RunManifestEntry> RunOneAsync(
+        EvalTaskAsset task,
+        string model,
+        int seedIndex,
+        CancellationToken ct
+    )
     {
         var topic = config.TopicForSeed(seedIndex);
-        var runKey = $"{model}/seed{seedIndex}";
+        var runKey = RunManifestEntry.MakeRunKey(variant, task.Id, model, seedIndex);
         var started = DateTimeOffset.UtcNow;
         string? threadId = null;
         string? inputId = null;
@@ -69,7 +89,7 @@ internal sealed class SweepRunner(
         try
         {
             threadId = await client.ProvisionConversationAsync(workspaceId, model, modeId, ct);
-            var taskText = TaskTemplateRenderer.Render(taskTemplate, topic);
+            var taskText = TaskTemplateRenderer.Render(task.Template, topic);
             inputId = await client.SendMessageAsync(threadId, taskText, ct);
 
             var deadline = started + TimeSpan.FromMinutes(config.PerRunTimeoutMinutes);
@@ -85,6 +105,8 @@ internal sealed class SweepRunner(
                 Model = model,
                 SeedIndex = seedIndex,
                 Topic = topic,
+                Variant = variant.Name,
+                Task = task.Id,
                 Status = status.Status,
                 ThreadId = threadId,
                 InputId = inputId,
@@ -121,6 +143,8 @@ internal sealed class SweepRunner(
                 Model = model,
                 SeedIndex = seedIndex,
                 Topic = topic,
+                Variant = variant.Name,
+                Task = task.Id,
                 Status = status,
                 ThreadId = threadId,
                 InputId = inputId,

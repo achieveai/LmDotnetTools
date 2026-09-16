@@ -181,9 +181,15 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         // The webhook base defaults to :5000 in appsettings; a wrong value silently breaks context
         // discovery, so it is pinned to this instance's own port.
         startInfo.ArgumentList.Add($"--Auth:Webhook:PublicBaseUrl=http://127.0.0.1:{port}");
-        // No sandbox gateway on the eval host: spawning is non-fatal-but-noisy, and the eval's task
-        // is a pure todo-board exercise.
-        startInfo.ArgumentList.Add("--SandboxGateway:AutoSpawn=false");
+        // No sandbox gateway on the eval host by default: spawning is non-fatal-but-noisy, and the
+        // todo-eval's task is a pure board exercise. host.sandbox=true omits the pin instead of
+        // forcing the opposite value, so the host's own configuration (via ExtraArgs, which carry the
+        // gateway and agent-cli paths) is what decides — a coding eval needs a real sandbox.
+        if (!config.Sandbox)
+        {
+            startInfo.ArgumentList.Add("--SandboxGateway:AutoSpawn=false");
+        }
+
         foreach (var arg in config.ExtraArgs)
         {
             startInfo.ArgumentList.Add(arg);
