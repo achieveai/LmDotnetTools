@@ -123,7 +123,8 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
     {
         // The designated overload: same shape as the prior constructor, plus two REQUIRED (no
         // default) bool parameters carrying the new controls, plus the optional
-        // descendantQuestionSink and compaction (#684) parameters. Because the bool flags have no default value, C# cannot
+        // descendantQuestionSink, compaction (#684) and elapsedTimeNotice (experimental) parameters. Because the bool
+        // flags have no default value, C# cannot
         // resolve a short-form call (e.g. 3 positional args) to this overload, so it can never collide
         // with the back-compat constructor above — the two are only ambiguous if both are
         // simultaneously applicable, and a required parameter with no supplied argument makes an
@@ -133,7 +134,7 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
         var withFlags = ctors.SingleOrDefault(ctor =>
         {
             var parameters = ctor.GetParameters();
-            return parameters.Length == PriorConstructorParameterTypes.Length + 4
+            return parameters.Length == PriorConstructorParameterTypes.Length + 5
                 && parameters.Any(p =>
                     p.Name == "includeAskUserQuestionTool" && p.ParameterType == typeof(bool) && !p.IsOptional
                 )
@@ -149,6 +150,12 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
                 && parameters.Any(p =>
                     p.Name == "compaction"
                     && p.ParameterType == typeof(CompactionSetup)
+                    && p.IsOptional
+                    && p.DefaultValue == null
+                )
+                && parameters.Any(p =>
+                    p.Name == "elapsedTimeNotice"
+                    && p.ParameterType == typeof(ElapsedTimeNoticeOptions)
                     && p.IsOptional
                     && p.DefaultValue == null
                 );
