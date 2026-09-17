@@ -35,6 +35,61 @@ describe('MessageList', () => {
     vi.restoreAllMocks();
   });
 
+  it('labels message groups while keeping the quiet role marks decorative in history and the active turn', () => {
+    const text = (role: 'user' | 'assistant', value: string) => ({
+      $type: MessageType.Text,
+      role,
+      text: value,
+      isThinking: false,
+    });
+    const wrapper = mount(MessageList, {
+      props: {
+        displayItems: [
+          { id: 'u-1', type: 'user-message', content: text('user', 'First'), status: 'active', timestamp: 1 },
+          { id: 'a-1', type: 'assistant-message', content: text('assistant', 'First answer') },
+          { id: 'u-2', type: 'user-message', content: text('user', 'Second'), status: 'active', timestamp: 2 },
+          { id: 'a-2', type: 'assistant-message', content: text('assistant', 'Second answer') },
+        ],
+      },
+    });
+
+    expect(wrapper.findAll('[role="group"][aria-label="Your message"]')).toHaveLength(2);
+    expect(wrapper.findAll('[role="group"][aria-label="Assistant message"]')).toHaveLength(2);
+    expect(wrapper.findAll('[data-testid="message-role-mark"]').map((mark) => mark.text())).toEqual([
+      'You',
+      'AI',
+      'You',
+      'AI',
+    ]);
+    expect(
+      wrapper.findAll('[data-testid="message-role-mark"]').every((mark) => mark.attributes('aria-hidden') === 'true')
+    ).toBe(true);
+  });
+
+  it('uses PendingMessage as the only surface for queued messages in history and the active turn', () => {
+    const text = (role: 'user' | 'assistant', value: string) => ({
+      $type: MessageType.Text,
+      role,
+      text: value,
+      isThinking: false,
+    });
+    const wrapper = mount(MessageList, {
+      props: {
+        displayItems: [
+          { id: 'u-1', type: 'user-message', content: text('user', 'Queued earlier'), status: 'pending', timestamp: 1 },
+          { id: 'a-1', type: 'assistant-message', content: text('assistant', 'Answer') },
+          { id: 'u-2', type: 'user-message', content: text('user', 'Queued now'), status: 'pending', timestamp: 2 },
+        ],
+      },
+    });
+
+    const userContents = wrapper.findAll('.user-content');
+    expect(userContents).toHaveLength(2);
+    expect(userContents.every((content) => !content.classes('user-content-surface'))).toBe(true);
+    expect(wrapper.findAll('.pending-message')).toHaveLength(2);
+    expect(wrapper.findAll('.waiting-indicator')).toHaveLength(2);
+  });
+
   it('scrolls to new user message when added', async () => {
     const wrapper = mount(MessageList, {
       props: {

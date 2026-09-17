@@ -2,9 +2,9 @@
 </script>
 
 <template>
-  <div class="assistant-message-wrapper">
+  <div class="assistant-message-wrapper" role="group" aria-label="Assistant message">
     <div class="assistant-message-container">
-      <div class="assistant-avatar group-avatar">&#x1F916;</div>
+      <div class="assistant-avatar group-avatar" aria-hidden="true">AI</div>
       <div class="assistant-content">
         <div class="typing-bubble">
           <div class="typing-indicator">
@@ -34,15 +34,18 @@
 }
 
 .assistant-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
-  background: #6c757d;
+  background: #eef0f2;
+  color: #4c5966;
   align-self: flex-start;
   position: sticky;
   top: 8px;

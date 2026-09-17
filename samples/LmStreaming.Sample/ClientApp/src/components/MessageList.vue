@@ -347,6 +347,8 @@ watch(
     <template v-for="group in splitGroups.history" :key="group.id">
       <div 
         :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
+        role="group"
+        :aria-label="group.role === 'user' ? 'Your message' : 'Assistant message'"
         :data-message-id="group.role === 'user' ? group.id : undefined"
         :data-view-anchor="group.role === 'user' ? group.id : undefined"
         :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
@@ -358,12 +360,19 @@ watch(
           <div 
             :class="group.role === 'user' ? 'user-avatar' : 'assistant-avatar'"
             class="group-avatar"
+            aria-hidden="true"
+            data-testid="message-role-mark"
           >
-            {{ group.role === 'user' ? '&#x1F464;' : '&#x1F916;' }}
+            {{ group.role === 'user' ? 'You' : 'AI' }}
           </div>
           
           <!-- Content area for all items in the group -->
-          <div :class="group.role === 'user' ? 'user-content' : 'assistant-content'">
+          <div
+            :class="[
+              group.role === 'user' ? 'user-content' : 'assistant-content',
+              { 'user-content-surface': group.role === 'user' && group.status !== 'pending' },
+            ]"
+          >
             <template v-for="row in renderRows(group)" :key="row.id">
               <TurnActivity
                 v-if="row.kind === 'activity'"
@@ -418,6 +427,8 @@ watch(
       <template v-for="group in splitGroups.current" :key="group.id">
         <div
           :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
+          role="group"
+          :aria-label="group.role === 'user' ? 'Your message' : 'Assistant message'"
           :data-message-id="group.role === 'user' ? group.id : undefined"
           :data-view-anchor="group.role === 'user' ? group.id : undefined"
           :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
@@ -429,12 +440,19 @@ watch(
             <div 
               :class="group.role === 'user' ? 'user-avatar' : 'assistant-avatar'"
               class="group-avatar"
+              aria-hidden="true"
+              data-testid="message-role-mark"
             >
-              {{ group.role === 'user' ? '&#x1F464;' : '&#x1F916;' }}
+              {{ group.role === 'user' ? 'You' : 'AI' }}
             </div>
             
             <!-- Content area for all items in the group -->
-            <div :class="group.role === 'user' ? 'user-content' : 'assistant-content'">
+            <div
+              :class="[
+                group.role === 'user' ? 'user-content' : 'assistant-content',
+                { 'user-content-surface': group.role === 'user' && group.status !== 'pending' },
+              ]"
+            >
               <template v-for="row in renderRows(group)" :key="row.id">
                 <TurnActivity
                   v-if="row.kind === 'activity'"
@@ -495,8 +513,10 @@ watch(
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 12px;
+  min-width: 0;
+  overflow-x: hidden;
+  padding: 20px clamp(12px, 3vw, 28px);
+  gap: 20px;
 }
 
 .empty-state {
@@ -512,6 +532,7 @@ watch(
 .assistant-message-wrapper {
   display: flex;
   max-width: 85%;
+  min-width: 0;
 }
 
 .user-message-wrapper {
@@ -538,22 +559,26 @@ watch(
 
 .user-avatar,
 .assistant-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 
 .user-avatar {
-  background: #1976d2;
+  background: #e9eef5;
+  color: #405064;
 }
 
 .assistant-avatar {
-  background: #6c757d;
+  background: #eef0f2;
+  color: #4c5966;
 }
 
 .user-content,
@@ -562,7 +587,13 @@ watch(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+
+.user-content-surface {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #f4f7fa;
 }
 
 .group-avatar {
@@ -572,16 +603,18 @@ watch(
 }
 
 .text-bubble {
-  background: #ffffff;
-  border: 1px solid #e0e0e0;
-  border-radius: 16px 16px 16px 4px;
-  padding: 12px 16px;
+  min-width: 0;
+  padding: 4px 36px 8px 0;
+  color: #202832;
+  overflow-wrap: anywhere;
 }
 
 /* The row is exactly the bubble's box (a block wrapper around one block child), so the button can be
    pinned to the bubble's corner while staying outside `assistant-text`. */
 .text-bubble-row {
   position: relative;
+  width: 100%;
+  max-width: 72ch;
   min-width: 0;
 }
 
@@ -590,7 +623,7 @@ watch(
 .bubble-copy {
   position: absolute;
   top: 6px;
-  right: 8px;
+  right: 0;
   opacity: 0;
   /* While invisible it must not swallow clicks or text selection on the bubble's first line. */
   pointer-events: none;
@@ -616,7 +649,7 @@ watch(
 .active-conversation-spacer {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
   /* justify-content: flex-end; Removed to allow content to start at top */
 }
 </style>

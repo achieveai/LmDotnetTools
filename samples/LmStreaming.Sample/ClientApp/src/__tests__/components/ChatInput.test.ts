@@ -6,8 +6,31 @@ const SEND = '[data-testid="send-button"]';
 const STOP = '[data-testid="stop-button"]';
 const QUEUE = '[data-testid="queue-button"]';
 const TEXTAREA = '[data-testid="chat-input-textarea"]';
+const HINT = '[data-testid="chat-input-hint"]';
 
 describe('ChatInput button states', () => {
+  it('gives the composer a label and associates its keyboard hint', async () => {
+    const wrapper = mount(ChatInput, { props: { streaming: false } });
+    const textarea = wrapper.get(TEXTAREA);
+
+    expect(wrapper.get('label[for="chat-message-input"]').text()).toBe('Message');
+    expect(textarea.attributes('aria-describedby')).toBe('chat-input-hint');
+    expect(wrapper.get(HINT).text()).toBe('Enter to send · Shift+Enter for a new line');
+
+    await wrapper.setProps({ streaming: true });
+    expect(wrapper.get(HINT).text()).toBe('Enter to queue · Shift+Enter for a new line');
+  });
+
+  it('keeps Shift+Enter available for a new line instead of sending', async () => {
+    const wrapper = mount(ChatInput, { props: { streaming: false } });
+    const textarea = wrapper.get(TEXTAREA);
+    await textarea.setValue('first line');
+    await textarea.trigger('keydown', { key: 'Enter', shiftKey: true });
+
+    expect(wrapper.emitted('send')).toBeFalsy();
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('first line');
+  });
+
   describe('Not streaming', () => {
     it('shows the Send button (no Stop, no Queue)', () => {
       const wrapper = mount(ChatInput, { props: { streaming: false } });

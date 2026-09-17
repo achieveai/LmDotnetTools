@@ -35,14 +35,22 @@ function handleKeydown(event: KeyboardEvent) {
 
 <template>
   <div class="chat-input" data-testid="chat-input">
-    <textarea
-      v-model="inputText"
-      :disabled="disabled"
-      placeholder="Type a message..."
-      rows="2"
-      data-testid="chat-input-textarea"
-      @keydown="handleKeydown"
-    />
+    <div class="input-field">
+      <label class="sr-only" for="chat-message-input">Message</label>
+      <textarea
+        id="chat-message-input"
+        v-model="inputText"
+        :disabled="disabled"
+        aria-describedby="chat-input-hint"
+        placeholder="Type a message..."
+        rows="2"
+        data-testid="chat-input-textarea"
+        @keydown="handleKeydown"
+      />
+      <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
+        Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
+      </p>
+    </div>
     <button
       v-if="streaming && inputText.trim()"
       class="queue-button"
@@ -73,14 +81,34 @@ function handleKeydown(event: KeyboardEvent) {
 <style scoped>
 .chat-input {
   display: flex;
-  gap: 8px;
-  padding: 16px;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
   border-top: 1px solid #e0e0e0;
   background: #fff;
 }
 
-textarea {
+.input-field {
   flex: 1;
+  min-width: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   padding: 12px;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
@@ -89,13 +117,21 @@ textarea {
   resize: none;
 }
 
-textarea:focus {
-  outline: none;
+textarea:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
   border-color: #007bff;
 }
 
 textarea:disabled {
   background: #f5f5f5;
+}
+
+.input-hint {
+  margin: 5px 2px 0;
+  color: #687481;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 button {
@@ -108,6 +144,22 @@ button {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
+}
+
+button:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .chat-input {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  button {
+    padding-inline: 16px;
+  }
 }
 
 button:hover:not(:disabled) {
