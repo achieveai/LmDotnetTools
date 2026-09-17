@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import ConversationTabs from '@/components/ConversationTabs.vue';
 import type { ConversationTab } from '@/composables/useConversationTabs';
@@ -65,5 +65,35 @@ describe('ConversationTabs', () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
     await wrapper.get('[data-tab-id="a2"]').trigger('click');
     expect(wrapper.emitted('select')).toEqual([['a2']]);
+  });
+
+  it('keeps a long agent name available in the native tooltip', () => {
+    const longName = 'Research and synthesis agent for quarterly architecture decisions';
+    const wrapper = mount(ConversationTabs, {
+      props: {
+        tabs: [{ id: 'long', label: longName, kind: 'subagent', color: '#2563eb', status: 'running' }],
+        activeTabId: 'long',
+      },
+    });
+
+    expect(wrapper.get('[data-tab-id="long"]').attributes('title')).toBe(`${longName} · running`);
+  });
+
+  it('scrolls a newly selected tab to the nearest visible position', async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
+      await wrapper.vm.$nextTick();
+      scrollIntoView.mockClear();
+
+      await wrapper.setProps({ activeTabId: 'wf1' });
+
+      await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalledOnce());
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
   });
 });
