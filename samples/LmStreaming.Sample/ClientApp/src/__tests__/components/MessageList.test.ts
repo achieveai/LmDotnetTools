@@ -481,7 +481,7 @@ describe('MessageList Consumer activity projection', () => {
     await toggle.trigger('click');
 
     expect(toggle.attributes('aria-expanded')).toBe('true');
-    expect(wrapper.getComponent({ name: 'MetadataPill' }).props('presentation')).toBe('card');
+    expect(wrapper.getComponent({ name: 'MetadataPill' }).props('presentation')).toBe('activity-row');
     wrapper.get('[data-notify-kind="compaction"]');
   });
 

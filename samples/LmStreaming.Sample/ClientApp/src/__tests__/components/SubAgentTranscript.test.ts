@@ -61,6 +61,10 @@ function mountView(props: Partial<Record<string, unknown>> = {}) {
 describe('SubAgentTranscript', () => {
   it('renders the transcript MessageList with the display items and streaming state', () => {
     const wrapper = mountView();
+    const view = wrapper.get('[data-testid="subagent-view"]');
+    expect(view.attributes('id')).toBe('conversation-agent-view-a1');
+    expect(view.attributes('role')).toBe('region');
+    expect(view.attributes('aria-labelledby')).toBe('conversation-agent-selector-a1');
     const ml = wrapper.get('[data-testid="subagent-transcript"] [data-testid="stub-ml"]');
     expect(ml.attributes('data-count')).toBe('2');
     expect(ml.attributes('data-loading')).toBe('true');

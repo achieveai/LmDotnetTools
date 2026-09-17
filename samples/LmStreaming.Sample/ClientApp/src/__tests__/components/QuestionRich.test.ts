@@ -6,6 +6,8 @@ import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
 import type { ClientToolSubmitFn, ClientToolSubmitOutcome } from '@/composables/useClientToolSubmit';
 import type { ToolCall } from '@/types';
 
+let draftKeySequence = 0;
+
 /** Build the (view, toolCall) prop pair against the locked #246 AskUserQuestion schema. */
 function mountQuestion(
   functionArgs: string,
@@ -15,6 +17,7 @@ function mountQuestion(
     isDeferred?: boolean;
     isErrorFlag?: boolean;
     toolCallId?: string;
+    draftKey?: string;
     submit?: ClientToolSubmitFn;
   } = {}
 ) {
@@ -24,12 +27,13 @@ function mountQuestion(
     isDeferred = false,
     isErrorFlag = false,
     toolCallId = 'q1',
+    draftKey = `question-test-${draftKeySequence++}`,
     submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false })),
   } = opts;
   const view = deriveToolPillState({ functionArgs, result, hasResult, isErrorFlag, isDeferred });
   const toolCall: ToolCall = { tool_call_id: toolCallId, function_name: 'AskUserQuestion', function_args: functionArgs };
   const w = mount(QuestionRich, {
-    props: { view, toolCall },
+    props: { view, toolCall, draftKey },
     global: { provide: { [SUBMIT_CLIENT_TOOL_RESULT]: submit } },
   });
   return { w, submit };
@@ -112,6 +116,14 @@ describe('QuestionRich — Other and Skip', () => {
     await w.get('[data-testid="question-other-toggle"] input').setValue(true);
     await w.get('[data-testid="question-other-text"]').setValue('Something specific');
     expect((w.get('[data-testid="question-submit"]').element as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('uses a labelled multiline field for Other', async () => {
+    const { w } = mountQuestion(otherArgs, { isDeferred: true });
+    await w.get('[data-testid="question-other-toggle"] input').setValue(true);
+    const field = w.get('[data-testid="question-other-text"]');
+    expect(field.element.tagName).toBe('TEXTAREA');
+    expect(field.element.closest('label')?.textContent).toContain('Your answer');
   });
 
   it('submits otherText distinct from selectedValues (never injected into selectedValues)', async () => {
@@ -322,6 +334,56 @@ describe('QuestionRich — 1-4 question stepper', () => {
       { questionId: 'q0', selectedValues: ['A'], otherText: '', skipped: false },
       { questionId: 'q1', selectedValues: ['B'], otherText: '', skipped: false },
     ]);
+  });
+
+  it('restores the current step and prior answers after a view remount', async () => {
+    const draftKey = 'thread-7:root:q-stepper';
+    const first = mountQuestion(twoQArgs, { isDeferred: true, draftKey }).w;
+    await first.get('[data-testid="question-option-A"] input').setValue(true);
+    await first.get('[data-testid="question-next"]').trigger('click');
+    first.unmount();
+
+    const restored = mountQuestion(twoQArgs, { isDeferred: true, draftKey }).w;
+    expect(restored.text()).toContain('Question 2 of 2');
+    await restored.get('[data-testid="question-back"]').trigger('click');
+    expect((restored.get('[data-testid="question-option-A"] input').element as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+describe('QuestionRich — accessible option groups and draft isolation', () => {
+  it('uses a fieldset legend and instance-unique radio names', () => {
+    const first = mountQuestion(singleArgs, { isDeferred: true });
+    const second = mountQuestion(singleArgs, { isDeferred: true });
+    expect(first.w.get('fieldset legend').text()).toBe('Pick a color');
+    const firstName = first.w.get('[data-testid="question-option-Red"] input').attributes('name');
+    const secondName = second.w.get('[data-testid="question-option-Red"] input').attributes('name');
+    expect(firstName).toBeTruthy();
+    expect(secondName).toBeTruthy();
+    expect(firstName).not.toBe(secondName);
+  });
+
+  it('restores Other text for the same scoped call but resets when its payload changes', async () => {
+    const draftKey = 'thread-7:agent-2:q-other';
+    const args = JSON.stringify({
+      context: 'ctx',
+      questions: [{ prompt: 'Anything else?', allowOther: true, options: [{ label: 'Nothing' }] }],
+    });
+    const first = mountQuestion(args, { isDeferred: true, draftKey }).w;
+    await first.get('[data-testid="question-other-toggle"] input').setValue(true);
+    await first.get('[data-testid="question-other-text"]').setValue('Keep this draft');
+    first.unmount();
+
+    const restored = mountQuestion(args, { isDeferred: true, draftKey }).w;
+    expect((restored.get('[data-testid="question-other-text"]').element as HTMLTextAreaElement).value).toBe('Keep this draft');
+    restored.unmount();
+
+    const changedArgs = JSON.stringify({
+      context: 'changed',
+      questions: [{ prompt: 'A new question?', allowOther: true, options: [{ label: 'No' }] }],
+    });
+    const reset = mountQuestion(changedArgs, { isDeferred: true, draftKey }).w;
+    expect(reset.find('[data-testid="question-other-text"]').exists()).toBe(false);
+    expect((reset.get('[data-testid="question-other-toggle"] input').element as HTMLInputElement).checked).toBe(false);
   });
 });
 

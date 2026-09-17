@@ -164,6 +164,13 @@ public sealed class PartialConcrete : PartialBase {}
     ) "A recognized test attribute reached through a project-wide global using alias must still be inventoried."
     $baseline = $coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline"
     Assert-True ($baseline.id -ceq 'dotnet|tests/Core/Core.csproj|Contracts.Checks.Baseline()') "Declaration identity must be stable, container-scoped and independent of source lines."
+    $checksPath = Join-Path $fixture "tests/Core/Checks.cs"
+    $checksLf = [System.IO.File]::ReadAllText($checksPath) -replace "`r`n?", "`n"
+    [System.IO.File]::WriteAllText($checksPath, $checksLf)
+    $lfHash = (& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline" | Select-Object -First 1).sourceHash
+    [System.IO.File]::WriteAllText($checksPath, ($checksLf -replace "`n", "`r`n"))
+    $crlfHash = (& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline" | Select-Object -First 1).sourceHash
+    Assert-True ($lfHash -ceq $crlfHash) "Declaration source hashes must not depend on Git checkout line endings."
     $genericBaseline = $coreCases | Where-Object method -eq "GenericBaseline"
     Assert-True ($genericBaseline.declaringType -ceq 'Checks+Generic`1+Inner`2') "Every generic declaring-type segment must retain its own arity."
     Assert-True ($genericBaseline.id -ceq 'dotnet|tests/Core/Core.csproj|Contracts.Checks+Generic`1+Inner`2.GenericBaseline()') "Generic declaring-type arity must prevent stable identity collisions."

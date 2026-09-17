@@ -7,7 +7,7 @@ import { GET_AGENT_COLOR } from '@/utils/agentColors';
 import { COMPACTION_NOTIFY_KIND, GET_CHECKPOINT_STATE } from '@/composables/messageDisplay';
 
 describe('NotificationPill.vue', () => {
-  it('renders a sub-agent completion notification with kind, source tool and label', () => {
+  it('renders a sub-agent completion with its message first and source metadata in details', async () => {
     const notification: NotificationDisplayData = {
       notifyKind: 'subagent-completion',
       sourceToolName: 'Spawn',
@@ -20,8 +20,11 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.exists()).toBe(true);
     expect(pill.attributes('data-notify-kind')).toBe('subagent-completion');
-    expect(wrapper.find('[data-testid="notification-source"]').text()).toContain('Spawn');
     expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('build-fixer');
+    expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
+    await wrapper.get('button.notification-header').trigger('click');
+    expect(wrapper.get('[data-testid="notification-source"]').text()).toBe('Spawn');
+    expect(wrapper.get('.notification-detail').text()).toBe('all green');
     // It is NOT rendered as a user/assistant chat bubble.
     expect(wrapper.find('.markdown-content').exists()).toBe(false);
   });
@@ -113,7 +116,7 @@ describe('NotificationPill.vue', () => {
   // (agentId/tab-id for descendant-question vs. the NotifyClient tool call's own id for
   // client-notification) and must not be conflated. No second notification channel — same pill,
   // different kind.
-  it('renders a descendant-question (pending question) with its own icon and label', () => {
+  it('renders a descendant-question with an outline icon and label', () => {
     const notification: NotificationDisplayData = {
       notifyKind: 'descendant-question',
       sourceToolName: 'AskUserQuestion',
@@ -125,7 +128,7 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.attributes('data-notify-kind')).toBe('descendant-question');
     expect(wrapper.find('.notification-kind').text()).toBe('Question pending');
-    expect(wrapper.find('.notification-icon').text()).toBe('❓');
+    expect(wrapper.get('svg.notification-icon').attributes('aria-hidden')).toBe('true');
   });
 
   it('navigates to the reporting descendant\'s tab when a descendant-question pill is clicked', async () => {
@@ -140,7 +143,10 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('button.notification-header');
+    expect(header.attributes('aria-expanded')).toBeUndefined();
+    expect(header.attributes('aria-controls')).toBeUndefined();
+    await header.trigger('click');
 
     expect(goToAgentTab).toHaveBeenCalledWith('agent-42');
   });
@@ -156,7 +162,9 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('.notification-header');
+    expect(header.element.tagName).toBe('DIV');
+    await header.trigger('click');
 
     expect(goToAgentTab).not.toHaveBeenCalled();
   });
@@ -180,6 +188,8 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.attributes('data-notify-kind')).toBe('client-notification');
     expect(wrapper.find('.notification-kind').text()).toBe('Notification');
+    expect(wrapper.get('[data-testid="notification-label"]').text()).toBe('Heads up');
+    expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
   });
 
   it('does not navigate for a generic client-notification even when sourceToolCallId is present, and stays expandable', async () => {
@@ -195,11 +205,17 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('button.notification-header');
+    const detailId = header.attributes('aria-controls');
+    expect(header.attributes('aria-expanded')).toBe('false');
+    expect(detailId).toBeTruthy();
+    await header.trigger('click');
 
     expect(goToAgentTab).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-testid="notification-body"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="notification-body"]').text()).toBe('Cleanup finished');
+    expect(header.attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('[data-testid="notification-body"]').attributes('id')).toBe(detailId);
+    expect(wrapper.get('[data-testid="notification-source"]').text()).toBe('NotifyClient');
+    expect(wrapper.get('.notification-detail').text()).toBe('Cleanup finished');
   });
 
   it('leaves other notification kinds unaffected by navigation (still just expands/collapses)', async () => {

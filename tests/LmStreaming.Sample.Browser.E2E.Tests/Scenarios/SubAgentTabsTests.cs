@@ -80,17 +80,18 @@ public sealed class SubAgentTabsTests
         await page.SendMessageAsync("research AI papers for me");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
 
-        // The poll (every 3s) surfaces the spawned child as a sub-agent tab alongside the `main` tab.
-        await page.SubAgentTabs().WaitForCountAtLeastAsync(1, timeoutMs: 20_000);
+        // The poll (every 3s) surfaces the spawned child in the agent picker beside Main.
+        await page.AgentPickerTrigger().WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
         (await page.ConversationTabs().IsVisibleAsync())
             .Should()
             .BeTrue("the tab strip appears once a sub-agent exists");
         await page.ConversationTab("main")
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-        await page.SubAgentTabs().First.WaitForTextContainsAsync("research", timeoutMs: 20_000);
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().First.WaitForTextContainsAsync("research", timeoutMs: 20_000);
 
         // Selecting the sub-agent tab switches the center pane to that child's persisted transcript.
-        await page.SubAgentTabs().First.ClickAsync();
+        await page.AgentPickerOptions().First.ClickAsync();
         await page.SubAgentView().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("subagent-transcript").WaitForTextContainsAsync(ResearcherAnswer, timeoutMs: 20_000);
 
@@ -187,16 +188,18 @@ public sealed class SubAgentTabsTests
         await page.SendMessageAsync("spawn two background workers");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
 
-        // Two sub-agent tabs (alpha, beta) appear alongside main.
-        await page.SubAgentTabs().WaitForCountAtLeastAsync(2, timeoutMs: 20_000);
-        var labels = (await page.SubAgentTabs().AllInnerTextsAsync()).Select(l => l.Trim()).ToList();
+        // Alpha and beta appear together in the searchable agent picker.
+        await page.AgentPickerTrigger().WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().WaitForCountAtLeastAsync(2, timeoutMs: 20_000);
+        var labels = (await page.AgentPickerOptions().AllInnerTextsAsync()).Select(l => l.Trim()).ToList();
         labels.Should().HaveCount(2);
         labels.Should().Contain(l => l.Contains("alpha"));
         labels.Should().Contain(l => l.Contains("beta"));
 
-        // Each tab dot gets a DISTINCT assigned color.
+        // Each picker row keeps its DISTINCT assigned identity color.
         var dotColors = await page.EvaluateAsync<string[]>(
-            "() => Array.from(document.querySelectorAll(\"[data-testid='conversation-tab']:not([data-tab-id='main']) .conversation-tab__dot\")).map(d => getComputedStyle(d).backgroundColor)"
+            "() => Array.from(document.querySelectorAll(\"[data-testid='agent-picker-option'] .conversation-dot\")).map(d => getComputedStyle(d).backgroundColor)"
         );
         dotColors.Should().HaveCount(2);
         dotColors.Distinct().Should().HaveCount(2, "each sub-agent tab gets a distinct color");
@@ -217,13 +220,15 @@ public sealed class SubAgentTabsTests
         await Assertions.Expect(alphaRow.GetByTestId("tool-technical-name")).ToHaveTextAsync("Agent");
 
         // Selecting each tab swaps the center pane to that child's transcript.
-        await page.SubAgentTabs().Filter(new LocatorFilterOptions { HasText = "alpha" }).First.ClickAsync();
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().Filter(new LocatorFilterOptions { HasText = "alpha" }).First.ClickAsync();
         await page.SubAgentView().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("subagent-transcript")
             .GetByText(AlphaAnswer, new LocatorGetByTextOptions { Exact = true })
             .First.WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
 
-        await page.SubAgentTabs().Filter(new LocatorFilterOptions { HasText = "beta" }).First.ClickAsync();
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().Filter(new LocatorFilterOptions { HasText = "beta" }).First.ClickAsync();
         await page.GetByTestId("subagent-transcript")
             .GetByText(BetaAnswer, new LocatorGetByTextOptions { Exact = true })
             .First.WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });

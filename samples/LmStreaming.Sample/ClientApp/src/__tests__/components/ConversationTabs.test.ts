@@ -1,69 +1,148 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import ConversationTabs from '@/components/ConversationTabs.vue';
 import type { ConversationTab } from '@/composables/useConversationTabs';
 
+const tab = (id: string, status: ConversationTab['status'] = 'running', overrides: Partial<ConversationTab> = {}): ConversationTab => ({
+  id, label: `Agent ${id}`, kind: 'subagent', color: '#2563eb', status, ...overrides,
+});
 const TABS: ConversationTab[] = [
   { id: 'main', label: 'main', kind: 'main', color: null },
-  { id: 'a1', label: 'Researcher', kind: 'subagent', color: '#2563eb', status: 'running' },
-  { id: 'a2', label: 'Planner', kind: 'subagent', color: '#0d9488', status: 'completed' },
-  { id: 'wf1', label: 'Nightly report', kind: 'workflow', color: '#7c3aed', status: 'running' },
+  tab('a1'), tab('a2', 'completed'), tab('a3', 'error', { failureCode: 'view_exceeds_window' }),
+  tab('a4', 'interrupted'), tab('wf', 'running', { kind: 'workflow', label: 'Nightly report' }),
 ];
 
-describe('ConversationTabs', () => {
-  it('renders one tab per entry with labels and tab ids', () => {
-    const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
-    const tabs = wrapper.findAll('[data-testid="conversation-tab"]');
-    expect(tabs).toHaveLength(4);
-    expect(tabs.map((t) => t.attributes('data-tab-id'))).toEqual(['main', 'a1', 'a2', 'wf1']);
-    expect(tabs[1].text()).toContain('Researcher');
-  });
-
-  it('badges only the workflow tab and tags its kind', () => {
-    const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
-    // Exactly one workflow badge, on the workflow tab; sub-agent/main tabs have none.
-    const badges = wrapper.findAll('[data-testid="workflow-tab-badge"]');
-    expect(badges).toHaveLength(1);
-    const wfTab = wrapper.get('[data-tab-id="wf1"]');
-    expect(wfTab.attributes('data-tab-kind')).toBe('workflow');
-    expect(wfTab.find('[data-testid="workflow-tab-badge"]').exists()).toBe(true);
-    expect(wfTab.attributes('title')).toContain('Workflow:');
-    // A plain sub-agent tab is not badged and keeps its own kind.
-    const subTab = wrapper.get('[data-tab-id="a1"]');
-    expect(subTab.attributes('data-tab-kind')).toBe('subagent');
-    expect(subTab.find('[data-testid="workflow-tab-badge"]').exists()).toBe(false);
-  });
-
-  it('marks the active tab and reflects it in aria-selected', () => {
+describe('ConversationTabs agent picker', () => {
+  it('keeps stable Main and current-agent anchors for existing navigation', async () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'a1' } });
-    const active = wrapper.get('[data-tab-id="a1"]');
-    expect(active.classes()).toContain('active');
-    expect(active.attributes('aria-selected')).toBe('true');
-    expect(wrapper.get('[data-tab-id="main"]').attributes('aria-selected')).toBe('false');
+    const anchors = wrapper.findAll('[data-testid="conversation-tab"]');
+    expect(anchors).toHaveLength(2);
+    expect(anchors[0].attributes('data-tab-id')).toBe('main');
+    expect(anchors[0].text()).toContain('Main conversation');
+    expect(anchors[1].attributes('data-tab-id')).toBe('a1');
+    expect(anchors[1].text()).toContain('Agent a1');
+    expect(anchors[1].text()).toContain('Running');
+    expect(anchors[1].text()).toContain('Agents 5');
+    const navigation = wrapper.get('nav');
+    const main = anchors[0];
+    const agent = anchors[1];
+
+    expect(navigation.attributes('aria-label')).toBe('Conversation views');
+    expect(main.attributes('id')).toBe('conversation-main-selector');
+    expect(main.attributes('aria-controls')).toBe('conversation-main-view');
+    expect(agent.attributes('id')).toBe('conversation-agent-selector-a1');
+    expect(agent.attributes('aria-current')).toBe('page');
+    expect(agent.attributes('aria-controls')).toBe('conversation-agent-view-a1');
+
+    await agent.trigger('click');
+    expect(agent.attributes('aria-controls')).toBe('conversation-agent-view-a1 agent-picker-list');
+    const selected = wrapper.get('[role="option"][aria-selected="true"]');
+    expect(selected.attributes('aria-controls')).toBe('conversation-agent-view-a1');
+    expect(wrapper.get('[data-agent-id="a2"]').attributes('aria-controls')).toBeUndefined();
   });
 
-  it('applies the assigned hue to the color dot', () => {
+  it('shows the count on main and selects Main through the existing emit', async () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
-    const dot = wrapper.get('[data-tab-id="a1"] .conversation-tab__dot');
-    // jsdom normalizes the hex to rgb.
-    expect(dot.attributes('style')).toContain('background');
+    expect(wrapper.findAll('[data-testid="conversation-tab"]')[1].text()).toContain('Agents (5)');
+    await wrapper.get('[data-tab-id="main"]').trigger('click');
+    expect(wrapper.emitted('select')).toEqual([['main']]);
   });
 
-  it('names an errored tab\'s failure code in its tooltip, and only an errored one', () => {
-    const tabs: ConversationTab[] = [
-      { id: 'e1', label: 'Reviewer', kind: 'subagent', color: '#2563eb', status: 'error', failureCode: 'view_exceeds_window' },
-      { id: 'e2', label: 'Fixer', kind: 'subagent', color: '#0d9488', status: 'error', failureCode: null },
-      { id: 'r1', label: 'Runner', kind: 'subagent', color: '#7c3aed', status: 'running', failureCode: 'stale' },
-    ];
-    const wrapper = mount(ConversationTabs, { props: { tabs, activeTabId: 'main' } });
-    expect(wrapper.get('[data-tab-id="e1"]').attributes('title')).toBe('Reviewer · error (view_exceeds_window)');
-    expect(wrapper.get('[data-tab-id="e2"]').attributes('title')).toBe('Fixer · error');
-    expect(wrapper.get('[data-tab-id="r1"]').attributes('title')).toBe('Runner · running');
+  it('opens with search focused and exposes all 64 agents without truncating list names', async () => {
+    const many = [{ id: 'main', label: 'main', kind: 'main', color: null } as ConversationTab,
+      ...Array.from({ length: 64 }, (_, index) => tab(`agent-${index}`, 'running', { label: `Long readable agent name ${index}` }))];
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: many, activeTabId: 'main' } });
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]')).toHaveLength(64);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="agent-picker-search"]').element);
+    expect(wrapper.get('[data-agent-id="agent-63"]').text()).toContain('Long readable agent name 63');
+    expect(wrapper.find('[role="option"] button').exists()).toBe(false);
+    wrapper.unmount();
   });
 
-  it('emits select with the tab id on click', async () => {
+  it('searches names and status metadata and reports no matches', async () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
-    await wrapper.get('[data-tab-id="a2"]').trigger('click');
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    const search = wrapper.get('[data-testid="agent-picker-search"]');
+    await search.setValue('nightly');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]')).toHaveLength(1);
+    expect(wrapper.get('[data-testid="agent-picker-option"]').text()).toContain('Nightly report');
+    await search.setValue('missing');
+    expect(wrapper.text()).toContain('No agents match.');
+  });
+
+  it('filters running, completed, and attention including pending answers and interrupted agents', async () => {
+    const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main', pendingQuestionAgentIds: ['a2'] } });
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    await wrapper.get('[data-testid="agent-filter-running"]').trigger('click');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]')).toHaveLength(2);
+    await wrapper.get('[data-testid="agent-filter-completed"]').trigger('click');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]')).toHaveLength(1);
+    expect(wrapper.text()).toContain('Awaiting answer');
+    await wrapper.get('[data-testid="agent-filter-attention"]').trigger('click');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]').map((row) => row.attributes('data-agent-id')))
+      .toEqual(['a2', 'a3', 'a4']);
+    expect(wrapper.text()).toContain('Error · view_exceeds_window');
+    expect(wrapper.text()).toContain('Interrupted');
+  });
+
+  it('uses arrows and Enter to choose from filtered results, then restores trigger focus', async () => {
+    const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollCalls: unknown[] = [];
+    HTMLElement.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) { scrollCalls.push(options); };
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main' } });
+    const picker = wrapper.findAll('[data-testid="conversation-tab"]')[1];
+    await picker.trigger('click');
+    const search = wrapper.get('[data-testid="agent-picker-search"]');
+    await search.trigger('keydown', { key: 'ArrowDown' });
+    await wrapper.vm.$nextTick();
+    expect(scrollCalls).toContainEqual({ block: 'nearest' });
+    await search.trigger('keydown', { key: 'Enter' });
     expect(wrapper.emitted('select')).toEqual([['a2']]);
+    await wrapper.vm.$nextTick();
+    expect(document.activeElement).toBe(picker.element);
+    wrapper.unmount();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+  });
+
+  it('closes on Escape from a filter and when focus leaves the picker', async () => {
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main' } });
+    const picker = wrapper.findAll('[data-testid="conversation-tab"]')[1];
+    await picker.trigger('click');
+    const filter = wrapper.get('[data-testid="agent-filter-running"]');
+    (filter.element as HTMLElement).focus();
+    await filter.trigger('keydown', { key: 'Escape' });
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(picker.element);
+
+    await picker.trigger('click');
+    await wrapper.vm.$nextTick();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
+    wrapper.unmount();
+    outside.remove();
+  });
+
+  it('Escape closes without selecting and restores focus', async () => {
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main' } });
+    const picker = wrapper.findAll('[data-testid="conversation-tab"]')[1];
+    await picker.trigger('click');
+    await wrapper.get('[data-testid="agent-picker-search"]').trigger('keydown', { key: 'Escape' });
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
+    expect(wrapper.emitted('select')).toBeUndefined();
+    expect(document.activeElement).toBe(picker.element);
+    wrapper.unmount();
+  });
+
+  it('updates the stable trigger when routing changes externally without opening or stealing focus', async () => {
+    const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'a1' } });
+    await wrapper.setProps({ activeTabId: 'wf' });
+    const picker = wrapper.findAll('[data-testid="conversation-tab"]')[1];
+    expect(picker.attributes('data-tab-id')).toBe('wf');
+    expect(picker.text()).toContain('Nightly report');
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
   });
 });

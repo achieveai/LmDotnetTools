@@ -1,37 +1,41 @@
-import { describe, it, expect } from 'vitest';
-import { mount } from '@vue/test-utils';
-import PendingQuestionDock from '@/components/PendingQuestionDock.vue';
-import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
-import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
-import type { ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
-import { MessageType } from '@/types';
-import type { DisplayItem, ToolCall, ToolCallResultMessage } from '@/types';
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { enableAutoUnmount, mount } from "@vue/test-utils";
+import PendingQuestionDock from "@/components/PendingQuestionDock.vue";
+import { GET_RESULT_FOR_TOOL_CALL } from "@/composables/useToolResult";
+import { SUBMIT_CLIENT_TOOL_RESULT } from "@/composables/useClientToolSubmit";
+import type { ClientToolSubmitFn } from "@/composables/useClientToolSubmit";
+import { MessageType } from "@/types";
+import type { DisplayItem, ToolCall, ToolCallResultMessage } from "@/types";
 
-/**
- * The dock is the surface the user actually answers on, so the two things that must hold are:
- * it appears with a LIVE form when a question is pending, and it disappears the moment the
- * canonical result lands (a stale form parked over the input would let someone answer a question
- * that is already closed).
- *
- * It resolves results and submits through INJECTED providers, never props — that is what makes it
- * route correctly in both the main chat (root socket) and a sub-agent tab, where
- * SubAgentTranscript shadows both providers with the focused child's own.
- */
-describe('PendingQuestionDock', () => {
+enableAutoUnmount(afterEach);
+
+describe("PendingQuestionDock", () => {
   const ARGS = JSON.stringify({
-    context: 'Need your input',
-    questions: [{ prompt: 'Pick a colour', options: [{ label: 'Blue', value: 'blue' }] }],
+    context: "Need your input",
+    questions: [
+      { prompt: "Pick a colour", options: [{ label: "Blue", value: "blue" }] },
+    ],
   });
 
   function call(id: string): ToolCall {
-    return { tool_call_id: id, function_name: 'AskUserQuestion', function_args: ARGS };
+    return {
+      tool_call_id: id,
+      function_name: "AskUserQuestion",
+      function_args: ARGS,
+    };
   }
 
   function pill(id: string, ...toolCalls: ToolCall[]): DisplayItem {
     return {
-      type: 'pill',
+      type: "pill",
       id,
-      items: [{ $type: MessageType.ToolsCall, role: 'assistant', tool_calls: toolCalls } as never],
+      items: [
+        {
+          $type: MessageType.ToolsCall,
+          role: "assistant",
+          tool_calls: toolCalls,
+        } as never,
+      ],
     } as DisplayItem;
   }
 
@@ -39,84 +43,238 @@ describe('PendingQuestionDock', () => {
     return {
       $type: MessageType.ToolCallResult,
       tool_call_id: id,
-      result: '',
+      result: "",
       is_error: false,
       is_deferred: true,
-      role: 'tool',
+      role: "tool",
     };
   }
 
   function mountDock(
-    displayItems: DisplayItem[],
-    results: Record<string, ToolCallResultMessage>,
-    submit: ClientToolSubmitFn = async () => ({ status: 'acked' as const, duplicate: false })
+    options: {
+      displayItems?: DisplayItem[];
+      results?: Record<string, ToolCallResultMessage>;
+      active?: boolean;
+      sourceLabel?: string;
+      scopeKey?: string;
+      requestedQuestionId?: string | null;
+      submit?: ClientToolSubmitFn;
+    } = {},
   ) {
+    const results = options.results ?? {};
     return mount(PendingQuestionDock, {
-      props: { displayItems },
+      attachTo: document.body,
+      props: {
+        displayItems: options.displayItems ?? [],
+        active: options.active ?? true,
+        sourceLabel: options.sourceLabel ?? "Main conversation",
+        scopeKey: options.scopeKey ?? "thread-1:main",
+        requestedQuestionId: options.requestedQuestionId ?? null,
+      },
       global: {
         provide: {
           [GET_RESULT_FOR_TOOL_CALL]: (id: string | null | undefined) =>
             (id ? results[id] : null) ?? null,
-          [SUBMIT_CLIENT_TOOL_RESULT]: submit,
+          [SUBMIT_CLIENT_TOOL_RESULT]:
+            options.submit ??
+            vi.fn(async () => ({ status: "acked", duplicate: false })),
         },
       },
     });
   }
 
-  it('renders nothing at all when no question is pending', () => {
-    const w = mountDock([pill('p1', call('q1'))], {});
-    expect(w.find('[data-testid="question-dock"]').exists()).toBe(false);
-    // Not merely hidden: an empty dock must cost zero vertical space above the input.
-    expect(w.html()).toBe('<!--v-if-->');
+  it("renders nothing when no question is pending", () => {
+    const wrapper = mountDock();
+    expect(wrapper.find('[data-testid="question-dock"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      false,
+    );
   });
 
-  it('renders a live, answerable form for a pending question', () => {
-    const w = mountDock([pill('p1', call('q1'))], { q1: deferred('q1') });
-    expect(w.find('[data-testid="question-dock"]').exists()).toBe(true);
-    expect(w.find('[data-testid="question-form"]').exists()).toBe(true);
-    expect(w.find('[data-testid="question-option-blue"]').exists()).toBe(true);
-    expect(w.text()).toContain('Pick a colour');
-  });
-
-  it('disappears once the canonical result resolves the question', async () => {
-    const results: Record<string, ToolCallResultMessage> = { q1: deferred('q1') };
-    const w = mountDock([pill('p1', call('q1'))], results);
-    expect(w.find('[data-testid="question-dock"]').exists()).toBe(true);
-
-    // Same tool_call_id republished with the real answer — the placeholder is overwritten.
-    results.q1 = {
-      ...deferred('q1'),
-      result: JSON.stringify({ answers: [{ questionId: 'q0', selectedValues: ['blue'], otherText: '', skipped: false }] }),
-      is_deferred: false,
-    };
-    await w.setProps({ displayItems: [pill('p1', call('q1'))] });
-    expect(w.find('[data-testid="question-dock"]').exists()).toBe(false);
-  });
-
-  it('submits through the INJECTED client-tool function, with the answering call id', async () => {
-    // This is the routing guarantee in miniature: whichever provider is in scope receives the
-    // answer. In a sub-agent tab that provider is the focused child's socket, not the root's —
-    // the root does not know a descendant's toolCallId and would reply `not_found`.
-    const seen: Array<{ id: string; payload: string; isError?: boolean }> = [];
-    const submit: ClientToolSubmitFn = async (id, payload, isError) => {
-      seen.push({ id, payload, isError });
-      return { status: 'acked' as const, duplicate: false };
-    };
-    const w = mountDock([pill('p1', call('q1'))], { q1: deferred('q1') }, submit);
-
-    await w.get('[data-testid="question-option-blue"] input').setValue(true);
-    await w.get('[data-testid="question-submit"]').trigger('click');
-
-    expect(seen).toHaveLength(1);
-    expect(seen[0].id).toBe('q1');
-    expect(JSON.parse(seen[0].payload).answers[0].selectedValues).toEqual(['blue']);
-  });
-
-  it('docks every distinct pending question, oldest first', () => {
-    const w = mountDock([pill('p1', call('q1')), pill('p2', call('q2'))], {
-      q1: deferred('q1'),
-      q2: deferred('q2'),
+  it("shows a compact notice and auto-opens the oldest question only for an active view", () => {
+    const wrapper = mountDock({
+      displayItems: [pill("p1", call("q1"))],
+      results: { q1: deferred("q1") },
+      sourceLabel: "Main conversation",
     });
-    expect(w.findAll('[data-testid="question-rich"]')).toHaveLength(2);
+
+    expect(wrapper.get('[data-testid="question-dock"]').text()).toContain(
+      "Needs your answer",
+    );
+    expect(wrapper.get('[data-testid="question-dock"]').text()).toContain(
+      "Main conversation",
+    );
+    expect(
+      wrapper.get('[data-testid="question-review-modal"]').text(),
+    ).toContain("Pick a colour");
+    expect(wrapper.emitted("opened")).toEqual([["q1"]]);
+
+    const inactive = mountDock({
+      displayItems: [pill("p1", call("q1"))],
+      results: { q1: deferred("q1") },
+      active: false,
+    });
+    expect(
+      inactive.find('[data-testid="question-review-modal"]').exists(),
+    ).toBe(false);
+    expect(inactive.find('[data-testid="question-review"]').exists()).toBe(
+      true,
+    );
+  });
+
+  it("Close and Later hide without cancelling, submitting, or reopening on a reactive refresh", async () => {
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({
+      status: "acked",
+      duplicate: false,
+    }));
+    const items = [pill("p1", call("q1"))];
+    const wrapper = mountDock({
+      displayItems: items,
+      results: { q1: deferred("q1") },
+      submit,
+    });
+
+    await wrapper
+      .get('[data-testid="question-review-modal-close"]')
+      .trigger("click");
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="question-dock"]').exists()).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="question-review"]').trigger("click");
+    await wrapper.get('[data-testid="question-later"]').trigger("click");
+    expect(submit).not.toHaveBeenCalled();
+    expect(wrapper.emitted("open-change")).toEqual([
+      [true],
+      [false],
+      [true],
+      [false],
+    ]);
+
+    await wrapper.setProps({ displayItems: [...items] });
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      false,
+    );
+  });
+
+  it("queues one live form at a time with stable owner-scoped draft keys", async () => {
+    const wrapper = mountDock({
+      displayItems: [pill("p1", call("q1")), pill("p2", call("q2"))],
+      results: { q1: deferred("q1"), q2: deferred("q2") },
+      scopeKey: "thread-1:agent-a",
+      sourceLabel: "Research agent",
+    });
+
+    expect(wrapper.get('[data-testid="question-count"]').text()).toContain("2");
+    expect(wrapper.findAll('[data-testid="question-rich"]')).toHaveLength(1);
+    expect(
+      wrapper.get('[data-testid="question-queue-position"]').text(),
+    ).toContain("1 of 2");
+    expect(
+      wrapper.getComponent({ name: "QuestionRich" }).props("draftKey"),
+    ).toBe("thread-1:agent-a:q1");
+
+    await wrapper.get('[data-testid="question-next-pending"]').trigger("click");
+    expect(
+      wrapper.get('[data-testid="question-queue-position"]').text(),
+    ).toContain("2 of 2");
+    expect(
+      wrapper.getComponent({ name: "QuestionRich" }).props("draftKey"),
+    ).toBe("thread-1:agent-a:q2");
+    expect(
+      wrapper.get('[data-testid="question-review-modal"]').text(),
+    ).toContain("Research agent");
+  });
+
+  it("opens an exact requested question and exposes the same API to the parent inbox", async () => {
+    const results = {
+      q1: deferred("q1"),
+      q2: deferred("q2"),
+      q3: deferred("q3"),
+    };
+    const wrapper = mountDock({
+      displayItems: [pill("p1", call("q1")), pill("p2", call("q2"))],
+      results,
+      active: false,
+    });
+
+    await wrapper.setProps({ active: true, requestedQuestionId: "q2" });
+    expect(
+      wrapper.getComponent({ name: "QuestionRich" }).props("toolCall"),
+    ).toMatchObject({ tool_call_id: "q2" });
+
+    await wrapper.get('[data-testid="question-later"]').trigger("click");
+    await wrapper.setProps({
+      displayItems: [
+        pill("p1", call("q1")),
+        pill("p2", call("q2")),
+        pill("p3", call("q3")),
+      ],
+    });
+    expect(
+      wrapper.getComponent({ name: "QuestionRich" }).props("toolCall"),
+    ).toMatchObject({ tool_call_id: "q1" });
+
+    await wrapper.get('[data-testid="question-later"]').trigger("click");
+    (
+      wrapper.vm as unknown as { openQuestion: (id: string) => void }
+    ).openQuestion("q1");
+    await wrapper.vm.$nextTick();
+    expect(
+      wrapper.getComponent({ name: "QuestionRich" }).props("toolCall"),
+    ).toMatchObject({ tool_call_id: "q1" });
+  });
+
+  it("disables queue switching while the visible question reports a submission in flight", async () => {
+    const wrapper = mountDock({
+      displayItems: [pill("p1", call("q1")), pill("p2", call("q2"))],
+      results: { q1: deferred("q1"), q2: deferred("q2") },
+    });
+
+    wrapper
+      .getComponent({ name: "QuestionRich" })
+      .vm.$emit("busy-change", true);
+    await wrapper.vm.$nextTick();
+    expect(
+      (
+        wrapper.get('[data-testid="question-next-pending"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (
+        wrapper.get('[data-testid="question-later"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    await wrapper
+      .get('[data-testid="question-review-modal-close"]')
+      .trigger("click");
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      true,
+    );
+    expect(wrapper.emitted("busy-change")?.at(-1)).toEqual([true]);
+  });
+
+  it("defers automatic opening while another dialog is active but keeps manual Review available", async () => {
+    const otherDialog = document.createElement("div");
+    otherDialog.setAttribute("role", "dialog");
+    document.body.appendChild(otherDialog);
+
+    const wrapper = mountDock({
+      displayItems: [pill("p1", call("q1"))],
+      results: { q1: deferred("q1") },
+    });
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      false,
+    );
+
+    await wrapper.get('[data-testid="question-review"]').trigger("click");
+    expect(wrapper.find('[data-testid="question-review-modal"]').exists()).toBe(
+      true,
+    );
+    otherDialog.remove();
   });
 });

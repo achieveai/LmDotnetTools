@@ -134,8 +134,9 @@ public sealed class ProviderSwitchTests
 
         // The second turn spawns a real background child. Selecting its tab mounts the child's own
         // reply composer; the provider selector remains owned by the hidden root composer only.
-        await page.SubAgentTabs().WaitForCountAtLeastAsync(1, timeoutMs: 20_000);
-        await page.SubAgentTabs().First.ClickAsync();
+        await page.AgentPickerTrigger().WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().First.ClickAsync();
         var subAgentView = page.SubAgentView();
         await subAgentView.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await Assertions.Expect(subAgentView.GetByTestId("chat-input")).ToHaveCountAsync(1);

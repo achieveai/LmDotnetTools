@@ -263,10 +263,24 @@ public static class UiHelpers
         return page.Locator($"[data-testid=\"conversation-tab\"][data-tab-id=\"{tabId}\"]");
     }
 
-    /// <summary>All sub-agent tabs (every conversation tab except the always-present <c>main</c> tab).</summary>
-    public static ILocator SubAgentTabs(this IPage page)
+    /// <summary>The stable trigger for the searchable agent picker.</summary>
+    public static ILocator AgentPickerTrigger(this IPage page)
     {
         return page.Locator("[data-testid=\"conversation-tab\"]:not([data-tab-id=\"main\"])");
+    }
+
+    /// <summary>Visible agent choices inside the open picker.</summary>
+    public static ILocator AgentPickerOptions(this IPage page)
+    {
+        return page.GetByTestId("agent-picker-option");
+    }
+
+    /// <summary>Open the agent picker and wait until its choices are available.</summary>
+    public static async Task OpenAgentPickerAsync(this IPage page)
+    {
+        await page.AgentPickerTrigger().ClickAsync();
+        await page.GetByTestId("agent-picker-popover")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
     }
 
     /// <summary>The center-pane sub-agent view (mounted only while a sub-agent tab is active).</summary>
