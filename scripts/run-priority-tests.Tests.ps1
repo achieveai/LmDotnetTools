@@ -258,7 +258,7 @@ try {
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
     # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 347), @("P1", 7969), @("P2", 2019), @("P3", 135))) {
+    foreach ($tier in @(@("P0", 347), @("P1", 7955), @("P2", 2022), @("P3", 146))) {
         Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
