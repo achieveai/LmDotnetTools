@@ -25,6 +25,15 @@ const copyDialogVisible = ref(false);
 const copySourceMode = ref<ChatMode | null>(null);
 const copyNewName = ref('');
 const deleteConfirmMode = ref<ChatMode | null>(null);
+const modeEditorRef = ref<InstanceType<typeof ModeEditor> | null>(null);
+/**
+ * A create/update is in flight: `handleSave` no longer switches back to the list view itself (it
+ * used to, unconditionally, before the parent's `await createMode/updateMode` even settled — which
+ * is exactly what made surfacing a server-side validation error impossible, since the editor was
+ * already unmounted by the time the rejection arrived). The caller now closes the form on success
+ * ({@link closeForm}) or shows the error and keeps it open on failure ({@link showFormError}).
+ */
+const submitting = ref(false);
 
 const systemModes = computed(() => props.modes.filter((m) => m.isSystemDefined));
 const userModes = computed(() => props.modes.filter((m) => !m.isSystemDefined));
@@ -82,19 +91,41 @@ function handleCancelDelete(): void {
 }
 
 function handleSave(data: ChatModeCreateUpdate): void {
+  if (submitting.value) return;
+  submitting.value = true;
   if (currentView.value === 'edit' && editingMode.value) {
     emit('update', editingMode.value.id, data);
   } else {
     emit('create', data);
   }
-  currentView.value = 'list';
-  editingMode.value = null;
+  // View intentionally stays put until the parent calls closeForm() or showFormError() — see
+  // `submitting`'s doc comment above.
 }
 
 function handleCancelEdit(): void {
   currentView.value = 'list';
   editingMode.value = null;
+  submitting.value = false;
 }
+
+/** Called by the parent once the awaited create/update actually succeeded. */
+function closeForm(): void {
+  submitting.value = false;
+  currentView.value = 'list';
+  editingMode.value = null;
+}
+
+/**
+ * Called by the parent when the awaited create/update failed with something worth showing inline
+ * (currently `InvalidEnvError`). The view is left exactly where it was — create or edit — so the
+ * user's entered data (env rows included) is not lost, mirroring `WorkspaceSelector.showFormError`.
+ */
+function showFormError(message: string): void {
+  submitting.value = false;
+  modeEditorRef.value?.showFormError(message);
+}
+
+defineExpose({ closeForm, showFormError });
 
 function handleClose(): void {
   emit('close');
@@ -217,9 +248,10 @@ function handleBackdropClick(event: MouseEvent): void {
         <!-- Create/Edit View -->
         <template v-else>
           <ModeEditor
+            ref="modeEditorRef"
             :mode="editingMode"
             :tools="tools"
-            :is-loading="isLoading"
+            :is-loading="isLoading || submitting"
             @save="handleSave"
             @cancel="handleCancelEdit"
           />

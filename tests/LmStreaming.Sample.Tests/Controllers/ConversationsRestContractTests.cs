@@ -76,6 +76,81 @@ public class ConversationsRestContractTests
     }
 
     [Fact]
+    public async Task Provision_WithEnv_StoresTheProvisionLayerEnvProperty()
+    {
+        var store = new InMemoryConversationStore();
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        await using var pool = CreateRealAgentPool(registry, store);
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry.ToReal()
+        );
+
+        var env = new Dictionary<string, string> { ["FOO"] = "bar" };
+        var provisionResult = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                Env = env,
+            },
+            CancellationToken.None
+        );
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(provisionResult).Value)
+            .ThreadId;
+
+        var stored = await ConversationSandboxEnv.ReadAsync(store, threadId);
+        stored.Should().BeEquivalentTo(env);
+    }
+
+    [Fact]
+    public async Task Provision_WithInvalidEnvKey_Returns400AndCreatesNoThread()
+    {
+        var store = new InMemoryConversationStore();
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        await using var pool = CreateRealAgentPool(registry, store);
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry.ToReal()
+        );
+
+        var provisionResult = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                Env = new Dictionary<string, string> { ["NO_PROXY"] = "example.com" },
+            },
+            CancellationToken.None
+        );
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(provisionResult);
+        var payload = JsonSerializer.Serialize(badRequest.Value);
+        payload.Should().Contain("invalid_env").And.Contain("NO_PROXY").And.NotContain("example.com");
+
+        (await store.ListThreadsAsync()).Should().BeEmpty("a rejected provision must not persist any thread");
+    }
+
+    [Fact]
     public async Task SendMessage_WhileRunInProgress_QueuesAndResolvesIndependently()
     {
         var store = new InMemoryConversationStore();

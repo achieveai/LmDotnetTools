@@ -39,6 +39,13 @@ public sealed class ChatWebSocketManager
     private readonly Services.WorkflowRunRegistry _workflowRunRegistry;
     private readonly PendingAuthCoordinator _pendingAuth;
     private readonly IConversationStore _conversationStore;
+
+    /// <summary>
+    /// Reconciles the thread's sandbox env before each turn. Required, not optional: a workspace's
+    /// sandbox session is shared by every conversation in it, so "whose env is live" changes underneath a
+    /// pooled agent. See <see cref="Services.SandboxEnvApplier.ApplyForActivationAsync"/>.
+    /// </summary>
+    private readonly Services.SandboxEnvApplier _envApplier;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
 
@@ -87,6 +94,7 @@ public sealed class ChatWebSocketManager
         Services.WorkflowRunRegistry workflowRunRegistry,
         PendingAuthCoordinator pendingAuth,
         IConversationStore conversationStore,
+        Services.SandboxEnvApplier envApplier,
         ILogger<ChatWebSocketManager> logger
     )
     {
@@ -95,6 +103,7 @@ public sealed class ChatWebSocketManager
         _workflowRunRegistry = workflowRunRegistry ?? throw new ArgumentNullException(nameof(workflowRunRegistry));
         _pendingAuth = pendingAuth ?? throw new ArgumentNullException(nameof(pendingAuth));
         _conversationStore = conversationStore ?? throw new ArgumentNullException(nameof(conversationStore));
+        _envApplier = envApplier ?? throw new ArgumentNullException(nameof(envApplier));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
     }
@@ -1085,6 +1094,11 @@ public sealed class ChatWebSocketManager
             }
 
             agent = refresh.Agent;
+
+            // Reconcile the sandbox env for THIS conversation before the turn is queued. The agent is
+            // pooled and its env was applied when it was BUILT; another conversation sharing this
+            // workspace's session may have replaced that env since. See ApplyForActivationAsync.
+            await _envApplier.ApplyForActivationAsync(threadId, ct).ConfigureAwait(false);
 
             // Create user message
             var userMessage = new TextMessage { Role = Role.User, Text = request.Message };

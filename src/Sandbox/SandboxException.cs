@@ -83,6 +83,15 @@ public sealed class SandboxException : Exception
     /// </summary>
     public bool IsDirectReadCapExceeded { get; init; }
 
+    /// <summary>
+    /// The offending environment-variable keys from a gateway <c>400 invalid_env</c> response (see
+    /// <see cref="SandboxErrorKind.InvalidEnv"/>), when the gateway reported them. <c>null</c> for
+    /// every other failure and for an <see cref="SandboxErrorKind.InvalidEnv"/> whose body did not
+    /// carry a <c>keys</c> array. Set via object initializer at the throw site (kept OFF the
+    /// constructor so its signature stays binary-stable for already-compiled callers).
+    /// </summary>
+    public IReadOnlyList<string>? InvalidKeys { get; init; }
+
     public SandboxException(
         SandboxErrorKind kind,
         string message,

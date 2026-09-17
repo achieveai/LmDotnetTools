@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWorkspaces } from '@/composables/useWorkspaces';
-import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
+import { InvalidEnvError, WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -628,5 +628,86 @@ describe('useWorkspaces created-workspace selection', () => {
     await state.createWorkspace(create());
 
     expect(state.selectedWorkspaceId.value).toBe('new');
+  });
+});
+
+describe('useWorkspaces invalid_env is a partial success, not a plain failure', () => {
+  beforeEach(resetFetch);
+
+  const invalidEnv = () =>
+    Promise.resolve({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: async () => ({ error: 'Invalid environment variable names.', code: 'invalid_env', keys: ['1BAD'] }),
+    });
+
+  /**
+   * The store already WROTE the workspace; only the gateway refused the env. So the server has moved
+   * on and our cached copy has not. Without the reload the editor reseeds from pre-save data and the
+   * next save sends a REPLACEMENT env map built from it — silently deleting whatever the server did
+   * keep. RED if the `InvalidEnvError` branch in `updateWorkspace` is dropped: only two fetches.
+   */
+  it('reloads the catalog after an invalid_env rejection so the reseed sees what was stored', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), env: { OLD: '1' } }] }))
+      .mockReturnValueOnce(invalidEnv())
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), name: 'renamed', env: { OLD: '1' } }] }));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    const error = await state
+      .updateWorkspace('repo', { env: { '1BAD': 'x' } } as never)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidEnvError);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // The reload applied: the form now reseeds from the server's post-save copy, not the stale one.
+    expect(state.workspaces.value[0].name).toBe('renamed');
+    // The rejection still surfaces its keys, so the editor can point at the offending row.
+    expect((error as InvalidEnvError).keys).toEqual(['1BAD']);
+  });
+
+  /**
+   * Over-reach bound: an ordinary failure must NOT trigger the reload. Nothing was written, so a
+   * reload would only throw away the user's in-progress form for no reason.
+   */
+  it('does NOT reload after an unrelated failure', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('repo')] }))
+      .mockReturnValueOnce(response({ error: 'boom' }, false));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    await state.updateWorkspace('repo', { env: {} } as never).catch(() => undefined);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  /** The reload must be SETTLED, not merely started: a superseded reload applies nothing. */
+  it('waits for the catalog to settle before surfacing the rejection', async () => {
+    const reload = deferred();
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), name: 'before' }] }))
+      .mockReturnValueOnce(invalidEnv())
+      .mockReturnValueOnce(reload.promise);
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    let settled = false;
+    const update = state
+      .updateWorkspace('repo', { env: { '1BAD': 'x' } } as never)
+      .catch((e: unknown) => {
+        settled = true;
+        return e;
+      });
+
+    await flush();
+    expect(settled).toBe(false);
+
+    reload.release({ gateway, workspaces: [{ ...workspace('repo'), name: 'after' }] });
+
+    expect(await update).toBeInstanceOf(InvalidEnvError);
+    expect(state.workspaces.value[0].name).toBe('after');
   });
 });

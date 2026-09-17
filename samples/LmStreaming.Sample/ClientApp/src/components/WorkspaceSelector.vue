@@ -10,6 +10,16 @@ import type {
 } from '@/types/workspace';
 import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
+import { getConversationCapabilities } from '@/api/conversationsApi';
+import EnvEditor from './EnvEditor.vue';
+
+/**
+ * Whether the running gateway can apply per-sandbox env at all. False on a pre-0.1.11 gateway, and
+ * false whenever the capability report cannot be read — see `getConversationCapabilities`. The env
+ * editor is hidden entirely rather than disabled: a disabled editor still shows variables as though
+ * they were in effect, and on this deployment nothing the user types would ever reach the sandbox.
+ */
+const sandboxEnvSupported = ref(false);
 
 /**
  * Tooltip for one workspace row. Three distinct sentences for three distinct states, because the
@@ -89,12 +99,20 @@ const directoryTouched = ref(false);
 const createMarketplaces = ref<string[]>([]);
 /** Tri-state, exactly as on the wire — `null` = legacy "all plugins", `[]` = none. Never `?? []`. */
 const createPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables for the new workspace. Not tri-state — `{}` means none. */
+const createEnv = ref<Record<string, string>>({});
+/** Live handle on the create form's env rows, so the submit can refuse what they already flag. */
+const createEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Edit form state
 const editWorkspaceId = ref<string | null>(null);
 const editMarketplaces = ref<string[]>([]);
 /** Tri-state, seeded from the workspace being edited. See {@link createPluginSelection}. */
 const editPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables, seeded from the workspace being edited. See {@link seedEditFormFrom}. */
+const editEnv = ref<Record<string, string>>({});
+/** Live handle on the edit form's env rows; see {@link createEnvEditorRef}. */
+const editEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Marketplace options sourced from the live gateway catalog (GET /api/marketplaces), replacing the
 // former static [core, community] seed. Empty when the gateway is offline (marketplacesUnavailable).
@@ -285,6 +303,18 @@ function pluginSelectionEquals(a: PluginRef[] | null, b: PluginRef[] | null): bo
   return left.every((key, i) => key === right[i]);
 }
 
+/**
+ * Order-insensitive record equality for {@link Workspace.env}. Used by `submitEdit` to decide
+ * whether `env` belongs in the payload at all — see the note there on why sending it unconditionally
+ * would be wasteful (same reasoning as `pluginSelection`, though `env` is not itself tri-state).
+ */
+function sameRecord(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+}
+
 
 const isLocked = computed(() => !!props.lockedWorkspaceId);
 
@@ -303,6 +333,7 @@ const lockedWorkspace = computed<Workspace | null>(() => {
       // `unavailable` says exactly that; `incompatible` would assert a verdict nobody reached.
       compatibility: 'unavailable',
       unsupportedMarketplaces: [],
+      env: {},
     }
   );
 });
@@ -370,6 +401,7 @@ function openCreateForm(): void {
   createMarketplaces.value = [];
   // A new workspace starts with no preference, i.e. legacy "all plugins" — NOT "no plugins".
   createPluginSelection.value = null;
+  createEnv.value = {};
   void loadAvailableMarketplaces();
 }
 
@@ -419,6 +451,13 @@ function submitCreate(): void {
     formError.value = 'Name is required';
     return;
   }
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (createEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const directory = createDirectory.value.trim();
   const payload: WorkspaceCreate = {
     name,
@@ -431,6 +470,9 @@ function submitCreate(): void {
     // per-plugin selection existed.
     payload.pluginSelection =
       createPluginSelection.value === null ? null : [...createPluginSelection.value];
+  }
+  if (Object.keys(createEnv.value).length > 0) {
+    payload.env = { ...createEnv.value };
   }
   // Keep the form open and mark it in-flight. The parent awaits the API call and
   // calls closeForm() on success or showFormError() on failure (which re-renders
@@ -457,6 +499,7 @@ function openEditForm(workspace: Workspace): void {
 function seedEditFormFrom(workspace: Workspace): void {
   editMarketplaces.value = [...workspace.marketplaces];
   editPluginSelection.value = seedSelection(workspace.pluginSelection);
+  editEnv.value = { ...(workspace.env ?? {}) };
 }
 
 /**
@@ -506,6 +549,13 @@ function submitEdit(): void {
   if (submitting.value || interactionBlocked.value) return;
   formError.value = null;
   if (!editWorkspaceId.value) return;
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (editEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const payload: WorkspaceUpdate = { marketplaces: [...editMarketplaces.value] };
   const workspace = editWorkspace.value;
   // Include the selection ONLY when it actually differs from what is stored. Setting the key on
@@ -530,6 +580,13 @@ function submitEdit(): void {
   // Otherwise `pluginSelection` is ABSENT from the body — the backend's four-state "leave
   // unchanged". That covers a marketplace-only edit, a no-op save, and the whole UI when the
   // gateway cannot filter plugins: none of them may clobber a stored selection.
+
+  // `env` is included ONLY when it actually differs from what is stored, for the same reason as
+  // `pluginSelection` above: sending it on every save (a rename, a marketplace-only toggle, a no-op
+  // save) would trigger a live-session re-apply on the server for nothing.
+  if (workspace !== null && !sameRecord(editEnv.value, workspace.env ?? {})) {
+    payload.env = { ...editEnv.value };
+  }
   submitting.value = true;
   emit('update-workspace', editWorkspaceId.value, payload);
 }
@@ -585,6 +642,17 @@ onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   document.addEventListener('keydown', handleKeydown);
   void loadAvailableMarketplaces();
+  // `getConversationCapabilities` already fails closed internally, but the `.catch` is not
+  // redundant: it keeps that guarantee a property of THIS call site rather than of the API helper's
+  // current implementation. Without it a helper that ever throws leaves an unhandled rejection, and
+  // the editor's visibility would depend on a contract nothing here enforces.
+  void getConversationCapabilities()
+    .then((c) => {
+      sandboxEnvSupported.value = c.sandboxEnv;
+    })
+    .catch(() => {
+      sandboxEnvSupported.value = false;
+    });
 });
 
 onUnmounted(() => {
@@ -839,6 +907,15 @@ watch(
               </p>
             </div>
           </div>
+          <div v-if="sandboxEnvSupported" class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              ref="createEnvEditorRef"
+              v-model="createEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
+          </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}
           </div>
@@ -960,6 +1037,15 @@ watch(
                 {{ marketplacesUnavailable ? 'Gateway offline — no marketplaces available.' : 'No marketplaces available.' }}
               </p>
             </div>
+          </div>
+          <div v-if="sandboxEnvSupported" class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              ref="editEnvEditorRef"
+              v-model="editEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
           </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}

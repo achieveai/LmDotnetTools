@@ -1,15 +1,37 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import { BUILT_IN_TOOL_GROUP, SANDBOX_TOOL_GROUP } from '@/types/chatMode';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 import { selectionFromMode, selectionToModeFields, toolGroup, toolId } from '@/utils/modeToolSelection';
 import ToolCheckboxList from './ToolCheckboxList.vue';
+import EnvEditor from './EnvEditor.vue';
 
 const props = defineProps<{
   mode?: ChatMode | null;
   tools: ToolDefinition[];
   isLoading?: boolean;
 }>();
+
+/**
+ * Whether the running gateway can apply per-sandbox env at all — see `getConversationCapabilities`,
+ * which fails closed. Hidden rather than disabled for the same reason as the workspace form: on a
+ * gateway without the env routes, nothing typed here would ever reach the sandbox, and an editor
+ * showing variables implies otherwise.
+ */
+const sandboxEnvSupported = ref(false);
+
+onMounted(() => {
+  // The `.catch` keeps failing-closed a property of this call site rather than of the API helper's
+  // current internals — see the matching note in `WorkspaceSelector.vue`.
+  void getConversationCapabilities()
+    .then((c) => {
+      sandboxEnvSupported.value = c.sandboxEnv;
+    })
+    .catch(() => {
+      sandboxEnvSupported.value = false;
+    });
+});
 
 const emit = defineEmits<{
   save: [data: ChatModeCreateUpdate];
@@ -47,6 +69,16 @@ const requiredToolIds = ref<string[]>([]);
  * not a choice the user revoked — so they ride along untouched and are re-appended on save.
  */
 const preservedRequiredToolIds = ref<string[]>([]);
+/**
+ * Sandbox environment variables for this mode. Seeded from the mode's stored map (`{}` when absent
+ * or null); the save payload omits the key when unchanged and writes an explicit `null` to clear it
+ * — see {@link handleSave} — matching the server's presence-aware update contract.
+ */
+const env = ref<Record<string, string>>({});
+/** Live handle on the env rows, so `validate()` can refuse a save the editor already knows is bad. */
+const envEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
+/** A create/update failure surfaced by the parent via the exposed {@link showFormError}. */
+const formError = ref<string | null>(null);
 
 /**
  * Two groups are left out of this picker because a pick there could not do what it says:
@@ -93,6 +125,8 @@ watch(
       subAgentPromptPlacement.value = newMode.subAgentPromptPlacement || 'append';
       selectedToolIds.value = selectionFromMode(newMode, props.tools);
       loadRequiredTools(newMode);
+      env.value = { ...(newMode.env ?? {}) };
+      formError.value = null;
     } else {
       resetForm();
     }
@@ -119,9 +153,29 @@ function resetForm(): void {
   selectedToolIds.value = selectionFromMode(null, props.tools);
   requiredToolIds.value = [];
   preservedRequiredToolIds.value = [];
+  env.value = {};
+  formError.value = null;
   nameError.value = '';
   systemPromptError.value = '';
 }
+
+/** Order-insensitive record equality — same semantics as `WorkspaceSelector`'s helper of the same name. */
+function sameRecord(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+}
+
+/**
+ * Surfaces a create/update failure from the parent (e.g. `InvalidEnvError`). The form stays mounted
+ * so the inline error element renders; mirrors `WorkspaceSelector.showFormError`.
+ */
+function showFormError(message: string): void {
+  formError.value = message;
+}
+
+defineExpose({ showFormError });
 
 function validate(): boolean {
   let valid = true;
@@ -140,10 +194,20 @@ function validate(): boolean {
     systemPromptError.value = '';
   }
 
+  // The env rows validate themselves and render their own per-row messages, but until the parent
+  // ASKS, nothing stopped the save: `buildRecord` collapses two rows with the same name into one
+  // object key, so submitting with a duplicate silently dropped a variable the user had typed. The
+  // row error was on screen the whole time and the save went through anyway.
+  if (envEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    valid = false;
+  }
+
   return valid;
 }
 
 function handleSave(): void {
+  formError.value = null;
   if (!validate()) return;
 
   const trimmedSubAgentPrompt = subAgentPrompt.value.trim();
@@ -174,6 +238,15 @@ function handleSave(): void {
   // for them, so their stored order is the only stable one available.
   const requiredTools = [...requiredToolIds.value, ...preservedRequiredToolIds.value];
   data.subAgentRequiredTools = requiredTools.length > 0 ? requiredTools : null;
+
+  // env follows the same presence-aware contract as subAgentPrompt/description: omitted means
+  // "unchanged" server-side, so it is only written when it actually differs from the loaded mode.
+  // An explicit null clears a previously-set map; an empty object is not a valid "clear" spelling
+  // here (unlike Workspace.env, which is never tri-state to begin with).
+  const loadedEnv = props.mode?.env ?? {};
+  if (!sameRecord(env.value, loadedEnv)) {
+    data.env = Object.keys(env.value).length > 0 ? { ...env.value } : null;
+  }
 
   emit('save', data);
 }
@@ -268,6 +341,19 @@ function handleCancel(): void {
         />
       </div>
 
+      <div v-if="sandboxEnvSupported" class="form-group" data-testid="mode-editor-env">
+        <label class="form-label">Environment Variables</label>
+        <p class="field-hint">
+          Sandbox environment variables layered onto every session opened in this mode.
+        </p>
+        <EnvEditor
+          ref="envEditorRef"
+          v-model="env"
+          testid-prefix="mode-env"
+          :disabled="isLoading"
+        />
+      </div>
+
       <div class="form-group" data-testid="mode-editor-required-tools">
         <label class="form-label">Required Sub-agent Tools</label>
         <p class="field-hint" data-testid="mode-editor-required-tools-hint">
@@ -279,6 +365,10 @@ function handleCancel(): void {
           :tools="requiredToolsCatalog"
           :disabled="isLoading"
         />
+      </div>
+
+      <div v-if="formError" class="form-error" data-testid="mode-editor-form-error">
+        {{ formError }}
       </div>
 
       <div class="form-actions">
@@ -378,6 +468,11 @@ function handleCancel(): void {
 .error-message {
   font-size: 12px;
   color: #dc3545;
+}
+
+.form-error {
+  font-size: 13px;
+  color: #b02a37;
 }
 
 .field-hint {

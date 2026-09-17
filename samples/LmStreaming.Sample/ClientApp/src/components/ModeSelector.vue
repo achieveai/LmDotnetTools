@@ -23,6 +23,7 @@ const dropdownOpen = ref(false);
 const modalOpen = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
 const menuId = useId();
+const modeManagementModalRef = ref<InstanceType<typeof ModeManagementModal> | null>(null);
 
 const currentMode = computed(() =>
   props.modes.find((m) => m.id === props.currentModeId)
@@ -78,6 +79,23 @@ function handleCopyMode(modeId: string, newName: string): void {
   emit('copy-mode', modeId, newName);
 }
 
+/**
+ * Forwarding pair for the parent's create/update catch blocks (`ChatLayout.handleCreateMode`/
+ * `handleUpdateMode`). `ModeManagementModal` is `v-if`'d here, not in `ChatLayout`, so this is the
+ * only place that can hold a live ref to it — hence these thin pass-throughs instead of the parent
+ * reaching in directly. Both are safely no-ops if the modal was closed (X / backdrop / Escape)
+ * before the awaited API call settled.
+ */
+function closeManageForm(): void {
+  modeManagementModalRef.value?.closeForm();
+}
+
+function showManageFormError(message: string): void {
+  modeManagementModalRef.value?.showFormError(message);
+}
+
+defineExpose({ closeManageForm, showManageFormError });
+
 // Close dropdown when clicking outside
 function handleClickOutside(event: MouseEvent): void {
   if (dropdownRef.value && !dropdownRef.value.contains(event.target as Node)) {
@@ -107,7 +125,13 @@ watch(
   (isDisabled) => {
     if (isDisabled) {
       closeDropdown();
-      modalOpen.value = false;
+      // The MODAL is deliberately left open. `disabled` folds in socket-driven, self-reversing
+      // conditions — `modeSwitchDisabled` includes `hasPendingClientQuestion` — so an agent asking a
+      // question while the user is mid-save flipped this true and tore the form down, discarding
+      // every row they had typed AND the error that was about to be shown. Closing the dropdown is
+      // still right (picking a different mode while a switch is inflight is not), but the edit form
+      // is the user's own in-progress work and nothing here is entitled to throw it away. The
+      // workspace side reached the same conclusion — see `workspaceSelectorDisabled` in ChatLayout.
     }
   }
 );
@@ -182,6 +206,7 @@ watch(
     <!-- Management Modal -->
     <ModeManagementModal
       v-if="modalOpen"
+      ref="modeManagementModalRef"
       :modes="modes"
       :tools="tools"
       :is-loading="isLoading"

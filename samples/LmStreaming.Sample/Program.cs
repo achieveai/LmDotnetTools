@@ -989,6 +989,17 @@ try
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
                     var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
+                    var envApplier = sp.GetRequiredService<SandboxEnvApplier>();
+                    var effectiveEnv = envApplier
+                        .ComputeEffectiveAsync(threadId, effectiveWorkspaceId, mode.Id, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    // First create carries the full merged map; a gateway-404 recreate only knows the
+                    // workspace layer, which the Ensure call after the session resolves tops up.
+                    workspaceRef = workspaceRef with
+                    {
+                        Env = effectiveEnv,
+                    };
                     if (workspace is not null)
                     {
                         try
@@ -1047,6 +1058,16 @@ try
                     // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
                     // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
                     sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
+                    envApplier
+                        .ApplyForThreadAsync(
+                            threadId,
+                            sandboxSession.SessionId,
+                            effectiveWorkspaceId,
+                            mode.Id,
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult();
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
@@ -2413,6 +2434,10 @@ try
         // fail the request, so without it they would be invisible in production.
         logger: sp.GetRequiredService<ILogger<WorkspacePluginSelectionService>>()
     ));
+
+    // Sandbox env reapply (Task 4 fills in the real logic): STUB registered here so
+    // WorkspacesController/ChatModesController can depend on it today.
+    _ = builder.Services.AddSingleton<SandboxEnvApplier>();
 
     // Register the ChatWebSocketManager and the live-connection registry that lets backend
     // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
@@ -4972,6 +4997,15 @@ public partial class Program
     ///     may have no stored workspace (the implicit "default"). That case yields a bare ref, which
     ///     is exactly the pre-existing behaviour: every optional field falls back to its own default.
     ///     </para>
+    ///     <para>
+    ///     <see cref="WorkspaceRef.Env"/> carries the WORKSPACE layer only, which is all this function
+    ///     can see. The first-create path overwrites it moments later with the fully merged map; the
+    ///     reload callback cannot, so the workspace layer is what a recreated session is born with and
+    ///     the mode/provision layers are topped up by the <c>EnsureSessionEnvAsync</c> call that
+    ///     follows. Omitting it here left a gateway-404 replacement with NO env at all until some
+    ///     later edit happened to PATCH it — every variable the user set silently absent for the rest
+    ///     of the conversation.
+    ///     </para>
     /// </summary>
     internal static WorkspaceRef BuildWorkspaceRef(
         string workspaceId,
@@ -4981,7 +5015,8 @@ public partial class Program
             workspaceId,
             workspace?.DirectoryRelPath,
             workspace?.Marketplaces,
-            ToSandboxPluginRefs(workspace?.PluginSelection)
+            ToSandboxPluginRefs(workspace?.PluginSelection),
+            workspace?.Env
         );
 
     /// <summary>

@@ -3,6 +3,7 @@ import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue';
 import { listMarketplaces } from '@/api/marketplacesApi';
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import type { Workspace } from '@/types/workspace';
 
 // The selector now sources its marketplace options from the gateway catalog. Mock the API so the
@@ -74,6 +75,13 @@ vi.mock('@/api/marketplacesApi', () => ({
   listMarketplaces: vi.fn(async () => catalog.value),
 }));
 
+// The env editor is gated on the live gateway reporting support (see `getConversationCapabilities`,
+// which fails closed). Default it to supported so the pre-existing env cases still exercise the
+// editor; the gating itself is asserted in its own case below.
+vi.mock('@/api/conversationsApi', () => ({
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
+}));
+
 const workspaces: Workspace[] = [
   {
     id: 'default',
@@ -85,6 +93,7 @@ const workspaces: Workspace[] = [
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
   },
   {
     id: 'ws-user',
@@ -96,6 +105,7 @@ const workspaces: Workspace[] = [
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
   },
 ];
 
@@ -644,6 +654,7 @@ describe('WorkspaceSelector plugin selection across marketplaces', () => {
         updatedAt: 0,
         compatibility: 'unknown',
         unsupportedMarketplaces: [],
+        env: {},
         pluginSelection: [
           { marketplace: 'demo', plugin: 'toolkit' },
           { marketplace: 'extra-mp', plugin: 'widget' },
@@ -678,6 +689,7 @@ describe('WorkspaceSelector edit form plugin selection', () => {
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -903,6 +915,7 @@ describe('WorkspaceSelector edit form omits an unchanged plugin selection', () =
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -1028,6 +1041,7 @@ describe('WorkspaceSelector reseedEditForm after a revision conflict', () => {
     updatedAt: 0,
     compatibility: 'unknown',
     unsupportedMarketplaces: [],
+    env: {},
     pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
     pluginsRevision: 7,
   };
@@ -1196,6 +1210,7 @@ describe('WorkspaceSelector self-removing controls do not close the dropdown (F5
         updatedAt: 0,
         compatibility: 'unknown',
         unsupportedMarketplaces: [],
+        env: {},
         pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
         pluginsRevision: 7,
       },
@@ -1420,6 +1435,7 @@ describe('WorkspaceSelector blocks form interaction during a transient refresh',
       updatedAt: 0,
       compatibility: 'unknown',
       unsupportedMarketplaces: [],
+      env: {},
       pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
       pluginsRevision: 7,
     },
@@ -1694,5 +1710,333 @@ describe('WorkspaceSelector unverified rows stay selectable (#459)', () => {
     await wrapper.get('[data-testid="workspace-option-unavailable-ws"]').trigger('click');
 
     expect(wrapper.emitted('select-workspace')?.[0]).toEqual(['unavailable-ws']);
+  });
+});
+
+/**
+ * `env` follows the same "only send it when it changed" rule as `pluginSelection` (F1 above), but is
+ * NOT itself tri-state on the wire — there is no separate "leave unchanged" vs "clear" distinction on
+ * `WorkspaceUpdate.env`; an absent key means unchanged and an empty object means "no variables".
+ */
+describe('WorkspaceSelector env', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: [],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
+      env: { FOO: 'bar' },
+    },
+  ];
+
+  it('seeds the edit form\'s EnvEditor from the workspace\'s stored env', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    const key = wrapper.get<HTMLInputElement>('[data-testid="workspace-env-key"]');
+    const value = wrapper.get<HTMLInputElement>('[data-testid="workspace-env-value"]');
+    expect(key.element.value).toBe('FOO');
+    expect(value.element.value).toBe('bar');
+  });
+
+  it('omits env from the PUT payload when it is saved unchanged', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('update-workspace')![0][1] as UpdatePayload;
+    expect('env' in payload).toBe(false);
+  });
+
+  it('includes env in the PUT payload when it is changed', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('update-workspace')![0][1] as UpdatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('includes a non-empty env in the create payload', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('With Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-key"]').setValue('TOKEN');
+    await wrapper.get('[data-testid="workspace-env-value"]').setValue('secret');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ TOKEN: 'secret' });
+  });
+
+  it('omits env from the create payload when nothing was entered', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('No Env');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload & {
+      env?: Record<string, string>;
+    };
+    expect('env' in payload).toBe(false);
+  });
+
+  /**
+   * PAIRED POSITIVE for the two `'env' in payload === false` cases above. Both assert a pure absence,
+   * so both still pass with the entire env feature deleted from the component. These two pin the
+   * other half: the save still happened and still carried everything else, which is what makes
+   * "env was omitted" mean "env SPECIFICALLY was omitted" rather than "nothing was sent".
+   */
+  it('still sends the rest of the workspace when an unchanged env is omitted from the PUT', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('update-workspace')!;
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0][0]).toBe('ws-user');
+    const payload = emitted[0][1] as UpdatePayload;
+    expect('env' in payload).toBe(false);
+    expect(payload.marketplaces).toBeDefined();
+  });
+
+  it('still sends the name on create when an empty env is omitted', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('No Env');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('create-workspace')!;
+    expect(emitted).toHaveLength(1);
+    const payload = emitted[0][0] as CreatePayload & { env?: Record<string, string> };
+    expect('env' in payload).toBe(false);
+    expect(payload.name).toBe('No Env');
+  });
+});
+
+/**
+ * Finding D. Per-sandbox env needs gateway image 0.1.11+; on anything older the gateway has no
+ * `/env` route and every value the user types here is silently dropped on provision. Offering the
+ * editor there is worse than not offering it: the user believes a secret reached the sandbox. The
+ * capability probe (`getConversationCapabilities`) reports what the registry actually observed and
+ * fails closed, so an unreachable probe hides the editor rather than promising support.
+ */
+describe('WorkspaceSelector env editor is gated on observed gateway support', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: [],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
+      env: { FOO: 'bar' },
+    },
+  ];
+
+  it('hides the env editor in the edit form when the gateway does not support it', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
+  });
+
+  it('hides the env editor in the create form when the gateway does not support it', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
+  });
+
+  it('shows it when the gateway does support it, so the gate is not simply always off', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(true);
+  });
+
+  /** Fails closed: a probe that rejects must hide the editor, not default it on. */
+  it('hides the env editor when the capability probe itself fails', async () => {
+    vi.mocked(getConversationCapabilities).mockRejectedValueOnce(new Error('offline'));
+
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    expect(wrapper.find('[data-testid="workspace-env-add"]').exists()).toBe(false);
+  });
+});
+
+/**
+ * EnvEditor flags a bad row and exposes `hasErrors`, but for a while nobody read it: the submit
+ * handlers ran anyway and `buildRecord` collapsed a duplicate key into one entry, so the workspace
+ * saved with a variable the user had typed silently missing while its red error was still on screen.
+ * These pin the parent half of that contract — a per-row error the editor is already showing must
+ * stop the emit, and the paired positives keep "no emit" from passing on a broken form.
+ */
+describe('WorkspaceSelector refuses a save the env editor already flags', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: [],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
+      env: { FOO: 'bar' },
+    },
+  ];
+
+  it('blocks create when a key is malformed', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Bad Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-key"]').setValue('9NOPE');
+    await wrapper.get('[data-testid="workspace-env-value"]').setValue('x');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('create-workspace')).toBeUndefined();
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  it('blocks create when two rows share a key, the case that silently dropped a value', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Dup Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[0].setValue('TOKEN');
+    await values[0].setValue('first');
+    // Case-insensitive on purpose: this is exactly what the gateway would collapse.
+    await keys[1].setValue('token');
+    await values[1].setValue('second');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('create-workspace')).toBeUndefined();
+  });
+
+  // The exact-duplicate case, separately: the record can hold only one TOKEN, so the emitted payload
+  // would look valid on its own. Only the row check can catch it.
+  it('blocks create when two rows share the exact same key', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Dup Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[0].setValue('TOKEN');
+    await values[0].setValue('first');
+    await keys[1].setValue('TOKEN');
+    await values[1].setValue('second');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('create-workspace')).toBeUndefined();
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  it('blocks edit when a key is protected by the sandbox', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    await keys[1].setValue('SANDBOX_HOME');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('update-workspace')).toBeUndefined();
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  /**
+   * PAIRED POSITIVES. Without these, the three "no emit" assertions above would still pass if the
+   * guard were unconditional — i.e. if it blocked every save, valid env included.
+   */
+  it('still submits create when the same rows are valid', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Good Env');
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-env-key"]').setValue('TOKEN');
+    await wrapper.get('[data-testid="workspace-env-value"]').setValue('secret');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ TOKEN: 'secret' });
+    expect(wrapper.find('[data-testid="workspace-form-error"]').exists()).toBe(false);
+  });
+
+  it('still submits edit when the added row is valid', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.get('[data-testid="workspace-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="workspace-env-key"]');
+    const values = wrapper.findAll('[data-testid="workspace-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('update-workspace')![0][1] as UpdatePayload & {
+      env?: Record<string, string>;
+    };
+    expect(payload.env).toEqual({ FOO: 'bar', BAZ: 'qux' });
   });
 });

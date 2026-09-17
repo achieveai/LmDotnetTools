@@ -338,3 +338,33 @@ export async function getConversationStatus(
   }
   return response.json();
 }
+
+/**
+ * What the running backend and its gateway can actually do, from
+ * `GET /api/conversations/capabilities`. Only the fields this client acts on are modelled; the
+ * response carries more.
+ */
+export interface ConversationCapabilities {
+  sandboxEnv: boolean;
+}
+
+/**
+ * Reads the capability report, treating ANY failure as "nothing extra is supported".
+ *
+ * Fail-closed is the point. `sandboxEnv` is false on a gateway older than 0.1.11, where env editors
+ * would collect variables that silently never reach the sandbox — a worse outcome than not offering
+ * them. An unreachable or malformed capabilities endpoint is not evidence that the feature works, so
+ * it lands in the same bucket rather than defaulting the feature on.
+ */
+export async function getConversationCapabilities(): Promise<ConversationCapabilities> {
+  try {
+    const response = await apiFetch('/api/conversations/capabilities');
+    if (!response.ok) {
+      return { sandboxEnv: false };
+    }
+    const body = (await response.json()) as Partial<ConversationCapabilities> | null;
+    return { sandboxEnv: body?.sandboxEnv === true };
+  } catch {
+    return { sandboxEnv: false };
+  }
+}

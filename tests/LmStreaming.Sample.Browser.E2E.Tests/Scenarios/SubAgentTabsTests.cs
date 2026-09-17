@@ -104,8 +104,8 @@ public sealed class SubAgentTabsTests
     }
 
     /// <summary>
-    /// Two sub-agents each get their OWN center tab with a DISTINCT assigned color, and that color also
-    /// tints the sub-agent's inline <c>Agent</c> call pill in the parent conversation. Switching tabs
+    /// Two sub-agents each get their OWN center tab with a DISTINCT assigned color, while their parent
+    /// <c>Agent</c> calls remain inspectable in the neutral developer activity stream. Switching tabs
     /// swaps the center pane to the matching child's transcript. Mirrors the validated manual run
     /// <c>playwright-scripts/subagent-tabs.mjs</c>.
     /// </summary>
@@ -201,14 +201,20 @@ public sealed class SubAgentTabsTests
         dotColors.Should().HaveCount(2);
         dotColors.Distinct().Should().HaveCount(2, "each sub-agent tab gets a distinct color");
 
-        // Each tab color also tints its inline Agent call pill in the parent conversation.
-        var pillBorders = await page.EvaluateAsync<string[]>(
-            "() => Array.from(document.querySelectorAll(\"[data-testid='main-view'] [data-testid='tool-call-pill'][data-tool-name='Agent']\")).map(p => getComputedStyle(p).borderLeftColor)"
-        );
-        foreach (var color in dotColors)
-        {
-            pillBorders.Should().Contain(color, "the sub-agent's inline Agent pill is tinted to match its tab");
-        }
+        // The flat developer activity stream keeps both calls identifiable and inspectable. Its rows
+        // intentionally use neutral borders; assigned color belongs to the tab identity above.
+        var agentRows = page.GetByTestId("main-view").Locator("[data-testid='tool-call-pill'][data-tool-name='Agent']");
+        await Assertions.Expect(agentRows).ToHaveCountAsync(2);
+        var descriptions = await agentRows.Locator(".tool-pill__activity-description").AllInnerTextsAsync();
+        descriptions.Should().Contain(description => description.StartsWith("Started alpha", StringComparison.Ordinal));
+        descriptions.Should().Contain(description => description.StartsWith("Started beta", StringComparison.Ordinal));
+
+        var alphaRow = agentRows.Filter(new LocatorFilterOptions { HasText = "Started alpha" });
+        var alphaDetails = alphaRow.Locator("button.tool-pill__header");
+        await Assertions.Expect(alphaDetails).ToHaveAttributeAsync("aria-expanded", "false");
+        await alphaDetails.ClickAsync();
+        await Assertions.Expect(alphaDetails).ToHaveAttributeAsync("aria-expanded", "true");
+        await Assertions.Expect(alphaRow.GetByTestId("tool-technical-name")).ToHaveTextAsync("Agent");
 
         // Selecting each tab swaps the center pane to that child's transcript.
         await page.SubAgentTabs().Filter(new LocatorFilterOptions { HasText = "alpha" }).First.ClickAsync();

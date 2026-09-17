@@ -1,0 +1,509 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text;
+using AchieveAi.LmDotnetTools.Sandbox;
+using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Logging;
+
+namespace LmStreaming.Sample.Tests.Services;
+
+/// <summary>
+/// Shared registry + stub-handler builder for sandbox per-session-env tests (Task 2's
+/// <c>SandboxSessionRegistry.EnsureSessionEnvAsync</c> and Task 4's higher-level consumers). Extends the
+/// bare create-only stub from <see cref="SandboxSessionRegistryWorkspaceTests"/> with the session-scoped
+/// direct-API env routes (<c>GET</c>/<c>PATCH .../api/v1/sandboxes/{sessionId}/env</c>) so a test can
+/// drive a full create → ensure-env round trip against one in-memory registry.
+/// </summary>
+internal static class SandboxEnvTestSupport
+{
+    internal const string DefaultLeaf = "default-leaf";
+
+    /// <summary>
+    /// Builds a registry wired to the stub handler below. <paramref name="workspaceBasePath"/> mirrors
+    /// <see cref="SandboxSessionRegistryWorkspaceTests"/>'s helper of the same shape — a real temp
+    /// directory so <c>ResolveWorkspace</c>'s containment check has a parent to resolve against.
+    /// </summary>
+    internal static SandboxSessionRegistry CreateRegistry(
+        string workspaceBasePath,
+        out CapturedEnvRequests captured,
+        ILogger<SandboxSessionRegistry>? logger = null
+    )
+    {
+        var capturedRequests = new CapturedEnvRequests();
+        captured = capturedRequests;
+
+        // Gateway lifetime: any 200 makes EnsureReadyAsync adopt it as healthy (it probes /health). This
+        // uses its OWN HttpClient/handler, deliberately separate from the registry's — mirrors the
+        // workspace-tests pattern.
+        static HttpResponseMessage Healthy(HttpRequestMessage _) => new(HttpStatusCode.OK);
+
+        var options = new SandboxGatewayOptions
+        {
+            BaseUrl = "http://localhost:3000",
+            WorkspaceBasePath = workspaceBasePath,
+            Workspace = DefaultLeaf,
+        };
+
+        var gateway = new SandboxGatewayLifetime(
+            options,
+            NullLogger<SandboxGatewayLifetime>.Instance,
+            new HttpClient(new StubHandler(Healthy))
+        );
+
+        return new SandboxSessionRegistry(
+            gateway,
+            options,
+            logger ?? NullLogger<SandboxSessionRegistry>.Instance,
+            new HttpClient(new StubHandler(request => Respond(request, capturedRequests))),
+            new AuthOptions(),
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
+    }
+
+    private static HttpResponseMessage Respond(HttpRequestMessage request, CapturedEnvRequests captured)
+    {
+        var path = request.RequestUri!.AbsolutePath;
+
+        if (request.Method == HttpMethod.Post && path.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal))
+        {
+            var bodyJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            captured.LastCreateBody = JsonDocument.Parse(bodyJson).RootElement.Clone();
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(
+                    new CreateSandboxResponseProbe(
+                        SessionId: "sess-" + Guid.NewGuid().ToString("N"),
+                        ContainerId: "container-1",
+                        Volumes: new VolumesProbe(new WorkspaceVolumeProbe("/workspace", ReadOnly: false))
+                    )
+                ),
+            };
+        }
+
+        if (path.EndsWith("/env", StringComparison.Ordinal))
+        {
+            // Path shape: /api/v1/sandboxes/{sessionId}/env — the session id is the second-to-last segment.
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var sessionId = segments[^2];
+
+            captured.EnterEnvCall();
+            try
+            {
+                return RespondToEnv(request, captured, sessionId);
+            }
+            finally
+            {
+                captured.ExitEnvCall();
+            }
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    }
+
+    /// <summary>The GET/PATCH .../env half of <see cref="Respond"/>, split out so every exit path is
+    /// wrapped by the concurrency accounting in <see cref="CapturedEnvRequests.EnterEnvCall"/>.</summary>
+    private static HttpResponseMessage RespondToEnv(
+        HttpRequestMessage request,
+        CapturedEnvRequests captured,
+        string sessionId
+    )
+    {
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                captured.GetEnvCalls++;
+                if (captured.StatefulEnv)
+                {
+                    return EnvResponse(captured.GatewayEnvFor(sessionId));
+                }
+
+                return new HttpResponseMessage(captured.GetEnvStatus)
+                {
+                    Content = captured.GetEnvBody is null
+                        ? null
+                        : new StringContent(captured.GetEnvBody, Encoding.UTF8, "application/json"),
+                };
+            }
+
+            if (request.Method == HttpMethod.Patch)
+            {
+                if (captured.ThrowTransportErrorOnPatchEnv)
+                {
+                    // SandboxClient.Transport.cs maps an HttpRequestException thrown by the inner handler
+                    // to SandboxException(TransportTimeout) ("could not reach the sandbox gateway") — the
+                    // simplest deterministic way to provoke that kind without a real timing budget.
+                    throw new HttpRequestException("Simulated transport failure for PATCH .../env.");
+                }
+
+                var bodyJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                captured.LastPatchBody = JsonDocument.Parse(bodyJson).RootElement.Clone();
+                captured.PatchedSessionIds.Add(sessionId);
+
+                if (captured.StatefulEnv)
+                {
+                    var map = captured.GatewayEnvFor(sessionId);
+                    lock (map)
+                    {
+                        foreach (var entry in captured.LastPatchBody.Value.EnumerateObject())
+                        {
+                            if (entry.Value.ValueKind == JsonValueKind.Null)
+                            {
+                                _ = map.Remove(entry.Name);
+                            }
+                            else
+                            {
+                                map[entry.Name] = entry.Value.GetString()!;
+                            }
+                        }
+                    }
+
+                    return EnvResponse(map);
+                }
+
+                if (captured.InvalidEnvSessionIds.Contains(sessionId))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                    {
+                        Content = new StringContent(
+                            """{"error":"invalid env","error_code":"invalid_env","keys":["BAD"]}""",
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    };
+                }
+
+                return new HttpResponseMessage(captured.PatchEnvStatus)
+                {
+                    Content = new StringContent(captured.PatchEnvJson, Encoding.UTF8, "application/json"),
+                };
+            }
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    }
+
+    private static HttpResponseMessage EnvResponse(Dictionary<string, string> map)
+    {
+        string json;
+        lock (map)
+        {
+            json = JsonSerializer.Serialize(new { env = map });
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+    }
+
+    /// <summary>Records every create/GET-env/PATCH-env request the stub handler saw, and lets a test
+    /// configure the GET/PATCH env responses before exercising the registry.</summary>
+    internal sealed class CapturedEnvRequests
+    {
+        /// <summary>The most recent sandbox-create request body (the whole JSON object, including <c>env</c>).</summary>
+        public JsonElement? LastCreateBody { get; set; }
+
+        /// <summary>The most recent PATCH .../env request body (flat: key → value, or JSON null for unset).</summary>
+        public JsonElement? LastPatchBody { get; set; }
+
+        /// <summary>Every session id a PATCH .../env request targeted, in call order.</summary>
+        public List<string> PatchedSessionIds { get; } = [];
+
+        /// <summary>Number of GET .../env requests observed so far.</summary>
+        public int GetEnvCalls { get; set; }
+
+        /// <summary>Status the next GET .../env response returns. Default <see cref="HttpStatusCode.OK"/>.</summary>
+        public HttpStatusCode GetEnvStatus { get; set; } = HttpStatusCode.OK;
+
+        /// <summary>Body the next GET .../env response returns. <see langword="null"/> sends no content
+        /// (a bare 404 with no gateway error body).</summary>
+        public string? GetEnvBody { get; set; } = """{"env":{}}""";
+
+        /// <summary>Status the next PATCH .../env response returns. Default <see cref="HttpStatusCode.OK"/>.</summary>
+        public HttpStatusCode PatchEnvStatus { get; set; } = HttpStatusCode.OK;
+
+        /// <summary>Body the next PATCH .../env response returns — the resulting full env map.</summary>
+        public string PatchEnvJson { get; set; } = """{"env":{}}""";
+
+        /// <summary>
+        /// Session ids whose PATCH .../env is answered <c>400 { error_code: "invalid_env" }</c> regardless
+        /// of <see cref="PatchEnvStatus"/>. Lets a test reject ONE session out of several, which is the
+        /// only way to observe whether a reapply loop carries on past a failure.
+        /// </summary>
+        public HashSet<string> InvalidEnvSessionIds { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>When true, the next PATCH .../env request throws <see cref="HttpRequestException"/>
+        /// instead of responding — the SDK maps that to <c>SandboxErrorKind.TransportTimeout</c>.</summary>
+        public bool ThrowTransportErrorOnPatchEnv { get; set; }
+
+        /// <summary>
+        /// How long each GET/PATCH .../env handler stays "in flight". Widens the window in which two
+        /// callers could overlap, so <see cref="MaxConcurrentEnvCalls"/> measures something. Default zero,
+        /// so every other test is unaffected.
+        /// </summary>
+        public TimeSpan EnvCallDelay { get; set; } = TimeSpan.Zero;
+
+        /// <summary>
+        /// When set, GET/PATCH .../env behave like a real gateway: each session holds a map, a PATCH
+        /// applies its diff (null unsets) and both routes answer with the resulting map. The fixed
+        /// <see cref="GetEnvBody"/>/<see cref="PatchEnvJson"/> answers are ignored. Lets a test assert what
+        /// the gateway ENDS UP carrying, not only what was sent.
+        /// </summary>
+        public bool StatefulEnv { get; set; }
+
+        private readonly Dictionary<string, Dictionary<string, string>> _gatewayEnv = new(StringComparer.Ordinal);
+
+        /// <summary>The map the stateful gateway currently holds for <paramref name="sessionId"/>.</summary>
+        public Dictionary<string, string> GatewayEnvFor(string sessionId)
+        {
+            lock (_gatewayEnv)
+            {
+                if (!_gatewayEnv.TryGetValue(sessionId, out var map))
+                {
+                    _gatewayEnv[sessionId] = map = new Dictionary<string, string>(StringComparer.Ordinal);
+                }
+
+                return map;
+            }
+        }
+
+        private int _concurrentEnvCalls;
+        private int _maxConcurrentEnvCalls;
+
+        /// <summary>
+        /// The highest number of GET/PATCH .../env handlers that were ever in flight at the same instant.
+        /// <c>1</c> means the registry serialised them.
+        /// </summary>
+        public int MaxConcurrentEnvCalls => Volatile.Read(ref _maxConcurrentEnvCalls);
+
+        internal void EnterEnvCall()
+        {
+            var depth = Interlocked.Increment(ref _concurrentEnvCalls);
+            int seen;
+            while (depth > (seen = Volatile.Read(ref _maxConcurrentEnvCalls)))
+            {
+                if (Interlocked.CompareExchange(ref _maxConcurrentEnvCalls, depth, seen) == seen)
+                {
+                    break;
+                }
+            }
+
+            if (EnvCallDelay > TimeSpan.Zero)
+            {
+                // The stub handler is synchronous by design, so a plain sleep is the honest way to hold
+                // the call open; there is no async continuation to await here.
+                Thread.Sleep(EnvCallDelay);
+            }
+        }
+
+        internal void ExitEnvCall() => Interlocked.Decrement(ref _concurrentEnvCalls);
+    }
+
+    // Local mirrors of the registry's private snake_case JSON contract — same probes
+    // SandboxSessionRegistryWorkspaceTests uses to compose the gateway's create response.
+    internal sealed record CreateSandboxResponseProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("session_id")] string SessionId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("container_id")] string? ContainerId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("volumes")] VolumesProbe? Volumes
+    );
+
+    internal sealed record VolumesProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] WorkspaceVolumeProbe? Workspace
+    );
+
+    internal sealed record WorkspaceVolumeProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("container_path")] string? ContainerPath,
+        [property: System.Text.Json.Serialization.JsonPropertyName("read_only")] bool ReadOnly
+    );
+
+    internal sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            return Task.FromResult(respond(request));
+        }
+    }
+
+    /// <summary>Creates (and deletes) a real temp directory to serve as the workspace base.</summary>
+    internal sealed class TempWorkspaceBase : IDisposable
+    {
+        public string Path { get; } =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ws-env-test-" + Guid.NewGuid().ToString("N"));
+
+        public TempWorkspaceBase() => Directory.CreateDirectory(Path);
+
+        public void Dispose()
+        {
+            try
+            {
+                if (Directory.Exists(Path))
+                {
+                    Directory.Delete(Path, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup; a leaked temp dir must not fail the test.
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Minimal in-memory <see cref="IWorkspaceStore"/> fake for <see cref="SandboxEnvApplier"/> tests and
+/// <see cref="NoOpSandboxEnvApplier"/> construction. Supports only what those callers need — seeding
+/// and lookup by id — so the mutation members throw rather than silently no-op.
+/// </summary>
+internal sealed class InMemoryWorkspaceStoreFake : IWorkspaceStore
+{
+    private readonly Dictionary<string, Workspace> _workspaces = new(StringComparer.Ordinal);
+
+    public void Seed(Workspace workspace) => _workspaces[workspace.Id] = workspace;
+
+    /// <summary>Ids whose <see cref="GetAsync"/> fails the way a corrupt catalog does: not a sandbox exception.</summary>
+    public HashSet<string> FaultingIds { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Ids whose <see cref="GetAsync"/> is cancelled, to pin that containment never swallows cancellation.</summary>
+    public HashSet<string> CancellingIds { get; } = new(StringComparer.Ordinal);
+
+    public Task<IReadOnlyList<Workspace>> GetAllAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Workspace>>([.. _workspaces.Values]);
+
+    public Task<Workspace?> GetAsync(string id, CancellationToken ct = default)
+    {
+        if (FaultingIds.Contains(id))
+        {
+            throw new InvalidOperationException($"Simulated unreadable workspace catalog for '{id}'.");
+        }
+
+        if (CancellingIds.Contains(id))
+        {
+            throw new OperationCanceledException($"Simulated cancellation reading workspace '{id}'.");
+        }
+
+        return Task.FromResult(_workspaces.TryGetValue(id, out var workspace) ? workspace : null);
+    }
+
+    public Task<Workspace> CreateAsync(WorkspaceCreate dto, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryWorkspaceStoreFake supports only Seed/GetAsync.");
+
+    public Task<Workspace> UpdateAsync(string id, WorkspaceUpdate dto, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryWorkspaceStoreFake supports only Seed/GetAsync.");
+}
+
+/// <summary>Minimal in-memory <see cref="IChatModeStore"/> fake — see <see cref="InMemoryWorkspaceStoreFake"/>.</summary>
+internal sealed class InMemoryChatModeStoreFake : IChatModeStore
+{
+    private readonly Dictionary<string, ChatMode> _modes = new(StringComparer.Ordinal);
+
+    public void Seed(ChatMode mode) => _modes[mode.Id] = mode;
+
+    public Task<IReadOnlyList<ChatMode>> GetAllModesAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<ChatMode>>([.. _modes.Values]);
+
+    public Task<ChatMode?> GetModeAsync(string modeId, CancellationToken ct = default) =>
+        Task.FromResult(_modes.TryGetValue(modeId, out var mode) ? mode : null);
+
+    public Task<ChatMode> CreateModeAsync(ChatModeCreateUpdate mode, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task<ChatMode> UpdateModeAsync(string modeId, ChatModeCreateUpdate mode, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task DeleteModeAsync(string modeId, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+
+    public Task<ChatMode> CopyModeAsync(string modeId, string newName, CancellationToken ct = default) =>
+        throw new NotSupportedException("InMemoryChatModeStoreFake supports only Seed/GetModeAsync.");
+}
+
+/// <summary>
+/// No-op <see cref="SandboxEnvApplier"/> double for controller/persistence tests that need a valid
+/// applier instance to satisfy DI but exercise no env-reapply behavior at all. Both public reapply
+/// hooks are overridden to a no-op, so the base class's real dependencies (wired here to harmless
+/// throwaway fakes and one shared, never-invoked registry) are never actually exercised.
+/// </summary>
+internal class NoOpSandboxEnvApplier : SandboxEnvApplier
+{
+    // Shared across every instance: the underlying registry is never invoked (both reapply methods are
+    // overridden below), so one lazily-built throwaway instance is enough for the whole test run rather
+    // than standing up a gateway/HttpClient/temp-dir per controller test.
+    private static readonly Lazy<SandboxSessionRegistry> SharedRegistry = new(() =>
+    {
+        var dir = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "sandbox-env-noop-" + Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(dir);
+        return SandboxEnvTestSupport.CreateRegistry(dir, out _);
+    });
+
+    public NoOpSandboxEnvApplier()
+        : base(
+            new InMemoryWorkspaceStoreFake(),
+            new InMemoryChatModeStoreFake(),
+            new InMemoryConversationStore(),
+            SharedRegistry.Value,
+            NullLogger<SandboxEnvApplier>.Instance
+        ) { }
+
+    public override Task<SandboxEnvReapplyOutcome> ReapplyForWorkspaceAsync(string workspaceId, CancellationToken ct) =>
+        Task.FromResult(SandboxEnvReapplyOutcome.None);
+
+    public override Task<SandboxEnvReapplyOutcome> ReapplyForModeAsync(string modeId, CancellationToken ct) =>
+        Task.FromResult(SandboxEnvReapplyOutcome.None);
+
+    public override Task ApplyForActivationAsync(string threadId, CancellationToken ct) => Task.CompletedTask;
+}
+
+/// <summary>
+/// A no-op applier that records which threads were reconciled at activation, so a test can pin that a
+/// dispatch surface actually calls the hook. The reconcile itself is covered in
+/// <c>SandboxEnvApplierTests</c>; what this double is for is the WIRING, which is the half that was
+/// missing.
+/// </summary>
+internal sealed class RecordingActivationEnvApplier : NoOpSandboxEnvApplier
+{
+    public List<string> ActivatedThreadIds { get; } = [];
+
+    public override Task ApplyForActivationAsync(string threadId, CancellationToken ct)
+    {
+        ActivatedThreadIds.Add(threadId);
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// A <see cref="SandboxEnvApplier"/> whose mode reapply fails the way a GATEWAY rejection fails —
+/// after the store write has already succeeded. Used to pin the controllers' partial-success
+/// <c>invalid_env</c> response, which is a different situation from a validator rejection: there,
+/// nothing was persisted; here, the mode was saved and only the env was refused.
+/// </summary>
+internal sealed class GatewayRejectsEnvApplier(params string[] invalidKeys) : NoOpSandboxEnvApplier
+{
+    public override Task<SandboxEnvReapplyOutcome> ReapplyForModeAsync(string modeId, CancellationToken ct) =>
+        Task.FromResult(
+            new SandboxEnvReapplyOutcome(
+                Attempted: 1,
+                Succeeded: 0,
+                Failures:
+                [
+                    new SandboxEnvReapplyFailure(
+                        "session-1",
+                        new SandboxException(SandboxErrorKind.InvalidEnv, "gateway refused the environment", 400)
+                        {
+                            ErrorCode = "invalid_env",
+                            InvalidKeys = invalidKeys,
+                        }
+                    ),
+                ]
+            )
+        );
+}
