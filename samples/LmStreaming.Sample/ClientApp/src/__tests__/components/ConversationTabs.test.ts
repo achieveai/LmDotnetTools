@@ -39,7 +39,9 @@ describe('ConversationTabs', () => {
     const active = wrapper.get('[data-tab-id="a1"]');
     expect(active.classes()).toContain('active');
     expect(active.attributes('aria-selected')).toBe('true');
+    expect(active.attributes('tabindex')).toBe('0');
     expect(wrapper.get('[data-tab-id="main"]').attributes('aria-selected')).toBe('false');
+    expect(wrapper.get('[data-tab-id="main"]').attributes('tabindex')).toBe('-1');
   });
 
   it('applies the assigned hue to the color dot', () => {
@@ -95,5 +97,27 @@ describe('ConversationTabs', () => {
     } finally {
       HTMLElement.prototype.scrollIntoView = original;
     }
+  });
+
+  it('uses arrow, Home and End keys to select and focus tabs with wrapping', async () => {
+    const wrapper = mount(ConversationTabs, {
+      attachTo: document.body,
+      props: { tabs: TABS, activeTabId: 'a1' },
+    });
+
+    await wrapper.get('[data-tab-id="a1"]').trigger('keydown', { key: 'ArrowLeft' });
+    expect(wrapper.emitted('select')?.at(-1)).toEqual(['main']);
+
+    await wrapper.setProps({ activeTabId: 'main' });
+    await wrapper.get('[data-tab-id="main"]').trigger('keydown', { key: 'ArrowLeft' });
+    expect(wrapper.emitted('select')?.at(-1)).toEqual(['wf1']);
+
+    await wrapper.get('[data-tab-id="main"]').trigger('keydown', { key: 'End' });
+    expect(wrapper.emitted('select')?.at(-1)).toEqual(['wf1']);
+
+    await wrapper.get('[data-tab-id="wf1"]').trigger('keydown', { key: 'Home' });
+    expect(wrapper.emitted('select')?.at(-1)).toEqual(['main']);
+    expect(document.activeElement).toBe(wrapper.get('[data-tab-id="main"]').element);
+    wrapper.unmount();
   });
 });

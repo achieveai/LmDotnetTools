@@ -44,6 +44,27 @@ function setTabElement(
   else tabElements.delete(tabId);
 }
 
+async function handleTabKeydown(event: KeyboardEvent, tabId: string): Promise<void> {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+
+  const currentIndex = props.tabs.findIndex((tab) => tab.id === tabId);
+  if (currentIndex < 0 || props.tabs.length === 0) return;
+
+  let nextIndex: number;
+  if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = props.tabs.length - 1;
+  else {
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    nextIndex = (currentIndex + direction + props.tabs.length) % props.tabs.length;
+  }
+
+  const nextTab = props.tabs[nextIndex];
+  emit('select', nextTab.id);
+  await nextTick();
+  tabElements.get(nextTab.id)?.focus();
+}
+
 watch(
   () => [props.activeTabId, ...props.tabs.map((tab) => tab.id)],
   async () => {
@@ -67,11 +88,13 @@ watch(
       :class="{ active: tab.id === activeTabId }"
       role="tab"
       :aria-selected="tab.id === activeTabId"
+      :tabindex="tab.id === activeTabId ? 0 : -1"
       data-testid="conversation-tab"
       :data-tab-id="tab.id"
       :data-tab-kind="tab.kind"
       :title="tabTitle(tab)"
       @click="emit('select', tab.id)"
+      @keydown="handleTabKeydown($event, tab.id)"
     >
       <span class="conversation-tab__dot" :style="{ background: hueFor(tab) }" aria-hidden="true" />
       <span
