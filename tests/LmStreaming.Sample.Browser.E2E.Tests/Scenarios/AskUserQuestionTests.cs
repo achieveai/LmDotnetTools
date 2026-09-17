@@ -67,6 +67,7 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("what should I pick?");
 
@@ -113,6 +114,7 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("what should I pick?");
         await page.WaitForStreamIdleAsync();
@@ -153,6 +155,7 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("what should I pick?");

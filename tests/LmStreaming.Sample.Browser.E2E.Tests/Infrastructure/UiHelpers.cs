@@ -106,6 +106,54 @@ public static class UiHelpers
         return page.GetByTestId("assistant-text");
     }
 
+    /// <summary>The persisted Consumer transcript preference in the chat header.</summary>
+    public static ILocator ConsumerViewPreference(this IPage page)
+    {
+        return page.GetByTestId("view-preference-consumer");
+    }
+
+    /// <summary>The persisted Developer transcript preference in the chat header.</summary>
+    public static ILocator DeveloperViewPreference(this IPage page)
+    {
+        return page.GetByTestId("view-preference-developer");
+    }
+
+    /// <summary>One Consumer activity disclosure per assistant turn/run.</summary>
+    public static ILocator TurnActivity(this IPage page)
+    {
+        return page.GetByTestId("turn-activity");
+    }
+
+    /// <summary>The accessible toggle that reveals a Consumer activity row's original details.</summary>
+    public static ILocator TurnActivityToggle(this IPage page)
+    {
+        return page.GetByTestId("turn-activity-toggle");
+    }
+
+    /// <summary>Selects the detailed Developer view through the real persisted header control.</summary>
+    public static Task SelectDeveloperViewAsync(this IPage page)
+    {
+        return page.Locator("label").Filter(new() { Has = page.DeveloperViewPreference() }).ClickAsync();
+    }
+
+    /// <summary>Selects the quiet Consumer view through the real persisted header control.</summary>
+    public static Task SelectConsumerViewAsync(this IPage page)
+    {
+        return page.Locator("label").Filter(new() { Has = page.ConsumerViewPreference() }).ClickAsync();
+    }
+
+    /// <summary>The header launcher for the unified Work and agents inspector.</summary>
+    public static ILocator ConversationInspectorLauncher(this IPage page)
+    {
+        return page.GetByTestId("conversation-inspector-launcher");
+    }
+
+    /// <summary>The unified Work and agents inspector shell, present only while open.</summary>
+    public static ILocator ConversationInspector(this IPage page)
+    {
+        return page.GetByTestId("conversation-inspector");
+    }
+
     /// <summary>All metadata pills (one per group that produced thinking/tool-call events).</summary>
     public static ILocator MetadataPills(this IPage page)
     {

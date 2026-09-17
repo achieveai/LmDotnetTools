@@ -182,6 +182,7 @@ public sealed class SubAgentTabsTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("spawn two background workers");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);

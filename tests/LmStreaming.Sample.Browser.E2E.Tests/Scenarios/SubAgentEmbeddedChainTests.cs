@@ -59,6 +59,7 @@ public sealed class SubAgentEmbeddedChainTests
             subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(providerMode, loggerFactory)
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("delegate to the embedded-chain sub-agent");
         // The synchronous Agent call blocks until the sub-agent runs its full nested chain

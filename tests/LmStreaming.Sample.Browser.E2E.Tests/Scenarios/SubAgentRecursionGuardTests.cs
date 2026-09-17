@@ -104,6 +104,7 @@ public sealed class SubAgentRecursionGuardTests
             subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(providerMode, loggerFactory)
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("delegate to a sub-agent that tries to sub-delegate");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);

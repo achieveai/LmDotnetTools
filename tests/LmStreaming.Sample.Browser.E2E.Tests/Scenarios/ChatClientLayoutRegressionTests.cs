@@ -92,6 +92,7 @@ public sealed class ChatClientLayoutRegressionTests
 
         await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Pin the viewport so both regressions are deterministic across machines (see field docs).
         await page.SetViewportSizeAsync(ViewportWidth, ViewportHeight);

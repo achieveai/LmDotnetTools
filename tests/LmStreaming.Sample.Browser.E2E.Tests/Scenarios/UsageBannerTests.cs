@@ -43,6 +43,7 @@ public sealed class UsageBannerTests
 
         await using var session = await _fixture.OpenAsync("test-anthropic", responder.HandlerFor("test-anthropic"));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Turn 1: one generation = 100 in / 50 out -> Total 150.
         // #265: SendMessageAsync is a bare fill+click with no wait, so WaitForStreamIdleAsync could
@@ -86,6 +87,7 @@ public sealed class UsageBannerTests
             subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(loggerFactory)
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("delegate to the sub-agent");
         // The synchronous Agent call blocks until the sub-agent runs its nested chain, so allow extra time.
