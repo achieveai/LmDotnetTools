@@ -194,6 +194,37 @@
       ]
     },
     {
+      // Round 9 (H11). The round-6 headline re-run at a sample size that can carry it. These two arms are
+      // byte-identical to compact-v0-tok-keep99 and compact-v0-tok; only the names are new, because the
+      // runner names a workspace without a sweep id and the old names already own seeds 0-2 on s1 and r3.
+      // Round 8 measured s1's run-to-run sd at 0.1235, which makes 13 seeds the number for a 0.141 effect.
+      // On r3 the quantity of interest is not a mean but a FAILURE RATE: the default lost r3's deleted
+      // pages on one seed of three (41 clears, no compaction, the gain gate blocking every summary), and
+      // one failure in three bounds that rate only to 0.8%-90.6%.
+      // Outcome, for whoever reads this next: the pair settled the MECHANISM and not the harm. On r3
+      // h11-keep99 compacted on 9 of 13 seeds and h11-default on 0 of 13 (Fisher p = 0.000458), but the
+      // scores are 0.9720 vs 0.9301 (0.88 SE) and s1 is a tie at 0.44 SE. Suppressing the trigger is
+      // proven; that the suppression costs accuracy often enough to matter is not.
+      "name": "h11-keep99",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Today's shipping default: the pre-emptive clear keeps 3 tool turns. The control for h11-keep99.
+      "name": "h11-default",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
       // H7 bound and the 128k clamp together: no proactive clear and no genuine overflow on the scaled tasks.
       "name": "compact-v0-tok-keep99-128k",
       "compacts": true,
