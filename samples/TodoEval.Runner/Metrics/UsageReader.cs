@@ -51,6 +51,14 @@ internal sealed record UsageRecordRow
     public long TotalTokens { get; init; }
 
     /// <summary>
+    /// The record's revision. One attempt is relayed into more than one bag, and the copies are not
+    /// the same age: the sub-agent's bag holds the revision written before the pricing resolver ran,
+    /// the root bag the resolved one. Higher is more resolved. 0 when the archive predates the field,
+    /// which keeps every such copy equal and leaves the first one standing.
+    /// </summary>
+    public int Revision { get; init; }
+
+    /// <summary>
     /// What this attempt cost in micro-units, or null when no cost could be resolved. Mirrors
     /// <c>UsageRecord.PreferredCostMicros</c>: the provider's own figure when it reported one, else
     /// the public-pricing estimate. Read defensively — an archive written before costs were persisted
@@ -253,6 +261,11 @@ internal static class UsageReader
     /// Rolls a run's records up. <paramref name="records"/> may span the root thread and every
     /// sub-agent bag, so rows are DEDUPED by <c>ProviderAttemptId</c> first: the same attempt is
     /// relayed into more than one bag by design, and counting it twice would double the run's tokens.
+    /// The survivor is the copy with the highest <see cref="UsageRecordRow.Revision"/>, NOT whichever
+    /// bag was read first: the copies differ in how resolved they are, and the sub-agent's earlier
+    /// one is written before the pricing resolver fills the cost in. Keeping the first dropped the
+    /// price of every summariser call in the compaction eval while still counting its tokens, so the
+    /// run's cost read as a total when it was a lower bound.
     /// <paramref name="generationIdsByAgent"/> supplies the turn ids each thread actually recorded,
     /// which is what the best-effort turn join matches against.
     /// </summary>
@@ -261,6 +274,18 @@ internal static class UsageReader
         IReadOnlyDictionary<string, IReadOnlyCollection<string>> generationIdsByAgent
     )
     {
+        // Two passes, because the survivor of a duplicate is not knowable until every copy is seen.
+        // The first pass picks it; the second walks the ORIGINAL order filtered to survivors, so the
+        // per-kind and per-agent groupings keep the order the archives were read in.
+        var survivors = new Dictionary<string, UsageRecordRow>(StringComparer.Ordinal);
+        foreach (var row in records)
+        {
+            if (!survivors.TryGetValue(row.ProviderAttemptId, out var held) || row.Revision > held.Revision)
+            {
+                survivors[row.ProviderAttemptId] = row;
+            }
+        }
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var duplicates = 0;
         var totals = new UsageTotals();
@@ -272,7 +297,7 @@ internal static class UsageReader
 
         foreach (var row in records)
         {
-            if (!seen.Add(row.ProviderAttemptId))
+            if (!ReferenceEquals(survivors[row.ProviderAttemptId], row) || !seen.Add(row.ProviderAttemptId))
             {
                 duplicates++;
                 continue;
@@ -392,6 +417,7 @@ internal static class UsageReader
             CacheWriteTokens = GetLong(element, "CacheWriteTokens"),
             ReasoningTokens = GetLong(element, "ReasoningTokens"),
             TotalTokens = GetLong(element, "TotalTokens"),
+            Revision = (int)GetLong(element, "Revision"),
             CostMicros = ReadCost(element),
             CompactionCheckpointId = GetString(element, "CompactionCheckpointId"),
         };
