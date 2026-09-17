@@ -215,6 +215,57 @@
       ]
     },
     {
+      // Round 10 (H12). Round 9 proved proactive clearing suppresses the compaction trigger on r3 but
+      // could not show a cost, because at 96k r3 rarely loses anything. At 64k the head MUST be cut, so
+      // this pair asks whether the suppression survives real pressure and what it costs. Only runnable
+      // now: moving the clamp moves run duration, which used to move the steer with it (173c2b68).
+      "name": "h12-keep99-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Today's shipping default at the same clamp. The control for h12-keep99-c64.
+      "name": "h12-default-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Harness probe, not a research arm: one r3 run to prove the new event-based steer release works
+      // against the real host, before a round is spent on it. Byte-identical to h11-keep99.
+      // NOTE: r3 uses the 'firstAnswer' trigger, which adds no new HTTP call. The 'toolCalls' trigger
+      // s1 uses DOES poll a new endpoint mid-run, so it needs its own probe (probe-steer-s1) before any
+      // s1 sweep. Proving one trigger says nothing about the other.
+      "name": "probe-steer",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // The other half of the harness probe: one s1 run, because s1's steer releases on fourteen Read
+      // calls and that path polls the conversation's messages mid-run. Byte-identical to h11-keep99.
+      "name": "probe-steer-s1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
       // Today's shipping default: the pre-emptive clear keeps 3 tool turns. The control for h11-keep99.
       "name": "h11-default",
       "compacts": true,
