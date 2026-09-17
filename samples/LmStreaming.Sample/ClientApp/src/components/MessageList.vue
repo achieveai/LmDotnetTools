@@ -631,7 +631,7 @@ watch(
 
 /* Copy button: pinned to the bubble's top-right corner, revealed on hover or keyboard focus. It stays
    in the DOM (opacity, not v-show) so Tab can reach it and :focus-within can reveal it. */
-.bubble-copy {
+:deep(.bubble-copy) {
   position: absolute;
   top: 6px;
   right: 0;
@@ -641,18 +641,10 @@ watch(
   transition: opacity 0.12s ease-in-out;
 }
 
-.text-bubble-row:hover .bubble-copy,
-.text-bubble-row:focus-within .bubble-copy {
+.text-bubble-row:hover :deep(.bubble-copy),
+.text-bubble-row:focus-within :deep(.bubble-copy) {
   opacity: 1;
   pointer-events: auto;
-}
-
-/* Touch screens have no hover: keep it visible there. */
-@media (hover: none) {
-  .bubble-copy {
-    opacity: 1;
-    pointer-events: auto;
-  }
 }
 
 @media (max-width: 600px) {
