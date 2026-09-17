@@ -150,6 +150,10 @@ public sealed class MultiTurnAgentLoop
     // no CompactionSetup, in which case nothing on the request path changes.
     private readonly CompactionRuntime? _compaction;
 
+    // The experimental elapsed-time notice clock. Null when the host supplied no options, in which
+    // case no notice is ever appended and the turn loop is unchanged.
+    private readonly ElapsedTimeNoticeTracker? _elapsedTimeNotice;
+
     /// <summary>Estimated tokens of the tool definitions every request carries (compaction's fixed prefix).</summary>
     internal long ToolSchemaTokens { get; }
 
@@ -269,7 +273,7 @@ public sealed class MultiTurnAgentLoop
     /// constructor ever had. Callers that need to control tool registration or supply a custom
     /// descendant-question sink (e.g. a spawned sub-agent, or a workflow controller loop with no
     /// browser socket of its own) must use the
-    /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?, CompactionSetup?)"/>
+    /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?, CompactionSetup?, ElapsedTimeNoticeOptions?)"/>
     /// overload instead. Both route through the same implementation.
     /// </remarks>
     public MultiTurnAgentLoop(
@@ -387,6 +391,11 @@ public sealed class MultiTurnAgentLoop
     ///     exactly as it was: no policy pass, no recall tool, no observation. Spawned sub-agents
     ///     inherit it through <see cref="SubAgentOptions.Compaction"/>.
     /// </param>
+    /// <param name="elapsedTimeNotice">
+    ///     Optional, experimental. When supplied, the loop appends a persisted, never-published
+    ///     user-role <see cref="ElapsedTimeNotice"/> at a turn boundary once the configured interval has
+    ///     passed since the run started or the previous notice. Null leaves the turn loop unchanged.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -411,7 +420,8 @@ public sealed class MultiTurnAgentLoop
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
         Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
-        CompactionSetup? compaction = null
+        CompactionSetup? compaction = null,
+        ElapsedTimeNoticeOptions? elapsedTimeNotice = null
     )
         : base(
             threadId,
@@ -468,6 +478,8 @@ public sealed class MultiTurnAgentLoop
         }
 
         _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
+
+        _elapsedTimeNotice = elapsedTimeNotice is null ? null : new ElapsedTimeNoticeTracker(elapsedTimeNotice);
 
         // Just-in-time compaction (#684). The runtime holds no reference to this loop — every fact it
         // needs is a delegate — and it is built before the inheritable-tool snapshot below so the recall
@@ -1268,6 +1280,7 @@ public sealed class MultiTurnAgentLoop
         var recoveryCount = TakeCarriedRecoveryBudget(runId);
         ResumeSentinel? pendingResume = null;
         _compaction?.OnRunStarted();
+        _elapsedTimeNotice?.OnRunStarted();
 
         while (turnCount < MaxTurnsPerRun)
         {
@@ -1333,6 +1346,17 @@ public sealed class MultiTurnAgentLoop
                         runId
                     );
                 }
+            }
+
+            // Experimental elapsed-time notice: appended to history HERE, at the turn boundary, where
+            // the previous turn's tool results are already settled and appended, so a user-role text
+            // can never land between an assistant tool_use and its tool_result. AddToHistory persists
+            // it and never publishes a user-role text, so no client ever sees a synthetic bubble; the
+            // next ExecuteTurnAsync rebuilds the request from history and carries it to the model.
+            if (_elapsedTimeNotice?.NextNotice() is { } elapsedNotice)
+            {
+                AddToHistory(elapsedNotice);
+                Logger.LogDebug("Appended elapsed-time notice to run {RunId} before turn {Turn}", runId, turnCount + 1);
             }
 
             turnCount++;
