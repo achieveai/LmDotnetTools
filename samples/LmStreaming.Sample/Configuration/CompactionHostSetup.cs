@@ -9,10 +9,10 @@ namespace LmStreaming.Sample.Configuration;
 /// every knob the policy has is settable from appsettings or <c>Compaction__*</c> environment variables.
 /// </summary>
 /// <remarks>
-/// The library default is <see cref="CompactionMode.Off"/> and the shipped appsettings sets
-/// <c>"Compaction": { "Mode": "Off" }</c>, so a host that does not turn a route on builds no setup: every loop
-/// is constructed exactly as before, <c>manualCompaction</c> is not advertised and a manual request answers
-/// 409 <c>compaction_off</c>.
+/// The library default is <see cref="CompactionMode.Off"/>, while this sample deliberately ships the ADR 0020
+/// production profile in Compact mode. Operators can still set <c>Compaction__Mode=Off</c>; when no route is on,
+/// the host builds no setup, <c>manualCompaction</c> is not advertised and a manual request answers 409
+/// <c>compaction_off</c>.
 /// </remarks>
 public static class CompactionHostSetup
 {

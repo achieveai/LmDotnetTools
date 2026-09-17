@@ -31,6 +31,36 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void CheckedInHostDefaults_EnableTheRecommendedProductionProfile()
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(AppsettingsPath).Build();
+        var options = CompactionHostSetup.BindOptions(configuration);
+
+        options.Mode.Should().Be(CompactionMode.Compact);
+        options.ClearAnsweredToolResultsOnly.Should().BeTrue();
+        options.TextTokenizer.Should().Be("o200k");
+        options.MeasureCompactionGainOnStoredRows.Should().BeFalse("ADR 0020 does not recommend the H8 arm");
+        CompactionHostSetup
+            .Create(options, capacityResolver: null, providerId: "test")!
+            .TextTokens.Should()
+            .NotBeNull("the checked-in profile uses the real o200k tokenizer");
+    }
+
+    [Fact]
+    public void CheckedInHostDefaults_CanBeDisabledByConfigurationOverride()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(AppsettingsPath)
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Compaction:Mode"] = "Off" })
+            .Build();
+
+        CompactionHostSetup
+            .Create(CompactionHostSetup.BindOptions(configuration), capacityResolver: null, providerId: "test")
+            .Should()
+            .BeNull("operators retain a complete opt-out");
+    }
+
+    [Fact]
     public void ModeOffWithNoRouteAboveOff_LeavesTheFeatureAbsent()
     {
         Create(
@@ -225,6 +255,21 @@ public class CompactionHostSetupTests
 
         act.Should().Throw<InvalidOperationException>();
     }
+
+    private static string AppsettingsPath { get; } =
+        Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "samples",
+                "LmStreaming.Sample",
+                "appsettings.json"
+            )
+        );
 
     private sealed class FixedCapacity(string modelId, long window) : IModelCapacityResolver
     {

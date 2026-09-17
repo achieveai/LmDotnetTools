@@ -827,8 +827,9 @@ Drives just-in-time compaction end to end: the policy decision in the **Context*
 
 ### Test profile (host flags, no appsettings edit)
 
-`appsettings.json` ships `"Compaction": { "Mode": "Off" }`, so nothing compacts by default. Start the host
-with command-line overrides. They shrink the `test-anthropic` model's window to 18,000 tokens so a few turns
+`appsettings.json` ships compaction enabled in `Compact` mode with ADR 0020's recommended answered-result
+clearing and `o200k` tokenizer. Set `Compaction__Mode=Off` to opt out. For this test, start the host with the
+command-line overrides below. They shrink the `test-anthropic` model's window to 18,000 tokens so a few turns
 cross the bands. Use flags, not env vars: the model id has hyphens, which Bash cannot put in a variable name.
 
 ```bash
