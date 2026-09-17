@@ -207,6 +207,90 @@ internal sealed class EvalHostClient
         return ReadStringProperty(body, "inputId");
     }
 
+    /// <summary>
+    ///     How many calls to <paramref name="tool"/> the thread has recorded so far.
+    /// </summary>
+    /// <remarks>
+    ///     Read mid-run so a correction can be released by what the agent has DONE rather than by how
+    ///     long it has taken. Counts the root thread only: a sub-agent's calls are its own thread's, and
+    ///     the s1 read burst this exists for lands on the root thread (measured: 26 of 26 round-9 runs).
+    ///     A thread whose messages cannot be read yet counts as zero rather than failing the run — the
+    ///     correction still has the first answer as its backstop.
+    /// </remarks>
+    public async Task<int> CountToolCallsAsync(string threadId, string tool, CancellationToken ct)
+    {
+        string body;
+        try
+        {
+            body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
+                body: null,
+                ct
+            );
+        }
+        catch (HttpRequestException)
+        {
+            return 0;
+        }
+
+        using var doc = JsonDocument.Parse(body);
+        var messages = doc.RootElement.ValueKind switch
+        {
+            JsonValueKind.Array => doc.RootElement,
+            JsonValueKind.Object when doc.RootElement.TryGetProperty("messages", out var m) => m,
+            _ => default,
+        };
+        if (messages.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var message in messages.EnumerateArray())
+        {
+            if (NamesTheTool(message, tool))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    ///     True when a stored message is a tool call naming <paramref name="tool"/>. The name lives in
+    ///     the nested <c>messageJson</c> payload, which is a STRING on the wire, so it is parsed again.
+    /// </summary>
+    private static bool NamesTheTool(JsonElement message, string tool)
+    {
+        if (
+            !message.TryGetProperty("messageType", out var type)
+            || type.ValueKind != JsonValueKind.String
+            || !string.Equals(type.GetString(), "ToolCallMessage", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return false;
+        }
+
+        if (!message.TryGetProperty("messageJson", out var json) || json.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var inner = JsonDocument.Parse(json.GetString() ?? "{}");
+            return inner.RootElement.TryGetProperty("function_name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                && string.Equals(name.GetString(), tool, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     public async Task<RunStatus> GetStatusByInputIdAsync(string threadId, string inputId, CancellationToken ct)
     {
         var body = await SendReadAsync(

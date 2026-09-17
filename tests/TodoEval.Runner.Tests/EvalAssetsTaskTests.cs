@@ -129,6 +129,55 @@ public class EvalAssetsTaskTests : IDisposable
         task.Steer.Should().Be("Correction: do it differently.");
     }
 
+    /// <summary>A minimal steer task body; only its meta varies across the trigger tests.</summary>
+    private const string SteerBody = "docs\n---\nDo {SEED}.\n\n## steer\n\nCorrection.";
+
+    [Fact]
+    public void ASteerAfterTriggerIsLoadedWithIt()
+    {
+        WriteTask(
+            "s1",
+            SteerBody,
+            meta: """
+            { "seeds": ["aurora"], "steerAfterSeconds": 90,
+              "steerAfter": { "kind": "toolCalls", "tool": "Read", "count": 14 } }
+            """
+        );
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["s1"]).Tasks.Single();
+
+        task.Meta!.SteerAfter!.Kind.Should().Be(SteerTriggerKinds.ToolCalls);
+        task.Meta.SteerAfter.Tool.Should().Be("Read");
+        task.Meta.SteerAfter.Count.Should().Be(14);
+    }
+
+    [Fact]
+    public void ATaskWithNoSteerAfterKeepsTheWallClockRelease()
+    {
+        WriteTask("s1", SteerBody, meta: """{ "seeds": ["aurora"], "steerAfterSeconds": 90 }""");
+
+        var task = EvalAssets.Load(_evalDir, "probe-eval", ["s1"]).Tasks.Single();
+
+        task.Meta!.SteerAfter.Should().BeNull("every sweep recorded before the trigger existed used the clock");
+        task.Meta.SteerAfterSeconds.Should().Be(90);
+    }
+
+    [Theory]
+    [InlineData("""{ "kind": "whenever" }""", "whenever")]
+    [InlineData("""{ "kind": "toolCalls", "count": 3 }""", "tool")]
+    [InlineData("""{ "kind": "toolCalls", "tool": "Read" }""", "count")]
+    [InlineData("""{ "kind": "toolCalls", "tool": "Read", "count": 0 }""", "count")]
+    public void ASteerAfterTheRunnerCannotWaitForIsRefusedAtLoad(string trigger, string expected)
+    {
+        // A trigger that silently does nothing would put the correction back on the clock without
+        // saying so, which is the exact failure this option exists to end.
+        WriteTask("s1", SteerBody, meta: $$"""{ "seeds": ["aurora"], "steerAfter": {{trigger}} }""");
+
+        var act = () => EvalAssets.Load(_evalDir, "probe-eval", ["s1"]);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{expected}*");
+    }
+
     [Fact]
     public void SeedWordsCycleWhenThereAreMoreRepeatsThanSeeds()
     {

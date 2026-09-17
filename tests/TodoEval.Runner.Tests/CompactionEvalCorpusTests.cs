@@ -58,4 +58,23 @@ public class CompactionEvalCorpusTests
         var rendered = TaskTemplateRenderer.Render(s1.Template, "a topic", s1.Meta.SeedForIndex(0));
         rendered.Should().NotContain("{SEED}").And.Contain(s1.Meta.SeedForIndex(0)!);
     }
+
+    [SkippableTheory]
+    [InlineData("s1")]
+    [InlineData("r2")]
+    [InlineData("r3")]
+    public void EverySteerTaskReleasesItsCorrectionOnAConversationEvent(string taskId)
+    {
+        // Measured over 79 s1 runs, the wall-clock release landed anywhere between 1 and 60 Read calls
+        // into the work, so the same task was a different task per arm — and every arm this eval compares
+        // changes how long a run takes. A steer task that drops back to the clock is not comparable
+        // across arms, so the corpus refuses one.
+        var evalDir = EvalDir();
+        Skip.If(evalDir is null, "evals/compaction-eval is not present in this checkout.");
+
+        var task = EvalAssets.Load(evalDir!, "compaction-eval", [taskId]).Tasks.Single();
+
+        task.Steer.Should().NotBeNullOrWhiteSpace();
+        task.Meta!.SteerAfter.Should().NotBeNull($"task '{taskId}' must not release its steer on a clock");
+    }
 }

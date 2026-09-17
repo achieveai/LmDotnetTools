@@ -5,5 +5,6 @@
   "minCompactions": 1,
   "timeoutMinutes": 25,
   "steerAfterSeconds": 240,
-  "windowPressure": "r2's two waves (five full-page reads each, ~22k tokens per wave, o200k), but wave one's pages are deleted after reading and nothing is written until wave two. The second message pushes the request past the ~55k trigger with wave one as the cuttable head, so a summary is produced; the five wave-one values then exist only in that summary, so its fidelity is the score (R3). No re-read can rescue a lossy summary."
+  "steerAfter": { "kind": "firstAnswer" },
+  "windowPressure": "r2's two waves (five full-page reads each, ~22k tokens per wave, o200k), but wave one's pages are deleted after reading and nothing is written until wave two. The second message, held until the first answer is terminal so it is always a second WAVE, pushes the request past the ~55k trigger with wave one as the cuttable head, so a summary is produced; the five wave-one values then exist only in that summary, so its fidelity is the score (R3). No re-read can rescue a lossy summary."
 }

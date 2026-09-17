@@ -28,7 +28,7 @@ public class SweepEndToEndTests : IDisposable
     }
 
     /// <summary>A task directory with the tasks/README.md contract: fixtures, hidden material, meta.</summary>
-    private EvalTaskAsset WriteTask(string? steer = null, int? steerAfterSeconds = 0)
+    private EvalTaskAsset WriteTask(string? steer = null, int? steerAfterSeconds = 0, SteerTrigger? steerAfter = null)
     {
         var dir = Path.Combine(_root, "tasks", "c1");
         Directory.CreateDirectory(Path.Combine(dir, "fixtures", "data"));
@@ -47,6 +47,7 @@ public class SweepEndToEndTests : IDisposable
                 Seeds = ["aurora", "basalt"],
                 MinCompactions = 1,
                 SteerAfterSeconds = steerAfterSeconds,
+                SteerAfter = steerAfter,
             },
             ExpectedBoard = null,
         };
@@ -139,6 +140,90 @@ public class SweepEndToEndTests : IDisposable
         host.Messages[1].Should().Be("Correction: 15 rows.");
         entry.SteerSentAt.Should().NotBeNull();
         entry.SteerMidRun.Should().BeFalse("the first answer was already terminal when it was sent");
+        entry.Status.Should().Be(RunOutcomes.Completed);
+    }
+
+    [Fact]
+    public async Task ASteerTriggeredOnTheFirstAnswer_IsNeverSentWhileTheFirstAnswerIsStillRunning()
+    {
+        // The defect this replaces: the two-wave tasks release their second wave on a 240-second clock,
+        // so a run slower than that had "now read pages 06-10" injected while it was still reading pages
+        // 01-05. The premise the task is built on — wave one is DONE and only its summary carries it —
+        // was silently false for exactly the arms that slow a run down.
+        var host = new ScriptedHost { CompleteAfterMessages = 1, StatusPollsBeforeTerminal = 3 };
+
+        var entry = (
+            await SweepAsync(
+                WriteTask(
+                    steer: "Thanks. Now read pages 06-10.",
+                    steerAfterSeconds: 0,
+                    steerAfter: new SteerTrigger { Kind = SteerTriggerKinds.FirstAnswer }
+                ),
+                host
+            )
+        ).Single();
+
+        host.Messages.Should().HaveCount(2);
+        host.MessagesWhileRunning.Should()
+            .Be(1, "only the first message may arrive before the first answer is terminal");
+        entry.SteerMidRun.Should().BeFalse("the correction waited for the answer rather than for a clock");
+        entry.Status.Should().Be(RunOutcomes.Completed);
+    }
+
+    [Fact]
+    public async Task ASteerTriggeredOnToolCalls_WaitsForTheCountNotTheClock()
+    {
+        // steerAfterSeconds is 0, so the clock would fire the correction immediately. The trigger holds
+        // it until the agent has actually made three Read calls.
+        var host = new ScriptedHost { CompleteAfterMessages = 2, ToolCallsPerPoll = 1 };
+
+        var entry = (
+            await SweepAsync(
+                WriteTask(
+                    steer: "Correction: 15 rows.",
+                    steerAfterSeconds: 0,
+                    steerAfter: new SteerTrigger
+                    {
+                        Kind = SteerTriggerKinds.ToolCalls,
+                        Tool = "Read",
+                        Count = 3,
+                    }
+                ),
+                host
+            )
+        ).Single();
+
+        host.Messages.Should().HaveCount(2);
+        host.ReadCountWhenSteerArrived.Should().BeGreaterThanOrEqualTo(3, "the count is what released it");
+        entry.SteerMidRun.Should().BeTrue("the run was still going when the count was reached");
+        entry.Status.Should().Be(RunOutcomes.Completed);
+    }
+
+    [Fact]
+    public async Task ASteerTriggeredOnToolCallsTheRunNeverReaches_StillLandsAsAFollowUp()
+    {
+        // The first answer stays the backstop: a run that finishes without ever making the calls still
+        // owes the second half of its task, exactly as under the clock.
+        var host = new ScriptedHost { CompleteAfterMessages = 1, ToolCallsPerPoll = 0 };
+
+        var entry = (
+            await SweepAsync(
+                WriteTask(
+                    steer: "Correction: 15 rows.",
+                    steerAfterSeconds: 0,
+                    steerAfter: new SteerTrigger
+                    {
+                        Kind = SteerTriggerKinds.ToolCalls,
+                        Tool = "Read",
+                        Count = 99,
+                    }
+                ),
+                host
+            )
+        ).Single();
+
+        host.Messages.Should().HaveCount(2);
+        entry.SteerMidRun.Should().BeFalse("nothing but the first answer could release it");
         entry.Status.Should().Be(RunOutcomes.Completed);
     }
 
@@ -243,11 +328,42 @@ public class SweepEndToEndTests : IDisposable
         /// <summary>The status reported once enough messages have arrived.</summary>
         public string TerminalStatus { get; init; } = "Completed";
 
+        /// <summary>Status polls answered "Running" before the terminal status is reported at all.</summary>
+        public int StatusPollsBeforeTerminal { get; init; }
+
+        /// <summary>Read tool calls the transcript gains on every status poll, so work accrues over time.</summary>
+        public int ToolCallsPerPoll { get; init; }
+
         public List<string> Messages { get; } = [];
+
+        /// <summary>How many messages arrived while the first answer was still Running.</summary>
+        public int MessagesWhileRunning { get; private set; }
+
+        /// <summary>The Read count the transcript showed when the correction was posted.</summary>
+        public int ReadCountWhenSteerArrived { get; private set; } = -1;
+
+        private int _statusPolls;
+        private int _reads;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get && path.EndsWith("/messages", StringComparison.Ordinal))
+            {
+                lock (Messages)
+                {
+                    var rows = string.Join(
+                        ",",
+                        Enumerable
+                            .Range(0, _reads)
+                            .Select(_ =>
+                                """{"messageType":"ToolCallMessage","messageJson":"{\"function_name\":\"Read\"}"}"""
+                            )
+                    );
+                    return Json($"[{rows}]");
+                }
+            }
+
             if (request.Method == HttpMethod.Post && path == "/api/workspaces")
             {
                 return Json("""{"id":"ws-run"}""");
@@ -269,13 +385,31 @@ public class SweepEndToEndTests : IDisposable
                 var text = JsonDocument.Parse(body).RootElement.GetProperty("text").GetString()!;
                 lock (Messages)
                 {
+                    if (Messages.Count >= 1 && ReadCountWhenSteerArrived < 0)
+                    {
+                        ReadCountWhenSteerArrived = _reads;
+                    }
+
+                    var firstAnswerIsTerminal =
+                        Messages.Count >= CompleteAfterMessages && _statusPolls > StatusPollsBeforeTerminal;
+                    if (!firstAnswerIsTerminal)
+                    {
+                        MessagesWhileRunning++;
+                    }
+
                     Messages.Add(text);
                 }
 
                 return Json($$"""{"inputId":"i-{{Messages.Count}}"}""");
             }
 
-            var done = Messages.Count >= CompleteAfterMessages;
+            lock (Messages)
+            {
+                _statusPolls++;
+                _reads += ToolCallsPerPoll;
+            }
+
+            var done = Messages.Count >= CompleteAfterMessages && _statusPolls > StatusPollsBeforeTerminal;
             return Json(done ? $$"""{"status":"{{TerminalStatus}}","runId":"r-1"}""" : """{"status":"Running"}""");
         }
 

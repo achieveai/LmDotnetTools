@@ -34,12 +34,81 @@ internal sealed record TaskMeta
 
     /// <summary>
     /// Delay before the <c>## steer</c> correction is sent, measured from the first message. Null with
-    /// a steer section present means "send it as soon as the run is under way" (zero delay).
+    /// a steer section present means "send it as soon as the run is under way" (zero delay). Used only
+    /// when <see cref="SteerAfter"/> is absent: a clock says WHEN the correction is sent, not where in
+    /// the conversation it lands, and those stop agreeing the moment an arm changes how long a run takes.
     /// </summary>
     public int? SteerAfterSeconds { get; init; }
 
+    /// <summary>
+    /// The conversation event that releases the <c>## steer</c> correction. Null keeps the legacy
+    /// wall-clock release on <see cref="SteerAfterSeconds"/>, which every sweep before this option
+    /// existed used.
+    /// </summary>
+    public SteerTrigger? SteerAfter { get; init; }
+
     /// <summary>Seed word for a zero-based repeat index, or null when the task declares no seeds.</summary>
     public string? SeedForIndex(int seedIndex) => Seeds.Count == 0 ? null : Seeds[seedIndex % Seeds.Count];
+}
+
+/// <summary>The trigger kinds <see cref="SteerTrigger.Kind"/> accepts.</summary>
+internal static class SteerTriggerKinds
+{
+    /// <summary>Wait for the first input to reach a terminal status, then send.</summary>
+    public const string FirstAnswer = "firstAnswer";
+
+    /// <summary>Wait until the thread shows a given number of calls to a named tool.</summary>
+    public const string ToolCalls = "toolCalls";
+}
+
+/// <summary>
+///     What has to have happened in the conversation before the <c>## steer</c> correction is sent.
+/// </summary>
+/// <remarks>
+/// <para>
+///     The correction's job is to land at a particular POINT IN THE WORK: after the first wave of a
+///     two-wave research task, or partway through a read burst. A wall-clock delay only expresses that
+///     for one run speed, and every arm this eval compares changes run speed — so the same task became
+///     a different task per arm. Measured over 79 s1 runs, the 90-second delay landed anywhere between
+///     1 and 60 Read calls into the work.
+/// </para>
+/// <para>
+///     <see cref="SteerTriggerKinds.FirstAnswer"/> is the one the two-wave tasks need: their steer opens
+///     "Thanks. Now read pages 06-10", which is only a second wave if the first one finished. Under the
+///     clock a slow run had it injected mid-read, destroying the premise the task is built on.
+/// </para>
+/// </remarks>
+internal sealed record SteerTrigger
+{
+    /// <summary>One of <see cref="SteerTriggerKinds"/>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>For <see cref="SteerTriggerKinds.ToolCalls"/>: the tool whose calls are counted.</summary>
+    public string? Tool { get; init; }
+
+    /// <summary>For <see cref="SteerTriggerKinds.ToolCalls"/>: how many calls release the correction.</summary>
+    public int? Count { get; init; }
+
+    /// <summary>Throws unless this trigger is one the runner can actually wait for.</summary>
+    public void Validate(string path)
+    {
+        switch (Kind)
+        {
+            case SteerTriggerKinds.FirstAnswer:
+                return;
+            case SteerTriggerKinds.ToolCalls when Tool is { Length: > 0 } && Count is > 0:
+                return;
+            case SteerTriggerKinds.ToolCalls:
+                throw new InvalidOperationException(
+                    $"{path}: steerAfter '{SteerTriggerKinds.ToolCalls}' needs a non-empty 'tool' and a 'count' above zero."
+                );
+            default:
+                throw new InvalidOperationException(
+                    $"{path}: steerAfter kind '{Kind}' is not one of "
+                        + $"'{SteerTriggerKinds.FirstAnswer}', '{SteerTriggerKinds.ToolCalls}'."
+                );
+        }
+    }
 }
 
 /// <summary>
@@ -212,9 +281,14 @@ internal sealed class EvalAssets
         }
     }
 
-    private static TaskMeta LoadMeta(string path) =>
-        JsonSerializer.Deserialize<TaskMeta>(File.ReadAllText(path), MetaOptions)
-        ?? throw new InvalidOperationException($"{path} parsed to null.");
+    private static TaskMeta LoadMeta(string path)
+    {
+        var meta =
+            JsonSerializer.Deserialize<TaskMeta>(File.ReadAllText(path), MetaOptions)
+            ?? throw new InvalidOperationException($"{path} parsed to null.");
+        meta.SteerAfter?.Validate(path);
+        return meta;
+    }
 
     private static readonly JsonSerializerOptions MetaOptions = new()
     {

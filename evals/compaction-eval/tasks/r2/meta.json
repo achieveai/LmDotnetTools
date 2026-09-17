@@ -5,5 +5,6 @@
   "minCompactions": 1,
   "timeoutMinutes": 25,
   "steerAfterSeconds": 240,
-  "windowPressure": "two waves of five full-page reads (~22k tokens each, o200k). Wave one answers five keys from pages 01-05 and stays under the 96k trigger (~36k). The second message asks for pages 06-10 and a supersession check, which pushes the request past the ~55k trigger with wave one's pages as a cuttable head (>=20k freed), so a summary is produced and its numbers must survive (R3). Unlike r1, whose single ten-page burst is the tail and frees nothing."
+  "steerAfter": { "kind": "firstAnswer" },
+  "windowPressure": "two waves of five full-page reads (~22k tokens each, o200k). Wave one answers five keys from pages 01-05 and stays under the 96k trigger (~36k). The second message, held until the first answer is terminal so it is always a second WAVE, asks for pages 06-10 and a supersession check, which pushes the request past the ~55k trigger with wave one's pages as a cuttable head (>=20k freed), so a summary is produced and its numbers must survive (R3). Unlike r1, whose single ten-page burst is the tail and frees nothing."
 }

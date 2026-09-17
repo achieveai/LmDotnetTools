@@ -258,31 +258,120 @@ internal sealed class SweepRunner(
             return (await client.PollToTerminalAsync(threadId, inputId, deadline, config.Poll, ct), null, null);
         }
 
-        // Poll to whichever comes first. Running out of time at the RUN's own deadline is an ordinary
-        // timeout and propagates — a correction sent then could never land.
-        var steerDue = started + TimeSpan.FromSeconds(task.Meta?.SteerAfterSeconds ?? 0);
-        var firstDeadline = steerDue < deadline ? steerDue : deadline;
-        var midRun = false;
-        try
+        var released = task.Meta?.SteerAfter is { } trigger
+            ? await WaitForSteerTriggerAsync(threadId, inputId, trigger, deadline, ct)
+            : await WaitForSteerClockAsync(threadId, inputId, task, started, deadline, ct);
+        if (released.First is { } early)
         {
-            var first = await client.PollToTerminalAsync(threadId, inputId, firstDeadline, config.Poll, ct);
-            if (first.Status != RunOutcomes.Completed)
-            {
-                return (first, null, null);
-            }
-        }
-        catch (TimeoutException) when (firstDeadline < deadline)
-        {
-            // Still working, which is what the steer family exists to measure: the correction lands mid-run.
-            midRun = true;
+            return (early, null, null);
         }
 
+        var midRun = released.MidRun;
         var steerInputId = await client.SendMessageAsync(threadId, steer, ct);
         var sentAt = DateTimeOffset.UtcNow;
         log.WriteLine(
             $"[run] steer sent on thread {threadId} at {sentAt:O} ({(midRun ? "mid-run" : "after the first answer")})"
         );
         return (await client.PollToTerminalAsync(threadId, steerInputId, deadline, config.Poll, ct), sentAt, midRun);
+    }
+
+    /// <summary>
+    ///     A status that means the first answer is over. Deliberately NOT "anything but Running": a host
+    ///     reports queued and starting states too, and treating one of those as an ending would retire
+    ///     the count trigger before the agent had made a single call.
+    /// </summary>
+    private static bool IsTerminal(string status) =>
+        string.Equals(status, RunOutcomes.Completed, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, RunOutcomes.Errored, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, RunOutcomes.Interrupted, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     The legacy release: whichever comes first, the clock reaching <c>steerAfterSeconds</c> or the
+    ///     first answer going terminal. Kept so every task written before <c>steerAfter</c> existed, and
+    ///     every sweep already recorded, still means what it meant.
+    /// </summary>
+    private async Task<(RunStatus? First, bool MidRun)> WaitForSteerClockAsync(
+        string threadId,
+        string inputId,
+        EvalTaskAsset task,
+        DateTimeOffset started,
+        DateTimeOffset deadline,
+        CancellationToken ct
+    )
+    {
+        // Running out of time at the RUN's own deadline is an ordinary timeout and propagates — a
+        // correction sent then could never land.
+        var steerDue = started + TimeSpan.FromSeconds(task.Meta?.SteerAfterSeconds ?? 0);
+        var firstDeadline = steerDue < deadline ? steerDue : deadline;
+        try
+        {
+            var first = await client.PollToTerminalAsync(threadId, inputId, firstDeadline, config.Poll, ct);
+            return first.Status == RunOutcomes.Completed ? (null, false) : (first, false);
+        }
+        catch (TimeoutException) when (firstDeadline < deadline)
+        {
+            // Still working, which is what the steer family exists to measure: the correction lands mid-run.
+            return (null, true);
+        }
+    }
+
+    /// <summary>
+    ///     The event release: hold the correction until the conversation itself says the moment has come,
+    ///     so the correction lands at the same point in the WORK however long the work took.
+    /// </summary>
+    /// <remarks>
+    ///     The first answer is always the backstop. For <c>firstAnswer</c> it is the whole trigger, which
+    ///     is what a two-wave task needs — its steer is a second wave and a second wave cannot precede the
+    ///     first. For <c>toolCalls</c> the count usually wins, and a run that finishes without ever
+    ///     reaching it gets the correction as a follow-up turn exactly as before.
+    /// </remarks>
+    private async Task<(RunStatus? First, bool MidRun)> WaitForSteerTriggerAsync(
+        string threadId,
+        string inputId,
+        SteerTrigger trigger,
+        DateTimeOffset deadline,
+        CancellationToken ct
+    )
+    {
+        if (trigger.Kind == SteerTriggerKinds.FirstAnswer)
+        {
+            var answered = await client.PollToTerminalAsync(threadId, inputId, deadline, config.Poll, ct);
+            return answered.Status == RunOutcomes.Completed ? (null, false) : (answered, false);
+        }
+
+        var tool = trigger.Tool!;
+        var wanted = trigger.Count!.Value;
+        var interval = config.Poll.InitialInterval;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException(
+                    $"Run on thread {threadId} neither reached {wanted} {tool} calls nor finished before {deadline:O}."
+                );
+            }
+
+            if (await client.CountToolCallsAsync(threadId, tool, ct) >= wanted)
+            {
+                log.WriteLine($"[run] steer released on thread {threadId}: {wanted} {tool} calls reached");
+                return (null, true);
+            }
+
+            // The count usually wins. If the run reaches an end first, hand the verdict to the hardened
+            // poll rather than reading it here: a bare Interrupted right after a send is routinely
+            // synthesized, and only PollToTerminalAsync knows to re-poll it through the grace window.
+            var status = await client.GetStatusByInputIdAsync(threadId, inputId, ct);
+            if (IsTerminal(status.Status))
+            {
+                var settled = await client.PollToTerminalAsync(threadId, inputId, deadline, config.Poll, ct);
+                return settled.Status == RunOutcomes.Completed ? (null, false) : (settled, false);
+            }
+
+            await Task.Delay(interval, ct);
+            var next = interval + interval;
+            interval = next > config.Poll.MaxInterval ? config.Poll.MaxInterval : next;
+        }
     }
 
     /// <summary>

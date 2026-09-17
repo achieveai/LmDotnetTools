@@ -3,7 +3,9 @@
 Family `steer`, split `dev`. Workspace = `fixtures/` (`docs/report-01..14.txt`, ~45k words; `stopwords.txt`).
 The task forces fourteen full-document reads (~57k tokens of tool results) before the code work, so
 the cut lands during or right after the read phase. The runner sends the second message (`## steer`)
-after `steerAfterSeconds`; it changes the word-statistics rule AND re-keys every per-document note the
+once the agent has made fourteen Read calls — a point in the WORK, not on the clock, so an arm that
+changes how long a run takes does not change where the correction lands; it changes the word-statistics
+rule AND re-keys every per-document note the
 agent has already produced (R3/R4/R5/RC7). Checker: the final artifacts match the CORRECTED goal.
 
 ---
