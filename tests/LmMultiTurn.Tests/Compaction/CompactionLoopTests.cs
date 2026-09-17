@@ -2559,7 +2559,18 @@ public class CompactionLoopTests
         var system = h.Agent.Requests[0].OfType<TextMessage>().Where(m => m.Role == Role.System).Select(m => m.Text);
         if (told)
         {
-            system.Should().ContainSingle().Which.Should().Contain(CompactionRuntime.SystemNote);
+            system
+                .Should()
+                .ContainSingle()
+                .Which.Should()
+                .StartWith(
+                    CompactionRuntime.SystemNote,
+                    "host and caller instructions must retain their later, stronger prompt position"
+                );
+            CompactionRuntime
+                .WithSystemNote("CALLER PROMPT", h.Setup, Model)
+                .Should()
+                .EndWith("CALLER PROMPT", "enabling compaction must retain the supplied prompt after its disclosure");
         }
         else
         {

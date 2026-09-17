@@ -756,7 +756,7 @@ internal sealed class CompactionRuntime
         "Context compaction is automatic or user-triggered. You cannot compact the conversation; never claim you did.";
 
     /// <summary>
-    ///     <paramref name="systemPrompt"/> with <see cref="SystemNote"/> appended when <paramref name="setup"/> resolves
+    ///     <paramref name="systemPrompt"/> with <see cref="SystemNote"/> prepended when <paramref name="setup"/> resolves
     ///     to a mode other than Off for <paramref name="modelId"/>; unchanged otherwise.
     /// </summary>
     internal static string? WithSystemNote(string? systemPrompt, CompactionSetup? setup, string? modelId)
@@ -766,7 +766,7 @@ internal sealed class CompactionRuntime
             return systemPrompt;
         }
 
-        return string.IsNullOrEmpty(systemPrompt) ? SystemNote : systemPrompt + "\n\n" + SystemNote;
+        return string.IsNullOrEmpty(systemPrompt) ? SystemNote : SystemNote + "\n\n" + systemPrompt;
     }
 
     /// <summary>The mode for this loop's route.</summary>
