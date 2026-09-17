@@ -1205,7 +1205,9 @@ onBeforeUnmount(() => {
 
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
-        <div v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view">
+        <div id="conversation-main-view" v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view"
+          role="region" :aria-labelledby="tabs.length > 1 ? 'conversation-main-selector' : undefined"
+          :aria-label="tabs.length > 1 ? undefined : 'Main conversation'">
           <MessageList
             :display-items="displayItems"
             :is-loading="chatLoading"

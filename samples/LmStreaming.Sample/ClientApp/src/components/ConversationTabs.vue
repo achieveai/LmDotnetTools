@@ -33,8 +33,15 @@ const filteredAgents = computed(() => {
     return !term || [tab.label, tab.kind, tab.status, tab.failureCode, statusLabel(tab)].some((value) => value?.toLocaleLowerCase().includes(term));
   });
 });
+const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
+const agentSelectorId = (agentId: string) => `conversation-agent-selector-${safeId(agentId)}`;
+const agentViewId = (agentId: string) => `conversation-agent-view-${safeId(agentId)}`;
 const optionId = (tab: ConversationTab) => `agent-picker-option-${tab.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 const activeDescendant = computed(() => filteredAgents.value[highlightedIndex.value] ? optionId(filteredAgents.value[highlightedIndex.value]) : undefined);
+const agentTriggerControls = computed(() => [
+  currentAgent.value ? agentViewId(currentAgent.value.id) : null,
+  open.value ? 'agent-picker-list' : null,
+].filter(Boolean).join(' ') || undefined);
 const color = (tab: ConversationTab | null) => tab?.color ?? MAIN_TAB_COLOR;
 function showPicker(): void {
   open.value = true;
@@ -87,14 +94,17 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', onDocumentPo
 
 <template>
   <nav ref="root" class="conversation-tabs" data-testid="conversation-tabs" aria-label="Conversation views" @focusout="onFocusOut">
-    <button type="button" class="conversation-anchor" :class="{ active: activeTabId === MAIN_TAB_ID }" data-testid="conversation-tab"
-      :data-tab-id="MAIN_TAB_ID" :aria-current="activeTabId === MAIN_TAB_ID ? 'page' : undefined" @click="emit('select', MAIN_TAB_ID)">
+    <button id="conversation-main-selector" type="button" class="conversation-anchor" :class="{ active: activeTabId === MAIN_TAB_ID }"
+      data-testid="conversation-tab" :data-tab-id="MAIN_TAB_ID" aria-controls="conversation-main-view"
+      :aria-current="activeTabId === MAIN_TAB_ID ? 'page' : undefined" @click="emit('select', MAIN_TAB_ID)">
       <span class="conversation-dot" :style="{ background: MAIN_TAB_COLOR }" aria-hidden="true" /><span>Main conversation</span>
     </button>
     <div v-if="agents.length" class="agent-picker">
-      <button ref="trigger" type="button" class="conversation-anchor agent-picker__trigger" :class="{ active: currentAgent }"
+      <button ref="trigger" :id="currentAgent ? agentSelectorId(currentAgent.id) : undefined" type="button"
+        class="conversation-anchor agent-picker__trigger" :class="{ active: currentAgent }"
         data-testid="conversation-tab" :data-tab-id="currentAgent?.id || 'agents'" aria-haspopup="listbox" :aria-expanded="open"
-        aria-controls="agent-picker-list" @click="open ? closePicker() : showPicker()">
+        :aria-controls="agentTriggerControls" :aria-current="currentAgent ? 'page' : undefined"
+        @click="open ? closePicker() : showPicker()">
         <span class="conversation-dot" :style="{ background: color(currentAgent) }" aria-hidden="true" />
         <span class="agent-picker__trigger-label">{{ currentAgent?.label || `Agents (${agents.length})` }}</span>
         <span v-if="currentAgent" class="agent-picker__trigger-status">{{ statusLabel(currentAgent) }}</span>
@@ -114,6 +124,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', onDocumentPo
         <ul id="agent-picker-list" class="agent-picker__list" role="listbox" aria-label="Agents">
           <li v-for="(tab, index) in filteredAgents" :id="optionId(tab)" :key="tab.id" role="option"
             :aria-selected="tab.id === activeTabId" data-testid="agent-picker-option" :data-agent-id="tab.id"
+            :aria-controls="tab.id === activeTabId ? agentViewId(tab.id) : undefined"
             class="agent-picker__option" :class="{ highlighted: index === highlightedIndex }" :title="tab.label"
             @mouseenter="highlightedIndex = index" @mousedown.prevent @click="choose(tab)">
               <span class="conversation-dot" :style="{ background: color(tab) }" aria-hidden="true" />

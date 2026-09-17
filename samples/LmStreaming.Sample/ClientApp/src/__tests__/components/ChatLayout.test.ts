@@ -1598,6 +1598,9 @@ describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
     await flushPromises();
 
     const mainView = wrapper.get('[data-testid="main-view"]');
+    expect(mainView.attributes('id')).toBe('conversation-main-view');
+    expect(mainView.attributes('role')).toBe('region');
+    expect(mainView.attributes('aria-label')).toBe('Main conversation');
     expect((mainView.element as HTMLElement).style.display).toBe('none');
   });
 });

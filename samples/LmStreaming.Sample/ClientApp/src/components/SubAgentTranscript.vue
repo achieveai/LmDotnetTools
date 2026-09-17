@@ -44,10 +44,12 @@ provide(GET_RESULT_FOR_TOOL_CALL, props.getResultForToolCall);
 // Shadow ChatLayout's root SUBMIT_CLIENT_TOOL_RESULT so a descendant's AskUserQuestion (rendered via
 // QuestionRich inside this subtree) answers over the FOCUSED CHILD connection, not the root (#246).
 provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
+const safeAgentId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 </script>
 
 <template>
-  <div class="subagent-view" data-testid="subagent-view">
+  <div :id="`conversation-agent-view-${safeAgentId(activeAgentId)}`" class="subagent-view"
+    data-testid="subagent-view" role="region" :aria-labelledby="`conversation-agent-selector-${safeAgentId(activeAgentId)}`">
     <div v-if="error" class="subagent-view__error" data-testid="subagent-error" role="alert">
       {{ error }}
     </div>

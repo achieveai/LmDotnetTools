@@ -13,7 +13,7 @@ const TABS: ConversationTab[] = [
 ];
 
 describe('ConversationTabs agent picker', () => {
-  it('keeps stable Main and current-agent anchors for existing navigation', () => {
+  it('keeps stable Main and current-agent anchors for existing navigation', async () => {
     const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'a1' } });
     const anchors = wrapper.findAll('[data-testid="conversation-tab"]');
     expect(anchors).toHaveLength(2);
@@ -23,6 +23,22 @@ describe('ConversationTabs agent picker', () => {
     expect(anchors[1].text()).toContain('Agent a1');
     expect(anchors[1].text()).toContain('Running');
     expect(anchors[1].text()).toContain('Agents 5');
+    const navigation = wrapper.get('nav');
+    const main = anchors[0];
+    const agent = anchors[1];
+
+    expect(navigation.attributes('aria-label')).toBe('Conversation views');
+    expect(main.attributes('id')).toBe('conversation-main-selector');
+    expect(main.attributes('aria-controls')).toBe('conversation-main-view');
+    expect(agent.attributes('id')).toBe('conversation-agent-selector-a1');
+    expect(agent.attributes('aria-current')).toBe('page');
+    expect(agent.attributes('aria-controls')).toBe('conversation-agent-view-a1');
+
+    await agent.trigger('click');
+    expect(agent.attributes('aria-controls')).toBe('conversation-agent-view-a1 agent-picker-list');
+    const selected = wrapper.get('[role="option"][aria-selected="true"]');
+    expect(selected.attributes('aria-controls')).toBe('conversation-agent-view-a1');
+    expect(wrapper.get('[data-agent-id="a2"]').attributes('aria-controls')).toBeUndefined();
   });
 
   it('shows the count on main and selects Main through the existing emit', async () => {
