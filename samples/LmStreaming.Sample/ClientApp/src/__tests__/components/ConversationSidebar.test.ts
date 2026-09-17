@@ -81,6 +81,8 @@ describe('ConversationSidebar — project folders', () => {
     expect(wrapper.get('[data-testid="project-folder-repo-a"]').text()).toContain('Repo A');
     expect(wrapper.get('[data-testid="project-folder-legacy"]').text()).toContain('No project');
     expect(wrapper.get('[data-testid="project-folder-missing-gone"]').text()).toContain('gone');
+    expect(wrapper.find('[data-testid="start-conversation-legacy"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="start-conversation-gone"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="project-folder-repo-a"]').find('.project-count').exists()).toBe(false);
     expect(
       wrapper
@@ -90,16 +92,37 @@ describe('ConversationSidebar — project folders', () => {
     ).toEqual(['a-new', 'a-old']);
   });
 
-  it('renders empty catalog projects with a start action that emits their workspace id', async () => {
+  it('renders an accessible folder-header compose button that emits its workspace id', async () => {
     const wrapper = mountSidebar({ conversations: [], workspaces });
 
     expect(wrapper.find('[data-testid="project-folder-repo-a"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="project-conversations-repo-a"]').find('li').classes()).toContain(
-      'start-conversation-row'
-    );
-    await wrapper.get('[data-testid="start-conversation-repo-a"]').trigger('click');
+    const compose = wrapper.get('[data-testid="start-conversation-repo-a"]');
+    expect(compose.element.tagName).toBe('BUTTON');
+    expect(compose.attributes('aria-label')).toBe('Start a conversation in Repo A');
+    expect(compose.element.closest('.project-heading')).not.toBeNull();
+    expect(
+      wrapper
+        .get('[data-testid="project-conversations-repo-a"]')
+        .find('[data-testid="start-conversation-repo-a"]')
+        .exists()
+    ).toBe(false);
+    await compose.trigger('click');
 
     expect(wrapper.emitted('newChatInWorkspace')).toEqual([['repo-a']]);
+  });
+
+  it('starts a conversation from a collapsed folder without toggling its disclosure', async () => {
+    const wrapper = mountSidebar({ conversations: groupedConversations, workspaces });
+    const disclosure = wrapper.get('[data-testid="project-toggle-repo-a"]');
+    await disclosure.trigger('click');
+    expect(disclosure.attributes('aria-expanded')).toBe('false');
+
+    const compose = wrapper.get('[data-testid="start-conversation-repo-a"]');
+    expect(compose.element.tagName).toBe('BUTTON');
+    await compose.trigger('click');
+
+    expect(wrapper.emitted('newChatInWorkspace')).toEqual([['repo-a']]);
+    expect(disclosure.attributes('aria-expanded')).toBe('false');
   });
 
   it('does not offer draft creation for a missing workspace id', () => {

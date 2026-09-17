@@ -242,7 +242,11 @@ function handleDelete(event: Event, threadId: string): void {
         @click="emit('newChat')"
         :tabindex="isCollapsed ? -1 : 0"
       >
-        + New Chat
+        <svg class="compose-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M8.75 2.75h-5A1.25 1.25 0 0 0 2.5 4v8.25h8.25A1.25 1.25 0 0 0 12 11V6" />
+          <path d="m7.25 8.75 4.9-4.9 1.5 1.5-4.9 4.9-2 .5z" />
+        </svg>
+        <span>New Chat</span>
       </button>
     </div>
 
@@ -311,11 +315,32 @@ function handleDelete(event: Event, threadId: string): void {
               :aria-controls="`project-conversations-${group.testId}`"
               @click="toggleGroup(group.key)"
             >
-              <span class="disclosure-icon" aria-hidden="true">{{ isGroupExpanded(group.key) ? '⌄' : '›' }}</span>
+              <svg
+                class="disclosure-icon"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path :d="isGroupExpanded(group.key) ? 'm4 6 4 4 4-4' : 'm6 4 4 4-4 4'" />
+              </svg>
               <svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                 <path d="M1.75 4.25h4l1.35 1.5h7.15v6.75H1.75z" />
               </svg>
               <span class="project-name">{{ group.label }}</span>
+            </button>
+            <button
+              v-if="canStartConversation(group)"
+              class="project-compose-btn"
+              type="button"
+              :aria-label="`Start a conversation in ${group.label}`"
+              :title="`Start a conversation in ${group.label}`"
+              :data-testid="`start-conversation-${group.workspace!.id}`"
+              @click="emit('newChatInWorkspace', group.workspace!.id)"
+            >
+              <svg class="compose-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M8.75 2.75h-5A1.25 1.25 0 0 0 2.5 4v8.25h8.25A1.25 1.25 0 0 0 12 11V6" />
+                <path d="m7.25 8.75 4.9-4.9 1.5 1.5-4.9 4.9-2 .5z" />
+              </svg>
             </button>
           </div>
 
@@ -325,17 +350,6 @@ function handleDelete(event: Event, threadId: string): void {
             class="conversation-list project-conversations"
             :data-testid="`project-conversations-${group.testId}`"
           >
-            <li v-if="canStartConversation(group)" class="start-conversation-row">
-              <button
-                class="start-conversation-btn"
-                type="button"
-                :data-testid="`start-conversation-${group.workspace!.id}`"
-                @click="emit('newChatInWorkspace', group.workspace!.id)"
-              >
-                + Start a conversation
-              </button>
-            </li>
-
             <li
               v-for="conv in group.conversations"
               :key="conv.threadId"
@@ -438,10 +452,15 @@ function handleDelete(event: Event, threadId: string): void {
 
 .new-chat-btn {
   flex: 1;
-  padding: 10px 12px;
-  background: #007bff;
-  color: white;
-  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 12px;
+  background: transparent;
+  color: #3f4852;
+  border: 1px solid #cfd4da;
   border-radius: 6px;
   font-size: 14px;
   font-weight: 500;
@@ -463,7 +482,19 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .new-chat-btn:hover:not(.hidden) {
-  background: #0056b3;
+  background: #eef0f2;
+  border-color: #adb5bd;
+}
+
+.compose-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
 }
 
 .sidebar-sort {
@@ -608,20 +639,24 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .project-folder {
-  border-bottom: 1px solid #e2e5e9;
+  padding: 2px 0;
 }
 
 .project-heading {
-  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px;
 }
 
 .project-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
   min-height: 30px;
-  padding: 4px 6px;
+  padding: 4px;
   border: 0;
   border-radius: 5px;
   background: transparent;
@@ -641,16 +676,21 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .disclosure-icon {
-  width: 12px;
+  width: 10px;
+  height: 16px;
+  flex: 0 0 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
   color: #6c757d;
-  font-size: 16px;
-  line-height: 1;
-  text-align: center;
 }
 
 .folder-icon {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   fill: none;
   stroke: #667085;
   stroke-linejoin: round;
@@ -667,34 +707,42 @@ function handleDelete(event: Event, threadId: string): void {
   white-space: nowrap;
 }
 
+.project-compose-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+}
+
+.project-compose-btn:hover,
+.project-compose-btn:focus-visible {
+  background: #e9ecef;
+  color: #343a40;
+}
+
+.project-compose-btn:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
 .project-conversations .conversation-item {
-  padding: 9px 12px 9px 68px;
+  margin: 2px 8px;
+  padding: 8px 8px 8px 40px;
   border-bottom: 0;
+  border-radius: 6px;
 }
 
 .project-conversations .conversation-item.active {
-  padding-left: 65px;
+  padding-left: 40px;
 }
 
-.project-conversations .conversation-item::after {
-  content: '';
-  position: absolute;
-  right: 12px;
-  bottom: 0;
-  left: 68px;
-  height: 1px;
-  background: #e0e0e0;
-}
-
-.project-conversations .conversation-item.active::after {
-  left: 65px;
-}
-
-.start-conversation-row {
-  padding: 2px 10px 8px 68px;
-}
-
-.start-conversation-btn,
 .load-more-btn {
   border: 0;
   background: transparent;
@@ -704,11 +752,6 @@ function handleDelete(event: Event, threadId: string): void {
   text-align: left;
 }
 
-.start-conversation-btn {
-  padding: 5px 0;
-}
-
-.start-conversation-btn:hover,
 .load-more-btn:hover:not(:disabled) {
   color: #0056b3;
 }
@@ -773,13 +816,12 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .conversation-item:hover {
-  background: #e9ecef;
+  background: #eef0f2;
 }
 
 .conversation-item.active {
-  background: #d4e5f7;
-  border-left: 3px solid #007bff;
-  padding-left: 13px;
+  background: #e3e6e9;
+  border-left: 0;
 }
 
 .conversation-content {
