@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
+import { isTestInstruction } from '@/composables/useChat';
 
 /**
  * Compact right-side LAUNCHER for a conversation's sub-agents. Stateless/presentational: it renders the
@@ -12,6 +13,7 @@ const props = defineProps<{
   children: SubAgentSummary[];
   /** The active center tab (`'main'` or an agentId) — highlights the matching row. */
   activeTabId: string;
+  embedded?: boolean;
 }>();
 
 const emit = defineEmits<{ select: [agentId: string] }>();
@@ -24,6 +26,10 @@ function toggle(): void {
 function truncate(text: string, max: number): string {
   if (!text) return '';
   return text.length <= max ? text : text.slice(0, max) + '...';
+}
+
+function taskSummary(task: string): string | null {
+  return isTestInstruction(task) ? null : truncate(task, 60);
 }
 
 /**
@@ -57,8 +63,9 @@ function attr(value: number | boolean | null | undefined): string | undefined {
 </script>
 
 <template>
-  <aside class="subagent-panel-container">
+  <aside :class="['subagent-panel-container', { embedded: props.embedded }]">
     <button
+      v-if="!props.embedded"
       class="subagent-toggle"
       data-testid="subagent-panel-toggle"
       :title="expanded ? 'Collapse sub-agents' : 'Expand sub-agents'"
@@ -68,7 +75,7 @@ function attr(value: number | boolean | null | undefined): string | undefined {
       <span class="subagent-toggle-caret">{{ expanded ? '▸' : '◂' }}</span>
     </button>
 
-    <div v-if="expanded" class="subagent-panel" data-testid="subagent-panel">
+    <div v-if="props.embedded || expanded" class="subagent-panel" data-testid="subagent-panel">
       <ul class="subagent-list" data-testid="subagent-list">
         <li v-if="props.children.length === 0" class="subagent-empty">No sub-agents yet.</li>
         <li
@@ -98,7 +105,7 @@ function attr(value: number | boolean | null | undefined): string | undefined {
                 >🔒</span
               >
             </div>
-            <div class="subagent-task">{{ truncate(child.task, 60) }}</div>
+            <div v-if="taskSummary(child.task)" class="subagent-task">{{ taskSummary(child.task) }}</div>
             <div class="subagent-status">
               {{ child.status }}
               <span
@@ -124,6 +131,18 @@ function attr(value: number | boolean | null | undefined): string | undefined {
   border-left: 1px solid #e0e0e0;
   background: #f8f9fa;
   min-width: 48px;
+}
+
+.subagent-panel-container.embedded {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  border-left: 0;
+}
+
+.subagent-panel-container.embedded .subagent-panel {
+  width: 100%;
+  min-width: 0;
 }
 
 .subagent-toggle {

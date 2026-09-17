@@ -15,8 +15,7 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
-import SubAgentListPanel from './SubAgentListPanel.vue';
-import TodoBoardPanel from './TodoBoardPanel.vue';
+import ConversationInspector from './ConversationInspector.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
@@ -106,7 +105,9 @@ const { viewPreference, selectViewPreference } = useViewPreference();
 const showDeveloperDiagnostics = computed(() => viewPreference.value === 'developer');
 
 function handleViewPreferenceChange(event: Event): void {
-  selectViewPreference((event.target as HTMLInputElement).value as ViewPreference);
+  const preference = (event.target as HTMLInputElement).value as ViewPreference;
+  selectViewPreference(preference);
+  if (preference === 'consumer') closeInspector(false);
 }
 
 // Initialize chat with getters for the current mode and provider ids.
@@ -347,6 +348,30 @@ const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
+const inspectorOpen = ref(false);
+const inspectorSection = ref<'work' | 'agents'>('work');
+const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
+let inspectorInitialized = false;
+
+function openInspector(): void {
+  inspectorOpen.value = true;
+}
+
+function closeInspector(restoreFocus = true): void {
+  inspectorOpen.value = false;
+  if (restoreFocus) void nextTick(() => inspectorLauncherRef.value?.focus());
+}
+
+function handleInspectorAgentSelect(agentId: string, closeDrawer: boolean): void {
+  selectTab(agentId);
+  if (!closeDrawer) return;
+  closeInspector(false);
+  void nextTick(() => {
+    const tab = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="conversation-tab"]'))
+      .find((button) => button.dataset.tabId === agentId);
+    tab?.focus();
+  });
+}
 
 /**
  * Closes the egress-auth modal, resetting both the header-button flag and any
@@ -795,9 +820,17 @@ function checkMobile(): void {
 
 onMounted(() => {
   checkMobile();
+  if (!inspectorInitialized) {
+    inspectorOpen.value = viewPreference.value === 'developer' && window.innerWidth > 1100;
+    inspectorInitialized = true;
+  }
   window.addEventListener('resize', checkMobile);
   // Poll the active conversation's sub-agents so tabs/launcher populate as children spawn.
   startSubAgentPolling();
+});
+
+watch(focusMode, (focused) => {
+  if (focused) closeInspector(false);
 });
 
 onBeforeUnmount(() => {
@@ -878,6 +911,16 @@ onBeforeUnmount(() => {
             </fieldset>
           </div>
           <div v-if="!focusMode" class="header-actions">
+            <button
+              ref="inspectorLauncherRef"
+              class="inspector-launcher"
+              data-testid="conversation-inspector-launcher"
+              aria-controls="conversation-inspector"
+              :aria-expanded="inspectorOpen"
+              @click="inspectorOpen ? closeInspector() : openInspector()"
+            >
+              Work &amp; agents
+            </button>
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"
@@ -1076,16 +1119,19 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <!-- Right-side WORK BOARD (#583). A SIBLING of the sub-agent panel, not nested with it: both stay
-         direct flex children of .chat-layout, so each keeps full column height and independent
-         collapse, and SubAgentListPanel needs no change at all. The board sits inboard of the
-         sub-agent panel so the sub-agent rail stays where it has always been, at the true right edge.
-
-         `v-if="hasTodoBoard"` is load-bearing, not an optimization: a conversation that never touched
-         the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
-         must render NOTHING here rather than an empty board eating the right edge. That is what keeps
-         two right-hand panels affordable. -->
-    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" @open-artifact="openArtifactPreview" />
+    <ConversationInspector
+      v-if="!focusMode"
+      :open="inspectorOpen"
+      :active-section="inspectorSection"
+      :tasks="todoTasks"
+      :has-work="hasTodoBoard"
+      :children="subAgentChildren"
+      :active-conversation-tab-id="activeTabId"
+      @close="closeInspector"
+      @select-section="inspectorSection = $event"
+      @open-artifact="openArtifactPreview"
+      @select-agent="handleInspectorAgentSelect"
+    />
 
     <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
          board's thread id: with no started conversation there is no workspace to preview against.
@@ -1106,13 +1152,6 @@ onBeforeUnmount(() => {
       @close="artifactPreview = null"
     />
 
-    <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
-         composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
-    <SubAgentListPanel
-      :children="subAgentChildren"
-      :active-tab-id="activeTabId"
-      @select="selectTab"
-    />
   </div>
 </template>
 
@@ -1255,6 +1294,33 @@ onBeforeUnmount(() => {
   /* Wrap the controls (right-aligned) rather than clipping them when the row is tight. */
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.inspector-launcher {
+  padding: 7px 12px;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #394553;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.inspector-launcher:hover {
+  border-color: #aeb7c2;
+  background: #eef1f4;
+}
+
+.inspector-launcher[aria-expanded='true'] {
+  border-color: #9bb7e8;
+  background: #e8f0fc;
+  color: #174ea6;
+}
+
+.inspector-launcher:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
 }
 
 .marketplace-btn {

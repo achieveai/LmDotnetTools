@@ -387,6 +387,7 @@ describe('ChatLayout view preference', () => {
     });
 
   beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
     localStorage.clear();
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
@@ -412,6 +413,8 @@ describe('ChatLayout view preference', () => {
     expect((wrapper.get('[data-testid="view-preference-consumer"]').element as HTMLInputElement).checked).toBe(true);
     expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(false);
     expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').attributes('aria-expanded')).toBe('false');
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
   });
 
   it('restores Developer and reveals context and token diagnostics', async () => {
@@ -423,6 +426,8 @@ describe('ChatLayout view preference', () => {
     expect((wrapper.get('[data-testid="view-preference-developer"]').element as HTMLInputElement).checked).toBe(true);
     expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(true);
     expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(true);
+    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
   });
 
   it('keeps the preference switch out of focus mode', async () => {
@@ -433,6 +438,8 @@ describe('ChatLayout view preference', () => {
 
     expect(wrapper.find('[data-testid="view-preference-consumer"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="view-preference-developer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector-launcher"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
   });
 
   it('switches views without remounting chat state or touching the connection', async () => {
@@ -457,6 +464,23 @@ describe('ChatLayout view preference', () => {
     expect(sharedMocks.markStreamIdle).not.toHaveBeenCalled();
     expect(sharedMocks.markStreamLoading).not.toHaveBeenCalled();
     expect(localStorage.getItem('lmstreaming:view-preference')).toBe('consumer');
+  });
+
+  it('opens and closes the inspector without remounting transcript or composer', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    document.body.appendChild(wrapper.element);
+    const transcript = wrapper.get('[data-test="message-list-probe"]').element;
+    const composer = wrapper.get('[data-testid="chat-input-textarea"]').element;
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    await wrapper.get('.inspector-close').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
+    expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="conversation-inspector-launcher"]').element);
+    wrapper.unmount();
   });
 });
 
@@ -2130,6 +2154,8 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     const wrapper = mountLayout();
     await flushPromises();
     sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
     await flushPromises();
     await wrapper.get('[data-test="board-chip"]').trigger('click');
     expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);

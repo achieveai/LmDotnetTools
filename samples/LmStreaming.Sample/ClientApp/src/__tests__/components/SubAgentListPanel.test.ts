@@ -25,6 +25,26 @@ function mountPanel(children: SubAgentSummary[] = [], activeTabId = 'main') {
 }
 
 describe('SubAgentListPanel (launcher)', () => {
+  it('renders its list without a duplicate rail toggle when embedded', () => {
+    const wrapper = mount(SubAgentListPanel, { props: { children: [summary('a1')], activeTabId: 'main', embedded: true } });
+    expect(wrapper.find('[data-testid="subagent-panel-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="subagent-panel"]').exists()).toBe(true);
+  });
+
+  it('shows ordinary task text but omits recognized internal instruction envelopes', () => {
+    const internal = '<|instruction_start|>{"instruction_chain":[{"content":"secret"}]}<|instruction_end|>';
+    const wrapper = mount(SubAgentListPanel, {
+      props: {
+        children: [summary('plain', { task: 'Review the accessibility findings' }), summary('internal', { task: internal })],
+        activeTabId: 'main',
+        embedded: true,
+      },
+    });
+    const rows = wrapper.findAll('[data-testid="subagent-item"]');
+    expect(rows[0].find('.subagent-task').text()).toBe('Review the accessibility findings');
+    expect(rows[1].find('.subagent-task').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('instruction_chain');
+  });
   it('is collapsed by default: shows the toggle with the child count, panel hidden', () => {
     const wrapper = mountPanel([summary('a1'), summary('a2')]);
     const toggle = wrapper.get('[data-testid="subagent-panel-toggle"]');

@@ -43,6 +43,11 @@ function sampleBoard(): TodoTask[] {
 }
 
 describe('TodoBoardPanel — shape', () => {
+  it('renders its full content without a duplicate rail toggle when embedded', () => {
+    const wrapper = mount(TodoBoardPanel, { props: { tasks: sampleBoard(), embedded: true } });
+    expect(wrapper.find('[data-testid="todo-panel-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);
+  });
   it('is expanded by default: it only mounts when there IS work to watch', async () => {
     const wrapper = mountPanel(sampleBoard());
     expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);
