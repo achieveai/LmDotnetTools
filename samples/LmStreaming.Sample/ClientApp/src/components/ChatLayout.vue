@@ -43,6 +43,7 @@ import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import FileBrowserModal from './FileBrowserModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
+import HeaderActionsMenu from './HeaderActionsMenu.vue';
 
 const {
   conversations,
@@ -348,6 +349,8 @@ const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
+const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
+const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'files' | 'share' | null>(null);
 const inspectorOpen = ref(false);
 const inspectorSection = ref<'work' | 'agents'>('work');
 const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
@@ -380,6 +383,36 @@ function handleInspectorAgentSelect(agentId: string, closeDrawer: boolean): void
 function handleCloseEgressModal(): void {
   egressAuthModalOpen.value = false;
   closeEgressDialog();
+  restoreHeaderActionsFocus('egress');
+}
+
+function closeMarketplaceModal(): void {
+  marketplaceModalOpen.value = false;
+  restoreHeaderActionsFocus('marketplace');
+}
+
+function closeFileBrowserModal(): void {
+  fileBrowserModalOpen.value = false;
+  restoreHeaderActionsFocus('files');
+}
+
+function closeShareModal(): void {
+  shareModalOpen.value = false;
+  restoreHeaderActionsFocus('share');
+}
+
+function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  modalOpenedFromHeaderActions.value = modal;
+  if (modal === 'marketplace') marketplaceModalOpen.value = true;
+  else if (modal === 'egress') egressAuthModalOpen.value = true;
+  else if (modal === 'files') fileBrowserModalOpen.value = true;
+  else shareModalOpen.value = true;
+}
+
+function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  if (modalOpenedFromHeaderActions.value !== modal) return;
+  modalOpenedFromHeaderActions.value = null;
+  void nextTick(() => headerActionsMenuRef.value?.focusTrigger());
 }
 const modeSwitchDisabled = computed(
   () =>
@@ -874,17 +907,18 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="chat-view">
         <header class="chat-header">
-          <button
-            v-if="sidebarCollapsed && !focusMode"
-            class="menu-btn"
-            @click="handleToggleCollapse"
-            title="Open sidebar"
-          >
-            =
-          </button>
-          <div class="header-heading">
-            <h1>{{ headerTitle }}</h1>
-            <fieldset v-if="!focusMode" class="view-preference" aria-label="Conversation view">
+          <div class="header-primary">
+            <button
+              v-if="sidebarCollapsed && !focusMode"
+              class="menu-btn"
+              @click="handleToggleCollapse"
+              title="Open sidebar"
+            >
+              =
+            </button>
+            <div class="header-heading">
+              <h1>{{ headerTitle }}</h1>
+              <fieldset v-if="!focusMode" class="view-preference" aria-label="Conversation view">
               <legend class="sr-only">Conversation view</legend>
               <label>
                 <input
@@ -908,10 +942,10 @@ onBeforeUnmount(() => {
                 />
                 <span>Developer</span>
               </label>
-            </fieldset>
-          </div>
-          <div v-if="!focusMode" class="header-actions">
+              </fieldset>
+            </div>
             <button
+              v-if="!focusMode"
               ref="inspectorLauncherRef"
               class="inspector-launcher"
               data-testid="conversation-inspector-launcher"
@@ -921,6 +955,8 @@ onBeforeUnmount(() => {
             >
               Work &amp; agents
             </button>
+          </div>
+          <div v-if="!focusMode" class="header-context">
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"
@@ -952,54 +988,23 @@ onBeforeUnmount(() => {
               @delete-mode="handleDeleteMode"
               @copy-mode="handleCopyMode"
             />
-            <button
-              class="marketplace-btn"
-              data-testid="marketplace-button"
-              title="Browse marketplaces"
-              @click="marketplaceModalOpen = true"
-            >
-              Marketplaces
-            </button>
-            <button
-              class="egress-auth-btn"
-              data-testid="egress-auth-button"
-              title="Manage egress auth keys"
-              @click="egressAuthModalOpen = true"
-            >
-              Egress Auth
-            </button>
-            <button
-              class="file-browser-btn"
-              data-testid="file-browser-button"
-              title="Browse workspace files"
-              :disabled="!currentThreadId"
-              @click="fileBrowserModalOpen = true"
-            >
-              Files
-            </button>
-            <button
-              class="share-btn"
-              data-testid="share-button"
-              title="Share this conversation"
-              :disabled="!currentThreadId"
-              @click="shareModalOpen = true"
-            >
-              Share
-            </button>
-            <button
-              class="clear-btn"
-              data-testid="clear-button"
-              @click="clearMessages"
-              :disabled="chatLoading"
-            >
-              Clear
-            </button>
+            <HeaderActionsMenu
+              ref="headerActionsMenuRef"
+              :files-disabled="!currentThreadId"
+              :share-disabled="!currentThreadId"
+              :clear-disabled="chatLoading"
+              @open-marketplaces="openHeaderActionModal('marketplace')"
+              @open-egress="openHeaderActionModal('egress')"
+              @open-files="openHeaderActionModal('files')"
+              @open-share="openHeaderActionModal('share')"
+              @clear="clearMessages"
+            />
           </div>
         </header>
 
         <MarketplaceModal
           v-if="marketplaceModalOpen"
-          @close="marketplaceModalOpen = false"
+          @close="closeMarketplaceModal"
         />
 
         <EgressAuthModal
@@ -1010,7 +1015,7 @@ onBeforeUnmount(() => {
         <FileBrowserModal
           v-if="fileBrowserModalOpen"
           :thread-id="currentThreadId"
-          @close="fileBrowserModalOpen = false"
+          @close="closeFileBrowserModal"
         />
 
         <!--
@@ -1031,7 +1036,7 @@ onBeforeUnmount(() => {
           :visibility="currentConversation?.visibility"
           :can-share="currentConversation?.canShare"
           @changed="loadConversations"
-          @close="shareModalOpen = false"
+          @close="closeShareModal"
         />
 
         <ConversationTabs
@@ -1190,16 +1195,29 @@ onBeforeUnmount(() => {
 
 .chat-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 12px 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #f8f9fa;
-  gap: 12px;
-  /* Let the control row drop below the title (and its own buttons wrap) instead of
-     overflowing the row — otherwise the trailing "Clear" button is clipped off the
-     right edge on typical laptop widths, since the selectors + buttons are wider
-     than the 900px content column. */
+  gap: 10px;
+  min-width: 0;
+}
+
+.header-primary,
+.header-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.header-primary {
+  justify-content: space-between;
+}
+
+.header-context {
   flex-wrap: wrap;
 }
 
@@ -1225,7 +1243,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex: 1;
-  min-width: min(100%, 300px);
+  min-width: 0;
 }
 
 .chat-header h1 {
@@ -1287,15 +1305,6 @@ onBeforeUnmount(() => {
   border: 0;
 }
 
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  /* Wrap the controls (right-aligned) rather than clipping them when the row is tight. */
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
 .inspector-launcher {
   padding: 7px 12px;
   border: 1px solid #cbd1d8;
@@ -1323,94 +1332,24 @@ onBeforeUnmount(() => {
   outline-offset: 2px;
 }
 
-.marketplace-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
+@media (max-width: 520px) {
+  .chat-header {
+    padding: 10px 12px;
+  }
 
-.marketplace-btn:hover {
-  background: #2057bd;
-}
+  .header-primary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
 
-.egress-auth-btn {
-  padding: 8px 16px;
-  background: #6f42c1;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
+  .header-heading {
+    flex-basis: calc(100% - 44px);
+    flex-wrap: wrap;
+  }
 
-.file-browser-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.egress-auth-btn:hover {
-  background: #5a34a0;
-}
-
-.file-browser-btn:hover:not(:disabled) {
-  background: #2057bd;
-}
-
-.file-browser-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
-}
-
-.share-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.share-btn:hover:not(:disabled) {
-  background: #2057bd;
-}
-
-.share-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
-}
-
-.clear-btn {
-  padding: 8px 16px;
-  background: #dc3545;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.clear-btn:hover:not(:disabled) {
-  background: #c82333;
-}
-
-.clear-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+  .chat-header h1 {
+    font-size: 18px;
+  }
 }
 
 .error-banner {

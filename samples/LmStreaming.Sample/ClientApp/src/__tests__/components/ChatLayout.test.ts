@@ -14,6 +14,7 @@ import {
 import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
+import { closeEgressDialog, openEgressDialog } from '@/composables/useEgressAuth';
 
 // Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
 // replaced optional-ized every field and silently drifted from the server DTO — `visibility` (#445)
@@ -90,6 +91,7 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  clearMessages: vi.fn(),
   // #246: browser-hosted client tools (AskUserQuestion) gating.
   hasPendingClientQuestion: false,
   submitClientToolResult: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
@@ -250,7 +252,7 @@ vi.mock('@/composables/useChat', async () => {
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
         sendMessage: vi.fn(async () => {}),
-        clearMessages: vi.fn(),
+        clearMessages: sharedMocks.clearMessages,
         cancelStream: vi.fn(async () => {}),
         disconnectWebSocket: sharedMocks.disconnectWebSocket,
         // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
@@ -444,6 +446,7 @@ describe('ChatLayout view preference', () => {
     expect(wrapper.find('[data-testid="view-preference-developer"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="conversation-inspector-launcher"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="header-actions-menu-button"]').exists()).toBe(false);
   });
 
   it('switches views without remounting chat state or touching the connection', async () => {
@@ -1969,6 +1972,105 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
   });
 });
 
+describe('ChatLayout header actions menu', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          MarketplaceModal: true,
+          EgressAuthModal: true,
+          FileBrowserModal: true,
+          ShareConversationModal: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    window.history.pushState({}, '', '/');
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.chatLoading = false;
+    sharedMocks.clearMessages.mockClear();
+    closeEgressDialog();
+  });
+
+  afterEach(() => document.body.replaceChildren());
+
+  async function choose(wrapper: ReturnType<typeof mountLayout>, testId: string): Promise<void> {
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+    await wrapper.get(`[data-testid="${testId}"]`).trigger('click');
+    await flushPromises();
+  }
+
+  it('routes each secondary action to the existing owner and restores More focus after modal close', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await choose(wrapper, 'marketplace-button');
+    const marketplace = wrapper.findComponent({ name: 'MarketplaceModal' });
+    expect(marketplace.exists()).toBe(true);
+    marketplace.vm.$emit('close');
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="header-actions-menu-button"]').element);
+
+    await choose(wrapper, 'egress-auth-button');
+    expect(wrapper.findComponent({ name: 'EgressAuthModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'EgressAuthModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'file-browser-button');
+    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'FileBrowserModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'share-button');
+    expect(wrapper.findComponent({ name: 'ShareConversationModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'ShareConversationModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'clear-button');
+    expect(sharedMocks.clearMessages).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="header-actions-menu-button"]').element);
+    wrapper.unmount();
+  });
+
+  it('passes the existing no-thread and streaming disabled states into menu actions', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.chatLoading = true;
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+
+    expect(wrapper.get('[data-testid="file-browser-button"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="share-button"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="clear-button"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it('does not steal focus when an unrelated auth flow opens and closes Egress auth', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    const inspector = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    (inspector.element as HTMLButtonElement).focus();
+
+    openEgressDialog('api.example.com');
+    await flushPromises();
+    const modal = wrapper.findComponent({ name: 'EgressAuthModal' });
+    expect(modal.exists()).toBe(true);
+    modal.vm.$emit('close');
+    await flushPromises();
+
+    expect(document.activeElement).toBe(inspector.element);
+    wrapper.unmount();
+  });
+});
+
 // #445 item 9, the host half of #375's visibility criterion. Visibility is stored server-side and
 // reaches the client on the conversation LISTING, so ChatLayout is what hands it to the share
 // control — and what re-lists once that control has made the server flip it.
@@ -2000,12 +2102,17 @@ describe('ChatLayout share control visibility (#375)', () => {
     sharedMocks.loadConversations.mockClear();
   });
 
+  async function openShare(wrapper: ReturnType<typeof mountWithShareModal>): Promise<void> {
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+    await wrapper.get('[data-testid="share-button"]').trigger('click');
+    await flushPromises();
+  }
+
   it('hands the share control the visibility the listing reported for the open conversation', async () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
 
     const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
     expect(modal.exists()).toBe(true);
@@ -2021,8 +2128,7 @@ describe('ChatLayout share control visibility (#375)', () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
 
     const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
     expect(modal.props('canShare')).toBe(false);
@@ -2032,8 +2138,7 @@ describe('ChatLayout share control visibility (#375)', () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
     // The mount-time list is not what is under test here.
     sharedMocks.loadConversations.mockClear();
 
