@@ -124,11 +124,16 @@ public sealed class ChatClientLayoutRegressionTests
         await page.GetByTestId("egress-auth-button").PressAsync("Escape");
         await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
 
-        // Menu items are roving-focus targets rather than independent tab stops. Tab closes the
-        // menu and continues from More to the composer textarea.
+        // Menu items are roving-focus targets rather than independent tab stops. Wait for the
+        // blank-chat project picker to become interactive so the assertion cannot race its loading
+        // state: Tab closes More and enters the composer's real DOM order, then continues to text.
+        var projectPicker = page.GetByTestId("workspace-selector-button");
+        await Assertions.Expect(projectPicker).ToBeEnabledAsync();
         await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
         await page.MarketplaceButton().PressAsync("Tab");
         await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
+        await Assertions.Expect(projectPicker).ToBeFocusedAsync();
+        await projectPicker.PressAsync("Tab");
         await Assertions.Expect(page.Textarea()).ToBeFocusedAsync();
 
         await page.HeaderActionsMenuButton().FocusAsync();
