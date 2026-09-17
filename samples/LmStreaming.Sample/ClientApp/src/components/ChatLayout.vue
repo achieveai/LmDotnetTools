@@ -906,8 +906,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="chat-view">
-        <header class="chat-header">
-          <div :class="['header-primary', { 'has-inspector-launcher': !focusMode }]">
+        <header :class="['chat-header', { 'has-inspector-launcher': !focusMode && !inspectorOpen }]">
+          <div class="header-primary">
             <button
               v-if="sidebarCollapsed && !focusMode"
               class="menu-btn"
@@ -1179,6 +1179,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  container-name: chat-main;
+  container-type: inline-size;
 }
 
 .chat-view {
@@ -1225,10 +1227,6 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
-.header-primary.has-inspector-launcher {
-  padding-right: 42px;
-}
-
 .header-context {
   flex-wrap: wrap;
 }
@@ -1271,7 +1269,10 @@ onBeforeUnmount(() => {
 
 .view-preference {
   display: inline-flex;
-  margin: 0;
+  height: 34px;
+  box-sizing: border-box;
+  align-items: center;
+  margin: 0 0 0 auto;
   padding: 2px;
   border: 1px solid #cbd1d8;
   border-radius: 7px;
@@ -1294,8 +1295,8 @@ onBeforeUnmount(() => {
   padding: 4px 8px;
   border-radius: 5px;
   color: #59636e;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 14px;
+  line-height: 18px;
 }
 
 .view-preference input:checked + span {
@@ -1375,6 +1376,12 @@ onBeforeUnmount(() => {
 
   .chat-header h1 {
     font-size: 18px;
+  }
+}
+
+@container chat-main (max-width: 980px) {
+  .chat-header.has-inspector-launcher {
+    padding-right: 58px;
   }
 }
 

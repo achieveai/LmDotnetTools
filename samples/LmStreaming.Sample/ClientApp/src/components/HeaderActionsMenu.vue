@@ -150,6 +150,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
 
 .header-actions-trigger {
   display: inline-flex;
+  height: 34px;
+  box-sizing: border-box;
   align-items: center;
   gap: 7px;
   padding: 7px 12px;
@@ -158,6 +160,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
   background: #fff;
   color: #394553;
   font-size: 14px;
+  line-height: 18px;
   cursor: pointer;
 }
 

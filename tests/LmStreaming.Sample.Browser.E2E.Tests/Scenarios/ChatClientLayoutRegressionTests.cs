@@ -185,35 +185,90 @@ public sealed class ChatClientLayoutRegressionTests
         // through the user's 1597px desktop viewport. Opening the inspector replaces its launcher
         // with an equal-size close control at the same screen coordinates, so the affordance does
         // not jump as the panel changes the available transcript width.
-        foreach (var width in new[] { 390, 768, 946, ViewportWidth, 1597 })
+        var geometryCases = new (int Width, bool SidebarCollapsed)[]
+        {
+            (1597, false),
+            (ViewportWidth, false),
+            (1261, false),
+            (1261, true),
+            (1259, false),
+            (1101, false),
+            (946, false),
+            (768, true),
+            (390, true),
+        };
+        foreach (var (width, sidebarCollapsed) in geometryCases)
         {
             await page.SetViewportSizeAsync(width, ViewportHeight);
+            var sidebar = page.Locator(".conversation-sidebar");
+            if (width <= 768)
+            {
+                await Assertions
+                    .Expect(sidebar)
+                    .ToHaveAttributeAsync(
+                        "class",
+                        new System.Text.RegularExpressions.Regex("(?:^|\\s)collapsed(?:\\s|$)")
+                    );
+                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", "0px");
+            }
+            else
+            {
+                var sidebarIsCollapsed = await sidebar.EvaluateAsync<bool>("el => el.classList.contains('collapsed')");
+                if (sidebarIsCollapsed != sidebarCollapsed)
+                {
+                    var sidebarToggle = sidebarIsCollapsed
+                        ? page.Locator(".chat-header .menu-btn")
+                        : sidebar.Locator(".toggle-btn");
+                    await sidebarToggle.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
+                }
+                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", sidebarCollapsed ? "48px" : "280px");
+            }
+            var geometryLabel = $"{width}px with sidebar {(sidebarCollapsed ? "collapsed" : "expanded")}";
 
             var headerBox = await page.Locator(".chat-header").BoundingBoxAsync();
             var moreBox = await page.HeaderActionsMenuButton().BoundingBoxAsync();
             var launcherBox = await page.ConversationInspectorLauncher().BoundingBoxAsync();
-            var headingBox = await page.Locator(".header-heading").BoundingBoxAsync();
+            var titleBox = await page.Locator(".chat-header h1").BoundingBoxAsync();
+            var viewPreference = page.Locator(".view-preference");
+            var viewPreferenceBox = await viewPreference.BoundingBoxAsync();
             var headerPaddingRight = await page.Locator(".chat-header")
                 .EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).paddingRight)");
+            var moreFontSize = await page.HeaderActionsMenuButton()
+                .EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).fontSize)");
+            var viewFontSize = await viewPreference
+                .Locator("span")
+                .First.EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).fontSize)");
 
             headerBox.Should().NotBeNull("the centered transcript header must have a measurable layout box");
             moreBox.Should().NotBeNull("More must remain visible in the header context row");
             launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible at app top-right");
-            headingBox.Should().NotBeNull("the title and view controls must have a measurable layout box");
+            titleBox.Should().NotBeNull("the conversation title must have a measurable layout box");
+            viewPreferenceBox.Should().NotBeNull("the view switch must have a measurable layout box");
 
             Math.Abs(moreBox!.X + moreBox.Width - (headerBox!.X + headerBox.Width - headerPaddingRight))
                 .Should()
-                .BeLessThanOrEqualTo(1, $"More must align with the header's inner right edge at {width}px");
+                .BeLessThanOrEqualTo(1, $"More must align with the header's inner right edge at {geometryLabel}");
+            Math.Abs(viewPreferenceBox!.X + viewPreferenceBox.Width - (moreBox.X + moreBox.Width))
+                .Should()
+                .BeLessThanOrEqualTo(1, $"the view switch and More must share a right edge at {geometryLabel}");
+            Math.Abs(viewPreferenceBox.Height - moreBox.Height)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"the view switch and More must have equal height at {geometryLabel}");
+            Math.Abs(viewFontSize - moreFontSize)
+                .Should()
+                .BeLessThanOrEqualTo(0.1, $"the view switch and More must use equal type size at {geometryLabel}");
             (width - (launcherBox!.X + launcherBox.Width))
                 .Should()
-                .BeInRange(0, 20, $"the inspector launcher must stay at the app's top-right edge at {width}px");
-            launcherBox.Y.Should().BeInRange(0, 20, $"the inspector launcher must stay at the app top at {width}px");
+                .BeInRange(0, 20, $"the inspector launcher must stay at the app's top-right edge at {geometryLabel}");
             launcherBox
-                .X.Should()
-                .BeGreaterThanOrEqualTo(
-                    headingBox!.X + headingBox.Width,
-                    $"the inspector launcher must not overlap the title or view controls at {width}px"
-                );
+                .Y.Should()
+                .BeInRange(0, 20, $"the inspector launcher must stay at the app top at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(launcherBox, titleBox!, $"launcher and title at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(
+                launcherBox,
+                viewPreferenceBox,
+                $"launcher and view switch at {geometryLabel}"
+            );
 
             await page.ConversationInspectorLauncher().ClickAsync();
             await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
@@ -226,21 +281,30 @@ public sealed class ChatClientLayoutRegressionTests
             inspectorTabsBox.Should().NotBeNull("the inspector tabs must have a measurable layout box");
             Math.Abs(closeBox!.X - launcherBox.X)
                 .Should()
-                .BeLessThanOrEqualTo(1, $"opening the inspector must not move the top-right control at {width}px");
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"opening the inspector must not move the top-right control at {geometryLabel}"
+                );
             Math.Abs(closeBox.Y - launcherBox.Y)
                 .Should()
-                .BeLessThanOrEqualTo(1, $"opening the inspector must not move the top-right control at {width}px");
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"opening the inspector must not move the top-right control at {geometryLabel}"
+                );
             Math.Abs(closeBox.Width - launcherBox.Width)
                 .Should()
-                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal width at {width}px");
+                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal width at {geometryLabel}");
             Math.Abs(closeBox.Height - launcherBox.Height)
                 .Should()
-                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal height at {width}px");
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"open and closed inspector controls must have equal height at {geometryLabel}"
+                );
             (closeBox.Y + closeBox.Height)
                 .Should()
                 .BeLessThanOrEqualTo(
                     inspectorTabsBox!.Y,
-                    $"the fixed-size inspector close control must not overlap its tabs at {width}px"
+                    $"the fixed-size inspector close control must not overlap its tabs at {geometryLabel}"
                 );
             await page.Keyboard.PressAsync("Escape");
             await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
@@ -254,11 +318,11 @@ public sealed class ChatClientLayoutRegressionTests
 
             var menuBox = await page.HeaderActionsMenu().BoundingBoxAsync();
             menuBox.Should().NotBeNull("the open More menu must have a measurable layout box");
-            menuBox!.X.Should().BeGreaterThanOrEqualTo(0, $"the More menu must stay inside a {width}px viewport");
+            menuBox!.X.Should().BeGreaterThanOrEqualTo(0, $"the More menu must stay inside {geometryLabel}");
             (menuBox.X + menuBox.Width)
                 .Should()
-                .BeLessThanOrEqualTo(width, $"the More menu must stay inside a {width}px viewport");
-            await AssertPageDoesNotScrollAsync(page, $"with the More menu open at {width}px");
+                .BeLessThanOrEqualTo(width, $"the More menu must stay inside {geometryLabel}");
+            await AssertPageDoesNotScrollAsync(page, $"with the More menu open at {geometryLabel}");
 
             await page.ClearButton().PressAsync("Escape");
             await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
@@ -272,6 +336,23 @@ public sealed class ChatClientLayoutRegressionTests
         await Assertions.Expect(page.MarketplaceModal()).ToHaveCountAsync(0);
 
         await session.SaveSuccessScreenshotAsync("ChatClientLayout.message_list_scrolls_not_page_and_Clear_on_screen");
+    }
+
+    private static void AssertRectanglesDoNotOverlap(
+        LocatorBoundingBoxResult first,
+        LocatorBoundingBoxResult second,
+        string because
+    )
+    {
+        var overlapWidth = Math.Max(
+            0,
+            Math.Min(first.X + first.Width, second.X + second.Width) - Math.Max(first.X, second.X)
+        );
+        var overlapHeight = Math.Max(
+            0,
+            Math.Min(first.Y + first.Height, second.Y + second.Height) - Math.Max(first.Y, second.Y)
+        );
+        (overlapWidth * overlapHeight).Should().Be(0, $"{because} must not overlap in two dimensions");
     }
 
     /// <summary>
