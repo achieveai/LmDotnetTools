@@ -10,6 +10,7 @@ const workspaces: Workspace[] = [
     name: 'Default project',
     directoryRelPath: '',
     marketplaces: [],
+    env: {},
     isSystemDefined: true,
     createdAt: 0,
     updatedAt: 0,
@@ -21,6 +22,7 @@ const workspaces: Workspace[] = [
     name: 'Repo A',
     directoryRelPath: 'repo-a',
     marketplaces: [],
+    env: {},
     isSystemDefined: false,
     createdAt: 1,
     updatedAt: 1,
@@ -175,6 +177,25 @@ describe('ConversationSidebar — project folders', () => {
     expect(select.element.tagName).toBe('BUTTON');
     await select.trigger('click');
     expect(wrapper.emitted('selectConversation')).toEqual([['a-new']]);
+  });
+
+  it('renders each chat on one line with hover details in metadata and the native tooltip', () => {
+    const title = 'A long conversation title preserved in full for assistive and hover access';
+    const preview = 'The previous response remains available without taking a second visible line.';
+    const wrapper = mountSidebar({
+      conversations: [
+        { threadId: 'single-line', title, preview, lastUpdated: Date.now(), workspace: 'repo-a' },
+      ],
+      workspaces,
+    });
+    const row = wrapper.get('[data-thread-id="single-line"]');
+    const select = row.get('button.conversation-select-btn');
+
+    expect(row.get('.conversation-title').text()).toBe(title);
+    expect(row.find('.conversation-preview').exists()).toBe(false);
+    expect(select.attributes('title')).toBe(`${title}\n${preview}`);
+    expect(row.get('time.conversation-date').attributes('datetime')).toBeTruthy();
+    expect(row.get('button.delete-btn').attributes('title')).toBe('Delete conversation');
   });
 
   it('keeps pagination reachable with a visible load-more button when folders are collapsed', async () => {

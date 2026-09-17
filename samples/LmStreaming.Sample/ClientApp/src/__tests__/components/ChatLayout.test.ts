@@ -851,6 +851,7 @@ describe('ChatLayout workspace project integration', () => {
     name: 'Repository',
     directoryRelPath: 'repo',
     marketplaces: [],
+    env: {},
     isSystemDefined: false,
     createdAt: 1,
     updatedAt: 1,

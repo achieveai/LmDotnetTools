@@ -213,12 +213,6 @@ function formatDate(timestamp: number): string {
   }
 }
 
-function truncateText(text: string | undefined, maxLength: number): string {
-  if (!text) return '';
-  if (text.length <= maxLength) return text;
-  return text.substring(0, maxLength) + '...';
-}
-
 function handleDelete(event: Event, threadId: string): void {
   event.stopPropagation();
   if (confirm('Are you sure you want to delete this conversation?')) {
@@ -242,9 +236,9 @@ function handleDelete(event: Event, threadId: string): void {
         @click="emit('newChat')"
         :tabindex="isCollapsed ? -1 : 0"
       >
-        <svg class="compose-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path d="M8.75 2.75h-5A1.25 1.25 0 0 0 2.5 4v8.25h8.25A1.25 1.25 0 0 0 12 11V6" />
-          <path d="m7.25 8.75 4.9-4.9 1.5 1.5-4.9 4.9-2 .5z" />
+        <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+          <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
         </svg>
         <span>New Chat</span>
       </button>
@@ -337,9 +331,9 @@ function handleDelete(event: Event, threadId: string): void {
               :data-testid="`start-conversation-${group.workspace!.id}`"
               @click="emit('newChatInWorkspace', group.workspace!.id)"
             >
-              <svg class="compose-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                <path d="M8.75 2.75h-5A1.25 1.25 0 0 0 2.5 4v8.25h8.25A1.25 1.25 0 0 0 12 11V6" />
-                <path d="m7.25 8.75 4.9-4.9 1.5 1.5-4.9 4.9-2 .5z" />
+              <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
               </svg>
             </button>
           </div>
@@ -360,20 +354,18 @@ function handleDelete(event: Event, threadId: string): void {
               <button
                 type="button"
                 class="conversation-select-btn"
+                :title="conv.preview ? `${conv.title}\n${conv.preview}` : conv.title"
                 @click="emit('selectConversation', conv.threadId)"
               >
                 <div class="conversation-content">
                   <div class="conversation-title">
-                    {{ truncateText(conv.title, 30) }}
-                  </div>
-                  <div v-if="conv.preview" class="conversation-preview">
-                    {{ truncateText(conv.preview, 50) }}
-                  </div>
-                  <div class="conversation-date">
-                    {{ formatDate(conv.lastUpdated) }}
+                    {{ conv.title }}
                   </div>
                 </div>
               </button>
+              <time class="conversation-date" :datetime="new Date(conv.lastUpdated).toISOString()">
+                {{ formatDate(conv.lastUpdated) }}
+              </time>
               <button
                 class="delete-btn"
                 @click="handleDelete($event, conv.threadId)"
@@ -734,7 +726,7 @@ function handleDelete(event: Event, threadId: string): void {
 
 .project-conversations .conversation-item {
   margin: 2px 8px;
-  padding: 8px 8px 8px 40px;
+  padding: 6px 8px 6px 40px;
   border-bottom: 0;
   border-radius: 6px;
 }
@@ -791,7 +783,7 @@ function handleDelete(event: Event, threadId: string): void {
   border-bottom: 1px solid #e0e0e0;
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   transition: background 0.1s;
 }
@@ -807,6 +799,12 @@ function handleDelete(event: Event, threadId: string): void {
   cursor: pointer;
   font: inherit;
   text-align: left;
+  transition: padding-right 0.15s;
+}
+
+.conversation-item:hover .conversation-select-btn,
+.conversation-item:focus-within .conversation-select-btn {
+  padding-right: 82px;
 }
 
 .conversation-select-btn:focus-visible {
@@ -832,25 +830,25 @@ function handleDelete(event: Event, threadId: string): void {
 .conversation-title {
   font-weight: 500;
   font-size: 14px;
-  margin-bottom: 4px;
+  margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: #212529;
 }
 
-.conversation-preview {
-  font-size: 12px;
-  color: #6c757d;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-}
-
 .conversation-date {
+  position: absolute;
+  top: 50%;
+  right: 36px;
+  transform: translateY(-50%);
   font-size: 11px;
-  color: #adb5bd;
+  color: #6c757d;
+  line-height: 20px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
 }
 
 .loading-more {
@@ -861,6 +859,10 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .delete-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
   opacity: 0;
   width: 20px;
   height: 20px;
@@ -876,7 +878,11 @@ function handleDelete(event: Event, threadId: string): void {
   flex-shrink: 0;
 }
 
-.conversation-item:hover .delete-btn {
+.conversation-item:hover .conversation-date,
+.conversation-item:focus-within .conversation-date,
+.conversation-item:hover .delete-btn,
+.conversation-item:focus-within .delete-btn,
+.delete-btn:focus-visible {
   opacity: 1;
 }
 
