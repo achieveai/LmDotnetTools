@@ -86,8 +86,49 @@ describe('MessageList', () => {
     const userContents = wrapper.findAll('.user-content');
     expect(userContents).toHaveLength(2);
     expect(userContents.every((content) => !content.classes('user-content-surface'))).toBe(true);
-    expect(wrapper.findAll('.pending-message')).toHaveLength(2);
+    const pendingMessages = wrapper.findAll('.pending-message');
+    expect(pendingMessages).toHaveLength(2);
+    expect(
+      pendingMessages.every((pending) => pending.element.closest('.user-message-wrapper') !== null)
+    ).toBe(true);
     expect(wrapper.findAll('.waiting-indicator')).toHaveLength(2);
+  });
+
+  it('keeps direct prose readable while rich answer blocks use the full answer row', () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        displayItems: [
+          {
+            id: 'u-1',
+            type: 'user-message',
+            content: { $type: MessageType.Text, role: 'user', text: 'Show the report', isThinking: false },
+            status: 'active',
+            timestamp: 1,
+          },
+          {
+            id: 'a-1',
+            type: 'assistant-message',
+            content: {
+              $type: MessageType.Text,
+              role: 'assistant',
+              text: '# Report\n\nReadable paragraph.\n\n```text\nwide output\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |',
+              isThinking: false,
+            },
+          },
+        ],
+      },
+      attachTo: document.body,
+    });
+
+    const row = wrapper.get('.text-bubble-row');
+    const markdown = wrapper.get('[data-testid="assistant-text"] .markdown-content');
+    const prose = markdown.get('p').element;
+    const richBlocks = ['h1', 'pre', 'table'].map((selector) => markdown.get(selector).element);
+    expect(prose.matches('.markdown-content > :is(p, ul, ol, blockquote)')).toBe(true);
+    expect(richBlocks.every((block) => !block.matches('.markdown-content > :is(p, ul, ol, blockquote)'))).toBe(true);
+    expect([prose, ...richBlocks].every((block) => block.closest('.text-bubble-row') === row.element)).toBe(true);
+    expect(row.find('.bubble-copy').exists()).toBe(true);
+    wrapper.unmount();
   });
 
   it('scrolls to new user message when added', async () => {
@@ -318,10 +359,6 @@ describe('MessageList', () => {
         'utf-8'
       ) as string;
     })();
-
-    it('should have width 100% on .assistant-message-wrapper to fill available space', () => {
-      expect(componentSource).toMatch(/\.assistant-message-wrapper\s*\{[^}]*width:\s*100%/);
-    });
 
     it('should have min-width 0 on message containers to prevent flex overflow', () => {
       // The combined rule targets both user and assistant containers

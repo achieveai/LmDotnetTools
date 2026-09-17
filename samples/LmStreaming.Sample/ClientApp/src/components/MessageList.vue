@@ -531,17 +531,18 @@ watch(
 .user-message-wrapper,
 .assistant-message-wrapper {
   display: flex;
-  max-width: 85%;
   min-width: 0;
 }
 
 .user-message-wrapper {
   margin-left: auto;
+  max-width: 70%;
 }
 
 .assistant-message-wrapper {
   margin-right: auto;
   width: 100%;
+  max-width: 100%;
 }
 
 .user-message-container,
@@ -596,6 +597,12 @@ watch(
   background: #f4f7fa;
 }
 
+.user-content :deep(.pending-message) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .group-avatar {
   align-self: flex-start;
   position: sticky;
@@ -609,12 +616,16 @@ watch(
   overflow-wrap: anywhere;
 }
 
+.text-bubble :deep(.markdown-content > :is(p, ul, ol, blockquote)) {
+  max-width: 72ch;
+}
+
 /* The row is exactly the bubble's box (a block wrapper around one block child), so the button can be
    pinned to the bubble's corner while staying outside `assistant-text`. */
 .text-bubble-row {
   position: relative;
   width: 100%;
-  max-width: 72ch;
+  max-width: none;
   min-width: 0;
 }
 
@@ -641,6 +652,12 @@ watch(
   .bubble-copy {
     opacity: 1;
     pointer-events: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .user-message-wrapper {
+    max-width: 92%;
   }
 }
 

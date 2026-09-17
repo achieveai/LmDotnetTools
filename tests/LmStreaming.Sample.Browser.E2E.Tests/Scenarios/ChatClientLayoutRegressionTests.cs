@@ -88,7 +88,20 @@ public sealed class ChatClientLayoutRegressionTests
             );
         }
 
-        var responder = role.Turn(t => t.TextLen(6_000)).Build();
+        var prose = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "A production answer should use the available transcript width while keeping each prose line comfortable to read.",
+                160
+            )
+        );
+        var wideCodeLine = $"const payload = '{new string('x', 320)}';";
+        var tableHeaders = string.Join(" | ", Enumerable.Range(1, 10).Select(i => $"Column {i} heading"));
+        var tableDivider = string.Join(" | ", Enumerable.Repeat("---", 10));
+        var tableValues = string.Join(" | ", Enumerable.Range(1, 10).Select(i => $"value-{i}-{new string('y', 24)}"));
+        var finalAnswer =
+            $"{prose}\n\n```text\n{wideCodeLine}\n```\n\n| {tableHeaders} |\n| {tableDivider} |\n| {tableValues} |";
+        var responder = role.Turn(t => t.Text(finalAnswer)).Build();
 
         await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
         var page = session.Page;
@@ -269,6 +282,105 @@ public sealed class ChatClientLayoutRegressionTests
                 viewPreferenceBox,
                 $"launcher and view switch at {geometryLabel}"
             );
+
+            if (width is 1597 or ViewportWidth or 768 or 390)
+            {
+                var messageList = page.MessageList();
+                var messageListBox = await messageList.BoundingBoxAsync();
+                var messageInnerWidth = await messageList.EvaluateAsync<double>(
+                    "el => el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight)"
+                );
+                var messagePaddingRight = await messageList.EvaluateAsync<double>(
+                    "el => parseFloat(getComputedStyle(el).paddingRight)"
+                );
+                var assistantWrapperBox = await page.Locator(".assistant-message-wrapper").Last.BoundingBoxAsync();
+                var assistantContentBox = await page.Locator(".assistant-content").Last.BoundingBoxAsync();
+                var userWrapperBox = await page.Locator(".user-message-wrapper").Last.BoundingBoxAsync();
+                var textRow = page.Locator(".text-bubble-row").Last;
+                var textRowBox = await textRow.BoundingBoxAsync();
+                var proseBlock = page.AssistantText().Last.Locator("p").First;
+                var proseBox = await proseBlock.BoundingBoxAsync();
+                var proseMaxWidth = await proseBlock.EvaluateAsync<double>(
+                    "el => parseFloat(getComputedStyle(el).maxWidth)"
+                );
+
+                messageListBox.Should().NotBeNull("the message list must have a measurable content box");
+                assistantWrapperBox.Should().NotBeNull("the assistant turn must have a measurable wrapper");
+                assistantContentBox.Should().NotBeNull("the assistant turn must have a measurable content column");
+                userWrapperBox.Should().NotBeNull("the human turn must have a measurable wrapper");
+                textRowBox.Should().NotBeNull("the assistant prose row must have a measurable box");
+                proseBox.Should().NotBeNull("the assistant answer must render a measurable prose block");
+
+                assistantWrapperBox!
+                    .Width.Should()
+                    .BeGreaterThanOrEqualTo(
+                        (float)(messageInnerWidth * 0.95),
+                        $"assistant turns should use nearly all transcript width at {geometryLabel}"
+                    );
+                textRowBox!
+                    .Width.Should()
+                    .BeGreaterThanOrEqualTo(
+                        assistantContentBox!.Width * 0.95f,
+                        $"the assistant text row should carry the full turn width at {geometryLabel}"
+                    );
+                proseBox!
+                    .Width.Should()
+                    .BeLessThanOrEqualTo(
+                        (float)(proseMaxWidth + 1),
+                        $"assistant prose should remain within its readable 72ch measure at {geometryLabel}"
+                    );
+                if (width >= ViewportWidth)
+                {
+                    proseBox
+                        .Width.Should()
+                        .BeLessThan(
+                            textRowBox.Width,
+                            $"readable prose should be narrower than the full assistant turn at {geometryLabel}"
+                        );
+                }
+
+                var messageInnerRight = messageListBox!.X + messageListBox.Width - messagePaddingRight;
+                Math.Abs(userWrapperBox!.X + userWrapperBox.Width - messageInnerRight)
+                    .Should()
+                    .BeLessThanOrEqualTo(1, $"the human turn must stay right-aligned at {geometryLabel}");
+                var userMaxRatio = width <= 600 ? 0.92 : 0.70;
+                userWrapperBox
+                    .Width.Should()
+                    .BeLessThanOrEqualTo(
+                        (float)((messageInnerWidth * userMaxRatio) + 1),
+                        $"the human turn must keep its compact treatment at {geometryLabel}"
+                    );
+
+                foreach (
+                    var (overflowingContent, contentName) in new[]
+                    {
+                        (page.AssistantText().Last.Locator("pre"), "code block"),
+                        (page.AssistantText().Last.Locator("table"), "table"),
+                    }
+                )
+                {
+                    var contentBox = await overflowingContent.BoundingBoxAsync();
+                    contentBox.Should().NotBeNull($"the scripted answer must render its {contentName}");
+                    contentBox!
+                        .X.Should()
+                        .BeGreaterThanOrEqualTo(textRowBox.X, $"the {contentName} must stay inside the prose row");
+                    (contentBox.X + contentBox.Width)
+                        .Should()
+                        .BeLessThanOrEqualTo(
+                            textRowBox.X + textRowBox.Width + 1,
+                            $"the {contentName} must not widen the assistant turn at {geometryLabel}"
+                        );
+                    var horizontalOverflow = await overflowingContent.EvaluateAsync<double>(
+                        "el => el.scrollWidth - el.clientWidth"
+                    );
+                    horizontalOverflow
+                        .Should()
+                        .BeGreaterThan(
+                            0,
+                            $"the deliberately wide {contentName} must scroll locally at {geometryLabel}"
+                        );
+                }
+            }
 
             await page.ConversationInspectorLauncher().ClickAsync();
             await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
