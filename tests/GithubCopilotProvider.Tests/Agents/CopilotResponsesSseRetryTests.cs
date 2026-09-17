@@ -114,6 +114,103 @@ public sealed class CopilotResponsesSseRetryTests
     }
 
     [Fact]
+    public async Task CreateSseClient_retries_transient_404_even_though_the_caller_did_not_ask_for_it()
+    {
+        // The Copilot /responses backend intermittently answers a first-attempt
+        // 404 {"error":{"message":"","code":"not_found"}} for a request that succeeds on the next
+        // attempt (it killed 11 production sub-agents). The factory must add NotFound to the
+        // transport's retryable set even when the caller passes RetryOptions that do not list it.
+        var sse = new OpenAiResponsesTestSseMessageHandler
+        {
+            ChunkDelayMs = 0,
+            FailFirstCount = 1,
+            FailStatusCode = HttpStatusCode.NotFound,
+        };
+        var logger = new ListLogger();
+
+        using var client = CopilotResponsesAgentFactory.CreateSseClient(
+            "https://copilot.test",
+            new StubTokenProvider(),
+            new CopilotSessionContext("m", "s"),
+            new CopilotOptions(),
+            logger,
+            RetryOptions.FastForTests, // caller options WITHOUT NotFound — the factory must merge it in
+            innerHandler: sse
+        );
+
+        var events = new List<ResponseEvent>();
+        await foreach (var ev in client.StreamResponseAsync(Request()))
+        {
+            events.Add(ev);
+        }
+
+        events.Should().NotBeEmpty();
+        events[^1].Type.Should().Be(ResponseEventTypes.ResponseCompleted);
+        logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning, "the 404 retry must be logged");
+    }
+
+    [Fact]
+    public async Task CreateSseClient_retries_transient_404_when_the_caller_passed_no_retry_options()
+    {
+        // Production (samples/LmStreaming.Sample) calls Create without retryOptions, so the merge must
+        // also happen on the null path. RetryOptions.Default's 1s first delay is acceptable for one retry.
+        var sse = new OpenAiResponsesTestSseMessageHandler
+        {
+            ChunkDelayMs = 0,
+            FailFirstCount = 1,
+            FailStatusCode = HttpStatusCode.NotFound,
+        };
+
+        using var client = CopilotResponsesAgentFactory.CreateSseClient(
+            "https://copilot.test",
+            new StubTokenProvider(),
+            new CopilotSessionContext("m", "s"),
+            new CopilotOptions(),
+            logger: null,
+            retryOptions: null,
+            innerHandler: sse
+        );
+
+        var events = new List<ResponseEvent>();
+        await foreach (var ev in client.StreamResponseAsync(Request()))
+        {
+            events.Add(ev);
+        }
+
+        events[^1].Type.Should().Be(ResponseEventTypes.ResponseCompleted);
+    }
+
+    [Fact]
+    public async Task Plain_responses_client_still_fails_on_404()
+    {
+        // The 404 opt-in is scoped to the Copilot factory: an OpenAiResponsesClient built directly with
+        // the same RetryOptions must still treat a 404 as a hard failure, so the global default is unchanged.
+        var sse = new OpenAiResponsesTestSseMessageHandler
+        {
+            ChunkDelayMs = 0,
+            FailFirstCount = 1,
+            FailStatusCode = HttpStatusCode.NotFound,
+        };
+
+        var httpClient = new HttpClient(sse) { BaseAddress = new Uri("https://copilot.test") };
+        using var client = new OpenAiResponsesClient(
+            httpClient,
+            disposeClient: true,
+            logger: null,
+            responsesPath: "/responses",
+            retryOptions: RetryOptions.FastForTests
+        );
+
+        var act = async () =>
+        {
+            await foreach (var _ in client.StreamResponseAsync(Request())) { }
+        };
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        ex.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task CreateSseClient_forwarded_retry_options_disable_retry_when_max_retries_zero()
     {
         var sse = new OpenAiResponsesTestSseMessageHandler

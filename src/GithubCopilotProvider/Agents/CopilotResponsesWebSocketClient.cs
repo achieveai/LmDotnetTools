@@ -226,10 +226,13 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
     ///     Classifies a connect/upgrade failure as transient (retryable). Retries when a
     ///     <see cref="WebSocketException"/> wraps a transient <see cref="SocketException"/>
     ///     (connection refused / timed out / host unreachable / DNS hiccup) or an inner
-    ///     <see cref="HttpRequestException"/> whose status is a retryable 5xx/429. Auth/permanent
-    ///     failures (401/403/400/404, DNS name-resolution failure) are NOT retried.
+    ///     <see cref="HttpRequestException"/> whose status is retryable under
+    ///     <see cref="_retryOptions"/> (the global 5xx/429 set, plus any status this transport opted
+    ///     into via <see cref="RetryOptions.AdditionalRetryableStatusCodes"/> — the factory opts the
+    ///     Copilot transport into 404). Auth/permanent failures (401/403/400, DNS name-resolution
+    ///     failure) are NOT retried.
     /// </summary>
-    private static bool IsRetryableConnect(Exception exception)
+    private bool IsRetryableConnect(Exception exception)
     {
         if (exception is not WebSocketException wsEx)
         {
@@ -248,7 +251,7 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                     or SocketError.HostUnreachable
                     or SocketError.NetworkUnreachable
                     or SocketError.TryAgain,
-            HttpRequestException { StatusCode: { } status } => HttpRetryHelper.IsRetryableStatusCode(status),
+            HttpRequestException { StatusCode: { } status } => _retryOptions.IsRetryableStatusCode(status),
             _ => false,
         };
     }
