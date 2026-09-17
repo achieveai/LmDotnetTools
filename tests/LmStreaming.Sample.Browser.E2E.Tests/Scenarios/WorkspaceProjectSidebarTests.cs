@@ -39,7 +39,11 @@ public sealed class WorkspaceProjectSidebarTests
             .Turn(t => t.Text("Beacon is ready."))
             .Build();
 
-        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        await using var session = await _fixture.OpenAsync(
+            "test",
+            responder.HandlerFor("test"),
+            catalogClient: FakeMarketplaceCatalogClient.WithAliases()
+        );
         var page = session.Page;
         await page.SetViewportSizeAsync(PhoneWidth, PhoneHeight);
 

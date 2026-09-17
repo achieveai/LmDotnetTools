@@ -124,6 +124,17 @@ describe('ConversationInspector', () => {
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
 
+  it('closes a hosted desktop dock once on Escape', async () => {
+    const externalClose = document.createElement('button');
+    externalClose.id = 'external-inspector-close';
+    document.body.appendChild(externalClose);
+    const wrapper = mountInspector({ externalCloseControlId: externalClose.id });
+
+    await wrapper.get('[data-testid="conversation-inspector"]').trigger('keydown', { key: 'Escape' });
+
+    expect(wrapper.emitted('close')).toHaveLength(1);
+  });
+
   it('closes on Escape and emits selected agents through the existing row', async () => {
     const wrapper = mountInspector({ activeSection: 'agents' });
     await wrapper.get('[data-testid="conversation-inspector"]').trigger('keydown', { key: 'Escape' });

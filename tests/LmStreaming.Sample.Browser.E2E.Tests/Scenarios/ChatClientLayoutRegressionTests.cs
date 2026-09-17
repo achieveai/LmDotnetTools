@@ -423,9 +423,10 @@ public sealed class ChatClientLayoutRegressionTests
 
             await page.ConversationInspectorLauncher().ClickAsync();
             await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
-            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeHiddenAsync();
-            var closeButton = page.ConversationInspector()
-                .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" });
+            var closeButton = page.ConversationInspectorLauncher();
+            await Assertions.Expect(closeButton).ToBeVisibleAsync();
+            await Assertions.Expect(closeButton).ToHaveAttributeAsync("aria-label", "Close Work and agents");
+            await Assertions.Expect(closeButton).ToHaveAttributeAsync("aria-expanded", "true");
             var inspectorBox = await page.ConversationInspector().BoundingBoxAsync();
             var closeBox = await closeButton.BoundingBoxAsync();
             var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();

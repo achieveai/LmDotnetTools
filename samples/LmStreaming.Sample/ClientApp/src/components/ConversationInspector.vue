@@ -77,6 +77,13 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+function onRootKeydown(event: KeyboardEvent): void {
+  // The document listener owns the hosted overlay because its external header toggle is one edge
+  // of that focus loop. A hosted desktop dock still needs its own Escape handler.
+  if (props.externalCloseControlId && overlay.value) return;
+  onKeydown(event);
+}
+
 function onDocumentKeydown(event: KeyboardEvent): void {
   if (!props.open || !overlay.value || !props.externalCloseControlId) return;
   const externalClose = document.getElementById(props.externalCloseControlId);
@@ -138,7 +145,7 @@ onBeforeUnmount(() => {
       :role="overlay ? 'dialog' : undefined"
       :aria-modal="overlay ? 'true' : undefined"
       aria-labelledby="conversation-inspector-title"
-      @keydown="!props.externalCloseControlId && onKeydown($event)"
+      @keydown="onRootKeydown"
     >
       <header class="inspector-header">
         <h2 id="conversation-inspector-title">Work &amp; agents</h2>

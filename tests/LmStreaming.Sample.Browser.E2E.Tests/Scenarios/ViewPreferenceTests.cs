@@ -42,9 +42,11 @@ public sealed class ViewPreferenceTests
         await page.ConversationInspectorLauncher().ClickAsync();
         await Assertions.Expect(page.ConversationInspector()).ToContainTextAsync("Work & agents");
         await session.SaveSuccessScreenshotAsync("ViewPreference.inspector_open");
-        await page.ConversationInspector()
-            .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" })
-            .ClickAsync();
+        await Assertions
+            .Expect(page.ConversationInspectorLauncher())
+            .ToHaveAttributeAsync("aria-label", "Close Work and agents");
+        await Assertions.Expect(page.ConversationInspectorLauncher()).ToHaveAttributeAsync("aria-expanded", "true");
+        await page.ConversationInspectorLauncher().ClickAsync();
         await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
 
         await page.Textarea().FillAsync("draft survives view changes");
