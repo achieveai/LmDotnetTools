@@ -156,6 +156,11 @@ keys }` — `layer` names which layer produced the bad map (`workspace`, `mode`,
 alongside the workspace/mode/conversation record; application logs record key counts and, on a
 rejection, the offending key names — never a value.
 
+**Single-tenant assumption.** The workspace and chat-mode APIs return env values in full. They
+authenticate the caller but do not scope resources to an owner, so any authenticated caller can read
+every workspace's and mode's env. Treat env values as visible to everyone who can call this sample.
+Do not deploy it for several mutually untrusted principals while env carries secrets.
+
 **Older gateways.** Per-sandbox env requires gateway `v0.1.11` or later (#183). Against an older
 gateway the session-env route doesn't exist, so the sample probes for it: the first time a session's
 env is reconciled it reads the session's real env once (`GET .../env`), and a code-less 404 or a 405

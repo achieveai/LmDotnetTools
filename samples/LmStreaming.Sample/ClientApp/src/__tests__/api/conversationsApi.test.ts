@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   conversationExists,
+  getConversationCapabilities,
   getConversationStatus,
   provisionConversation,
   sendConversationMessage,
@@ -183,5 +184,59 @@ describe('conversationsApi.conversationExists', () => {
     // Reporting `false` here would delete a real conversation from the user's view over a dropped
     // connection - the not-found panel claims the conversation is gone, which it is not.
     await expect(conversationExists('thread-real')).rejects.toThrow(/Failed to fetch/);
+  });
+});
+
+/**
+ * Fail-closed capability report. `sandboxEnv` gates every env editor: reporting it true on a gateway
+ * that cannot apply env would collect variables that never reach the sandbox. Only an explicit
+ * boolean `true` from a successful response may turn it on.
+ */
+describe('conversationsApi.getConversationCapabilities', () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => {
+    restore?.();
+    restore = undefined;
+  });
+
+  it('reports sandboxEnv true only for an explicit true', async () => {
+    ({ restore } = mockFetchOnce(200, { sandboxEnv: true, other: 1 }));
+
+    await expect(getConversationCapabilities()).resolves.toEqual({ sandboxEnv: true });
+  });
+
+  it.each([
+    ['false', { sandboxEnv: false }],
+    ['a truthy non-boolean', { sandboxEnv: 'true' }],
+    ['a missing field', {}],
+    ['a null body', null],
+  ])('reports sandboxEnv false for %s', async (_label, body) => {
+    ({ restore } = mockFetchOnce(200, body));
+
+    await expect(getConversationCapabilities()).resolves.toEqual({ sandboxEnv: false });
+  });
+
+  it('reports sandboxEnv false for a non-OK response, even one that claims support', async () => {
+    ({ restore } = mockFetchOnce(503, { sandboxEnv: true }));
+
+    await expect(getConversationCapabilities()).resolves.toEqual({ sandboxEnv: false });
+  });
+
+  it('reports sandboxEnv false when the body is not JSON', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response('<html>oops</html>', { status: 200 })) as unknown as typeof fetch;
+    restore = () => (globalThis.fetch = original);
+
+    await expect(getConversationCapabilities()).resolves.toEqual({ sandboxEnv: false });
+  });
+
+  it('reports sandboxEnv false when the request itself fails', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    restore = () => (globalThis.fetch = original);
+
+    await expect(getConversationCapabilities()).resolves.toEqual({ sandboxEnv: false });
   });
 });
