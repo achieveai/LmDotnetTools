@@ -17,7 +17,10 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces,
     // Deliberately camelCase "pluginSelection", NOT "plugins": the gateway's sandbox-create contract
     // already reserves the top-level "plugins" key for volume/plugin MOUNT data.
-    [property: JsonPropertyName("pluginSelection")] IReadOnlyList<PluginRefDto>? PluginSelection = null
+    [property: JsonPropertyName("pluginSelection")] IReadOnlyList<PluginRefDto>? PluginSelection = null,
+    // Per-sandbox environment variables (gateway PR #183 / v0.1.11). Omitted entirely when the
+    // caller's request has none, matching this SDK's nulls-omitted REST convention.
+    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null
 );
 
 internal sealed record PluginRefDto(
@@ -280,5 +283,13 @@ internal sealed record GatewayErrorDto(
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("code")] int? Code,
     [property: JsonPropertyName("error_code")] string? ErrorCode,
-    [property: JsonPropertyName("retryable")] bool? Retryable
+    [property: JsonPropertyName("retryable")] bool? Retryable,
+    // Present on invalid_env (400): the offending env-map keys. A closed-vocabulary structured field,
+    // not caller free text, so it is safe to surface on SandboxException like ErrorCode itself.
+    [property: JsonPropertyName("keys")] IReadOnlyList<string>? Keys = null
 );
+
+// --- Session env REST contract (gateway PR #183 / v0.1.11) ---
+
+/// <c>GET/PATCH .../env</c> response — the resulting environment map after the request is applied.
+internal sealed record SandboxEnvResponseDto([property: JsonPropertyName("env")] Dictionary<string, string>? Env);

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using LmStreaming.Sample.Models;
 
@@ -63,6 +64,8 @@ public sealed class FileChatModeStore : IChatModeStore
     {
         ArgumentNullException.ThrowIfNull(mode);
 
+        SandboxEnvRules.Validate(mode.Env, "mode");
+
         await _lock.WaitAsync(ct);
         try
         {
@@ -84,6 +87,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentReasoningEffort = mode.SubAgentReasoningEffort,
                 SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByType,
                 DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligence,
+                Env = mode.Env,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -113,6 +117,11 @@ public sealed class FileChatModeStore : IChatModeStore
         if (SystemChatModes.IsSystemMode(modeId))
         {
             throw new InvalidOperationException($"Cannot update system-defined mode '{modeId}'.");
+        }
+
+        if (mode.EnvIsSet)
+        {
+            SandboxEnvRules.Validate(mode.Env, "mode");
         }
 
         await _lock.WaitAsync(ct);
@@ -157,6 +166,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligenceIsSet
                     ? mode.DefaultSubAgentModelIntelligence
                     : existing.DefaultSubAgentModelIntelligence,
+                Env = mode.EnvIsSet ? mode.Env : existing.Env,
                 UpdatedAt = now,
             };
 
@@ -228,6 +238,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentReasoningEffort = sourceMode.SubAgentReasoningEffort,
                 SubAgentModelIntelligenceByType = sourceMode.SubAgentModelIntelligenceByType,
                 DefaultSubAgentModelIntelligence = sourceMode.DefaultSubAgentModelIntelligence,
+                Env = sourceMode.Env,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

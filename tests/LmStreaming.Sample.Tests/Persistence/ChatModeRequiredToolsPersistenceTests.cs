@@ -359,7 +359,10 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     [InlineData("Low,High")]
     public async Task Controller_Create_RefusesUnsupportedChildReasoningEffort(string effort)
     {
-        var controller = new ChatModesController(CreateStoreWithFile(null));
+        var controller = new ChatModesController(
+            CreateStoreWithFile(null),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+        );
 
         var result = await controller.Create(
             new ChatModeCreateUpdate
@@ -378,7 +381,10 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     [InlineData(-1)]
     public async Task Controller_Create_RefusesNegativeOrZeroChildRoutingTier(int tier)
     {
-        var controller = new ChatModesController(CreateStoreWithFile(null));
+        var controller = new ChatModesController(
+            CreateStoreWithFile(null),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+        );
 
         var result = await controller.Create(
             new ChatModeCreateUpdate
@@ -400,7 +406,10 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     [InlineData(-1)]
     public async Task Controller_Create_RefusesNegativeOrZeroDefaultChildRoutingTier(int tier)
     {
-        var controller = new ChatModesController(CreateStoreWithFile(null));
+        var controller = new ChatModesController(
+            CreateStoreWithFile(null),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+        );
 
         var result = await controller.Create(
             new ChatModeCreateUpdate
@@ -417,7 +426,10 @@ public sealed class ChatModeRequiredToolsPersistenceTests : IDisposable
     [Fact]
     public async Task Controller_Create_RefusesCaseVariantChildRoutingKeys()
     {
-        var controller = new ChatModesController(CreateStoreWithFile(null));
+        var controller = new ChatModesController(
+            CreateStoreWithFile(null),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+        );
 
         var result = await controller.Create(
             new ChatModeCreateUpdate

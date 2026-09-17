@@ -13,7 +13,8 @@ public sealed class WorkspacesController(
     IWorkspaceStore store,
     WorkspaceCatalogCompatibilityService compatibility,
     GatewayWorkspaceCatalogIdentity identity,
-    IWorkspacePluginSelectionService pluginSelection
+    IWorkspacePluginSelectionService pluginSelection,
+    SandboxEnvApplier envApplier
 ) : ControllerBase
 {
     [HttpGet]
@@ -146,6 +147,18 @@ public sealed class WorkspacesController(
         {
             return CatalogUnavailable(ex);
         }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
+        }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { error = ex.Message });
@@ -171,6 +184,18 @@ public sealed class WorkspacesController(
             var workspace = updateData.PluginSelection.IsSet
                 ? await pluginSelection.ApplyPluginSelectionUpdateAsync(id, updateData, ct)
                 : await store.UpdateAsync(id, updateData, ct);
+
+            if (updateData.Env.IsSet)
+            {
+                // The workspace is persisted from here on. Reapply on a token that is NOT RequestAborted:
+                // a client disconnecting now must not leave a suffix of live sessions on the old env.
+                // Each gateway call is still bounded by the SDK's own transport timeout.
+                var reapply = await envApplier.ReapplyForWorkspaceAsync(id, CancellationToken.None);
+                if (reapply.InvalidEnvFailure is not null)
+                {
+                    return BadRequest(reapply.ToSavedButNotAppliedBody($"Workspace '{id}'", "workspace"));
+                }
+            }
 
             return Ok(workspace.ToView(await compatibility.EvaluateAsync(workspace, ct)));
         }
@@ -268,6 +293,18 @@ public sealed class WorkspacesController(
             // broader clause would otherwise swallow a corrupt catalog into a 400 that blames the
             // caller for a server-side storage fault. List/Get/Create already answer 503 here.
             return CatalogUnavailable(ex);
+        }
+        catch (SandboxEnvValidationException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "invalid_env",
+                    layer = ex.Layer,
+                    keys = ex.Keys,
+                }
+            );
         }
         catch (InvalidOperationException ex)
         {

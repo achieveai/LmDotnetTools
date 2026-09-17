@@ -248,6 +248,58 @@ public class SandboxSessionRegistryMarketplacesTests
         reference.DirectoryRelPath.Should().BeNull();
         reference.Marketplaces.Should().BeNull();
         reference.PluginSelection.Should().BeNull();
+        reference.Env.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Spec §9: a session recreated after a gateway 404 must come back carrying the workspace's env.
+    /// <para>
+    /// This helper is the ONLY thing the recreate path has — the reload callback re-reads the
+    /// workspace and builds a ref, with no access to the mode or provision layers and no later
+    /// opportunity to inject them. While it passed only four of WorkspaceRef's five fields, Env
+    /// defaulted to null and the replacement sandbox started with NO environment at all, silently,
+    /// until some unrelated edit happened to PATCH it. The first-create path hid this: it overwrites
+    /// Env with the fully merged map immediately after calling the helper, so every direct-create
+    /// test stayed green.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void BuildWorkspaceRef_CarriesTheWorkspaceEnvLayer()
+    {
+        var workspace = new Workspace
+        {
+            Id = "ws-env",
+            Name = "Env",
+            DirectoryRelPath = "projA",
+            Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["FOO"] = "1" },
+        };
+
+        var reference = global::Program.BuildWorkspaceRef(workspace.Id, workspace);
+
+        reference.Env.Should().Equal(new Dictionary<string, string> { ["FOO"] = "1" });
+    }
+
+    /// <summary>
+    /// The recreate end to end: the same ref the reload callback builds must put the workspace's env
+    /// on the create request the gateway receives.
+    /// </summary>
+    [Fact]
+    public async Task Recreate_FromTheReloadedWorkspace_SendsEnvOnTheCreateRequest()
+    {
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl };
+        var (registry, capture) = CreateRegistry(options);
+        var workspace = new Workspace
+        {
+            Id = "ws-env",
+            Name = "Env",
+            DirectoryRelPath = "projA",
+            Env = new Dictionary<string, string>(StringComparer.Ordinal) { ["FOO"] = "1" },
+        };
+
+        _ = await registry.GetOrCreateSessionAsync(global::Program.BuildWorkspaceRef(workspace.Id, workspace));
+
+        using var doc = JsonDocument.Parse(capture.Body!);
+        doc.RootElement.GetProperty("env").GetProperty("FOO").GetString().Should().Be("1");
     }
 
     private static IReadOnlyList<string> ReadMarketplaces(string? body)

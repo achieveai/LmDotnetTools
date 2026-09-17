@@ -339,7 +339,12 @@ public sealed partial class SandboxClient
     /// reading <paramref name="response"/>'s body: an auth-rejection response is the upstream output
     /// most likely to echo submitted credential material, and an empty body (e.g. a bare <c>401</c>)
     /// must classify identically to one carrying an (ignored) error payload — reading the body first
-    /// would risk a JSON-parse failure masking the real classification.
+    /// would risk a JSON-parse failure masking the real classification. The ONE exception is
+    /// <see cref="MapRestBadRequestAsync"/>, used only for a <c>400</c> on the sandbox-create path: it
+    /// is safe to read there because a <c>400</c> is never the credential-rejection response (that is
+    /// <c>401</c>/<c>403</c>, still handled body-unread below), and the parse only extracts the
+    /// closed-vocabulary <c>error_code</c>/<c>keys</c> fields — the free-text <c>error</c> message is
+    /// never echoed or logged, same as <see cref="MapDirectErrorAsync"/>.
     /// </summary>
     /// <remarks>
     /// A <c>3xx</c> is treated as an explicit protocol violation, never followed: this SDK's owned
@@ -371,6 +376,69 @@ public sealed partial class SandboxClient
         };
 
         return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
+    }
+
+    /// <summary>
+    /// Classifies a <c>400</c> REST response (currently only sandbox create) into a
+    /// <see cref="SandboxException"/>, reading the gateway's small, stable
+    /// <c>{ error, error_code, keys }</c> body under the transport budget to recover
+    /// <c>invalid_env</c> and its offending <c>keys</c> — the same shape and safety contract as
+    /// <see cref="MapDirectErrorAsync"/>'s error-body read (a <c>400</c> is never the credential
+    /// rejection response, and only the closed-vocabulary <c>error_code</c>/<c>keys</c> fields are
+    /// ever surfaced; the free-text <c>error</c> message is never echoed or logged). A malformed or
+    /// unreadable body, or an <c>error_code</c> other than <c>invalid_env</c>, falls back to the
+    /// same <see cref="SandboxErrorKind.Protocol"/> classification <see cref="MapErrorResponse"/>
+    /// would have produced.
+    /// </summary>
+    private async Task<SandboxException> MapRestBadRequestAsync(
+        HttpResponseMessage response,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        var statusCode = (int)response.StatusCode;
+        string? errorCode = null;
+        IReadOnlyList<string>? invalidKeys = null;
+        try
+        {
+            using var budgetCts = StartTransportBudget();
+            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
+            var error = await response
+                .Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token)
+                .ConfigureAwait(false);
+            errorCode = error?.ErrorCode;
+            invalidKeys = error?.Keys;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+            when (ex
+                    is JsonException
+                        or InvalidOperationException
+                        or NotSupportedException
+                        or OperationCanceledException
+            )
+        {
+            // The read deadline fired, or the body was unreadable — fall back to status-only
+            // classification below (errorCode stays null). See MapDirectErrorAsync's sibling catch for
+            // why the non-JSON cases need three types rather than JsonException alone.
+        }
+
+        var kind = string.Equals(errorCode, "invalid_env", StringComparison.Ordinal)
+            ? SandboxErrorKind.InvalidEnv
+            : SandboxErrorKind.Protocol;
+        var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
+        return new SandboxException(
+            kind,
+            $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.",
+            statusCode
+        )
+        {
+            ErrorCode = errorCode,
+            InvalidKeys = invalidKeys,
+        };
     }
 
     /// <summary>
@@ -515,6 +583,7 @@ public sealed partial class SandboxClient
         }
 
         string? errorCode = null;
+        IReadOnlyList<string>? invalidKeys = null;
         try
         {
             // Link to the caller's token so a caller cancel trips IMMEDIATELY. When the caller (the download
@@ -530,6 +599,7 @@ public sealed partial class SandboxClient
                 .Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token)
                 .ConfigureAwait(false);
             errorCode = error?.ErrorCode;
+            invalidKeys = error?.Keys;
         }
         catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
@@ -537,11 +607,27 @@ public sealed partial class SandboxClient
             // as a SandboxException.
             throw;
         }
-        catch (Exception ex) when (ex is JsonException or OperationCanceledException)
+        catch (Exception ex)
+            when (ex
+                    is JsonException
+                        or InvalidOperationException
+                        or NotSupportedException
+                        or OperationCanceledException
+            )
         {
-            // The caller did NOT cancel: the read deadline fired, or the body was malformed — fall back to
+            // The caller did NOT cancel: the read deadline fired, or the body was unreadable — fall back to
             // status-only classification (errorCode stays null). An already-received gateway error is never
             // lost to an SDK-internal timeout.
+            //
+            // The non-JSON cases are the reason this catch is not JsonException alone. A proxy's error page
+            // arrives with its own headers, and which exception that produces depends on WHICH header is
+            // wrong (verified against the runtime, not assumed): a non-JSON media type such as text/html
+            // still reaches the parser and fails as JsonException, but a Content-Type naming a charset the
+            // runtime does not know (`charset=windows-1252`) throws InvalidOperationException before any
+            // parsing. NotSupportedException is the shape the media-type-validating HttpClient overloads
+            // raise. Any of them escaping here would pass every caller's `catch (SandboxException)`
+            // untouched — and on the env routes that also means the old-gateway 404/405 degradation never
+            // runs, so the session faults instead of quietly reporting the feature unsupported.
         }
 
         // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later
@@ -562,6 +648,7 @@ public sealed partial class SandboxClient
         )
         {
             ErrorCode = errorCode,
+            InvalidKeys = invalidKeys,
         };
     }
 
@@ -574,6 +661,7 @@ public sealed partial class SandboxClient
     private static SandboxErrorKind MapDirectErrorKind(HttpStatusCode status, string? errorCode) =>
         errorCode switch
         {
+            "invalid_env" => SandboxErrorKind.InvalidEnv,
             "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" =>
                 SandboxErrorKind.NotFound,
             "idempotency_conflict" or "operation_running" or "target_locked" => SandboxErrorKind.Conflict,

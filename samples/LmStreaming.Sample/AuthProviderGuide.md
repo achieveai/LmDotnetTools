@@ -384,6 +384,9 @@ the sandbox-create request:
   - **github** → `github.com`, `api.github.com`, `codeload.github.com`
   - **ado** → `dev.azure.com`, `*.dev.azure.com`, `*.visualstudio.com`
   - **m365** → `graph.microsoft.com`
+- **`env`** — the merged workspace/mode/provision per-sandbox environment map (see
+  [SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md#per-sandbox-environment-variables)), omitted
+  entirely when empty.
 
 When **no** provider is configured, both blocks are omitted entirely and the plain workspace sandbox
 is created as before.

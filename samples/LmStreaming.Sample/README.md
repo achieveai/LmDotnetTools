@@ -54,7 +54,8 @@ a configured workspace directory. Two delivery paths:
 
 All sandbox behavior is configured in the **`SandboxGateway`** section of
 `appsettings.Development.json` (bound to `Services/SandboxGatewayOptions.cs`). Full reference:
-**[SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md)**.
+**[SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md)** — including
+[per-sandbox environment variables](SandboxWorkspaceGuide.md#per-sandbox-environment-variables).
 
 ### 1. Point at your gateway installation
 

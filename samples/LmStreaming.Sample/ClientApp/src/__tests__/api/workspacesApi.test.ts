@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkspace,
   updateWorkspace,
+  InvalidEnvError,
   UnsupportedPluginsError,
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
+import { InvalidEnvError as ChatModesInvalidEnvError } from '@/api/chatModesApi';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -173,6 +175,59 @@ describe('workspacesApi typed failures', () => {
     }).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(UnsupportedPluginsError);
+  });
+
+  // RED if the invalid_env branch is dropped: the caller gets a bare Error, so WorkspaceSelector cannot
+  // tell an env rejection apart and the offending key names never reach the form.
+  it('maps 400 invalid_env to InvalidEnvError carrying the keys, the layer and a message naming them', async () => {
+    fetchMock.mockReturnValue(
+      fail(400, 'Bad Request', {
+        error: "Workspace 'ws' was saved, but its environment could not be applied.",
+        code: 'invalid_env',
+        saved: true,
+        layer: 'workspace',
+        keys: ['BAD_ONE', 42, 'BAD_TWO'],
+      })
+    );
+
+    const error = (await updateWorkspace('ws', { marketplaces: [] }).catch(
+      (e: unknown) => e
+    )) as InvalidEnvError;
+
+    expect(error).toBeInstanceOf(InvalidEnvError);
+    // A non-string entry in `keys` is dropped rather than rendered as "42".
+    expect(error.keys).toEqual(['BAD_ONE', 'BAD_TWO']);
+    expect(error.layer).toBe('workspace');
+    expect(error.message).toBe(
+      "Workspace 'ws' was saved, but its environment could not be applied. (BAD_ONE, BAD_TWO)"
+    );
+  });
+
+  it('maps 400 invalid_env on create too, with a default message when the body has no error text', async () => {
+    fetchMock.mockReturnValue(fail(400, 'Bad Request', { code: 'invalid_env' }));
+
+    const error = (await createWorkspace({ name: 'A' }).catch((e: unknown) => e)) as InvalidEnvError;
+
+    expect(error).toBeInstanceOf(InvalidEnvError);
+    expect(error.keys).toEqual([]);
+    expect(error.layer).toBeNull();
+    expect(error.message).toBe('One or more environment variable names are invalid.');
+  });
+
+  // Only a 400 carries the invalid_env meaning; the same code on another status is not re-typed.
+  it('does not treat invalid_env on a non-400 status as an env rejection', async () => {
+    fetchMock.mockReturnValue(fail(500, 'Server Error', { error: 'boom', code: 'invalid_env' }));
+
+    const error = (await updateWorkspace('ws', { marketplaces: [] }).catch((e: unknown) => e)) as Error;
+
+    expect(error).not.toBeInstanceOf(InvalidEnvError);
+    expect(error.message).toBe('boom');
+  });
+
+  // The two API modules must hand back ONE error type, or `instanceof` in a caller that handles both
+  // is silently false for one of them.
+  it('throws the same InvalidEnvError class that chatModesApi exports', () => {
+    expect(InvalidEnvError).toBe(ChatModesInvalidEnvError);
   });
 
   it('falls back to the server error text for an unrecognised failure', async () => {

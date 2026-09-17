@@ -8,6 +8,7 @@ import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
+import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
@@ -101,6 +102,7 @@ const {
 } = useWorkspaces();
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const modeSelectorRef = ref<InstanceType<typeof ModeSelector> | null>(null);
 
 // Initialize chat with getters for the current mode and provider ids.
 const {
@@ -471,11 +473,15 @@ async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate)
     workspaceSelectorRef.value?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
-    if (e instanceof WorkspaceRevisionConflictError) {
-      // updateWorkspace has already re-listed, so the next save would carry a FRESH compare-and-swap
-      // token while the form still held the pre-conflict selection — one more click would pass CAS
-      // and silently overwrite whoever changed it. Re-seed the form from the refreshed workspace so
-      // the pending change is dropped rather than the other writer's. `await nextTick()` first: the
+    if (e instanceof WorkspaceRevisionConflictError || e instanceof InvalidEnvError) {
+      // Two different causes, one required response: the server's copy has moved on and the form has
+      // not. On a CONFLICT, updateWorkspace has already re-listed, so the next save would carry a
+      // FRESH compare-and-swap token while the form still held the pre-conflict selection — one more
+      // click would pass CAS and silently overwrite whoever changed it. On an INVALID_ENV, the write
+      // PARTIALLY succeeded (the store took it, the gateway refused the env), and the env map is sent
+      // as a wholesale REPLACEMENT with no CAS token at all — so a reseed from stale rows would
+      // delete keys the server had actually kept. Re-seed from the refreshed workspace either way, so
+      // the pending change is dropped rather than the stored one. `await nextTick()` first: the
       // refreshed list reaches the child as a prop only after the parent re-renders.
       await nextTick();
       workspaceSelectorRef.value?.reseedEditForm();
@@ -705,8 +711,17 @@ async function handleSelectMode(modeId: string): Promise<void> {
 async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
   try {
     await createMode(data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to create mode:', e);
+    if (e instanceof InvalidEnvError) {
+      // Keeps the create form open (with the entered env rows intact) instead of the previous
+      // silent console.error — this is the one failure mode worth surfacing inline, since it names
+      // exactly which keys are wrong and the user can fix them without re-entering everything.
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to create mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -714,8 +729,14 @@ async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
 async function handleUpdateMode(modeId: string, data: ChatModeCreateUpdate): Promise<void> {
   try {
     await updateMode(modeId, data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to update mode:', e);
+    if (e instanceof InvalidEnvError) {
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to update mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -864,6 +885,7 @@ onBeforeUnmount(() => {
               @select-provider="handleSelectProvider"
             />
             <ModeSelector
+              ref="modeSelectorRef"
               :modes="modes"
               :current-mode-id="currentModeId"
               :tools="availableTools"

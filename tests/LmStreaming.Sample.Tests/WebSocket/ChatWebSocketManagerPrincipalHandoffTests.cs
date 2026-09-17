@@ -316,6 +316,7 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
                 NullLogger<PendingAuthCoordinator>.Instance
             ),
             new InMemoryConversationStore(),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
             NullLogger<ChatWebSocketManager>.Instance
         );
 

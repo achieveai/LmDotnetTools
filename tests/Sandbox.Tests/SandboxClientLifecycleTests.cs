@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -150,6 +151,114 @@ public class SandboxClientLifecycleTests
         body.TryGetProperty("network", out _).Should().BeFalse();
         body.TryGetProperty("discovery", out _).Should().BeFalse();
         body.TryGetProperty("marketplaces", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithEnv_IncludedInWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        var request = new SandboxCreateRequest(
+            "my-workspace",
+            env: new Dictionary<string, string> { ["FOO"] = "1", ["PATH"] = "/opt/bin:/usr/bin" }
+        );
+
+        _ = await client.CreateAsync(request);
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+
+        body.GetProperty("env").GetProperty("FOO").GetString().Should().Be("1");
+        body.GetProperty("env").GetProperty("PATH").GetString().Should().Be("/opt/bin:/usr/bin");
+    }
+
+    [Fact]
+    public async Task CreateAsync_EmptyOrNullEnv_OmitsEnvFieldFromWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws", env: new Dictionary<string, string>()));
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        foreach (var sent in handler.Requests.Where(r => r.Method == HttpMethod.Post))
+        {
+            var body = JsonDocument.Parse(sent.Body!).RootElement;
+            body.TryGetProperty("env", out _).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public void SandboxCreateRequest_Env_IsDefensiveCopy()
+    {
+        var source = new Dictionary<string, string> { ["FOO"] = "1" };
+
+        var request = new SandboxCreateRequest("ws", env: source);
+        source["BAR"] = "2";
+
+        request.Env.Should().ContainKey("FOO").WhoseValue.Should().Be("1");
+        request.Env.Should().NotContainKey("BAR");
+    }
+
+    [Fact]
+    public async Task CreateAsync_InvalidEnv400_MapsToInvalidEnvWithKeys()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"error":"invalid env","error_code":"invalid_env","keys":["SANDBOX_HOME"]}""",
+            HttpStatusCode.BadRequest
+        );
+
+        var exception = await Record.ExceptionAsync(() =>
+            client.CreateAsync(
+                new SandboxCreateRequest("ws", env: new Dictionary<string, string> { ["SANDBOX_HOME"] = "x" })
+            )
+        );
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.InvalidEnv);
+        sandboxException.StatusCode.Should().Be(400);
+        sandboxException.InvalidKeys.Should().Equal("SANDBOX_HOME");
+    }
+
+    /// <summary>
+    /// A 400 whose body is NOT JSON — a reverse proxy's HTML error page is the everyday example —
+    /// must still surface as a <see cref="SandboxException"/>.
+    /// <para>
+    /// <c>ReadFromJsonAsync</c> raises <see cref="NotSupportedException"/>, not
+    /// <see cref="JsonException"/>, when the Content-Type is not JSON, and the 400 reader caught only
+    /// the latter. The NotSupportedException therefore escaped the SDK's own error mapping entirely,
+    /// so every caller — all of which catch SandboxException — saw an exception type they do not
+    /// handle instead of a classified failure.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_400WithNonJsonBody_StillSurfacesAsSandboxException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        _ = handler.On(
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri is not null
+                && req.RequestUri.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("<html><body>400 Bad Request</body></html>", Encoding.UTF8, "text/html"),
+            }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("ws")));
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception;
+        sandboxException.StatusCode.Should().Be(400);
+        sandboxException
+            .Kind.Should()
+            .Be(SandboxErrorKind.Protocol, "an unreadable body cannot be classified as invalid_env");
     }
 
     [Fact]

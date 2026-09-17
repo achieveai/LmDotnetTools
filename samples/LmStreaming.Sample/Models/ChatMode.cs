@@ -119,6 +119,13 @@ public record ChatMode
     public int? DefaultSubAgentModelIntelligence { get; init; }
 
     /// <summary>
+    /// Mode-layer sandbox environment variables (spec §5): override the workspace's <see cref="Workspace.Env"/>
+    /// and are themselves overridden by a conversation's provisioned env. <see langword="null"/> means the
+    /// mode declares no env (the common case, and how every mode predating this field reads). Never logged.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -177,6 +184,7 @@ public record ChatModeCreateUpdate
     private string? _subAgentReasoningEffort;
     private IReadOnlyDictionary<string, int>? _subAgentModelIntelligenceByType;
     private int? _defaultSubAgentModelIntelligence;
+    private IReadOnlyDictionary<string, string>? _env;
 
     /// <summary>
     /// Display name of the mode.
@@ -354,6 +362,21 @@ public record ChatModeCreateUpdate
 
     [JsonIgnore]
     internal bool DefaultSubAgentModelIntelligenceIsSet { get; private init; }
+
+    /// <summary>Mode-layer sandbox env. See <see cref="ChatMode.Env"/>. Omission preserves the stored
+    /// map on update; explicit JSON <c>null</c> clears it.</summary>
+    public IReadOnlyDictionary<string, string>? Env
+    {
+        get => _env;
+        init
+        {
+            _env = value;
+            EnvIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool EnvIsSet { get; private init; }
 }
 
 /// <summary>
