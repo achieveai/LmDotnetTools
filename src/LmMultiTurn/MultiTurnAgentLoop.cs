@@ -760,7 +760,7 @@ public sealed class MultiTurnAgentLoop
         {
             await SubAgentInstrumentationProjection.SaveAsync(store, ThreadId, instrumentation, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
             // Measurement must never fail a run: the numbers exist to judge the run, not to gate it.
             Logger.LogWarning(ex, "Failed to persist sub-agent instrumentation for thread {ThreadId}", ThreadId);
@@ -943,6 +943,22 @@ public sealed class MultiTurnAgentLoop
     }
 
     /// <summary>
+    /// Whether <paramref name="exception"/> is this run being stopped, rather than this run failing.
+    /// </summary>
+    /// <remarks>
+    /// The exception TYPE alone does not answer that. <see cref="HttpClient"/> reports its own
+    /// <c>Timeout</c> elapsing as a <see cref="TaskCanceledException"/> — an
+    /// <see cref="OperationCanceledException"/> nobody asked for — and so does any library that cancels
+    /// on an internal deadline. A handler that excludes the type outright therefore lets a provider
+    /// timeout skip the run's error path entirely: the run is never completed, the caller (a parent
+    /// waiting on a sub-agent) stays parked on it forever, and the failure surfaces only as an
+    /// unexplained loop death. Only a cancellation raised while THIS run's token is cancelled is the
+    /// user's stop; everything else is a failure and must be reported as one.
+    /// </remarks>
+    private static bool IsRunCancellation(Exception exception, CancellationToken ct) =>
+        exception is OperationCanceledException && ct.IsCancellationRequested;
+
+    /// <summary>
     /// Runs an already-announced assignment to completion, turning any failure into a completed-with-
     /// error run rather than letting it escape and kill the loop.
     /// </summary>
@@ -968,7 +984,7 @@ public sealed class MultiTurnAgentLoop
                 ct: ct
             );
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
             // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
             // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
@@ -1582,7 +1598,7 @@ public sealed class MultiTurnAgentLoop
             {
                 stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (!IsRunCancellation(ex, ct))
             {
                 // The wrap-up is best-effort: if the model call itself fails, still close the run on a
                 // deterministic status rather than propagating (which would fail the whole run) or
@@ -2258,7 +2274,7 @@ public sealed class MultiTurnAgentLoop
                 );
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
             Logger.LogWarning(
                 ex,
@@ -3913,7 +3929,7 @@ public sealed class MultiTurnAgentLoop
         {
             await _compaction!.RunPendingManualAsync(LatestRunId ?? "manual-compaction", ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
             Logger.LogWarning(ex, "Manual compaction for thread {ThreadId} failed on the idle loop", ThreadId);
         }
