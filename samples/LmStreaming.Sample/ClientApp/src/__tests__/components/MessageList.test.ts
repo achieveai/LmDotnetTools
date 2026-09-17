@@ -481,7 +481,7 @@ describe('MessageList Consumer activity projection', () => {
     await toggle.trigger('click');
 
     expect(toggle.attributes('aria-expanded')).toBe('true');
-    wrapper.get('[data-testid="metadata-pill"]');
+    expect(wrapper.getComponent({ name: 'MetadataPill' }).props('presentation')).toBe('card');
     wrapper.get('[data-notify-kind="compaction"]');
   });
 
@@ -613,13 +613,24 @@ describe('MessageList Consumer activity projection', () => {
     expect(wrapper.text()).toContain('Message undelivered');
   });
 
-  it('leaves the current detailed timeline unchanged in Developer view', () => {
+  it('uses activity rows for Developer tool details in history and the current turn', () => {
     const wrapper = mount(MessageList, {
-      props: { displayItems: [user('u-1', 'Question'), pill('p-1')], viewPreference: 'developer' },
+      props: {
+        displayItems: [
+          user('u-1', 'First question'),
+          pill('p-1', 'run-1'),
+          answer('a-1', 'First answer', 'run-1'),
+          user('u-2', 'Second question'),
+          pill('p-2', 'run-2'),
+        ],
+        viewPreference: 'developer',
+      },
     });
 
     expect(wrapper.find('[data-testid="turn-activity"]').exists()).toBe(false);
-    wrapper.get('[data-testid="metadata-pill"]');
+    expect(
+      wrapper.findAllComponents({ name: 'MetadataPill' }).map((pill) => pill.props('presentation'))
+    ).toEqual(['activity-row', 'activity-row']);
   });
 
   it('keeps the first visible answer anchored when activity collapses', async () => {

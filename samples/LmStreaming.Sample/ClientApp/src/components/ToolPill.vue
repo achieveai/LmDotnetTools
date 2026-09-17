@@ -18,8 +18,12 @@ import TerminalRich from '@/components/tools/TerminalRich.vue';
 import MatchesRich from '@/components/tools/MatchesRich.vue';
 import WeatherRich from '@/components/tools/WeatherRich.vue';
 import QuestionRich from '@/components/tools/QuestionRich.vue';
+import { normalizeToolName } from '@/utils/toolName';
 
-const props = defineProps<{ toolCall: ToolCall }>();
+const props = withDefaults(defineProps<{
+  toolCall: ToolCall;
+  presentation?: 'card' | 'activity-row';
+}>(), { presentation: 'card' });
 
 const { getResult } = useToolResult();
 
@@ -46,6 +50,93 @@ const summary = computed(() => {
     return renderer.value.summarize(view.value.parsedArgs, view.value.resultText, view.value);
   } catch {
     return '';
+  }
+});
+
+const normalizedToolName = computed(() => normalizeToolName(props.toolCall.function_name));
+
+function stringArg(...keys: string[]): string {
+  for (const key of keys) {
+    const value = view.value.parsedArgs?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function humanizeToolName(name: string): string {
+  const spaced = name.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : 'Tool activity';
+}
+
+const activityDescription = computed(() => {
+  const state = view.value.state;
+  const succeeded = state === 'success';
+  const failed = state === 'error';
+  const detail = summary.value;
+  const family = renderer.value.family;
+  const toolName = normalizedToolName.value;
+
+  if (toolName === 'sendmessage') {
+    const target = stringArg('target', 'agent_id');
+    return failed
+      ? `Failed to send message${target ? ` to ${target}` : ''}`
+      : `${succeeded ? 'Sent' : 'Sending'} message${target ? ` to ${target}` : ''}`;
+  }
+  if (toolName === 'agent') {
+    const target = stringArg('subagent_type', 'name');
+    return failed
+      ? `Failed to start${target ? ` ${target}` : ' agent'}`
+      : `${succeeded ? 'Started' : 'Starting'}${target ? ` ${target}` : ' agent'}`;
+  }
+  if (toolName.includes('checkagent') || toolName === 'getagents') {
+    return `${failed ? 'Failed to check' : succeeded ? 'Checked' : 'Checking'} agent status`;
+  }
+  if (toolName === 'view_image') {
+    return failed ? 'Failed to view an image' : succeeded ? 'Viewed an image' : 'Viewing an image';
+  }
+
+  switch (family) {
+    case 'read': {
+      const path = stringArg('file_path');
+      return `${failed ? 'Failed to read' : succeeded ? 'Read' : 'Reading'} ${path || 'a file'}`;
+    }
+    case 'write': {
+      const path = stringArg('file_path') || 'file';
+      return `${failed ? 'Failed to write' : succeeded ? 'Wrote' : 'Writing'} ${path}`;
+    }
+    case 'edit': {
+      const path = stringArg('file_path') || 'file';
+      const stats = detail.includes('·') ? detail.slice(detail.indexOf('·') + 1).trim() : '';
+      return `${failed ? 'Failed to update' : succeeded ? 'Updated' : 'Updating'} ${path}${stats ? ` · ${stats}` : ''}`;
+    }
+    case 'shell':
+      return `${failed ? 'Command failed' : succeeded ? 'Ran' : 'Running'}${detail ? ` ${detail}` : ' command'}`;
+    case 'grep':
+    case 'glob':
+      return `${failed ? 'Search failed' : succeeded ? 'Searched for' : 'Searching for'}${detail ? ` ${detail}` : ''}`;
+    case 'math':
+      return `${failed ? 'Calculation failed' : succeeded ? 'Calculated' : 'Calculating'}${detail ? ` ${detail}` : ''}`;
+    case 'web':
+      return `${failed ? 'Web request failed' : succeeded ? 'Opened' : 'Opening'}${detail ? ` ${detail}` : ' web resource'}`;
+    default: {
+      const label = humanizeToolName(props.toolCall.function_name || toolName);
+      return `${failed ? `${label} failed` : label}${detail ? ` · ${detail}` : ''}`;
+    }
+  }
+});
+
+const activityIconPath = computed(() => {
+  switch (renderer.value.family) {
+    case 'read': return 'M3 2.5h6l3 3v8H3z M9 2.5v3h3';
+    case 'write': return 'M3 13h2.5L13 5.5 10.5 3 3 10.5z M9.5 4l2.5 2.5';
+    case 'edit': return 'M3 13h2.5L13 5.5 10.5 3 3 10.5z';
+    case 'shell': return 'M2.5 3.5h11v9h-11z M4.5 6l2 2-2 2 M8 10h3';
+    case 'grep':
+    case 'glob': return 'M7 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M10 10l3 3';
+    case 'agent': return 'M8 2.5v2 M4 6h8v6H4z M2.5 8v2 M13.5 8v2 M6 8h.01 M10 8h.01';
+    case 'math': return 'M3 4h10 M8 2v4 M4 9h3 M10 8l3 3 M13 8l-3 3';
+    case 'web': return 'M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z M2.5 8h11 M8 2.5c1.5 1.5 2.2 3.3 2.2 5.5S9.5 12 8 13.5C6.5 12 5.8 10.2 5.8 8S6.5 4 8 2.5z';
+    default: return 'M8 2.5v2 M8 11.5v2 M2.5 8h2 M11.5 8h2 M4.1 4.1l1.4 1.4 M10.5 10.5l1.4 1.4 M11.9 4.1l-1.4 1.4 M5.5 10.5l-1.4 1.4 M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z';
   }
 });
 
@@ -117,6 +208,11 @@ const STATUS: Record<ToolCallState, { icon: string; label: string }> = {
 };
 const statusIcon = computed(() => STATUS[view.value.state].icon);
 const statusLabel = computed(() => STATUS[view.value.state].label);
+const displayedStatusLabel = computed(() =>
+  props.presentation === 'activity-row' && view.value.state === 'awaiting-input'
+    ? 'awaiting input'
+    : statusLabel.value
+);
 
 function fmtVal(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v);
@@ -138,27 +234,55 @@ async function copyResult() {
 <template>
   <div
     class="tool-pill"
-    :class="[`f-${renderer.family}`, `st-${view.state}`, { 'has-agent-color': agentColor }]"
-    :style="agentColor ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : undefined"
+    :class="[
+      `f-${renderer.family}`,
+      `st-${view.state}`,
+      { 'has-agent-color': agentColor, 'tool-pill--activity-row': presentation === 'activity-row' },
+    ]"
+    :style="agentColor && presentation === 'card' ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : undefined"
     data-testid="tool-call-pill"
     :data-tool-name="toolCall.function_name || undefined"
   >
     <button type="button" class="tool-pill__header" :aria-expanded="expanded" @click="toggle">
-      <span class="tool-pill__icon" :class="{ pulsing: !view.hasResult }" aria-hidden="true">{{
+      <svg
+        v-if="presentation === 'activity-row'"
+        class="tool-pill__activity-icon"
+        :class="{ pulsing: !view.hasResult }"
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path :d="activityIconPath" />
+      </svg>
+      <span v-else class="tool-pill__icon" :class="{ pulsing: !view.hasResult }" aria-hidden="true">{{
         renderer.icon
       }}</span>
       <span class="sr-only">{{ renderer.iconAlt }}</span>
-      <span class="tool-pill__title">{{ toolCall.function_name || 'tool' }}</span>
-      <span class="tool-pill__summary">{{ summary }}</span>
-      <span v-if="view.isBackground" class="tool-pill__chip">background</span>
-      <span class="tool-pill__status" :class="`st-${view.state}`">
-        <span class="sr-only">{{ statusLabel }}</span>
-        <span aria-hidden="true">{{ statusIcon }}</span>
+      <span v-if="presentation === 'activity-row'" class="tool-pill__activity-description">
+        {{ activityDescription }}
+        <span v-if="view.isBackground" class="tool-pill__activity-qualifier">Running in background</span>
+        <span v-else-if="view.state === 'awaiting-input'" class="tool-pill__activity-qualifier">Waiting for input</span>
       </span>
-      <span class="tool-pill__chevron" aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
+      <template v-else>
+        <span class="tool-pill__title">{{ toolCall.function_name || 'tool' }}</span>
+        <span class="tool-pill__summary">{{ summary }}</span>
+        <span v-if="view.isBackground" class="tool-pill__chip">background</span>
+      </template>
+      <span class="tool-pill__status" :class="`st-${view.state}`" :title="displayedStatusLabel">
+        <span class="sr-only">{{ displayedStatusLabel }}</span>
+        <span aria-hidden="true">{{ presentation === 'card' ? statusIcon : view.state === 'error' ? '!' : view.state === 'awaiting-input' ? '?' : view.hasResult ? '●' : '◌' }}</span>
+      </span>
+      <span v-if="presentation === 'card'" class="tool-pill__chevron" aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
     </button>
 
     <div v-if="expanded" class="tool-pill__body">
+      <div
+        v-if="presentation === 'activity-row'"
+        class="tool-pill__technical-name"
+        data-testid="tool-technical-name"
+      >
+        <code>{{ toolCall.function_name || 'tool' }}</code>
+      </div>
       <section
         v-if="renderer.family === 'agent'"
         class="agent-routing"
@@ -237,6 +361,17 @@ async function copyResult() {
   border-color: #d0d0d0;
 }
 
+.tool-pill--activity-row {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.tool-pill--activity-row:hover {
+  border-color: transparent;
+}
+
 .tool-pill__header {
   display: flex;
   align-items: center;
@@ -254,6 +389,56 @@ async function copyResult() {
 
 .tool-pill__header:hover {
   background: #f8f8f8;
+}
+
+.tool-pill--activity-row .tool-pill__header {
+  min-height: 30px;
+  gap: 8px;
+  padding: 3px 2px;
+  border-radius: 4px;
+  color: #68727d;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.tool-pill--activity-row .tool-pill__header:hover,
+.tool-pill--activity-row .tool-pill__header:focus-visible {
+  background: #f5f6f7;
+  color: #48525c;
+}
+
+.tool-pill--activity-row .tool-pill__header:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
+}
+
+.tool-pill__activity-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.15;
+}
+
+.tool-pill__activity-icon.pulsing {
+  animation: tool-pill-pulse 2s ease-in-out infinite;
+}
+
+.tool-pill__activity-description {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-pill__activity-qualifier {
+  margin-left: 7px;
+  color: #858d95;
+  font-size: 12px;
 }
 
 .tool-pill__icon {
@@ -274,6 +459,13 @@ async function copyResult() {
   50% {
     opacity: 0.6;
     transform: scale(0.95);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-pill__icon.pulsing,
+  .tool-pill__activity-icon.pulsing {
+    animation: none;
   }
 }
 
@@ -323,6 +515,28 @@ async function copyResult() {
   color: #b8860b;
 }
 
+.tool-pill--activity-row .tool-pill__status {
+  width: 14px;
+  color: #9aa1a8;
+  font-size: 8px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.tool-pill--activity-row .tool-pill__status.st-success {
+  color: #87918a;
+}
+
+.tool-pill--activity-row .tool-pill__status.st-error {
+  color: #b3261e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tool-pill--activity-row .tool-pill__status.st-awaiting-input {
+  color: #9a7210;
+}
+
 .tool-pill__chevron {
   color: #999;
   font-size: 10px;
@@ -335,6 +549,25 @@ async function copyResult() {
   padding: 8px 10px;
   border-top: 1px solid #e0e0e0;
   overflow-x: auto;
+}
+
+.tool-pill--activity-row .tool-pill__body {
+  margin: 5px 0 0 28px;
+  padding: 8px 10px;
+  border: 1px solid #e3e6e8;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.tool-pill__technical-name {
+  margin: 0 0 8px;
+  color: #7a838c;
+  font-size: 11px;
+}
+
+.tool-pill__technical-name code {
+  color: #515b65;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .agent-routing {

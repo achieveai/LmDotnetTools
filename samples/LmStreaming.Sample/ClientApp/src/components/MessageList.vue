@@ -385,7 +385,11 @@ watch(
                 <TextMessage v-else :message="row.item.content" :is-streaming="false" />
               </template>
 
-              <MetadataPill v-else-if="row.item.type === 'pill'" :items="row.item.items" />
+              <MetadataPill
+                v-else-if="row.item.type === 'pill'"
+                :items="row.item.items"
+                presentation="activity-row"
+              />
 
               <NotificationPill
                 v-else-if="row.item.type === 'notification'"
@@ -467,7 +471,11 @@ watch(
                 </template>
                 
                 <!-- Assistant message with pill -->
-                <MetadataPill v-else-if="row.item.type === 'pill'" :items="row.item.items" />
+                <MetadataPill
+                  v-else-if="row.item.type === 'pill'"
+                  :items="row.item.items"
+                  presentation="activity-row"
+                />
 
                 <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
                 <NotificationPill
