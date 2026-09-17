@@ -42,6 +42,7 @@ public sealed class FileBrowserTests
         await page.AssistantText().WaitForCountAtLeastAsync(1);
 
         // ClickAsync auto-waits for the button to become actionable (enabled once a conversation is active).
+        await page.OpenHeaderActionsMenuAsync();
         await page.GetByTestId("file-browser-button").ClickAsync();
 
         await page.GetByTestId("file-browser-modal")
@@ -146,6 +147,7 @@ public sealed class FileBrowserTests
         );
 
         // --- Few files: the panel renders without an internal scrollbar ---
+        await page.OpenHeaderActionsMenuAsync();
         await page.GetByTestId("file-browser-button").ClickAsync();
         await page.GetByTestId("file-browser-modal")
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -174,6 +176,7 @@ public sealed class FileBrowserTests
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
         fileCount = 200;
+        await page.OpenHeaderActionsMenuAsync();
         await page.GetByTestId("file-browser-button").ClickAsync();
         await page.GetByTestId("file-browser-modal")
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -254,6 +257,7 @@ public sealed class FileBrowserTests
             }
         );
 
+        await page.OpenHeaderActionsMenuAsync();
         await page.GetByTestId("file-browser-button").ClickAsync();
         await page.GetByTestId("file-browser-modal")
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });

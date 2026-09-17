@@ -31,7 +31,28 @@ public static class UiHelpers
         return page.GetByTestId("queue-button");
     }
 
-    /// <summary>Clear-conversation button in the header.</summary>
+    /// <summary>The header's compact More-actions trigger.</summary>
+    public static ILocator HeaderActionsMenuButton(this IPage page)
+    {
+        return page.GetByTestId("header-actions-menu-button");
+    }
+
+    /// <summary>The open header actions menu.</summary>
+    public static ILocator HeaderActionsMenu(this IPage page)
+    {
+        return page.GetByTestId("header-actions-menu");
+    }
+
+    /// <summary>Opens the header actions menu through its visible trigger.</summary>
+    public static async Task OpenHeaderActionsMenuAsync(this IPage page)
+    {
+        if (await page.HeaderActionsMenu().CountAsync() == 0)
+        {
+            await page.HeaderActionsMenuButton().ClickAsync();
+        }
+    }
+
+    /// <summary>Clear-conversation item in the open header actions menu.</summary>
     public static ILocator ClearButton(this IPage page)
     {
         return page.GetByTestId("clear-button");

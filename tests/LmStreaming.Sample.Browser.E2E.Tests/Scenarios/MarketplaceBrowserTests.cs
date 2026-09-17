@@ -37,6 +37,7 @@ public sealed class MarketplaceBrowserTests
         );
         var page = session.Page;
 
+        await page.OpenHeaderActionsMenuAsync();
         await page.MarketplaceButton().ClickAsync();
 
         await page.MarketplaceModal().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -70,6 +71,7 @@ public sealed class MarketplaceBrowserTests
         );
         var page = session.Page;
 
+        await page.OpenHeaderActionsMenuAsync();
         await page.MarketplaceButton().ClickAsync();
 
         await page.GetByTestId("marketplace-browser-offline")

@@ -97,11 +97,41 @@ public sealed class ChatClientLayoutRegressionTests
         // Pin the viewport so both regressions are deterministic across machines (see field docs).
         await page.SetViewportSizeAsync(ViewportWidth, ViewportHeight);
 
+        // Before a conversation exists, the menu remains keyboard-operable while conversation-bound
+        // actions are truthfully disabled. ArrowDown opens at the first enabled item; Escape restores
+        // focus to the trigger.
+        await page.HeaderActionsMenuButton().FocusAsync();
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToBeVisibleAsync();
+        await Assertions.Expect(page.MarketplaceButton()).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("file-browser-button")).ToBeDisabledAsync();
+        await Assertions.Expect(page.GetByTestId("share-button")).ToBeDisabledAsync();
+        await page.MarketplaceButton().PressAsync("ArrowDown");
+        await Assertions.Expect(page.GetByTestId("egress-auth-button")).ToBeFocusedAsync();
+        await page.GetByTestId("egress-auth-button").PressAsync("Escape");
+        await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
+
+        // Menu items are roving-focus targets rather than independent tab stops. Tab and Shift+Tab
+        // close the menu and continue from More to the natural controls on either side.
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await page.MarketplaceButton().PressAsync("Tab");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Textarea()).ToBeFocusedAsync();
+
+        await page.HeaderActionsMenuButton().FocusAsync();
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await page.MarketplaceButton().PressAsync("Shift+Tab");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
+        await Assertions.Expect(page.ModeSelectorButton()).ToBeFocusedAsync();
+
         // Open a fresh conversation, then run the scripted plan to completion so every pill and the
         // long final text are rendered before we measure layout.
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("run twelve calculations, then write a long summary");
         await page.WaitForStreamActiveAsync();
+        await page.OpenHeaderActionsMenuAsync();
+        await Assertions.Expect(page.ClearButton()).ToBeDisabledAsync();
+        await page.MarketplaceButton().PressAsync("Escape");
         await page.ToolCallPills().WaitForCountAtLeastAsync(ToolCallCount, timeoutMs: 30_000);
         await page.WaitForStreamIdleAsync(timeoutMs: 60_000);
 
@@ -150,21 +180,36 @@ public sealed class ChatClientLayoutRegressionTests
         // shell clip and re-introduce the whole-page scrollbar.
         await AssertPageDoesNotScrollAsync(page, "with every tool pill expanded (largest sr-only leak)");
 
-        // Assertion (c) — the header "Clear" button must sit fully within the viewport. Without the
-        // `flex-wrap` fix the control row does not reflow and "Clear" is pushed to right ≈ 1346px at a
-        // 1280px viewport (clipped off-screen). BoundingBox reports the true layout position regardless
-        // of any ancestor clip, so this catches the clip that IsVisible alone would not.
-        var clearBox = await page.ClearButton().BoundingBoxAsync();
-        clearBox.Should().NotBeNull("the Clear button must be laid out to assert its on-screen position");
-        (clearBox!.X + clearBox.Width)
-            .Should()
-            .BeLessThanOrEqualTo(
-                ViewportWidth,
-                "the header must wrap so the trailing 'Clear' button stays within the viewport, not clipped off the right edge"
-            );
-        (await page.ClearButton().IsVisibleAsync())
-            .Should()
-            .BeTrue("the Clear button must remain visible after the header wraps");
+        // The compact action menu must remain on-screen without introducing document overflow from
+        // phone width through the preview and desktop widths. Keyboard navigation skips no enabled
+        // action: ArrowDown opens on Marketplaces, End reaches Clear, and Escape restores the trigger.
+        foreach (var width in new[] { 390, 768, 946, ViewportWidth })
+        {
+            await page.SetViewportSizeAsync(width, ViewportHeight);
+            await page.HeaderActionsMenuButton().FocusAsync();
+            await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+            await Assertions.Expect(page.MarketplaceButton()).ToBeFocusedAsync();
+            await page.MarketplaceButton().PressAsync("End");
+            await Assertions.Expect(page.ClearButton()).ToBeFocusedAsync();
+
+            var menuBox = await page.HeaderActionsMenu().BoundingBoxAsync();
+            menuBox.Should().NotBeNull("the open More menu must have a measurable layout box");
+            menuBox!.X.Should().BeGreaterThanOrEqualTo(0, $"the More menu must stay inside a {width}px viewport");
+            (menuBox.X + menuBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(width, $"the More menu must stay inside a {width}px viewport");
+            await AssertPageDoesNotScrollAsync(page, $"with the More menu open at {width}px");
+
+            await page.ClearButton().PressAsync("Escape");
+            await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
+        }
+
+        // A real menu action closes the menu and preserves the existing modal behavior.
+        await page.OpenHeaderActionsMenuAsync();
+        await page.MarketplaceButton().ClickAsync();
+        await Assertions.Expect(page.MarketplaceModal()).ToBeVisibleAsync();
+        await page.MarketplaceModalClose().ClickAsync();
+        await Assertions.Expect(page.MarketplaceModal()).ToHaveCountAsync(0);
 
         await session.SaveSuccessScreenshotAsync("ChatClientLayout.message_list_scrolls_not_page_and_Clear_on_screen");
     }
