@@ -11,13 +11,13 @@ import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
-import SubAgentListPanel from './SubAgentListPanel.vue';
-import TodoBoardPanel from './TodoBoardPanel.vue';
+import ConversationInspector from './ConversationInspector.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
@@ -26,6 +26,7 @@ import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useTodoBoard } from '@/composables/useTodoBoard';
 import { useContextReport } from '@/composables/useContextReport';
 import { useManualCompaction } from '@/composables/useManualCompaction';
+import { useViewPreference, type ViewPreference } from '@/composables/useViewPreference';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -44,6 +45,7 @@ import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import FileBrowserModal from './FileBrowserModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
+import HeaderActionsMenu from './HeaderActionsMenu.vue';
 
 const {
   conversations,
@@ -51,6 +53,7 @@ const {
   currentConversation,
   isLoading: conversationsLoading,
   isLoadingMore: conversationsLoadingMore,
+  hasMoreConversations,
   sortMode: conversationSortMode,
   loadConversations,
   loadMoreConversations,
@@ -103,6 +106,14 @@ const {
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
 const modeSelectorRef = ref<InstanceType<typeof ModeSelector> | null>(null);
+const { viewPreference, selectViewPreference } = useViewPreference();
+const showDeveloperDiagnostics = computed(() => viewPreference.value === 'developer');
+
+function handleViewPreferenceChange(event: Event): void {
+  const preference = (event.target as HTMLInputElement).value as ViewPreference;
+  selectViewPreference(preference);
+  if (preference === 'consumer') closeInspector(false);
+}
 
 // Initialize chat with getters for the current mode and provider ids.
 const {
@@ -342,6 +353,32 @@ const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
+const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
+const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'files' | 'share' | null>(null);
+const inspectorOpen = ref(false);
+const inspectorSection = ref<'work' | 'agents'>('work');
+const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
+let inspectorInitialized = false;
+
+function openInspector(): void {
+  inspectorOpen.value = true;
+}
+
+function closeInspector(restoreFocus = true): void {
+  inspectorOpen.value = false;
+  if (restoreFocus) void nextTick(() => inspectorLauncherRef.value?.focus());
+}
+
+function handleInspectorAgentSelect(agentId: string, closeDrawer: boolean): void {
+  selectTab(agentId);
+  if (!closeDrawer) return;
+  closeInspector(false);
+  void nextTick(() => {
+    const tab = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="conversation-tab"]'))
+      .find((button) => button.dataset.tabId === agentId);
+    tab?.focus();
+  });
+}
 
 /**
  * Closes the egress-auth modal, resetting both the header-button flag and any
@@ -350,6 +387,36 @@ const shareModalOpen = ref(false);
 function handleCloseEgressModal(): void {
   egressAuthModalOpen.value = false;
   closeEgressDialog();
+  restoreHeaderActionsFocus('egress');
+}
+
+function closeMarketplaceModal(): void {
+  marketplaceModalOpen.value = false;
+  restoreHeaderActionsFocus('marketplace');
+}
+
+function closeFileBrowserModal(): void {
+  fileBrowserModalOpen.value = false;
+  restoreHeaderActionsFocus('files');
+}
+
+function closeShareModal(): void {
+  shareModalOpen.value = false;
+  restoreHeaderActionsFocus('share');
+}
+
+function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  modalOpenedFromHeaderActions.value = modal;
+  if (modal === 'marketplace') marketplaceModalOpen.value = true;
+  else if (modal === 'egress') egressAuthModalOpen.value = true;
+  else if (modal === 'files') fileBrowserModalOpen.value = true;
+  else shareModalOpen.value = true;
+}
+
+function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  if (modalOpenedFromHeaderActions.value !== modal) return;
+  modalOpenedFromHeaderActions.value = null;
+  void nextTick(() => headerActionsMenuRef.value?.focusTrigger());
 }
 const modeSwitchDisabled = computed(
   () =>
@@ -599,6 +666,21 @@ async function handleNewChat(): Promise<void> {
   setThreadId(null);
 }
 
+/** Starts an unreserved draft bound to the workspace whose sidebar folder launched it. */
+async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
+  await settleWorkspaceCatalog();
+  const workspace = workspaces.value.find((candidate) => candidate.id === workspaceId);
+  if (!workspace || !isWorkspaceSelectable(workspace)) {
+    return;
+  }
+
+  await handleNewChat();
+  selectWorkspace(workspaceId);
+  if (window.innerWidth <= 768) {
+    sidebarCollapsed.value = true;
+  }
+}
+
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
   notFoundThreadId.value = null;
@@ -809,9 +891,17 @@ function checkMobile(): void {
 
 onMounted(() => {
   checkMobile();
+  if (!inspectorInitialized) {
+    inspectorOpen.value = viewPreference.value === 'developer' && window.innerWidth > 1100;
+    inspectorInitialized = true;
+  }
   window.addEventListener('resize', checkMobile);
   // Poll the active conversation's sub-agents so tabs/launcher populate as children spawn.
   startSubAgentPolling();
+});
+
+watch(focusMode, (focused) => {
+  if (focused) closeInspector(false);
 });
 
 onBeforeUnmount(() => {
@@ -821,15 +911,87 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-layout" data-testid="chat-layout">
+    <header :class="['app-header', { 'focus-mode': focusMode }]" data-testid="app-header">
+      <div class="app-header-left">
+        <button
+          v-if="!focusMode"
+          class="sidebar-toggle"
+          data-testid="sidebar-toggle"
+          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :aria-expanded="!sidebarCollapsed"
+          @click="handleToggleCollapse"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M7.5 3v14" />
+          </svg>
+        </button>
+        <h1>{{ headerTitle }}</h1>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-center">
+        <fieldset class="view-preference" aria-label="Conversation view">
+          <legend class="sr-only">Conversation view</legend>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="consumer"
+              data-testid="view-preference-consumer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Consumer</span>
+          </label>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="developer"
+              data-testid="view-preference-developer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Developer</span>
+          </label>
+        </fieldset>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-right">
+        <button
+          v-show="!inspectorOpen"
+          ref="inspectorLauncherRef"
+          class="inspector-launcher"
+          data-testid="conversation-inspector-launcher"
+          aria-label="Open Work and agents"
+          title="Open Work and agents"
+          aria-controls="conversation-inspector"
+          :aria-expanded="inspectorOpen"
+          @click="openInspector"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M12.5 3v14" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="shell-body" data-testid="shell-body">
     <ConversationSidebar
       v-if="!focusMode"
+      class="hosted-sidebar"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
       :is-loading-more="conversationsLoadingMore"
+      :workspaces="workspaces"
+      :has-more="hasMoreConversations"
       :sort-mode="conversationSortMode"
       :is-collapsed="sidebarCollapsed"
       @new-chat="handleNewChat"
+      @new-chat-in-workspace="handleNewChatInWorkspace"
       @select-conversation="handleSelectConversation"
       @delete-conversation="handleDeleteConversation"
       @toggle-collapse="handleToggleCollapse"
@@ -839,14 +1001,6 @@ onBeforeUnmount(() => {
 
     <main class="chat-main">
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
-        <button
-          v-if="sidebarCollapsed && !focusMode"
-          class="menu-btn not-found-menu-btn"
-          @click="handleToggleCollapse"
-          title="Open sidebar"
-        >
-          =
-        </button>
         <div class="not-found-content">
           <h2>Conversation not found</h2>
           <p>The conversation "{{ notFoundThreadId }}" does not exist or is no longer available.</p>
@@ -854,97 +1008,25 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="chat-view">
-        <header class="chat-header">
-          <button
-            v-if="sidebarCollapsed && !focusMode"
-            class="menu-btn"
-            @click="handleToggleCollapse"
-            title="Open sidebar"
-          >
-            =
-          </button>
-          <h1>{{ headerTitle }}</h1>
-          <div v-if="!focusMode" class="header-actions">
-            <WorkspaceSelector
-              ref="workspaceSelectorRef"
-              :workspaces="workspaces"
-              :gateway="workspaceGateway"
-              :selected-workspace-id="selectedWorkspaceId"
-              :locked-workspace-id="lockedWorkspaceId"
-              :is-loading="workspacesLoading"
-              :disabled="workspaceSelectorDisabled"
-              @select-workspace="handleSelectWorkspace"
-              @create-workspace="handleCreateWorkspace"
-              @update-workspace="handleUpdateWorkspace"
+        <header v-if="!focusMode" class="chat-context-header">
+          <div class="header-context">
+            <HeaderActionsMenu
+              ref="headerActionsMenuRef"
+              :files-disabled="!currentThreadId"
+              :share-disabled="!currentThreadId"
+              :clear-disabled="chatLoading"
+              @open-marketplaces="openHeaderActionModal('marketplace')"
+              @open-egress="openHeaderActionModal('egress')"
+              @open-files="openHeaderActionModal('files')"
+              @open-share="openHeaderActionModal('share')"
+              @clear="clearMessages"
             />
-            <ProviderSelector
-              :providers="providers"
-              :selected-provider-id="selectedProviderId"
-              :is-loading="providersLoading"
-              :disabled="providerSelectorDisabled"
-              @select-provider="handleSelectProvider"
-            />
-            <ModeSelector
-              ref="modeSelectorRef"
-              :modes="modes"
-              :current-mode-id="currentModeId"
-              :tools="availableTools"
-              :is-loading="modesLoading"
-              :disabled="modeSwitchDisabled"
-              @select-mode="handleSelectMode"
-              @create-mode="handleCreateMode"
-              @update-mode="handleUpdateMode"
-              @delete-mode="handleDeleteMode"
-              @copy-mode="handleCopyMode"
-            />
-            <button
-              class="marketplace-btn"
-              data-testid="marketplace-button"
-              title="Browse marketplaces"
-              @click="marketplaceModalOpen = true"
-            >
-              Marketplaces
-            </button>
-            <button
-              class="egress-auth-btn"
-              data-testid="egress-auth-button"
-              title="Manage egress auth keys"
-              @click="egressAuthModalOpen = true"
-            >
-              Egress Auth
-            </button>
-            <button
-              class="file-browser-btn"
-              data-testid="file-browser-button"
-              title="Browse workspace files"
-              :disabled="!currentThreadId"
-              @click="fileBrowserModalOpen = true"
-            >
-              Files
-            </button>
-            <button
-              class="share-btn"
-              data-testid="share-button"
-              title="Share this conversation"
-              :disabled="!currentThreadId"
-              @click="shareModalOpen = true"
-            >
-              Share
-            </button>
-            <button
-              class="clear-btn"
-              data-testid="clear-button"
-              @click="clearMessages"
-              :disabled="chatLoading"
-            >
-              Clear
-            </button>
           </div>
         </header>
 
         <MarketplaceModal
           v-if="marketplaceModalOpen"
-          @close="marketplaceModalOpen = false"
+          @close="closeMarketplaceModal"
         />
 
         <EgressAuthModal
@@ -955,7 +1037,7 @@ onBeforeUnmount(() => {
         <FileBrowserModal
           v-if="fileBrowserModalOpen"
           :thread-id="currentThreadId"
-          @close="fileBrowserModalOpen = false"
+          @close="closeFileBrowserModal"
         />
 
         <!--
@@ -976,7 +1058,7 @@ onBeforeUnmount(() => {
           :visibility="currentConversation?.visibility"
           :can-share="currentConversation?.canShare"
           @changed="loadConversations"
-          @close="shareModalOpen = false"
+          @close="closeShareModal"
         />
 
         <ConversationTabs
@@ -989,7 +1071,11 @@ onBeforeUnmount(() => {
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
         <div v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view">
-          <MessageList :display-items="displayItems" :is-loading="chatLoading" />
+          <MessageList
+            :display-items="displayItems"
+            :is-loading="chatLoading"
+            :view-preference="viewPreference"
+          />
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
@@ -999,6 +1085,7 @@ onBeforeUnmount(() => {
 
           <ContextCostPanel
             v-if="subAgentParentThreadId"
+            v-show="showDeveloperDiagnostics"
             :rows="contextRows"
             :total="contextTotal"
             :status="contextStatus"
@@ -1009,6 +1096,7 @@ onBeforeUnmount(() => {
 
           <div
             v-if="cumulativeUsage.totalTokens > 0"
+            v-show="showDeveloperDiagnostics"
             class="usage-banner"
             data-testid="usage-banner"
             title="Total sums per-call input tokens, so the cached prompt prefix is re-counted every turn; it already includes usage spent inside sub-agents and workflow tasks. In = fresh (uncached) input this conversation."
@@ -1038,7 +1126,47 @@ onBeforeUnmount(() => {
             :streaming="chatLoading"
             @send="handleSend"
             @cancel="handleCancel"
-          />
+          >
+            <template v-if="!focusMode" #mode-control>
+              <ModeSelector
+                ref="modeSelectorRef"
+                :modes="modes"
+                :current-mode-id="currentModeId"
+                :tools="availableTools"
+                :is-loading="modesLoading"
+                :disabled="modeSwitchDisabled"
+                @select-mode="handleSelectMode"
+                @create-mode="handleCreateMode"
+                @update-mode="handleUpdateMode"
+                @delete-mode="handleDeleteMode"
+                @copy-mode="handleCopyMode"
+              />
+            </template>
+            <template v-if="currentThreadId === null && !focusMode" #project-control>
+              <WorkspaceSelector
+                ref="workspaceSelectorRef"
+                presentation="project"
+                :workspaces="workspaces"
+                :gateway="workspaceGateway"
+                :selected-workspace-id="selectedWorkspaceId"
+                :locked-workspace-id="null"
+                :is-loading="workspacesLoading"
+                :disabled="workspaceSelectorDisabled"
+                @select-workspace="handleSelectWorkspace"
+                @create-workspace="handleCreateWorkspace"
+                @update-workspace="handleUpdateWorkspace"
+              />
+            </template>
+            <template #context-control>
+              <ProviderSelector
+                :providers="providers"
+                :selected-provider-id="selectedProviderId"
+                :is-loading="providersLoading"
+                :disabled="providerSelectorDisabled"
+                @select-provider="handleSelectProvider"
+              />
+            </template>
+          </ChatInput>
         </div>
 
         <!-- SUB-AGENT view: mounted only while a sub-agent tab is active; its own error banner + input
@@ -1052,21 +1180,25 @@ onBeforeUnmount(() => {
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
           :submit-client-tool-result="submitToFocusedChild"
+          :view-preference="viewPreference"
           @send="handleSubAgentSend"
         />
       </div>
     </main>
 
-    <!-- Right-side WORK BOARD (#583). A SIBLING of the sub-agent panel, not nested with it: both stay
-         direct flex children of .chat-layout, so each keeps full column height and independent
-         collapse, and SubAgentListPanel needs no change at all. The board sits inboard of the
-         sub-agent panel so the sub-agent rail stays where it has always been, at the true right edge.
-
-         `v-if="hasTodoBoard"` is load-bearing, not an optimization: a conversation that never touched
-         the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
-         must render NOTHING here rather than an empty board eating the right edge. That is what keeps
-         two right-hand panels affordable. -->
-    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" @open-artifact="openArtifactPreview" />
+    <ConversationInspector
+      v-if="!focusMode"
+      :open="inspectorOpen"
+      :active-section="inspectorSection"
+      :tasks="todoTasks"
+      :has-work="hasTodoBoard"
+      :children="subAgentChildren"
+      :active-conversation-tab-id="activeTabId"
+      @close="closeInspector"
+      @select-section="inspectorSection = $event"
+      @open-artifact="openArtifactPreview"
+      @select-agent="handleInspectorAgentSelect"
+    />
 
     <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
          board's thread id: with no started conversation there is no workspace to preview against.
@@ -1086,22 +1218,83 @@ onBeforeUnmount(() => {
       :beside-sidebar="!sidebarCollapsed && !focusMode"
       @close="artifactPreview = null"
     />
-
-    <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
-         composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
-    <SubAgentListPanel
-      :children="subAgentChildren"
-      :active-tab-id="activeTabId"
-      @select="selectTab"
-    />
+    </div>
   </div>
 </template>
 
 <style scoped>
 .chat-layout {
+  position: relative;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+.app-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-width: 0;
+  padding: 12px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.app-header.focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-header-left,
+.app-header-center,
+.app-header-right {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.app-header-left {
+  gap: 10px;
+}
+
+.app-header-center {
+  justify-content: center;
+}
+
+.app-header-right {
+  justify-content: flex-end;
+}
+
+.app-header h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.hosted-sidebar :deep(.toggle-btn) {
+  display: none;
+}
+
+.shell-body > .hosted-sidebar.conversation-sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 0;
 }
 
 .chat-main {
@@ -1130,142 +1323,166 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-.chat-header {
+.chat-context-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #f8f9fa;
-  gap: 12px;
-  /* Let the control row drop below the title (and its own buttons wrap) instead of
-     overflowing the row — otherwise the trailing "Clear" button is clipped off the
-     right edge on typical laptop widths, since the selectors + buttons are wider
-     than the 900px content column. */
-  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.menu-btn {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 16px;
-  color: #666;
-  flex-shrink: 0;
-}
-
-.menu-btn:hover {
-  background: #e9ecef;
-}
-
-.chat-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  flex: 1;
-}
-
-.header-actions {
+.header-context {
   display: flex;
   align-items: center;
-  gap: 12px;
-  /* Wrap the controls (right-aligned) rather than clipping them when the row is tight. */
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.header-context {
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
-.marketplace-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
+.header-context :deep(.header-actions-menu) {
+  margin-left: auto;
+}
+
+.sidebar-toggle,
+.inspector-launcher {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #cbd1d8;
   border-radius: 6px;
-  font-size: 14px;
+  background: #fff;
+  color: #394553;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s, border-color 0.2s;
 }
 
-.marketplace-btn:hover {
-  background: #2057bd;
+.sidebar-toggle svg,
+.inspector-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
 }
 
-.egress-auth-btn {
-  padding: 8px 16px;
-  background: #6f42c1;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
+.sidebar-toggle:hover,
+.inspector-launcher:hover {
+  border-color: #aeb7c2;
+  background: #eef1f4;
+}
+
+.view-preference {
+  display: inline-flex;
+  height: 34px;
+  box-sizing: border-box;
+  align-items: center;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid #cbd1d8;
+  border-radius: 7px;
+  background: #eef1f4;
+}
+
+.view-preference label {
+  position: relative;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
-.file-browser-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
+.view-preference input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.view-preference span {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: #59636e;
   font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
+  line-height: 18px;
 }
 
-.egress-auth-btn:hover {
-  background: #5a34a0;
+.view-preference input:checked + span {
+  color: #25313d;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
 }
 
-.file-browser-btn:hover:not(:disabled) {
-  background: #2057bd;
+.view-preference input:focus-visible + span {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
 }
 
-.file-browser-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.share-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
+.inspector-launcher {
+  position: static;
 }
 
-.share-btn:hover:not(:disabled) {
-  background: #2057bd;
+.sidebar-toggle:focus-visible,
+.inspector-launcher:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
 }
 
-.share-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+@media (max-width: 520px) {
+  .app-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 10px 12px;
+  }
+
+  .app-header-left {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .app-header-right {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .app-header-center {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+  }
+
+  .app-header h1 {
+    font-size: 18px;
+  }
+
+  .app-header.focus-mode {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.clear-btn {
-  padding: 8px 16px;
-  background: #dc3545;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.clear-btn:hover:not(:disabled) {
-  background: #c82333;
-}
-
-.clear-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+@media (max-width: 768px) {
+  .shell-body > .hosted-sidebar.conversation-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+  }
 }
 
 .error-banner {
@@ -1288,12 +1505,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   position: relative;
-}
-
-.not-found-menu-btn {
-  position: absolute;
-  top: 16px;
-  left: 16px;
 }
 
 .not-found-content {

@@ -88,19 +88,75 @@ public sealed class ChatClientLayoutRegressionTests
             );
         }
 
-        var responder = role.Turn(t => t.TextLen(6_000)).Build();
+        var prose = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "A production answer should use the available transcript width while keeping each prose line comfortable to read.",
+                160
+            )
+        );
+        var wideCodeLine = $"const payload = '{new string('x', 320)}';";
+        var tableHeaders = string.Join(" | ", Enumerable.Range(1, 10).Select(i => $"Column {i} heading"));
+        var tableDivider = string.Join(" | ", Enumerable.Repeat("---", 10));
+        var tableValues = string.Join(" | ", Enumerable.Range(1, 10).Select(i => $"value-{i}-{new string('y', 24)}"));
+        var finalAnswer =
+            $"{prose}\n\n```text\n{wideCodeLine}\n```\n\n| {tableHeaders} |\n| {tableDivider} |\n| {tableValues} |";
+        var responder = role.Turn(t => t.Text(finalAnswer)).Build();
 
         await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Pin the viewport so both regressions are deterministic across machines (see field docs).
         await page.SetViewportSizeAsync(ViewportWidth, ViewportHeight);
+
+        // Before a conversation exists, the menu remains keyboard-operable while conversation-bound
+        // actions are truthfully disabled. ArrowDown opens at the first enabled item; Escape restores
+        // focus to the trigger.
+        await page.HeaderActionsMenuButton().FocusAsync();
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToBeVisibleAsync();
+        await Assertions.Expect(page.MarketplaceButton()).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("file-browser-button")).ToBeDisabledAsync();
+        await Assertions.Expect(page.GetByTestId("share-button")).ToBeDisabledAsync();
+        await page.MarketplaceButton().PressAsync("ArrowDown");
+        await Assertions.Expect(page.GetByTestId("egress-auth-button")).ToBeFocusedAsync();
+        await page.GetByTestId("egress-auth-button").PressAsync("Escape");
+        await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
+
+        // Menu items are roving-focus targets rather than independent tab stops. Wait for the
+        // blank-chat project picker to become interactive so the assertion cannot race its loading
+        // state: Tab closes More and enters the composer's real DOM order, then continues to text.
+        var projectPicker = page.GetByTestId("workspace-selector-button");
+        await Assertions.Expect(projectPicker).ToBeEnabledAsync();
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await page.MarketplaceButton().PressAsync("Tab");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
+        await Assertions.Expect(projectPicker).ToBeFocusedAsync();
+        await projectPicker.PressAsync("Tab");
+        await Assertions.Expect(page.Textarea()).ToBeFocusedAsync();
+
+        await page.HeaderActionsMenuButton().FocusAsync();
+        await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+        await page.MarketplaceButton().PressAsync("Shift+Tab");
+        await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
+
+        // Mode now lives at the bottom-left of the root composer. Exercise the real menu option,
+        // rather than checking only its DOM bounds: an overflow-clipped upward menu can report as
+        // visible while still being impossible for a user to click.
+        await page.ModeSelectorButton().FocusAsync();
+        await page.ModeSelectorButton().PressAsync("Enter");
+        await page.ModeOption("default").ClickAsync();
+        await Assertions.Expect(page.ModeOption("default")).ToHaveCountAsync(0);
 
         // Open a fresh conversation, then run the scripted plan to completion so every pill and the
         // long final text are rendered before we measure layout.
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("run twelve calculations, then write a long summary");
         await page.WaitForStreamActiveAsync();
+        await page.OpenHeaderActionsMenuAsync();
+        await Assertions.Expect(page.ClearButton()).ToBeDisabledAsync();
+        await page.MarketplaceButton().PressAsync("Escape");
         await page.ToolCallPills().WaitForCountAtLeastAsync(ToolCallCount, timeoutMs: 30_000);
         await page.WaitForStreamIdleAsync(timeoutMs: 60_000);
 
@@ -149,23 +205,330 @@ public sealed class ChatClientLayoutRegressionTests
         // shell clip and re-introduce the whole-page scrollbar.
         await AssertPageDoesNotScrollAsync(page, "with every tool pill expanded (largest sr-only leak)");
 
-        // Assertion (c) — the header "Clear" button must sit fully within the viewport. Without the
-        // `flex-wrap` fix the control row does not reflow and "Clear" is pushed to right ≈ 1346px at a
-        // 1280px viewport (clipped off-screen). BoundingBox reports the true layout position regardless
-        // of any ancestor clip, so this catches the clip that IsVisible alone would not.
-        var clearBox = await page.ClearButton().BoundingBoxAsync();
-        clearBox.Should().NotBeNull("the Clear button must be laid out to assert its on-screen position");
-        (clearBox!.X + clearBox.Width)
-            .Should()
-            .BeLessThanOrEqualTo(
-                ViewportWidth,
-                "the header must wrap so the trailing 'Clear' button stays within the viewport, not clipped off the right edge"
+        // More belongs to the centered header's context row, while the inspector toggle belongs to
+        // the app chrome at the top-right. Prove both positions in a real renderer from phone width
+        // through the user's 1597px desktop viewport. Opening the inspector replaces its launcher
+        // with an equal-size close control at the same screen coordinates, so the affordance does
+        // not jump as the panel changes the available transcript width.
+        var geometryCases = new (int Width, bool SidebarCollapsed)[]
+        {
+            (1597, false),
+            (ViewportWidth, false),
+            (1261, false),
+            (1261, true),
+            (1259, false),
+            (1101, false),
+            (946, false),
+            (768, true),
+            (520, true),
+            (390, true),
+        };
+        foreach (var (width, sidebarCollapsed) in geometryCases)
+        {
+            await page.SetViewportSizeAsync(width, ViewportHeight);
+            var sidebar = page.Locator(".conversation-sidebar");
+            if (width <= 768)
+            {
+                await Assertions
+                    .Expect(sidebar)
+                    .ToHaveAttributeAsync(
+                        "class",
+                        new System.Text.RegularExpressions.Regex("(?:^|\\s)collapsed(?:\\s|$)")
+                    );
+                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", "0px");
+            }
+            else
+            {
+                var sidebarIsCollapsed = await sidebar.EvaluateAsync<bool>("el => el.classList.contains('collapsed')");
+                if (sidebarIsCollapsed != sidebarCollapsed)
+                {
+                    var sidebarToggle = page.GetByTestId("sidebar-toggle");
+                    await sidebarToggle.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
+                }
+                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", sidebarCollapsed ? "0px" : "280px");
+            }
+            var geometryLabel = $"{width}px with sidebar {(sidebarCollapsed ? "collapsed" : "expanded")}";
+
+            var headerBox = await page.GetByTestId("app-header").BoundingBoxAsync();
+            var moreBox = await page.HeaderActionsMenuButton().BoundingBoxAsync();
+            var launcherBox = await page.ConversationInspectorLauncher().BoundingBoxAsync();
+            var sidebarToggleBox = await page.GetByTestId("sidebar-toggle").BoundingBoxAsync();
+            var titleBox = await page.Locator(".app-header h1").BoundingBoxAsync();
+            var viewPreference = page.Locator(".view-preference");
+            var viewPreferenceBox = await viewPreference.BoundingBoxAsync();
+            headerBox.Should().NotBeNull("the full-width app header must have a measurable layout box");
+            moreBox.Should().NotBeNull("More must remain visible in the header context row");
+            launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible in the app header");
+            sidebarToggleBox.Should().NotBeNull("the app header must expose the sidebar control");
+            titleBox.Should().NotBeNull("the conversation title must have a measurable layout box");
+            viewPreferenceBox.Should().NotBeNull("the view switch must have a measurable layout box");
+
+            headerBox!
+                .X.Should()
+                .BeApproximately(0, 1, $"the app header must start at the viewport edge at {geometryLabel}");
+            headerBox
+                .Width.Should()
+                .BeApproximately(width, 1, $"the app header must span the viewport at {geometryLabel}");
+            headerBox
+                .Y.Should()
+                .BeApproximately(0, 1, $"the app header must stay at the viewport top at {geometryLabel}");
+            (launcherBox!.X + launcherBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    headerBox.X + headerBox.Width,
+                    $"the inspector control must stay in the header at {geometryLabel}"
+                );
+            AssertRectanglesDoNotOverlap(sidebarToggleBox!, titleBox!, $"sidebar control and title at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(launcherBox, titleBox!, $"launcher and title at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(
+                launcherBox,
+                viewPreferenceBox!,
+                $"launcher and view switch at {geometryLabel}"
             );
-        (await page.ClearButton().IsVisibleAsync())
-            .Should()
-            .BeTrue("the Clear button must remain visible after the header wraps");
+            AssertRectanglesDoNotOverlap(
+                sidebarToggleBox!,
+                viewPreferenceBox!,
+                $"sidebar control and view switch at {geometryLabel}"
+            );
+
+            var shellBodyBox = await page.GetByTestId("shell-body").BoundingBoxAsync();
+            var mainBox = await page.Locator(".chat-main").BoundingBoxAsync();
+            shellBodyBox.Should().NotBeNull("the body below the app header must be measurable");
+            mainBox.Should().NotBeNull("the transcript panel must be measurable");
+            Math.Abs(shellBodyBox!.Y - (headerBox.Y + headerBox.Height))
+                .Should()
+                .BeLessThanOrEqualTo(1, $"the shell body must begin below the header at {geometryLabel}");
+            if (sidebarCollapsed)
+            {
+                Math.Abs(mainBox!.X - shellBodyBox.X)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        1,
+                        $"a collapsed sidebar must release its horizontal space at {geometryLabel}"
+                    );
+            }
+
+            if (width is 1597 or ViewportWidth or 768 or 390)
+            {
+                var messageList = page.MessageList();
+                var messageListBox = await messageList.BoundingBoxAsync();
+                var messageInnerWidth = await messageList.EvaluateAsync<double>(
+                    "el => el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight)"
+                );
+                var messagePaddingRight = await messageList.EvaluateAsync<double>(
+                    "el => parseFloat(getComputedStyle(el).paddingRight)"
+                );
+                var assistantWrapperBox = await page.Locator(".assistant-message-wrapper").Last.BoundingBoxAsync();
+                var assistantContentBox = await page.Locator(".assistant-content").Last.BoundingBoxAsync();
+                var userWrapperBox = await page.Locator(".user-message-wrapper").Last.BoundingBoxAsync();
+                var textRow = page.Locator(".text-bubble-row").Last;
+                var textRowBox = await textRow.BoundingBoxAsync();
+                var assistantText = page.AssistantText().Last;
+                var responseContentWidth = await assistantText.EvaluateAsync<double>(
+                    "el => el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight)"
+                );
+                var proseBlock = assistantText.Locator("p").First;
+                var proseBox = await proseBlock.BoundingBoxAsync();
+                var renderedTable = assistantText.Locator("table").First;
+                var renderedColumns = renderedTable.Locator("thead th");
+                var tableOverflow = await renderedTable.EvaluateAsync<double>("el => el.scrollWidth - el.clientWidth");
+
+                messageListBox.Should().NotBeNull("the message list must have a measurable content box");
+                assistantWrapperBox.Should().NotBeNull("the assistant turn must have a measurable wrapper");
+                assistantContentBox.Should().NotBeNull("the assistant turn must have a measurable content column");
+                userWrapperBox.Should().NotBeNull("the human turn must have a measurable wrapper");
+                textRowBox.Should().NotBeNull("the assistant prose row must have a measurable box");
+                proseBox.Should().NotBeNull("the assistant answer must render a measurable prose block");
+                (await renderedColumns.CountAsync())
+                    .Should()
+                    .Be(10, $"the wide markdown table must render all ten actual columns at {geometryLabel}");
+
+                assistantWrapperBox!
+                    .Width.Should()
+                    .BeGreaterThanOrEqualTo(
+                        (float)(messageInnerWidth * 0.95),
+                        $"assistant turns should use nearly all transcript width at {geometryLabel}"
+                    );
+                textRowBox!
+                    .Width.Should()
+                    .BeGreaterThanOrEqualTo(
+                        assistantContentBox!.Width * 0.95f,
+                        $"the assistant text row should carry the full turn width at {geometryLabel}"
+                    );
+                proseBox!
+                    .Width.Should()
+                    .BeGreaterThanOrEqualTo(
+                        (float)(responseContentWidth * 0.99),
+                        $"assistant prose should use the full response-content width at {geometryLabel}"
+                    );
+                proseBox
+                    .Width.Should()
+                    .BeLessThanOrEqualTo(
+                        (float)(responseContentWidth + 1),
+                        $"assistant prose must not overflow the response-content box at {geometryLabel}"
+                    );
+                tableOverflow
+                    .Should()
+                    .BeGreaterThan(
+                        0,
+                        $"the ten rendered table columns should scroll inside the response instead of widening it at {geometryLabel}"
+                    );
+
+                var messageInnerRight = messageListBox!.X + messageListBox.Width - messagePaddingRight;
+                Math.Abs(userWrapperBox!.X + userWrapperBox.Width - messageInnerRight)
+                    .Should()
+                    .BeLessThanOrEqualTo(1, $"the human turn must stay right-aligned at {geometryLabel}");
+                var userMaxRatio = width <= 600 ? 0.92 : 0.70;
+                userWrapperBox
+                    .Width.Should()
+                    .BeLessThanOrEqualTo(
+                        (float)((messageInnerWidth * userMaxRatio) + 1),
+                        $"the human turn must keep its compact treatment at {geometryLabel}"
+                    );
+
+                foreach (
+                    var (overflowingContent, contentName) in new[]
+                    {
+                        (page.AssistantText().Last.Locator("pre"), "code block"),
+                        (page.AssistantText().Last.Locator("table"), "table"),
+                    }
+                )
+                {
+                    var contentBox = await overflowingContent.BoundingBoxAsync();
+                    contentBox.Should().NotBeNull($"the scripted answer must render its {contentName}");
+                    contentBox!
+                        .X.Should()
+                        .BeGreaterThanOrEqualTo(textRowBox.X, $"the {contentName} must stay inside the prose row");
+                    (contentBox.X + contentBox.Width)
+                        .Should()
+                        .BeLessThanOrEqualTo(
+                            textRowBox.X + textRowBox.Width + 1,
+                            $"the {contentName} must not widen the assistant turn at {geometryLabel}"
+                        );
+                    var horizontalOverflow = await overflowingContent.EvaluateAsync<double>(
+                        "el => el.scrollWidth - el.clientWidth"
+                    );
+                    horizontalOverflow
+                        .Should()
+                        .BeGreaterThan(
+                            0,
+                            $"the deliberately wide {contentName} must scroll locally at {geometryLabel}"
+                        );
+                }
+            }
+
+            await page.ConversationInspectorLauncher().ClickAsync();
+            await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
+            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeHiddenAsync();
+            var closeButton = page.ConversationInspector()
+                .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" });
+            var inspectorBox = await page.ConversationInspector().BoundingBoxAsync();
+            var closeBox = await closeButton.BoundingBoxAsync();
+            var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();
+            inspectorBox.Should().NotBeNull("the open inspector must have a measurable panel");
+            closeBox.Should().NotBeNull("the open inspector must expose a measurable close control");
+            inspectorTabsBox.Should().NotBeNull("the inspector tabs must have a measurable layout box");
+            if (width > 1100)
+            {
+                Math.Abs(inspectorBox!.Y - (headerBox.Y + headerBox.Height))
+                    .Should()
+                    .BeLessThanOrEqualTo(1, $"the docked inspector must begin below the app header at {geometryLabel}");
+                (inspectorBox.Y + inspectorBox.Height)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        ViewportHeight + 1,
+                        $"the docked inspector must end inside the viewport at {geometryLabel}"
+                    );
+            }
+            else
+            {
+                inspectorBox!
+                    .X.Should()
+                    .BeGreaterThanOrEqualTo(0, $"the drawer must stay in the viewport at {geometryLabel}");
+                inspectorBox
+                    .Y.Should()
+                    .BeApproximately(0, 1, $"the narrow drawer must cover from the viewport top at {geometryLabel}");
+                (inspectorBox.X + inspectorBox.Width)
+                    .Should()
+                    .BeLessThanOrEqualTo(width + 1, $"the drawer must stay in the viewport at {geometryLabel}");
+            }
+            Math.Abs(closeBox!.X - launcherBox.X)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"opening the inspector must preserve the top-right control x at {geometryLabel}"
+                );
+            Math.Abs(closeBox.Y - launcherBox.Y)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"opening the inspector must preserve the top-right control y at {geometryLabel}"
+                );
+            Math.Abs(closeBox.Width - launcherBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal width at {geometryLabel}");
+            Math.Abs(closeBox.Height - launcherBox.Height)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    1,
+                    $"open and closed inspector controls must have equal height at {geometryLabel}"
+                );
+            if (width <= 1100)
+            {
+                (closeBox.Y + closeBox.Height)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        inspectorTabsBox!.Y,
+                        $"the narrow drawer close control must not overlap its tabs at {geometryLabel}"
+                    );
+            }
+            await page.Keyboard.PressAsync("Escape");
+            await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
+            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();
+
+            await page.HeaderActionsMenuButton().FocusAsync();
+            await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
+            await Assertions.Expect(page.MarketplaceButton()).ToBeFocusedAsync();
+            await page.MarketplaceButton().PressAsync("End");
+            await Assertions.Expect(page.ClearButton()).ToBeFocusedAsync();
+
+            var menuBox = await page.HeaderActionsMenu().BoundingBoxAsync();
+            menuBox.Should().NotBeNull("the open More menu must have a measurable layout box");
+            menuBox!.X.Should().BeGreaterThanOrEqualTo(0, $"the More menu must stay inside {geometryLabel}");
+            (menuBox.X + menuBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(width, $"the More menu must stay inside {geometryLabel}");
+            await AssertPageDoesNotScrollAsync(page, $"with the More menu open at {geometryLabel}");
+
+            await page.ClearButton().PressAsync("Escape");
+            await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
+        }
+
+        // A real menu action closes the menu and preserves the existing modal behavior.
+        await page.OpenHeaderActionsMenuAsync();
+        await page.MarketplaceButton().ClickAsync();
+        await Assertions.Expect(page.MarketplaceModal()).ToBeVisibleAsync();
+        await page.MarketplaceModalClose().ClickAsync();
+        await Assertions.Expect(page.MarketplaceModal()).ToHaveCountAsync(0);
 
         await session.SaveSuccessScreenshotAsync("ChatClientLayout.message_list_scrolls_not_page_and_Clear_on_screen");
+    }
+
+    private static void AssertRectanglesDoNotOverlap(
+        LocatorBoundingBoxResult first,
+        LocatorBoundingBoxResult second,
+        string because
+    )
+    {
+        var overlapWidth = Math.Max(
+            0,
+            Math.Min(first.X + first.Width, second.X + second.Width) - Math.Max(first.X, second.X)
+        );
+        var overlapHeight = Math.Max(
+            0,
+            Math.Min(first.Y + first.Height, second.Y + second.Height) - Math.Max(first.Y, second.Y)
+        );
+        (overlapWidth * overlapHeight).Should().Be(0, $"{because} must not overlap in two dimensions");
     }
 
     /// <summary>

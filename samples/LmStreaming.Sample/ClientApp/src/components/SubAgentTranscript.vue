@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { provide } from 'vue';
 import type { DisplayItem, ToolCallResultMessage } from '@/types';
+import type { ViewPreference } from '@/composables/useViewPreference';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import MessageList from './MessageList.vue';
@@ -28,6 +29,7 @@ const props = defineProps<{
    * connection — the root does not know a descendant's toolCallId and would reply `not_found`.
    */
   submitClientToolResult: ClientToolSubmitFn;
+  viewPreference: ViewPreference;
 }>();
 
 const emit = defineEmits<{ send: [text: string] }>();
@@ -47,7 +49,12 @@ provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
       {{ error }}
     </div>
     <div class="subagent-view__transcript" data-testid="subagent-transcript">
-      <MessageList :key="activeAgentId" :display-items="displayItems" :is-loading="isStreaming" />
+      <MessageList
+        :key="activeAgentId"
+        :display-items="displayItems"
+        :is-loading="isStreaming"
+        :view-preference="viewPreference"
+      />
     </div>
     <!-- Inside this subtree on purpose: it inherits the two provides shadowed above, so a
          descendant's question resolves against the CHILD's results and answers over the CHILD's

@@ -99,6 +99,7 @@ public sealed class MarketplaceSubAgentTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("ask the orleans reviewer to look at my grain");
         // The synchronous Agent call blocks until the sub-agent returns, so allow extra time.

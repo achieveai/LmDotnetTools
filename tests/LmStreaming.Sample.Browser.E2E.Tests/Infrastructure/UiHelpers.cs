@@ -31,7 +31,28 @@ public static class UiHelpers
         return page.GetByTestId("queue-button");
     }
 
-    /// <summary>Clear-conversation button in the header.</summary>
+    /// <summary>The header's compact More-actions trigger.</summary>
+    public static ILocator HeaderActionsMenuButton(this IPage page)
+    {
+        return page.GetByTestId("header-actions-menu-button");
+    }
+
+    /// <summary>The open header actions menu.</summary>
+    public static ILocator HeaderActionsMenu(this IPage page)
+    {
+        return page.GetByTestId("header-actions-menu");
+    }
+
+    /// <summary>Opens the header actions menu through its visible trigger.</summary>
+    public static async Task OpenHeaderActionsMenuAsync(this IPage page)
+    {
+        if (await page.HeaderActionsMenu().CountAsync() == 0)
+        {
+            await page.HeaderActionsMenuButton().ClickAsync();
+        }
+    }
+
+    /// <summary>Clear-conversation item in the open header actions menu.</summary>
     public static ILocator ClearButton(this IPage page)
     {
         return page.GetByTestId("clear-button");
@@ -40,7 +61,7 @@ public static class UiHelpers
     /// <summary>New-chat button in the sidebar.</summary>
     public static ILocator NewChatButton(this IPage page)
     {
-        return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "+ New Chat" });
+        return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "New Chat", Exact = true });
     }
 
     /// <summary>All conversation list items in the sidebar (one per started conversation).</summary>
@@ -106,6 +127,54 @@ public static class UiHelpers
         return page.GetByTestId("assistant-text");
     }
 
+    /// <summary>The persisted Consumer transcript preference in the chat header.</summary>
+    public static ILocator ConsumerViewPreference(this IPage page)
+    {
+        return page.GetByTestId("view-preference-consumer");
+    }
+
+    /// <summary>The persisted Developer transcript preference in the chat header.</summary>
+    public static ILocator DeveloperViewPreference(this IPage page)
+    {
+        return page.GetByTestId("view-preference-developer");
+    }
+
+    /// <summary>One Consumer activity disclosure per assistant turn/run.</summary>
+    public static ILocator TurnActivity(this IPage page)
+    {
+        return page.GetByTestId("turn-activity");
+    }
+
+    /// <summary>The accessible toggle that reveals a Consumer activity row's original details.</summary>
+    public static ILocator TurnActivityToggle(this IPage page)
+    {
+        return page.GetByTestId("turn-activity-toggle");
+    }
+
+    /// <summary>Selects the detailed Developer view through the real persisted header control.</summary>
+    public static Task SelectDeveloperViewAsync(this IPage page)
+    {
+        return page.Locator("label").Filter(new() { Has = page.DeveloperViewPreference() }).ClickAsync();
+    }
+
+    /// <summary>Selects the quiet Consumer view through the real persisted header control.</summary>
+    public static Task SelectConsumerViewAsync(this IPage page)
+    {
+        return page.Locator("label").Filter(new() { Has = page.ConsumerViewPreference() }).ClickAsync();
+    }
+
+    /// <summary>The header launcher for the unified Work and agents inspector.</summary>
+    public static ILocator ConversationInspectorLauncher(this IPage page)
+    {
+        return page.GetByTestId("conversation-inspector-launcher");
+    }
+
+    /// <summary>The unified Work and agents inspector shell, present only while open.</summary>
+    public static ILocator ConversationInspector(this IPage page)
+    {
+        return page.GetByTestId("conversation-inspector");
+    }
+
     /// <summary>All metadata pills (one per group that produced thinking/tool-call events).</summary>
     public static ILocator MetadataPills(this IPage page)
     {
@@ -142,7 +211,7 @@ public static class UiHelpers
             );
     }
 
-    /// <summary>Mode selector button in the header.</summary>
+    /// <summary>Mode selector button in the root composer.</summary>
     public static ILocator ModeSelectorButton(this IPage page)
     {
         return page.GetByTestId("mode-selector-button");
@@ -154,7 +223,7 @@ public static class UiHelpers
         return page.GetByTestId($"mode-option-{modeId}");
     }
 
-    /// <summary>Provider selector button in the header (a dropdown when idle; disabled while streaming).</summary>
+    /// <summary>Provider selector button in the root composer (a dropdown when idle; disabled while streaming).</summary>
     public static ILocator ProviderSelectorButton(this IPage page)
     {
         return page.GetByTestId("provider-selector-button");

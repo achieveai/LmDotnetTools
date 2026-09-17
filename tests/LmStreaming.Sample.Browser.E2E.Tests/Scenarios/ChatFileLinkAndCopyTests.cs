@@ -108,11 +108,35 @@ public sealed class ChatFileLinkAndCopyTests
 
         var bubble = page.AssistantText().Last;
 
-        // --- Copy: hover reveals the button; the clipboard gets the model's markdown byte for byte. ---
+        // --- Copy: hover and keyboard focus reveal it; touch capability alone does not. ---
         var row = bubble.Locator("xpath=..");
+        var copyButton = row.GetByTestId("copy-message-button");
+        await page.GetByTestId("chat-input-textarea").ClickAsync();
+        await page.EvaluateAsync(
+            "() => document.activeElement instanceof HTMLElement && document.activeElement.blur()"
+        );
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("opacity", "0");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("pointer-events", "none");
         await row.HoverAsync();
-        await row.GetByTestId("copy-message-button").ClickAsync();
-        await Assertions.Expect(row.GetByTestId("copy-message-button")).ToContainTextAsync("Copied");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("opacity", "1");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("pointer-events", "auto");
+        await page.GetByTestId("chat-input-textarea").HoverAsync();
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("opacity", "0");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("pointer-events", "none");
+
+        var cdp = await session.Context.NewCDPSessionAsync(page);
+        await cdp.SendAsync(
+            "Emulation.setTouchEmulationEnabled",
+            new Dictionary<string, object> { ["enabled"] = true, ["maxTouchPoints"] = 1 }
+        );
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("opacity", "0");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("pointer-events", "none");
+        await copyButton.FocusAsync();
+        await Assertions.Expect(copyButton).ToBeFocusedAsync();
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("opacity", "1");
+        await Assertions.Expect(copyButton).ToHaveCSSAsync("pointer-events", "auto");
+        await copyButton.ClickAsync();
+        await Assertions.Expect(copyButton).ToContainTextAsync("Copied");
         var clipboard = await page.EvaluateAsync<string>("() => navigator.clipboard.readText()");
         // The Windows system clipboard stores CRLF line endings; the content is otherwise byte-identical.
         clipboard.ReplaceLineEndings("\n").Should().Be(Answer);

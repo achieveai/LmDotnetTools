@@ -72,6 +72,7 @@ public sealed class WorkflowMockProviderTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("run a minimal workflow");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);

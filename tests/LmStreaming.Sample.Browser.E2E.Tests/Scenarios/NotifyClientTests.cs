@@ -41,6 +41,7 @@ public sealed class NotifyClientTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("go do the long thing");
         await page.WaitForStreamActiveAsync();

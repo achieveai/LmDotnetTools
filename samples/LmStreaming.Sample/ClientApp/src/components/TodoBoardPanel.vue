@@ -32,6 +32,7 @@ import {
  */
 const props = defineProps<{
   tasks: TodoTask[];
+  embedded?: boolean;
 }>();
 
 /**
@@ -132,8 +133,9 @@ watch(activeTaskId, () => {
 </script>
 
 <template>
-  <aside class="todo-panel-container" data-testid="todo-panel-container">
+  <aside :class="['todo-panel-container', { embedded: props.embedded }]" data-testid="todo-panel-container">
     <button
+      v-if="!props.embedded"
       class="todo-toggle"
       data-testid="todo-panel-toggle"
       :title="expanded ? 'Collapse the work board' : 'Expand the work board'"
@@ -143,7 +145,7 @@ watch(activeTaskId, () => {
       <span class="todo-toggle-caret">{{ expanded ? '▸' : '◂' }}</span>
     </button>
 
-    <div v-if="expanded" class="todo-panel" data-testid="todo-panel">
+    <div v-if="props.embedded || expanded" class="todo-panel" data-testid="todo-panel">
       <div class="todo-summary">
         <div class="todo-tile" data-testid="todo-tile-completed">
           <span class="todo-tile-count done">{{ counts.done }}</span>
@@ -266,6 +268,18 @@ watch(activeTaskId, () => {
   border-left: 1px solid #e0e0e0;
   background: #f8f9fa;
   min-width: 48px;
+}
+
+.todo-panel-container.embedded {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  border-left: 0;
+}
+
+.todo-panel-container.embedded .todo-panel {
+  width: 100%;
+  min-width: 0;
 }
 
 .todo-toggle {

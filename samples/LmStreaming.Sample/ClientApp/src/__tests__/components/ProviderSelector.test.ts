@@ -110,6 +110,47 @@ describe('ProviderSelector disabled state', () => {
   });
 });
 
+describe('ProviderSelector disclosure accessibility', () => {
+  it('connects the trigger to a labelled popup and reports its expanded state', async () => {
+    const wrapper = mount(ProviderSelector, {
+      props: { providers, selectedProviderId: 'openai' },
+    });
+    const trigger = wrapper.get('[data-testid="provider-selector-button"]');
+
+    expect(trigger.attributes('aria-label')).toBe('Select provider, current: OpenAI');
+    expect(trigger.attributes('aria-expanded')).toBe('false');
+    expect(trigger.attributes('aria-controls')).toBe('provider-selector-menu');
+
+    await trigger.trigger('click');
+
+    expect(trigger.attributes('aria-expanded')).toBe('true');
+    const popup = wrapper.get('[data-testid="provider-selector-menu"]');
+    expect(popup.attributes('id')).toBe('provider-selector-menu');
+    expect(popup.attributes('role')).toBe('region');
+    expect(popup.attributes('aria-labelledby')).toBe('provider-selector-button');
+    expect(popup.findAll('button')).toHaveLength(providers.length);
+  });
+
+  it('closes on Escape and restores focus when focus was inside the popup', async () => {
+    const wrapper = mount(ProviderSelector, {
+      attachTo: document.body,
+      props: { providers, selectedProviderId: 'openai' },
+    });
+    const trigger = wrapper.get<HTMLButtonElement>('[data-testid="provider-selector-button"]');
+    await trigger.trigger('click');
+    const option = wrapper.get<HTMLButtonElement>('[data-testid="provider-option-anthropic"]');
+    option.element.focus();
+    expect(document.activeElement).toBe(option.element);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="provider-selector-menu"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(trigger.element);
+    wrapper.unmount();
+  });
+});
+
 describe('ProviderSelector dropdown scroll', () => {
   // Extract the `.dropdown-menu { ... }` rule body from the scoped stylesheet source.
   const menuRule = (() => {
@@ -126,5 +167,10 @@ describe('ProviderSelector dropdown scroll', () => {
 
   it('enables vertical scrolling for overflowing content', () => {
     expect(menuRule).toMatch(/overflow-y:\s*auto\s*;/);
+  });
+
+  it('anchors the popup above the trigger so the bottom composer does not clip it', () => {
+    expect(menuRule).toMatch(/bottom:\s*calc\(100%\s*\+\s*4px\)\s*;/);
+    expect(menuRule).toMatch(/top:\s*auto\s*;/);
   });
 });

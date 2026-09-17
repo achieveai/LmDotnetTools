@@ -26,6 +26,33 @@ const modes = [
 ];
 
 describe('ModeSelector', () => {
+  it('labels the compact trigger with the current mode and retains its icon', () => {
+    const wrapper = mount(ModeSelector, {
+      props: { modes, currentModeId: 'default', tools: [] },
+    });
+
+    const button = wrapper.get('[data-testid="mode-selector-button"]');
+    expect(button.text()).toContain('General Assistant');
+    expect(button.text()).not.toContain('Mode:');
+    expect(button.attributes('aria-label')).toBe('Select mode, current: General Assistant');
+    expect(button.attributes('title')).toBe('Select mode, current: General Assistant');
+    expect(button.attributes('aria-expanded')).toBe('false');
+    expect(button.attributes('aria-controls')).toBeTruthy();
+    expect(button.get('svg').attributes('aria-hidden')).toBe('true');
+  });
+
+  it('opens the controlled menu upward and reports its expanded state', async () => {
+    const wrapper = mount(ModeSelector, {
+      props: { modes, currentModeId: 'default', tools: [] },
+    });
+
+    const button = wrapper.get('[data-testid="mode-selector-button"]');
+    await button.trigger('click');
+    const menu = wrapper.get('.dropdown-menu');
+    expect(button.attributes('aria-expanded')).toBe('true');
+    expect(menu.attributes('id')).toBe(button.attributes('aria-controls'));
+  });
+
   it('disables selector button when disabled is true', () => {
     const wrapper = mount(ModeSelector, {
       props: {

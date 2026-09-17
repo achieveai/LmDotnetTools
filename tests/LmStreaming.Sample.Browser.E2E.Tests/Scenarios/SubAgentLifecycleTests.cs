@@ -57,6 +57,7 @@ public sealed class SubAgentLifecycleTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("research AI papers for me");
         // Sub-agent flow is slower than plain streams — the synchronous Agent call blocks until

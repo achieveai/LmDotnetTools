@@ -124,6 +124,7 @@ public sealed class SandboxGitCloneInstructionChainTests
                 fixedPort: port
             );
             var page = session.Page;
+            await page.SelectDeveloperViewAsync();
 
             // Workspace Agent mode is what folds the gateway's sandbox tools into the agent — select it
             // before the first send (the thread locks its mode on send).

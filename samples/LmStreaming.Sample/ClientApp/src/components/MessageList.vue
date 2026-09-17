@@ -5,6 +5,7 @@ import TextMessage from './TextMessage.vue';
 import CopyMessageButton from './CopyMessageButton.vue';
 import MetadataPill from './MetadataPill.vue';
 import NotificationPill from './NotificationPill.vue';
+import TurnActivity from './TurnActivity.vue';
 import PendingMessage from './PendingMessage.vue';
 import AssistantTypingIndicator from './AssistantTypingIndicator.vue';
 import { logger } from '@/utils/logger';
@@ -14,10 +15,13 @@ const log = logger.forComponent('MessageList');
 log.info('MessageList component created/loaded');
 // #endregion
 
-const props = defineProps<{
+// Direct consumers keep the established detailed timeline. ChatLayout and SubAgentTranscript always
+// pass the saved preference explicitly, so this default is only a backward-compatible fallback.
+const props = withDefaults(defineProps<{
   displayItems: readonly DisplayItem[];
   isLoading?: boolean;
-}>();
+  viewPreference?: 'consumer' | 'developer';
+}>(), { viewPreference: 'developer' });
 
 const messageListRef = ref<HTMLDivElement | null>(null);
 const activeConversationMinHeight = ref(0);
@@ -58,6 +62,78 @@ interface MessageGroup {
   role: 'user' | 'assistant';
   items: DisplayItem[];
   status?: 'pending' | 'active' | 'completed';
+}
+
+type RenderRow =
+  | { kind: 'item'; id: string; item: DisplayItem }
+  | { kind: 'activity'; id: string; items: DisplayItem[]; runId: string | null };
+
+const COLLAPSIBLE_NOTIFICATION_KINDS = new Set([
+  'agent-message',
+  'compaction',
+  'context-discovery',
+  'subagent-completion',
+  'todo-digest',
+  'todo-nudge',
+]);
+
+function isActivityItem(item: DisplayItem): boolean {
+  if (item.type === 'pill') return true;
+  if (item.type === 'assistant-message') return item.content.isThinking === true;
+  if (item.type === 'notification' && item.notification.agentMessageType === 'DeliveryFailure') {
+    return false;
+  }
+  return item.type === 'notification' && COLLAPSIBLE_NOTIFICATION_KINDS.has(item.notification.notifyKind);
+}
+
+function itemRunId(item: DisplayItem): string | null {
+  return item.type === 'user-message' ? null : item.runId ?? null;
+}
+
+function renderRows(group: MessageGroup): RenderRow[] {
+  if (props.viewPreference === 'developer' || group.role === 'user') {
+    return group.items.map((item) => ({ kind: 'item', id: item.id, item }));
+  }
+
+  const activityByRun = new Map<string, DisplayItem[]>();
+  for (const item of group.items) {
+    if (!isActivityItem(item)) continue;
+    const key = itemRunId(item) || 'legacy';
+    const items = activityByRun.get(key) ?? [];
+    items.push(item);
+    activityByRun.set(key, items);
+  }
+
+  const emitted = new Set<string>();
+  const rows: RenderRow[] = [];
+  for (const item of group.items) {
+    if (!isActivityItem(item)) {
+      rows.push({ kind: 'item', id: item.id, item });
+      continue;
+    }
+    const key = itemRunId(item) || 'legacy';
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+    rows.push({ kind: 'activity', id: `activity-${group.id}-${key}`, items: activityByRun.get(key)!, runId: itemRunId(item) });
+  }
+  return rows;
+}
+
+const activeRunId = computed<string | null>(() => {
+  for (let i = props.displayItems.length - 1; i >= 0; i--) {
+    const item = props.displayItems[i];
+    if (item.type === 'user-message') return null;
+    if (item.type === 'notification' && !item.runId) continue;
+    return item.runId ?? null;
+  }
+  return null;
+});
+
+function activityIsLoading(row: Extract<RenderRow, { kind: 'activity' }>, group: MessageGroup): boolean {
+  if (!props.isLoading) return false;
+  if (row.runId !== null) return row.runId === activeRunId.value;
+  const lastGroup = messageGroups.value[messageGroups.value.length - 1];
+  return lastGroup?.role === 'assistant' && lastGroup.id === group.id;
 }
 
 const messageGroups = computed<MessageGroup[]>(() => {
@@ -192,6 +268,31 @@ function smoothScrollTo(element: HTMLElement, to: number, duration: number) {
   requestAnimationFrame(animate);
 }
 
+watch(
+  () => props.viewPreference,
+  async () => {
+    const list = messageListRef.value;
+    if (!list) return;
+    const listTop = list.getBoundingClientRect().top;
+    const anchors = Array.from(list.querySelectorAll<HTMLElement>('[data-view-anchor]'));
+    const anchor = anchors.find((element) => element.getBoundingClientRect().bottom > listTop);
+    if (!anchor) return;
+    const id = anchor.dataset.viewAnchor;
+    const offset = anchor.getBoundingClientRect().top - listTop;
+
+    await nextTick();
+    const restored = id
+      ? Array.from(list.querySelectorAll<HTMLElement>('[data-view-anchor]')).find(
+          (element) => element.dataset.viewAnchor === id
+        ) ?? null
+      : null;
+    if (restored) {
+      list.scrollTop += restored.getBoundingClientRect().top - list.getBoundingClientRect().top - offset;
+    }
+  },
+  { flush: 'sync' }
+);
+
 // Watch for new user messages and scroll to them at the top
 watch(
   () => props.displayItems,
@@ -246,7 +347,10 @@ watch(
     <template v-for="group in splitGroups.history" :key="group.id">
       <div 
         :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
+        role="group"
+        :aria-label="group.role === 'user' ? 'Your message' : 'Assistant message'"
         :data-message-id="group.role === 'user' ? group.id : undefined"
+        :data-view-anchor="group.role === 'user' ? group.id : undefined"
         :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
       >
         <div 
@@ -256,53 +360,62 @@ watch(
           <div 
             :class="group.role === 'user' ? 'user-avatar' : 'assistant-avatar'"
             class="group-avatar"
+            aria-hidden="true"
+            data-testid="message-role-mark"
           >
-            {{ group.role === 'user' ? '&#x1F464;' : '&#x1F916;' }}
+            {{ group.role === 'user' ? 'You' : 'AI' }}
           </div>
           
           <!-- Content area for all items in the group -->
-          <div :class="group.role === 'user' ? 'user-content' : 'assistant-content'">
-            <template v-for="item in group.items" :key="item.id">
-              <!-- User message (pending or active) -->
-              <template v-if="item.type === 'user-message'">
-                <PendingMessage v-if="item.status === 'pending'" :content="item.content" />
-                <TextMessage v-else :message="item.content" :is-streaming="false" />
+          <div
+            :class="[
+              group.role === 'user' ? 'user-content' : 'assistant-content',
+              { 'user-content-surface': group.role === 'user' && group.status !== 'pending' },
+            ]"
+          >
+            <template v-for="row in renderRows(group)" :key="row.id">
+              <TurnActivity
+                v-if="row.kind === 'activity'"
+                :items="row.items"
+                :is-loading="activityIsLoading(row, group)"
+              />
+              <template v-else>
+              <template v-if="row.item.type === 'user-message'">
+                <PendingMessage v-if="row.item.status === 'pending'" :content="row.item.content" />
+                <TextMessage v-else :message="row.item.content" :is-streaming="false" />
               </template>
-              
-              <!-- Assistant message with pill -->
-              <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
 
-              <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
-              <NotificationPill
-                v-else-if="item.type === 'notification'"
-                :notification="item.notification"
+              <MetadataPill
+                v-else-if="row.item.type === 'pill'"
+                :items="row.item.items"
+                presentation="activity-row"
               />
 
-              <!-- Assistant text message -->
-              <!-- The copy button is a SIBLING of the bubble, not a child: `assistant-text` is read by
-                   innerText in the browser E2E suite, and a "Copy" label inside it would change every
-                   answer's text. -->
-              <div v-else-if="item.type === 'assistant-message'" class="text-bubble-row">
+              <NotificationPill
+                v-else-if="row.item.type === 'notification'"
+                :notification="row.item.notification"
+              />
+
+              <div
+                v-else-if="row.item.type === 'assistant-message'"
+                class="text-bubble-row"
+                :data-view-anchor="!isThinkingBubble(row.item) ? row.item.id : undefined"
+              >
                 <div class="text-bubble" data-testid="assistant-text">
-                  <!-- `is-complete` is bound here too, not just in the active section below: an
-                       assistant-only transcript (SubAgentTranscript) has no user group, so every
-                       group lands in `history` and the growing child bubble renders through THIS
-                       branch. It cannot mis-fire for the main chat -- an assistant item only reaches
-                       `history` when a later user message exists, and `streamingItemId`'s scan stops
-                       at that user message before it could ever reach the older bubble. -->
                   <TextMessage
-                    :message="item.content"
+                    :message="row.item.content"
                     :is-streaming="false"
-                    :is-complete="item.id !== streamingItemId"
-                    :workspace-links="!isThinkingBubble(item)"
+                    :is-complete="row.item.id !== streamingItemId"
+                    :workspace-links="!isThinkingBubble(row.item)"
                   />
                 </div>
                 <CopyMessageButton
-                  v-if="offersCopy(item)"
+                  v-if="offersCopy(row.item)"
                   class="bubble-copy"
-                  :text="item.content.text"
+                  :text="row.item.content.text"
                 />
               </div>
+              </template>
             </template>
           </div>
         </div>
@@ -318,7 +431,10 @@ watch(
       <template v-for="group in splitGroups.current" :key="group.id">
         <div
           :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
+          role="group"
+          :aria-label="group.role === 'user' ? 'Your message' : 'Assistant message'"
           :data-message-id="group.role === 'user' ? group.id : undefined"
+          :data-view-anchor="group.role === 'user' ? group.id : undefined"
           :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
         >
           <div 
@@ -328,44 +444,66 @@ watch(
             <div 
               :class="group.role === 'user' ? 'user-avatar' : 'assistant-avatar'"
               class="group-avatar"
+              aria-hidden="true"
+              data-testid="message-role-mark"
             >
-              {{ group.role === 'user' ? '&#x1F464;' : '&#x1F916;' }}
+              {{ group.role === 'user' ? 'You' : 'AI' }}
             </div>
             
             <!-- Content area for all items in the group -->
-            <div :class="group.role === 'user' ? 'user-content' : 'assistant-content'">
-              <template v-for="item in group.items" :key="item.id">
+            <div
+              :class="[
+                group.role === 'user' ? 'user-content' : 'assistant-content',
+                { 'user-content-surface': group.role === 'user' && group.status !== 'pending' },
+              ]"
+            >
+              <template v-for="row in renderRows(group)" :key="row.id">
+                <TurnActivity
+                  v-if="row.kind === 'activity'"
+                  :items="row.items"
+                  :is-loading="activityIsLoading(row, group)"
+                />
+                <template v-else>
                 <!-- User message (pending or active) -->
-                <template v-if="item.type === 'user-message'">
-                  <PendingMessage v-if="item.status === 'pending'" :content="item.content" />
-                  <TextMessage v-else :message="item.content" :is-streaming="false" />
+                <template v-if="row.item.type === 'user-message'">
+                  <PendingMessage v-if="row.item.status === 'pending'" :content="row.item.content" />
+                  <TextMessage v-else :message="row.item.content" :is-streaming="false" />
                 </template>
                 
                 <!-- Assistant message with pill -->
-                <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
+                <MetadataPill
+                  v-else-if="row.item.type === 'pill'"
+                  :items="row.item.items"
+                  presentation="activity-row"
+                />
 
                 <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
                 <NotificationPill
-                  v-else-if="item.type === 'notification'"
-                  :notification="item.notification"
+                  v-else-if="row.item.type === 'notification'"
+                  :notification="row.item.notification"
                 />
 
                 <!-- Assistant text message -->
-                <div v-else-if="item.type === 'assistant-message'" class="text-bubble-row">
+                <div
+                  v-else-if="row.item.type === 'assistant-message'"
+                  class="text-bubble-row"
+                  :data-view-anchor="!isThinkingBubble(row.item) ? row.item.id : undefined"
+                >
                   <div class="text-bubble" data-testid="assistant-text">
                     <TextMessage
-                      :message="item.content"
+                      :message="row.item.content"
                       :is-streaming="false"
-                      :is-complete="item.id !== streamingItemId"
-                      :workspace-links="!isThinkingBubble(item)"
+                      :is-complete="row.item.id !== streamingItemId"
+                      :workspace-links="!isThinkingBubble(row.item)"
                     />
                   </div>
                   <CopyMessageButton
-                    v-if="offersCopy(item)"
+                    v-if="offersCopy(row.item)"
                     class="bubble-copy"
-                    :text="item.content.text"
+                    :text="row.item.content.text"
                   />
                 </div>
+                </template>
               </template>
             </div>
           </div>
@@ -383,8 +521,10 @@ watch(
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 12px;
+  min-width: 0;
+  overflow-x: hidden;
+  padding: 20px clamp(12px, 3vw, 28px);
+  gap: 20px;
 }
 
 .empty-state {
@@ -399,16 +539,18 @@ watch(
 .user-message-wrapper,
 .assistant-message-wrapper {
   display: flex;
-  max-width: 85%;
+  min-width: 0;
 }
 
 .user-message-wrapper {
   margin-left: auto;
+  max-width: 70%;
 }
 
 .assistant-message-wrapper {
   margin-right: auto;
   width: 100%;
+  max-width: 100%;
 }
 
 .user-message-container,
@@ -426,22 +568,26 @@ watch(
 
 .user-avatar,
 .assistant-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 
 .user-avatar {
-  background: #1976d2;
+  background: #e9eef5;
+  color: #405064;
 }
 
 .assistant-avatar {
-  background: #6c757d;
+  background: #eef0f2;
+  color: #4c5966;
 }
 
 .user-content,
@@ -450,7 +596,19 @@ watch(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+
+.user-content-surface {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #f4f7fa;
+}
+
+.user-content :deep(.pending-message) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .group-avatar {
@@ -460,42 +618,58 @@ watch(
 }
 
 .text-bubble {
-  background: #ffffff;
-  border: 1px solid #e0e0e0;
-  border-radius: 16px 16px 16px 4px;
-  padding: 12px 16px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 36px 8px 0;
+  color: #202832;
+  overflow-wrap: anywhere;
+}
+
+.assistant-content :deep(.text-message),
+.assistant-content :deep(.markdown-content) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The shared markdown rule keeps tables block-level and locally scrollable. Assistant tables fill
+   the response row until their contents need that overflow behavior on a narrow screen. */
+.assistant-content :deep(.markdown-content table) {
+  width: 100%;
 }
 
 /* The row is exactly the bubble's box (a block wrapper around one block child), so the button can be
    pinned to the bubble's corner while staying outside `assistant-text`. */
 .text-bubble-row {
   position: relative;
+  width: 100%;
+  max-width: none;
   min-width: 0;
 }
 
 /* Copy button: pinned to the bubble's top-right corner, revealed on hover or keyboard focus. It stays
    in the DOM (opacity, not v-show) so Tab can reach it and :focus-within can reveal it. */
-.bubble-copy {
+:deep(.bubble-copy) {
   position: absolute;
   top: 6px;
-  right: 8px;
+  right: 0;
   opacity: 0;
   /* While invisible it must not swallow clicks or text selection on the bubble's first line. */
   pointer-events: none;
   transition: opacity 0.12s ease-in-out;
 }
 
-.text-bubble-row:hover .bubble-copy,
-.text-bubble-row:focus-within .bubble-copy {
+.text-bubble-row:hover :deep(.bubble-copy),
+.text-bubble-row:focus-within :deep(.bubble-copy) {
   opacity: 1;
   pointer-events: auto;
 }
 
-/* Touch screens have no hover: keep it visible there. */
-@media (hover: none) {
-  .bubble-copy {
-    opacity: 1;
-    pointer-events: auto;
+@media (max-width: 600px) {
+  .user-message-wrapper {
+    max-width: 92%;
   }
 }
 
@@ -504,7 +678,7 @@ watch(
 .active-conversation-spacer {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
   /* justify-content: flex-end; Removed to allow content to start at top */
 }
 </style>

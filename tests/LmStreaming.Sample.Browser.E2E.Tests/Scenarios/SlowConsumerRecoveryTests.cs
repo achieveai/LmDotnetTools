@@ -113,6 +113,7 @@ public sealed class SlowConsumerRecoveryTests
             }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Park the primary stream's pump. Sub-agent streams (threadId `subagent-*`) are untouched so a
         // gate armed here can never interfere with anything but the conversation under test.
@@ -296,6 +297,7 @@ public sealed class SlowConsumerRecoveryTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Park the focus view's pump only; the parent conversation streams normally throughout.
         var pump = new PumpGate(threadId => threadId.StartsWith("subagent-", StringComparison.Ordinal));

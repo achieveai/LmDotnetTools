@@ -60,12 +60,12 @@ async (page) => {
     const normal = {
       sidebar: await present('.conversation-sidebar'),
       headerActions: await visible('.header-actions'),
-      marketplaceBtn: await present('[data-testid="marketplace-button"]'),
+      moreBtn: await present('[data-testid="header-actions-menu-button"]'),
       providerBtn: await present('[data-testid="provider-selector-button"]'),
     };
     record('no focus keeps the ConversationSidebar', normal.sidebar, normal);
     record('no focus keeps the header-actions cluster', normal.headerActions, normal);
-    record('no focus keeps the marketplace + provider controls', normal.marketplaceBtn && normal.providerBtn, normal);
+    record('no focus keeps the More + provider controls', normal.moreBtn && normal.providerBtn, normal);
   } catch (e) {
     record('exception', false, String((e && e.stack) || e));
   }

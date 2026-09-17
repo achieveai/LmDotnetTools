@@ -66,10 +66,16 @@ const props = defineProps<{
    * component unreachable there, badge and all. See `ChatLayout.workspaceSelectorDisabled`.
    */
   disabled?: boolean;
+  /**
+   * Visual placement of the selector. The default preserves the compact workspace control used by
+   * existing callers; `project` is the wide disclosure shown directly above the chat composer.
+   */
+  presentation?: 'default' | 'project';
 }>();
 
 /** Any reason not to act on the workspace list right now — transient or terminal. */
 const interactionBlocked = computed(() => props.disabled === true || props.isLoading === true);
+const isProjectPresentation = computed(() => props.presentation === 'project');
 
 const emit = defineEmits<{
   'select-workspace': [workspaceId: string];
@@ -671,31 +677,57 @@ watch(
 </script>
 
 <template>
-  <div class="workspace-selector" ref="dropdownRef" data-testid="workspace-selector">
+  <div
+    class="workspace-selector"
+    :class="{ 'workspace-selector-project': isProjectPresentation }"
+    ref="dropdownRef"
+    data-testid="workspace-selector"
+  >
     <span
       v-if="isLocked"
       class="workspace-badge"
+      :class="{ 'workspace-badge-project': isProjectPresentation }"
       data-testid="workspace-locked-badge"
       :title="`This conversation is locked to ${lockedWorkspace?.name ?? lockedWorkspaceId}`"
     >
-      <span class="badge-label">Workspace:</span>
+      <span class="badge-label">{{ isProjectPresentation ? 'Project:' : 'Workspace:' }}</span>
       <span class="badge-name">{{ lockedWorkspace?.name ?? lockedWorkspaceId }}</span>
       <span class="badge-lock" aria-hidden="true">🔒</span>
     </span>
     <template v-else>
       <button
         class="selector-btn"
-        :class="{ open: dropdownOpen }"
+        :class="{ open: dropdownOpen, 'selector-btn-project': isProjectPresentation }"
         data-testid="workspace-selector-button"
         @click="toggleDropdown"
         :disabled="interactionBlocked"
+        :aria-expanded="dropdownOpen"
+        aria-controls="workspace-selector-menu"
       >
-        <span class="workspace-label">Workspace:</span>
-        <span class="workspace-name">{{ selectedWorkspace?.name ?? 'Loading...' }}</span>
-        <span class="dropdown-arrow">{{ dropdownOpen ? '▲' : '▼' }}</span>
+        <svg
+          v-if="isProjectPresentation"
+          class="project-folder-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          aria-hidden="true"
+        >
+          <path d="M3.75 6.75A1.75 1.75 0 0 1 5.5 5h4l2 2h7A1.75 1.75 0 0 1 20.25 8.75v8.75a1.75 1.75 0 0 1-1.75 1.75h-13a1.75 1.75 0 0 1-1.75-1.75V6.75Z" />
+        </svg>
+        <span v-if="!isProjectPresentation" class="workspace-label">Workspace:</span>
+        <span class="workspace-name">
+          {{ selectedWorkspace?.name ?? (isProjectPresentation ? 'Choose project' : 'Loading...') }}
+        </span>
+        <span class="dropdown-arrow" aria-hidden="true">{{ dropdownOpen ? '▲' : '▼' }}</span>
       </button>
 
-      <div v-if="dropdownOpen" class="dropdown-menu">
+      <div
+        v-if="dropdownOpen"
+        id="workspace-selector-menu"
+        class="dropdown-menu"
+        :class="{ 'dropdown-menu-project': isProjectPresentation }"
+      >
         <div v-if="gateway" class="section-header" data-testid="workspace-gateway-status">
           {{ gateway.canonicalBaseUrl }} · {{ gateway.appId }}
           <span v-if="!gateway.available"> · unavailable</span>
@@ -1047,6 +1079,11 @@ watch(
   position: relative;
 }
 
+.workspace-selector-project {
+  width: 100%;
+  min-width: 0;
+}
+
 .selector-btn {
   display: flex;
   align-items: center;
@@ -1074,17 +1111,47 @@ watch(
   cursor: not-allowed;
 }
 
+.selector-btn-project {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border-color: #e2e5e9;
+  border-bottom-color: transparent;
+  border-radius: 8px 8px 0 0;
+  background: #f5f6f7;
+  color: #5f6368;
+  text-align: left;
+}
+
+.selector-btn-project:hover:not(:disabled) {
+  background: #eef0f2;
+}
+
+.project-folder-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
 .workspace-label {
   color: #666;
 }
 
 .workspace-name {
+  flex: 1;
+  min-width: 0;
   color: #333;
   font-weight: 500;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.selector-btn-project .workspace-name {
+  max-width: none;
+  color: inherit;
+  font-weight: 400;
 }
 
 .dropdown-arrow {
@@ -1106,6 +1173,21 @@ watch(
   z-index: 100;
   overflow: hidden;
   padding: 4px 0;
+}
+
+.dropdown-menu-project {
+  top: auto;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  margin-top: 0;
+  margin-bottom: 6px;
+  min-width: 0;
+  /* The composer sits above the viewport edge, so viewport height alone overestimates the room
+     above this trigger. Half the viewport (capped for desktop) keeps the panel on-screen at phone
+     height while its own scroll region keeps the full create/edit forms reachable. */
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
 }
 
 .menu-section {
@@ -1379,13 +1461,29 @@ watch(
   color: #444;
 }
 
+.workspace-badge-project {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
 .badge-label {
   color: #666;
 }
 
 .badge-name {
+  min-width: 0;
   color: #333;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-badge-project .badge-name {
+  flex: 1;
 }
 
 .badge-lock {

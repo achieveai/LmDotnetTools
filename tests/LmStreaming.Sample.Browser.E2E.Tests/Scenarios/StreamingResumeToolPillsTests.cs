@@ -86,6 +86,7 @@ public sealed class StreamingResumeToolPillsTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Reproduce the real-provider wire: strip runId from server→client tool-call frames (the
         // scripted providers stamp it; real Anthropic does not). run_assignment keeps its runId so the

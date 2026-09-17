@@ -74,26 +74,32 @@ public sealed class AskUserQuestionTests
         // conversation is NOT finished (a deferred call is not a completed run from the client's view).
         await page.WaitForStreamIdleAsync();
 
-        var pill = page.ToolCallPillByName("AskUserQuestion");
-        await pill.WaitForAsync();
-
-        // Rich content (QuestionRich) only renders once the pill is expanded.
-        await pill.ClickAsync();
+        // Consumer folds the tool timeline, but the blocking form stays docked beside the composer
+        // without requiring the user to discover or expand the activity disclosure.
+        await Assertions.Expect(page.ConsumerViewPreference()).ToBeCheckedAsync();
+        await Assertions.Expect(page.ToolCallPills()).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("question-dock")).ToBeVisibleAsync();
         await page.QuestionForm().WaitForAsync();
+        await Assertions.Expect(page.TurnActivityToggle()).ToContainTextAsync("Waiting for your answer");
 
         await page.QuestionOption("blue").ClickAsync();
         await page.QuestionSubmitButton().ClickAsync();
-
-        // The resolved, read-only view only appears once the server's ToolCallResultMessage
-        // (is_deferred: false) round-trips back over the WebSocket.
-        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
-        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
 
         // The park truly resumed the SAME multi-turn run: the next scripted turn streamed in. Wait on
         // the text itself (not stream-idle first) — there is a real gap between the answer's ack and
         // the resumed run re-raising the stop button, during which the stream briefly reads as idle.
         await page.AssistantText().WaitForTextContainsAsync("Great, blue it is", timeoutMs: 20_000);
         await page.WaitForStreamIdleAsync();
+        await Assertions.Expect(page.GetByTestId("question-dock")).ToHaveCountAsync(0);
+
+        // Developer keeps the historical resolved-tool diagnostics asserted by this journey. The
+        // timeline pill starts collapsed, so expand it explicitly before checking its resolved body.
+        await page.SelectDeveloperViewAsync();
+        var pill = page.ToolCallPillByName("AskUserQuestion");
+        await pill.WaitForAsync();
+        await pill.ClickAsync();
+        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
+        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
 
         responder
             .RemainingTurns["parent"]
@@ -113,6 +119,7 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("what should I pick?");
         await page.WaitForStreamIdleAsync();
@@ -153,6 +160,7 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("what should I pick?");

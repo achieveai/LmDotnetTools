@@ -88,6 +88,139 @@ describe('ToolPill — expand a11y', () => {
   });
 });
 
+describe('ToolPill — activity-row presentation', () => {
+  it('keeps card presentation as the default', () => {
+    const tc: ToolCall = {
+      tool_call_id: 'card-default',
+      function_name: 'calculate',
+      function_args: '{"a":6,"operation":"add","b":2}',
+    };
+    const w = mountPill(tc, resultMsg('card-default', '8'));
+
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).not.toContain(
+      'tool-pill--activity-row'
+    );
+    expect(w.find('.tool-pill__activity-description').exists()).toBe(false);
+  });
+
+  it('renders a compact accessible disclosure while keeping raw details inspectable', async () => {
+    const rawArgs = '{"a":6,"operation":"add","b":2}';
+    const rawResult = '8\n';
+    const tc: ToolCall = {
+      tool_call_id: 'activity-success',
+      function_name: 'calculate',
+      function_args: rawArgs,
+    };
+    const w = mount(ToolPill, {
+      props: { toolCall: tc, presentation: 'activity-row' },
+      global: {
+        provide: {
+          [GET_RESULT_FOR_TOOL_CALL]: () => resultMsg('activity-success', rawResult),
+        },
+      },
+    });
+
+    const root = w.get('[data-testid="tool-call-pill"]');
+    const disclosure = w.get('.tool-pill__header');
+    expect(root.classes()).toContain('tool-pill--activity-row');
+    expect(root.attributes('data-tool-name')).toBe('calculate');
+    expect(disclosure.element.tagName).toBe('BUTTON');
+    expect(disclosure.attributes('aria-expanded')).toBe('false');
+    expect(w.get('svg.tool-pill__activity-icon').attributes('aria-hidden')).toBe('true');
+    expect(w.get('.tool-pill__activity-description').text()).toContain('6');
+    expect(w.get('.tool-pill__activity-description').text()).toContain('add');
+    expect(w.get('.tool-pill__status').text()).toMatch(/succeeded/i);
+    expect(w.find('.tool-pill__body').exists()).toBe(false);
+
+    await disclosure.trigger('click');
+
+    expect(disclosure.attributes('aria-expanded')).toBe('true');
+    expect(w.get('[data-testid="tool-technical-name"] code').text()).toBe('calculate');
+    expect(w.get('.kv').text()).toContain('operation');
+    expect(w.get('.kv').text()).toContain('add');
+    expect(w.get('.tool-call-result').element.textContent).toBe(rawResult);
+  });
+
+  it('keeps failure visible while the activity details are collapsed', () => {
+    const tc: ToolCall = {
+      tool_call_id: 'activity-error',
+      function_name: 'Bash',
+      function_args: '{"command":"exit 22"}',
+    };
+    const w = mount(ToolPill, {
+      props: { toolCall: tc, presentation: 'activity-row' },
+      global: {
+        provide: {
+          [GET_RESULT_FOR_TOOL_CALL]: () => resultMsg('activity-error', 'exit 22', true),
+        },
+      },
+    });
+
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('st-error');
+    expect(w.get('.tool-pill__status').text()).toMatch(/failed/i);
+    expect(w.get('.tool-pill__status').attributes('title')).toMatch(/failed/i);
+    expect(w.find('.tool-pill__body').exists()).toBe(false);
+  });
+
+  it('names background and awaiting-input activity without relying on glyphs alone', () => {
+    const background = mount(ToolPill, {
+      props: {
+        presentation: 'activity-row',
+        toolCall: {
+          tool_call_id: 'background',
+          function_name: 'Bash',
+          function_args: '{"command":"sleep 9","run_in_background":true}',
+        },
+      },
+      global: { provide: { [GET_RESULT_FOR_TOOL_CALL]: () => null } },
+    });
+    expect(background.get('.tool-pill__activity-qualifier').text()).toBe(
+      'Running in background'
+    );
+    expect(background.get('.tool-pill__status').attributes('title')).toMatch(/running/i);
+
+    const waitingResult: ToolCallResultMessage = {
+      $type: MessageType.ToolCallResult,
+      tool_call_id: 'waiting',
+      result: '',
+      is_error: false,
+      is_deferred: true,
+      role: 'tool',
+    };
+    const waiting = mount(ToolPill, {
+      props: {
+        presentation: 'activity-row',
+        toolCall: {
+          tool_call_id: 'waiting',
+          function_name: 'AskUserQuestion',
+          function_args: '{"questions":[]}',
+        },
+      },
+      global: { provide: { [GET_RESULT_FOR_TOOL_CALL]: () => waitingResult } },
+    });
+    expect(waiting.get('.tool-pill__activity-qualifier').text()).toBe('Waiting for input');
+    expect(waiting.get('.tool-pill__status').attributes('title')).toMatch(/awaiting input/i);
+  });
+
+  it('reveals the exact case-sensitive wire name only in expanded activity details', async () => {
+    const w = mount(ToolPill, {
+      props: {
+        presentation: 'activity-row',
+        toolCall: {
+          tool_call_id: 'technical-name',
+          function_name: 'Agent',
+          function_args: '{"subagent_type":"reviewer"}',
+        },
+      },
+      global: { provide: { [GET_RESULT_FOR_TOOL_CALL]: () => null } },
+    });
+
+    expect(w.find('[data-testid="tool-technical-name"]').exists()).toBe(false);
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.get('[data-testid="tool-technical-name"] code').text()).toBe('Agent');
+  });
+});
+
 describe('ToolPill — states & fallback', () => {
   it('unknown tool falls back to the generic renderer (f-generic, 🔧)', () => {
     const tc: ToolCall = { tool_call_id: 'g1', function_name: 'TotallyUnknownTool', function_args: '{"foo":1}' };

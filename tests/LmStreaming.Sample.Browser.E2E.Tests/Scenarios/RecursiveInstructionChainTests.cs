@@ -67,6 +67,7 @@ public sealed class RecursiveInstructionChainTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("use the weather sub-agent for Seattle");
         await page.WaitForStreamIdleAsync(timeoutMs: 45_000);
