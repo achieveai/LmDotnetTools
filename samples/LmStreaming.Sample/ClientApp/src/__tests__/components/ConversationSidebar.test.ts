@@ -49,9 +49,11 @@ function mountSidebar(
     isCollapsed: boolean;
     workspaces: Workspace[];
     hasMore: boolean;
-  }> = {}
+  }> = {},
+  attachTo?: HTMLElement
 ) {
   return mount(ConversationSidebar, {
+    attachTo,
     props: {
       conversations: conversations(5),
       currentThreadId: null,
@@ -83,8 +85,8 @@ describe('ConversationSidebar — project folders', () => {
     expect(wrapper.get('[data-testid="project-folder-repo-a"]').text()).toContain('Repo A');
     expect(wrapper.get('[data-testid="project-folder-legacy"]').text()).toContain('No project');
     expect(wrapper.get('[data-testid="project-folder-missing-gone"]').text()).toContain('gone');
-    expect(wrapper.find('[data-testid="start-conversation-legacy"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="start-conversation-gone"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="project-actions-gone"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="project-actions-legacy"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="project-folder-repo-a"]').find('.project-count').exists()).toBe(false);
     expect(
       wrapper
@@ -94,23 +96,28 @@ describe('ConversationSidebar — project folders', () => {
     ).toEqual(['a-new', 'a-old']);
   });
 
-  it('renders an accessible folder-header compose button that emits its workspace id', async () => {
-    const wrapper = mountSidebar({ conversations: [], workspaces });
+  it('renders an accessible folder menu that emits new-conversation and settings actions', async () => {
+    const wrapper = mountSidebar({ conversations: [], workspaces }, document.body);
 
     expect(wrapper.find('[data-testid="project-folder-repo-a"]').exists()).toBe(true);
-    const compose = wrapper.get('[data-testid="start-conversation-repo-a"]');
-    expect(compose.element.tagName).toBe('BUTTON');
-    expect(compose.attributes('aria-label')).toBe('Start a conversation in Repo A');
-    expect(compose.element.closest('.project-heading')).not.toBeNull();
-    expect(
-      wrapper
-        .get('[data-testid="project-conversations-repo-a"]')
-        .find('[data-testid="start-conversation-repo-a"]')
-        .exists()
-    ).toBe(false);
-    await compose.trigger('click');
+    const trigger = wrapper.get('[data-testid="project-actions-repo-a"]');
+    expect(trigger.element.tagName).toBe('BUTTON');
+    expect(trigger.attributes('aria-label')).toBe('More options for Repo A');
+    expect(trigger.attributes('aria-haspopup')).toBe('menu');
+    expect(trigger.attributes('aria-expanded')).toBe('false');
+
+    await trigger.trigger('click');
+    expect(trigger.attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('[data-testid="project-actions-menu-repo-a"]').attributes('role')).toBe('menu');
+    await wrapper.get('[data-testid="start-conversation-repo-a"]').trigger('click');
 
     expect(wrapper.emitted('newChatInWorkspace')).toEqual([['repo-a']]);
+
+    await trigger.trigger('click');
+    await wrapper.get('[data-testid="project-settings-repo-a"]').trigger('click');
+    expect(wrapper.emitted('editProject')).toEqual([['repo-a']]);
+    expect(document.activeElement).toBe(trigger.element);
+    wrapper.unmount();
   });
 
   it('starts a conversation from a collapsed folder without toggling its disclosure', async () => {
@@ -119,9 +126,9 @@ describe('ConversationSidebar — project folders', () => {
     await disclosure.trigger('click');
     expect(disclosure.attributes('aria-expanded')).toBe('false');
 
-    const compose = wrapper.get('[data-testid="start-conversation-repo-a"]');
-    expect(compose.element.tagName).toBe('BUTTON');
-    await compose.trigger('click');
+    const menuTrigger = wrapper.get('[data-testid="project-actions-repo-a"]');
+    await menuTrigger.trigger('click');
+    await wrapper.get('[data-testid="start-conversation-repo-a"]').trigger('click');
 
     expect(wrapper.emitted('newChatInWorkspace')).toEqual([['repo-a']]);
     expect(disclosure.attributes('aria-expanded')).toBe('false');
@@ -134,7 +141,53 @@ describe('ConversationSidebar — project folders', () => {
     });
 
     expect(wrapper.get('[data-testid="project-conversations-missing-gone"]').text()).toContain('Still readable');
-    expect(wrapper.find('[data-testid="start-conversation-gone"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="project-actions-gone"]').exists()).toBe(false);
+  });
+
+  it('emits global project creation and withholds unsupported folder actions', async () => {
+    const incompatible: Workspace = {
+      ...workspaces[1],
+      id: 'incompatible',
+      name: 'Needs repair',
+      compatibility: 'incompatible',
+      unsupportedMarketplaces: ['missing'],
+    };
+    const wrapper = mountSidebar({ conversations: [], workspaces: [...workspaces, incompatible] });
+
+    await wrapper.get('[data-testid="sidebar-new-project"]').trigger('click');
+    expect(wrapper.emitted('newProject')).toHaveLength(1);
+
+    await wrapper.get('[data-testid="project-actions-default"]').trigger('click');
+    expect(wrapper.find('[data-testid="project-settings-default"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="start-conversation-default"]').text()).toBe('New conversation');
+
+    await wrapper.get('[data-testid="project-actions-incompatible"]').trigger('click');
+    expect(wrapper.find('[data-testid="start-conversation-incompatible"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="project-settings-incompatible"]').text()).toBe('Project settings');
+  });
+
+  it('supports folder-menu keyboard navigation, Escape focus return, and outside click', async () => {
+    const wrapper = mountSidebar({ conversations: [], workspaces }, document.body);
+    const trigger = wrapper.get('[data-testid="project-actions-repo-a"]');
+
+    await trigger.trigger('keydown', { key: 'ArrowDown' });
+    await wrapper.vm.$nextTick();
+    const create = wrapper.get('[data-testid="start-conversation-repo-a"]');
+    const settings = wrapper.get('[data-testid="project-settings-repo-a"]');
+    expect(document.activeElement).toBe(create.element);
+
+    await create.trigger('keydown', { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(settings.element);
+    await settings.trigger('keydown', { key: 'Escape' });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="project-actions-menu-repo-a"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(trigger.element);
+
+    await trigger.trigger('click');
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="project-actions-menu-repo-a"]').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('uses native disclosure state and preserves manual collapse until selection changes', async () => {

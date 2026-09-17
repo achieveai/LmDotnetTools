@@ -30,9 +30,12 @@ const props = defineProps<{
    */
   submitClientToolResult: ClientToolSubmitFn;
   viewPreference: ViewPreference;
+  questionScope?: string;
+  questionSource?: string;
+  requestedQuestionId?: string;
 }>();
 
-const emit = defineEmits<{ send: [text: string] }>();
+const emit = defineEmits<{ send: [text: string]; questionBusy: [busy: boolean]; questionOpen: [open: boolean]; questionOpened: [id: string] }>();
 
 // Shadow ChatLayout's provide for THIS subtree so nested tool pills resolve against the child's
 // results — identical to the override SubAgentListPanel used to do. The resolver reads live state at
@@ -59,7 +62,10 @@ provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
     <!-- Inside this subtree on purpose: it inherits the two provides shadowed above, so a
          descendant's question resolves against the CHILD's results and answers over the CHILD's
          socket. -->
-    <PendingQuestionDock :display-items="displayItems" />
+    <PendingQuestionDock :display-items="focusedAgentId === activeAgentId ? displayItems : []"
+      :scope-key="questionScope || activeAgentId" :source-label="questionSource || 'Agent'"
+      :active="focusedAgentId === activeAgentId" :requested-question-id="requestedQuestionId"
+      @busy-change="emit('questionBusy', $event)" @open-change="emit('questionOpen', $event)" @opened="emit('questionOpened', $event)" />
     <!-- Send-only: never streaming (so no Stop button) — a reply resumes a completed child. Disabled
          until the live connection for this exact tab is attached, so a send can't drop on a dead socket. -->
     <ChatInput

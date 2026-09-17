@@ -17,6 +17,8 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
+import QuestionInbox from './QuestionInbox.vue';
+import { useQuestionInbox, type QuestionInboxEntry } from '@/composables/useQuestionInbox';
 import ConversationInspector from './ConversationInspector.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
@@ -105,6 +107,7 @@ const {
 } = useWorkspaces();
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const workspaceManagementRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
 const modeSelectorRef = ref<InstanceType<typeof ModeSelector> | null>(null);
 const { viewPreference, selectViewPreference } = useViewPreference();
 const showDeveloperDiagnostics = computed(() => viewPreference.value === 'developer');
@@ -243,6 +246,7 @@ const {
   sendToFocusedChild,
   submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
+  refreshChildren: refreshSubAgentChildren,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
 // ToDo board state (#583), hoisted here for the same reason the sub-agent panel is: ONE instance,
@@ -312,7 +316,7 @@ watch(subAgentParentThreadId, () => {
   artifactPreview.value = null;
 });
 
-const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
+const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = useConversationTabs({
   children: subAgentChildren,
   focusedAgentId,
   focusChild,
@@ -323,6 +327,92 @@ const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
 function handleSubAgentSend(text: string): void {
   sendToFocusedChild(text);
 }
+
+const questionInbox = useQuestionInbox(() => currentThreadId.value);
+const questionInboxEntries = computed(() => questionInbox.entries.value.map((entry) => ({
+  ...entry,
+  agentName: entry.agentName || 'Main agent',
+})));
+const requestedQuestionId = ref('');
+const pendingQuestionAgentIds = computed(() => [...new Set(questionInbox.entries.value
+  .filter((entry) => entry.rootThreadId === currentThreadId.value && entry.agentId)
+  .map((entry) => entry.agentId!))]);
+const questionBusy = ref(false);
+const questionOpen = ref(false);
+const questionNavigating = ref(false);
+async function selectTab(id: string): Promise<void> {
+  if (questionBusy.value) return;
+  await selectConversationTab(id);
+}
+const questionNavigationError = ref<string | null>(null);
+const autoOpenedQuestions = new Set<string>();
+const questionScope = computed(() => `${currentThreadId.value ?? 'draft'}:${activeTabId.value}`);
+const questionSource = computed(() => `${currentConversation.value?.title || 'Conversation'} · ${
+  activeTabId.value === 'main' ? 'Main agent' : subAgentChildren.value.find((child) => child.agentId === activeTabId.value)?.name || 'Agent'
+}`);
+
+function questionOpened(id: string): void {
+  autoOpenedQuestions.add(JSON.stringify([currentThreadId.value, activeTabId.value, id]));
+}
+
+function autoQuestionKey(entry: QuestionInboxEntry): string {
+  return JSON.stringify([entry.rootThreadId, entry.agentId || 'main', entry.toolCallId]);
+}
+
+async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
+  if (questionBusy.value || questionNavigating.value) return;
+  questionNavigating.value = true;
+  questionNavigationError.value = null;
+  requestedQuestionId.value = '';
+  try {
+    if (entry.rootThreadId !== currentThreadId.value) {
+      addOrUpdateConversation(entry.conversation);
+      await handleSelectConversation(entry.rootThreadId);
+    }
+    if (currentThreadId.value !== entry.rootThreadId) return;
+    if (entry.agentId) {
+      await refreshSubAgentChildren();
+      if (!subAgentChildren.value.some((child) => child.agentId === entry.agentId)) {
+        throw new Error('This agent is no longer available. Refresh the question inbox.');
+      }
+      await selectTab(entry.agentId);
+      if (focusedAgentId.value !== entry.agentId) throw new Error('Could not connect to this agent. Try again.');
+    } else {
+      await selectTab('main');
+    }
+    await nextTick();
+    const result = entry.agentId ? getSubAgentResultForToolCall(entry.toolCallId) : getResultForToolCall(entry.toolCallId);
+    if (!result?.is_deferred) {
+      questionNavigationError.value = 'This question is no longer waiting for an answer.';
+      void questionInbox.refresh();
+      return;
+    }
+    requestedQuestionId.value = entry.toolCallId;
+    if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+  } catch (err) {
+    // A partial tab change can mount a dock before child focus finishes. Do not let that transient
+    // `opened` event suppress a later automatic retry when navigation itself did not succeed.
+    autoOpenedQuestions.delete(autoQuestionKey(entry));
+    questionNavigationError.value = err instanceof Error ? err.message : 'Could not open this question. Try again.';
+  } finally {
+    questionNavigating.value = false;
+  }
+}
+
+function selectInboxQuestion(key: string): void {
+  const entry = questionInbox.entries.value.find((candidate) => candidate.key === key);
+  if (entry) void openInboxQuestion(entry);
+}
+
+watch([questionInbox.entries, currentThreadId, questionOpen, questionBusy], () => {
+  if (questionOpen.value || questionBusy.value || questionNavigating.value || document.visibilityState === 'hidden') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  const entry = questionInbox.entries.value.find((candidate) =>
+    candidate.rootThreadId === currentThreadId.value && !autoOpenedQuestions.has(autoQuestionKey(candidate)));
+  if (entry) void openInboxQuestion(entry);
+}, { flush: 'post' });
+
+watch(questionScope, () => { questionOpen.value = false; questionBusy.value = false; });
 
 // Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
 // shadows this with the child's own resolver for its subtree.
@@ -524,20 +614,32 @@ function handleSelectWorkspace(workspaceId: string): void {
   selectWorkspace(workspaceId);
 }
 
-async function handleCreateWorkspace(data: WorkspaceCreate): Promise<void> {
+async function handleCreateWorkspace(
+  data: WorkspaceCreate,
+  origin: InstanceType<typeof WorkspaceSelector> | null = workspaceSelectorRef.value
+): Promise<void> {
+  const selectedBeforeManagementCreate = origin === workspaceManagementRef.value
+    && currentThreadId.value !== null
+    ? selectedWorkspaceId.value
+    : null;
   try {
     await createWorkspace(data);
-    workspaceSelectorRef.value?.closeForm();
+    if (selectedBeforeManagementCreate) selectWorkspace(selectedBeforeManagementCreate);
+    origin?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to create workspace';
-    workspaceSelectorRef.value?.showFormError(message);
+    origin?.showFormError(message);
   }
 }
 
-async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate): Promise<void> {
+async function handleUpdateWorkspace(
+  workspaceId: string,
+  data: WorkspaceUpdate,
+  origin: InstanceType<typeof WorkspaceSelector> | null = workspaceSelectorRef.value
+): Promise<void> {
   try {
     await updateWorkspace(workspaceId, data);
-    workspaceSelectorRef.value?.closeForm();
+    origin?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
     if (e instanceof WorkspaceRevisionConflictError || e instanceof InvalidEnvError) {
@@ -551,10 +653,20 @@ async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate)
       // the pending change is dropped rather than the stored one. `await nextTick()` first: the
       // refreshed list reaches the child as a prop only after the parent re-renders.
       await nextTick();
-      workspaceSelectorRef.value?.reseedEditForm();
+      origin?.reseedEditForm();
     }
-    workspaceSelectorRef.value?.showFormError(message);
+    origin?.showFormError(message);
   }
+}
+
+function handleNewProject(): void {
+  workspaceSelectorRef.value?.closeDropdown();
+  workspaceManagementRef.value?.openCreateForm();
+}
+
+function handleEditProject(workspaceId: string): void {
+  workspaceSelectorRef.value?.closeDropdown();
+  workspaceManagementRef.value?.openEditForm(workspaceId);
 }
 
 // A conversation requested via ?threadId= that isn't in the backend's conversation list (never
@@ -646,6 +758,7 @@ onMounted(async () => {
 
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
+  if (questionBusy.value) return;
   notFoundThreadId.value = null;
 
   // Disconnect current WebSocket and clear state
@@ -683,6 +796,7 @@ async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
 
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
+  if (questionBusy.value) return;
   notFoundThreadId.value = null;
   if (threadId === currentThreadId.value) return;
 
@@ -741,6 +855,7 @@ function restoreBindingsFromConversation(threadId: string): void {
 
 // Handle deleting a conversation
 async function handleDeleteConversation(threadId: string): Promise<void> {
+  if (questionBusy.value) return;
   try {
     await removeConversation(threadId);
 
@@ -959,6 +1074,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="!focusMode" class="app-header-right">
+        <QuestionInbox :entries="questionInboxEntries" :refreshing="questionInbox.isRefreshing.value"
+          :error="questionInbox.error.value" :disabled="questionBusy || questionNavigating"
+          @select="selectInboxQuestion" @refresh="questionInbox.refresh()" />
         <HeaderActionsMenu
           ref="headerActionsMenuRef"
           :files-disabled="!currentThreadId"
@@ -1003,6 +1121,8 @@ onBeforeUnmount(() => {
       :is-collapsed="sidebarCollapsed"
       @new-chat="handleNewChat"
       @new-chat-in-workspace="handleNewChatInWorkspace"
+      @new-project="handleNewProject"
+      @edit-project="handleEditProject"
       @select-conversation="handleSelectConversation"
       @delete-conversation="handleDeleteConversation"
       @toggle-collapse="handleToggleCollapse"
@@ -1010,7 +1130,21 @@ onBeforeUnmount(() => {
       @change-sort-mode="setConversationSortMode"
     />
 
+    <WorkspaceSelector
+      v-if="!focusMode"
+      ref="workspaceManagementRef"
+      presentation="management"
+      :workspaces="workspaces"
+      :gateway="workspaceGateway"
+      :selected-workspace-id="selectedWorkspaceId"
+      :locked-workspace-id="null"
+      :is-loading="workspacesLoading"
+      @create-workspace="handleCreateWorkspace($event, workspaceManagementRef)"
+      @update-workspace="(workspaceId, data) => handleUpdateWorkspace(workspaceId, data, workspaceManagementRef)"
+    />
+
     <main class="chat-main">
+      <p v-if="questionNavigationError" class="question-navigation-error" role="status">{{ questionNavigationError }}</p>
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
         <div class="not-found-content">
           <h2>Conversation not found</h2>
@@ -1060,6 +1194,7 @@ onBeforeUnmount(() => {
           v-if="tabs.length > 1"
           :tabs="tabs"
           :active-tab-id="activeTabId"
+          :pending-question-agent-ids="pendingQuestionAgentIds"
           @select="selectTab"
         />
 
@@ -1114,7 +1249,10 @@ onBeforeUnmount(() => {
 
           <!-- Docked directly above the input: a question the run is blocked on is something the
                user must ACT on, so it belongs where they act, not inside the transcript's pill. -->
-          <PendingQuestionDock :display-items="displayItems" />
+          <PendingQuestionDock :key="currentThreadId || 'draft'" :display-items="displayItems"
+            :scope-key="`${currentThreadId || 'draft'}:main`" :source-label="`${currentConversation?.title || 'Conversation'} · Main agent`"
+            :active="activeTabId === 'main'" :requested-question-id="activeTabId === 'main' ? requestedQuestionId : ''"
+            @busy-change="questionBusy = $event" @open-change="questionOpen = $event" @opened="questionOpened" />
 
           <ChatInput
             :disabled="isSending && !chatLoading"
@@ -1148,8 +1286,8 @@ onBeforeUnmount(() => {
                 :is-loading="workspacesLoading"
                 :disabled="workspaceSelectorDisabled"
                 @select-workspace="handleSelectWorkspace"
-                @create-workspace="handleCreateWorkspace"
-                @update-workspace="handleUpdateWorkspace"
+                @create-workspace="handleCreateWorkspace($event, workspaceSelectorRef)"
+                @update-workspace="(workspaceId, data) => handleUpdateWorkspace(workspaceId, data, workspaceSelectorRef)"
               />
             </template>
             <template #context-control>
@@ -1168,6 +1306,9 @@ onBeforeUnmount(() => {
              (routed to the focused child) + child-scoped tool-result provide live inside it. -->
         <SubAgentTranscript
           v-if="activeTabId !== 'main'"
+          :key="questionScope"
+          :question-scope="questionScope" :question-source="questionSource" :requested-question-id="requestedQuestionId"
+          @question-busy="questionBusy = $event" @question-open="questionOpen = $event" @question-opened="questionOpened"
           :active-agent-id="activeTabId"
           :focused-agent-id="focusedAgentId"
           :display-items="focusedDisplayItems"
@@ -1218,6 +1359,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.question-navigation-error { margin: 8px 16px; padding: 10px 12px; color: #795719; background: #fff8ed; border-radius: 6px; font-size: 13px; }
 .chat-layout {
   position: relative;
   display: flex;

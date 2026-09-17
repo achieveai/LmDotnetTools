@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { ConversationSortMode, ConversationSummary } from '@/types/conversations';
 import { CONVERSATION_SORT_MODES } from '@/types/conversations';
 import type { Workspace } from '@/types/workspace';
@@ -21,7 +21,9 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   newChat: [];
+  newProject: [];
   newChatInWorkspace: [workspaceId: string];
+  editProject: [workspaceId: string];
   selectConversation: [threadId: string];
   deleteConversation: [threadId: string];
   toggleCollapse: [];
@@ -39,6 +41,9 @@ const LOAD_MORE_THRESHOLD_PX = 120;
 const scrollRef = ref<HTMLElement | null>(null);
 const sortMenuOpen = ref(false);
 const sortDropdownRef = ref<HTMLElement | null>(null);
+const openProjectMenuKey = ref<string | null>(null);
+const projectMenuRefs = new Map<string, HTMLElement>();
+const projectMenuTriggerRefs = new Map<string, HTMLButtonElement>();
 
 const sortModes = CONVERSATION_SORT_MODES;
 const LEGACY_GROUP_ID = 'legacy';
@@ -141,6 +146,97 @@ function canStartConversation(group: ConversationGroup): boolean {
   return group.workspace !== null && isWorkspaceSelectable(group.workspace);
 }
 
+function canEditProject(group: ConversationGroup): boolean {
+  return group.workspace !== null && !group.workspace.isSystemDefined;
+}
+
+function hasProjectActions(group: ConversationGroup): boolean {
+  return canStartConversation(group) || canEditProject(group);
+}
+
+function setProjectMenuRef(groupKey: string, element: unknown): void {
+  if (element instanceof HTMLElement) projectMenuRefs.set(groupKey, element);
+  else projectMenuRefs.delete(groupKey);
+}
+
+function setProjectMenuTriggerRef(groupKey: string, element: unknown): void {
+  if (element instanceof HTMLButtonElement) projectMenuTriggerRefs.set(groupKey, element);
+  else projectMenuTriggerRefs.delete(groupKey);
+}
+
+function projectMenuItems(groupKey: string): HTMLButtonElement[] {
+  return Array.from(projectMenuRefs.get(groupKey)?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+}
+
+function focusProjectMenuItem(groupKey: string, position: 'first' | 'last'): void {
+  void nextTick(() => {
+    const items = projectMenuItems(groupKey);
+    items[position === 'first' ? 0 : items.length - 1]?.focus();
+  });
+}
+
+function openProjectMenu(groupKey: string, position: 'first' | 'last' = 'first'): void {
+  openProjectMenuKey.value = groupKey;
+  focusProjectMenuItem(groupKey, position);
+}
+
+function closeProjectMenu(restoreFocus = false): void {
+  const groupKey = openProjectMenuKey.value;
+  openProjectMenuKey.value = null;
+  if (restoreFocus && groupKey) {
+    void nextTick(() => projectMenuTriggerRefs.get(groupKey)?.focus());
+  }
+}
+
+function toggleProjectMenu(groupKey: string): void {
+  if (openProjectMenuKey.value === groupKey) closeProjectMenu(true);
+  else openProjectMenu(groupKey);
+}
+
+function handleProjectMenuTriggerKeydown(event: KeyboardEvent, groupKey: string): void {
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    openProjectMenu(groupKey, 'last');
+  } else if (['Enter', ' ', 'ArrowDown'].includes(event.key)) {
+    event.preventDefault();
+    openProjectMenu(groupKey);
+  }
+}
+
+function handleProjectMenuKeydown(event: KeyboardEvent, groupKey: string): void {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeProjectMenu(true);
+    return;
+  }
+  if (event.key === 'Tab') {
+    closeProjectMenu();
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const items = projectMenuItems(groupKey);
+  if (items.length === 0) return;
+  if (event.key === 'Home') return items[0].focus();
+  if (event.key === 'End') return items[items.length - 1].focus();
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  const delta = event.key === 'ArrowDown' ? 1 : -1;
+  items[(current + delta + items.length) % items.length]?.focus();
+}
+
+function startConversation(group: ConversationGroup): void {
+  if (!group.workspace || !canStartConversation(group)) return;
+  closeProjectMenu();
+  emit('newChatInWorkspace', group.workspace.id);
+}
+
+function editProject(group: ConversationGroup): void {
+  if (!group.workspace || !canEditProject(group)) return;
+  projectMenuTriggerRefs.get(group.key)?.focus();
+  closeProjectMenu();
+  emit('editProject', group.workspace.id);
+}
+
 const currentSortLabel = computed(
   () => sortModes.find((m) => m.id === props.sortMode)?.label ?? ''
 );
@@ -180,11 +276,18 @@ function handleClickOutside(event: MouseEvent): void {
   if (sortDropdownRef.value && !sortDropdownRef.value.contains(event.target as Node)) {
     closeSortMenu();
   }
+  if (
+    openProjectMenuKey.value &&
+    !projectMenuRefs.get(openProjectMenuKey.value)?.contains(event.target as Node)
+  ) {
+    closeProjectMenu();
+  }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     closeSortMenu();
+    if (openProjectMenuKey.value) closeProjectMenu(true);
   }
 }
 
@@ -231,17 +334,33 @@ function handleDelete(event: Event, threadId: string): void {
       >
         {{ isCollapsed ? '>' : '<' }}
       </button>
-      <button
-        :class="['new-chat-btn', { hidden: isCollapsed }]"
-        @click="emit('newChat')"
-        :tabindex="isCollapsed ? -1 : 0"
-      >
-        <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-          <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
-        </svg>
-        <span>New Chat</span>
-      </button>
+      <div :class="['sidebar-create-actions', { hidden: isCollapsed }]">
+        <button
+          class="new-chat-btn"
+          data-testid="sidebar-new-chat"
+          @click="emit('newChat')"
+          :tabindex="isCollapsed ? -1 : 0"
+        >
+          <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+          </svg>
+          <span>New Chat</span>
+        </button>
+        <button
+          class="new-project-btn"
+          type="button"
+          data-testid="sidebar-new-project"
+          :tabindex="isCollapsed ? -1 : 0"
+          @click="emit('newProject')"
+        >
+          <svg class="new-project-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M1.75 4.25h4l1.35 1.5h7.15v6.75H1.75z" />
+            <path d="M8 7.25v4M6 9.25h4" />
+          </svg>
+          <span>New project</span>
+        </button>
+      </div>
     </div>
 
     <div :class="['sidebar-sort', { hidden: isCollapsed }]" ref="sortDropdownRef">
@@ -322,20 +441,62 @@ function handleDelete(event: Event, threadId: string): void {
               </svg>
               <span class="project-name">{{ group.label }}</span>
             </button>
-            <button
-              v-if="canStartConversation(group)"
-              class="project-compose-btn"
-              type="button"
-              :aria-label="`Start a conversation in ${group.label}`"
-              :title="`Start a conversation in ${group.label}`"
-              :data-testid="`start-conversation-${group.workspace!.id}`"
-              @click="emit('newChatInWorkspace', group.workspace!.id)"
+            <div
+              v-if="hasProjectActions(group)"
+              :ref="(el) => setProjectMenuRef(group.key, el)"
+              class="project-actions"
             >
-              <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
-              </svg>
-            </button>
+              <button
+                :id="`project-actions-trigger-${group.testId}`"
+                :ref="(el) => setProjectMenuTriggerRef(group.key, el)"
+                class="project-actions-trigger"
+                type="button"
+                :aria-label="`More options for ${group.label}`"
+                :title="`More options for ${group.label}`"
+                aria-haspopup="menu"
+                :aria-expanded="openProjectMenuKey === group.key"
+                :aria-controls="`project-actions-menu-${group.testId}`"
+                :data-testid="`project-actions-${group.workspace!.id}`"
+                @click="toggleProjectMenu(group.key)"
+                @keydown="handleProjectMenuTriggerKeydown($event, group.key)"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <circle cx="3" cy="8" r="1" />
+                  <circle cx="8" cy="8" r="1" />
+                  <circle cx="13" cy="8" r="1" />
+                </svg>
+              </button>
+              <div
+                v-if="openProjectMenuKey === group.key"
+                :id="`project-actions-menu-${group.testId}`"
+                class="project-actions-menu"
+                role="menu"
+                :aria-labelledby="`project-actions-trigger-${group.testId}`"
+                :data-testid="`project-actions-menu-${group.workspace!.id}`"
+                @keydown="handleProjectMenuKeydown($event, group.key)"
+              >
+                <button
+                  v-if="canStartConversation(group)"
+                  type="button"
+                  role="menuitem"
+                  tabindex="-1"
+                  :data-testid="`start-conversation-${group.workspace!.id}`"
+                  @click="startConversation(group)"
+                >
+                  New conversation
+                </button>
+                <button
+                  v-if="canEditProject(group)"
+                  type="button"
+                  role="menuitem"
+                  tabindex="-1"
+                  :data-testid="`project-settings-${group.workspace!.id}`"
+                  @click="editProject(group)"
+                >
+                  Project settings
+                </button>
+              </div>
+            </div>
           </div>
 
           <ul
@@ -421,8 +582,28 @@ function handleDelete(event: Event, threadId: string): void {
   border-bottom: 1px solid #e0e0e0;
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
   overflow: hidden;
+}
+
+.sidebar-create-actions {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-create-actions.hidden {
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
 }
 
 .toggle-btn {
@@ -443,7 +624,8 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .new-chat-btn {
-  flex: 1;
+  flex: none;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -467,15 +649,46 @@ function handleDelete(event: Event, threadId: string): void {
     background 0.15s;
 }
 
-.new-chat-btn.hidden {
-  opacity: 0;
-  transform: translateX(-10px);
-  pointer-events: none;
-}
-
-.new-chat-btn:hover:not(.hidden) {
+.new-chat-btn:hover {
   background: #eef0f2;
   border-color: #adb5bd;
+}
+
+.new-project-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #5f6874;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-project-btn:hover,
+.new-project-btn:focus-visible {
+  background: #eef0f2;
+  color: #3f4852;
+}
+
+.new-project-btn:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.new-project-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
 }
 
 .compose-icon {
@@ -700,7 +913,12 @@ function handleDelete(event: Event, threadId: string): void {
   white-space: nowrap;
 }
 
-.project-compose-btn {
+.project-actions {
+  position: relative;
+  flex: 0 0 28px;
+}
+
+.project-actions-trigger {
   display: grid;
   place-items: center;
   width: 28px;
@@ -714,15 +932,56 @@ function handleDelete(event: Event, threadId: string): void {
   cursor: pointer;
 }
 
-.project-compose-btn:hover,
-.project-compose-btn:focus-visible {
+.project-actions-trigger svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.project-actions-trigger:hover,
+.project-actions-trigger:focus-visible,
+.project-actions-trigger[aria-expanded='true'] {
   background: #e9ecef;
   color: #343a40;
 }
 
-.project-compose-btn:focus-visible {
+.project-actions-trigger:focus-visible {
   outline: 2px solid #2d6cdf;
   outline-offset: 1px;
+}
+
+.project-actions-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 0;
+  z-index: 110;
+  width: max-content;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid #d6dbe1;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 14%);
+}
+
+.project-actions-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #5f6874;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-actions-menu button:hover,
+.project-actions-menu button:focus-visible {
+  background: #eef0f2;
+  color: #343a40;
+  outline: 0;
 }
 
 .project-conversations .conversation-item {
