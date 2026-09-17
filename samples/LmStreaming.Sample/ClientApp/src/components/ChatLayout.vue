@@ -10,6 +10,7 @@ import { conversationExists, updateConversationMetadata } from '@/api/conversati
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
@@ -51,6 +52,7 @@ const {
   currentConversation,
   isLoading: conversationsLoading,
   isLoadingMore: conversationsLoadingMore,
+  hasMoreConversations,
   sortMode: conversationSortMode,
   loadConversations,
   loadMoreConversations,
@@ -658,6 +660,21 @@ async function handleNewChat(): Promise<void> {
   setThreadId(null);
 }
 
+/** Starts an unreserved draft bound to the workspace whose sidebar folder launched it. */
+async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
+  await settleWorkspaceCatalog();
+  const workspace = workspaces.value.find((candidate) => candidate.id === workspaceId);
+  if (!workspace || !isWorkspaceSelectable(workspace)) {
+    return;
+  }
+
+  await handleNewChat();
+  selectWorkspace(workspaceId);
+  if (window.innerWidth <= 768) {
+    sidebarCollapsed.value = true;
+  }
+}
+
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
   notFoundThreadId.value = null;
@@ -948,9 +965,12 @@ onBeforeUnmount(() => {
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
       :is-loading-more="conversationsLoadingMore"
+      :workspaces="workspaces"
+      :has-more="hasMoreConversations"
       :sort-mode="conversationSortMode"
       :is-collapsed="sidebarCollapsed"
       @new-chat="handleNewChat"
+      @new-chat-in-workspace="handleNewChatInWorkspace"
       @select-conversation="handleSelectConversation"
       @delete-conversation="handleDeleteConversation"
       @toggle-collapse="handleToggleCollapse"
@@ -969,18 +989,6 @@ onBeforeUnmount(() => {
       <div v-else class="chat-view">
         <header v-if="!focusMode" class="chat-context-header">
           <div class="header-context">
-            <WorkspaceSelector
-              ref="workspaceSelectorRef"
-              :workspaces="workspaces"
-              :gateway="workspaceGateway"
-              :selected-workspace-id="selectedWorkspaceId"
-              :locked-workspace-id="lockedWorkspaceId"
-              :is-loading="workspacesLoading"
-              :disabled="workspaceSelectorDisabled"
-              @select-workspace="handleSelectWorkspace"
-              @create-workspace="handleCreateWorkspace"
-              @update-workspace="handleUpdateWorkspace"
-            />
             <ModeSelector
               :modes="modes"
               :current-mode-id="currentModeId"
@@ -1110,6 +1118,21 @@ onBeforeUnmount(() => {
             @send="handleSend"
             @cancel="handleCancel"
           >
+            <template v-if="currentThreadId === null && !focusMode" #project-control>
+              <WorkspaceSelector
+                ref="workspaceSelectorRef"
+                presentation="project"
+                :workspaces="workspaces"
+                :gateway="workspaceGateway"
+                :selected-workspace-id="selectedWorkspaceId"
+                :locked-workspace-id="null"
+                :is-loading="workspacesLoading"
+                :disabled="workspaceSelectorDisabled"
+                @select-workspace="handleSelectWorkspace"
+                @create-workspace="handleCreateWorkspace"
+                @update-workspace="handleUpdateWorkspace"
+              />
+            </template>
             <template #context-control>
               <ProviderSelector
                 :providers="providers"

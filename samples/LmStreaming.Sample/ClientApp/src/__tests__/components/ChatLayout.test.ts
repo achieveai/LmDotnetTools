@@ -788,12 +788,12 @@ describe('ChatLayout provider placement', () => {
     sharedMocks.subAgentChildren = [];
   });
 
-  it('keeps Workspace, Mode, and More in context while placing Provider before root Send', async () => {
+  it('keeps Mode and More in context while placing Provider before root Send', async () => {
     const wrapper = mountLayout();
     await flushPromises();
 
     const context = wrapper.get('.header-context');
-    expect(context.get('[data-testid="workspace-selector-stub"]').text()).toBe('Workspace');
+    expect(context.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
     expect(context.get('[data-testid="mode-selector-stub"]').text()).toBe('Mode');
     expect(context.get('[data-testid="header-actions-stub"]').text()).toBe('More');
     expect(context.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
@@ -815,6 +815,136 @@ describe('ChatLayout provider placement', () => {
     const childComposer = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input"]');
     expect(childComposer.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
     expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+  });
+});
+
+describe('ChatLayout workspace project integration', () => {
+  const repoWorkspace: Workspace = {
+    id: 'repo',
+    name: 'Repository',
+    directoryRelPath: 'repo',
+    marketplaces: [],
+    isSystemDefined: false,
+    createdAt: 1,
+    updatedAt: 1,
+    compatibility: 'compatible',
+    unsupportedMarketplaces: [],
+  };
+
+  const sidebarStub = defineComponent({
+    props: { isCollapsed: Boolean },
+    emits: ['newChatInWorkspace'],
+    template:
+      '<button data-testid="folder-new-chat" :data-collapsed="String(isCollapsed)" @click="$emit(\'newChatInWorkspace\', \'repo\')">Start in Repository</button>',
+  });
+
+  const workspaceSelectorStub = defineComponent({
+    inheritAttrs: false,
+    template: '<button data-testid="workspace-selector-stub">Repository</button>',
+  });
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: sidebarStub,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          WorkspaceSelector: workspaceSelectorStub,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.workspaces = [repoWorkspace];
+    sharedMocks.selectedWorkspaceId = 'default';
+    sharedMocks.selectedProviderId = 'anthropic';
+    sharedMocks.setModeId?.('default');
+    sharedMocks.workspaceCatalogLoad = Promise.resolve();
+    sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.selectWorkspace.mockImplementation((workspaceId: string) => {
+      if (sharedMocks.workspaceSelectionRef) {
+        sharedMocks.workspaceSelectionRef.value = workspaceId;
+      }
+    });
+    sharedMocks.createNewConversation.mockReset();
+    sharedMocks.createNewConversation.mockResolvedValue('thread-provisioned');
+    sharedMocks.setThreadId.mockReset();
+  });
+
+  afterEach(() => {
+    sharedMocks.workspaces = [];
+    sharedMocks.selectWorkspace.mockReset();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    window.history.pushState({}, '', '/');
+  });
+
+  it('starts a blank chat in the folder workspace without reserving until first send', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="folder-new-chat"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectWorkspace).toHaveBeenCalledWith('repo');
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith(null);
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+
+    await sharedMocks.chatOptions!.provisionThreadId!();
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'repo',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+  });
+
+  it('shows one editable project picker above the root composer only for a blank chat', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const composer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
+    const project = composer.get('[data-testid="chat-input-project-control"]');
+    expect(project.find('[data-testid="workspace-selector-stub"]').exists()).toBe(true);
+    expect(project.element.nextElementSibling).toBe(
+      composer.get('[data-testid="chat-input-surface"]').element
+    );
+    expect(wrapper.findAll('[data-testid="workspace-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.find('.chat-context-header [data-testid="workspace-selector-stub"]').exists()).toBe(false);
+
+    wrapper.unmount();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', workspace: 'repo' })];
+    const established = mountLayout();
+    await flushPromises();
+    expect(established.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
+  });
+
+  it('keeps the project picker out of focus mode', async () => {
+    window.history.pushState({}, '', '/?focus=1');
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
+    window.history.pushState({}, '', '/');
+  });
+
+  it('collapses the sidebar after a folder starts a mobile draft', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    const wrapper = mountLayout();
+    await flushPromises();
+    const launcher = wrapper.get('[data-testid="folder-new-chat"]');
+    expect(launcher.attributes('data-collapsed')).toBe('false');
+    window.innerWidth = 520;
+
+    await launcher.trigger('click');
+    await flushPromises();
+
+    expect(launcher.attributes('data-collapsed')).toBe('true');
   });
 });
 
@@ -1368,7 +1498,7 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           WorkspaceSelector: WorkspaceSelectorStub,
         },
       },
@@ -1378,8 +1508,8 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
-    sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
     sharedMocks.createWorkspace.mockReset();
     sharedMocks.updateWorkspace.mockReset();
     sharedMocks.showFormError.mockReset();
@@ -1558,10 +1688,8 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
-    sharedMocks.currentThreadId = 'thread-1';
-    // No `workspace` on the summary: the selector must render as an editable dropdown, not a
-    // locked badge (a locked selector would hide the form for an unrelated reason).
-    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
     sharedMocks.useRealWorkspaces = true;
     listCalls = 0;
     putBodies = [];
@@ -1626,7 +1754,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
           // WorkspaceSelector deliberately NOT stubbed — its watcher is the code under test.
@@ -1703,7 +1831,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -1777,7 +1905,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -1840,7 +1968,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -2327,7 +2455,7 @@ describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
           // WorkspaceSelector deliberately NOT stubbed — reaching its rows is the whole point.

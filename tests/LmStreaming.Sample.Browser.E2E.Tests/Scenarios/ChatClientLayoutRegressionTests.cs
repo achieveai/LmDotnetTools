@@ -311,11 +311,15 @@ public sealed class ChatClientLayoutRegressionTests
                 var userWrapperBox = await page.Locator(".user-message-wrapper").Last.BoundingBoxAsync();
                 var textRow = page.Locator(".text-bubble-row").Last;
                 var textRowBox = await textRow.BoundingBoxAsync();
-                var proseBlock = page.AssistantText().Last.Locator("p").First;
-                var proseBox = await proseBlock.BoundingBoxAsync();
-                var proseMaxWidth = await proseBlock.EvaluateAsync<double>(
-                    "el => parseFloat(getComputedStyle(el).maxWidth)"
+                var assistantText = page.AssistantText().Last;
+                var responseContentWidth = await assistantText.EvaluateAsync<double>(
+                    "el => el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight)"
                 );
+                var proseBlock = assistantText.Locator("p").First;
+                var proseBox = await proseBlock.BoundingBoxAsync();
+                var renderedTable = assistantText.Locator("table").First;
+                var renderedColumns = renderedTable.Locator("thead th");
+                var tableOverflow = await renderedTable.EvaluateAsync<double>("el => el.scrollWidth - el.clientWidth");
 
                 messageListBox.Should().NotBeNull("the message list must have a measurable content box");
                 assistantWrapperBox.Should().NotBeNull("the assistant turn must have a measurable wrapper");
@@ -323,6 +327,9 @@ public sealed class ChatClientLayoutRegressionTests
                 userWrapperBox.Should().NotBeNull("the human turn must have a measurable wrapper");
                 textRowBox.Should().NotBeNull("the assistant prose row must have a measurable box");
                 proseBox.Should().NotBeNull("the assistant answer must render a measurable prose block");
+                (await renderedColumns.CountAsync())
+                    .Should()
+                    .Be(10, $"the wide markdown table must render all ten actual columns at {geometryLabel}");
 
                 assistantWrapperBox!
                     .Width.Should()
@@ -338,19 +345,22 @@ public sealed class ChatClientLayoutRegressionTests
                     );
                 proseBox!
                     .Width.Should()
-                    .BeLessThanOrEqualTo(
-                        (float)(proseMaxWidth + 1),
-                        $"assistant prose should remain within its readable 72ch measure at {geometryLabel}"
+                    .BeGreaterThanOrEqualTo(
+                        (float)(responseContentWidth * 0.99),
+                        $"assistant prose should use the full response-content width at {geometryLabel}"
                     );
-                if (width >= ViewportWidth)
-                {
-                    proseBox
-                        .Width.Should()
-                        .BeLessThan(
-                            textRowBox.Width,
-                            $"readable prose should be narrower than the full assistant turn at {geometryLabel}"
-                        );
-                }
+                proseBox
+                    .Width.Should()
+                    .BeLessThanOrEqualTo(
+                        (float)(responseContentWidth + 1),
+                        $"assistant prose must not overflow the response-content box at {geometryLabel}"
+                    );
+                tableOverflow
+                    .Should()
+                    .BeGreaterThan(
+                        0,
+                        $"the ten rendered table columns should scroll inside the response instead of widening it at {geometryLabel}"
+                    );
 
                 var messageInnerRight = messageListBox!.X + messageListBox.Width - messagePaddingRight;
                 Math.Abs(userWrapperBox!.X + userWrapperBox.Width - messageInnerRight)

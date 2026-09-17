@@ -35,54 +35,59 @@ function handleKeydown(event: KeyboardEvent) {
 
 <template>
   <div class="chat-input" data-testid="chat-input">
-    <div class="input-field">
-      <label class="sr-only" for="chat-message-input">Message</label>
-      <textarea
-        id="chat-message-input"
-        v-model="inputText"
-        :disabled="disabled"
-        aria-describedby="chat-input-hint"
-        placeholder="Type a message..."
-        rows="2"
-        data-testid="chat-input-textarea"
-        @keydown="handleKeydown"
-      />
+    <div v-if="$slots['project-control']" class="project-control" data-testid="chat-input-project-control">
+      <slot name="project-control" />
     </div>
-    <div class="composer-footer" data-testid="chat-input-footer">
-      <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
-        Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
-      </p>
-      <div class="composer-actions" data-testid="chat-input-actions">
-        <slot name="context-control" />
-        <button
-          v-if="streaming && inputText.trim()"
-          class="queue-button"
-          data-testid="queue-button"
-          @click="handleSubmit"
-        >
-          Queue
-        </button>
-        <button
-          v-else-if="streaming"
-          class="stop-button"
-          data-testid="stop-button"
-          @click="handleCancel"
-        >
-          Stop
-        </button>
-        <button
-          v-else
-          class="send-button"
-          :disabled="disabled || !inputText.trim()"
-          data-testid="send-button"
-          aria-label="Send message"
-          title="Send message"
-          @click="handleSubmit"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" />
-          </svg>
-        </button>
+    <div class="chat-input-surface" data-testid="chat-input-surface">
+      <div class="input-field">
+        <label class="sr-only" for="chat-message-input">Message</label>
+        <textarea
+          id="chat-message-input"
+          v-model="inputText"
+          :disabled="disabled"
+          aria-describedby="chat-input-hint"
+          placeholder="Type a message..."
+          rows="2"
+          data-testid="chat-input-textarea"
+          @keydown="handleKeydown"
+        />
+      </div>
+      <div class="composer-footer" data-testid="chat-input-footer">
+        <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
+          Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
+        </p>
+        <div class="composer-actions" data-testid="chat-input-actions">
+          <slot name="context-control" />
+          <button
+            v-if="streaming && inputText.trim()"
+            class="queue-button"
+            data-testid="queue-button"
+            @click="handleSubmit"
+          >
+            Queue
+          </button>
+          <button
+            v-else-if="streaming"
+            class="stop-button"
+            data-testid="stop-button"
+            @click="handleCancel"
+          >
+            Stop
+          </button>
+          <button
+            v-else
+            class="send-button"
+            :disabled="disabled || !inputText.trim()"
+            data-testid="send-button"
+            aria-label="Send message"
+            title="Send message"
+            @click="handleSubmit"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -95,6 +100,17 @@ function handleKeydown(event: KeyboardEvent) {
   gap: 4px;
   box-sizing: border-box;
   margin: 12px 16px;
+}
+
+.project-control {
+  width: 100%;
+}
+
+.chat-input-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
   padding: 12px 12px 10px;
   border: 1px solid #d9dde3;
   border-radius: 22px;
@@ -102,7 +118,7 @@ function handleKeydown(event: KeyboardEvent) {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.chat-input:focus-within {
+.chat-input-surface:focus-within {
   border-color: #9da7b3;
   box-shadow: 0 0 0 2px rgb(45 108 223 / 16%);
 }
@@ -224,6 +240,9 @@ button:focus-visible {
 @media (max-width: 520px) {
   .chat-input {
     margin: 8px 10px;
+  }
+
+  .chat-input-surface {
     padding: 10px 10px 8px;
   }
 

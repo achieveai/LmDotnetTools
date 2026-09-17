@@ -10,6 +10,7 @@ const TEXTAREA = '[data-testid="chat-input-textarea"]';
 const HINT = '[data-testid="chat-input-hint"]';
 const FOOTER = '[data-testid="chat-input-footer"]';
 const ACTIONS = '[data-testid="chat-input-actions"]';
+const PROJECT = '[data-testid="chat-input-project-control"]';
 
 describe('ChatInput button states', () => {
   it('gives the composer a label and associates its keyboard hint', async () => {
@@ -61,6 +62,28 @@ describe('ChatInput button states', () => {
     expect(wrapper.get(ACTIONS).get(SEND).attributes('aria-label')).toBe('Send message');
   });
 
+  it('places an optional project control above the rounded composer surface', () => {
+    const wrapper = mount(ChatInput, {
+      props: { streaming: false },
+      slots: {
+        'project-control': '<button data-testid="project-picker">Default</button>',
+      },
+    });
+
+    const project = wrapper.get(PROJECT);
+    const surface = wrapper.get('[data-testid="chat-input-surface"]');
+    expect(project.get('[data-testid="project-picker"]').text()).toBe('Default');
+    expect(project.element.nextElementSibling).toBe(surface.element);
+    expect(surface.find(TEXTAREA).exists()).toBe(true);
+  });
+
+  it('omits the project strip when the slot is not provided', () => {
+    const wrapper = mount(ChatInput, { props: { streaming: false } });
+
+    expect(wrapper.find(PROJECT).exists()).toBe(false);
+    expect(wrapper.get('[data-testid="chat-input-surface"]').find(TEXTAREA).exists()).toBe(true);
+  });
+
   it('uses one rounded composer surface with a borderless message area and internal footer', () => {
     const rule = (selector: string): string => {
       const start = chatInputSource.indexOf(`${selector} {`);
@@ -70,8 +93,8 @@ describe('ChatInput button states', () => {
     };
 
     expect(rule('.chat-input')).toMatch(/flex-direction:\s*column\s*;/);
-    expect(rule('.chat-input')).toMatch(/border:\s*1px\s+solid\s+[^;]+;/);
-    expect(rule('.chat-input')).toMatch(/border-radius:\s*[^;]+;/);
+    expect(rule('.chat-input-surface')).toMatch(/border:\s*1px\s+solid\s+[^;]+;/);
+    expect(rule('.chat-input-surface')).toMatch(/border-radius:\s*[^;]+;/);
     expect(rule('textarea')).toMatch(/border:\s*(?:0|none)\s*;/);
     expect(rule('.composer-footer')).toMatch(/display:\s*flex\s*;/);
     expect(rule('.composer-actions')).toMatch(/display:\s*flex\s*;/);

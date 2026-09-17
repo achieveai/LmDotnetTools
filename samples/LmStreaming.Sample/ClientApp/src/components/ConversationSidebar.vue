@@ -1,19 +1,27 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { ConversationSortMode, ConversationSummary } from '@/types/conversations';
 import { CONVERSATION_SORT_MODES } from '@/types/conversations';
+import type { Workspace } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   conversations: ConversationSummary[];
+  workspaces?: Workspace[];
   currentThreadId: string | null;
   isLoading: boolean;
   isLoadingMore: boolean;
+  hasMore?: boolean;
   sortMode: ConversationSortMode;
   isCollapsed: boolean;
-}>();
+}>(), {
+  workspaces: () => [],
+  hasMore: false,
+});
 
 const emit = defineEmits<{
   newChat: [];
+  newChatInWorkspace: [workspaceId: string];
   selectConversation: [threadId: string];
   deleteConversation: [threadId: string];
   toggleCollapse: [];
@@ -33,6 +41,105 @@ const sortMenuOpen = ref(false);
 const sortDropdownRef = ref<HTMLElement | null>(null);
 
 const sortModes = CONVERSATION_SORT_MODES;
+const LEGACY_GROUP_ID = 'legacy';
+
+interface ConversationGroup {
+  key: string;
+  testId: string;
+  label: string;
+  conversations: ConversationSummary[];
+  workspace: Workspace | null;
+  missingWorkspaceId: string | null;
+}
+
+const groups = computed<ConversationGroup[]>(() => {
+  const byWorkspace = new Map<string, ConversationSummary[]>();
+  const legacy: ConversationSummary[] = [];
+
+  for (const conversation of props.conversations) {
+    if (!conversation.workspace) {
+      legacy.push(conversation);
+      continue;
+    }
+    const rows = byWorkspace.get(conversation.workspace) ?? [];
+    rows.push(conversation);
+    byWorkspace.set(conversation.workspace, rows);
+  }
+
+  const knownIds = new Set(props.workspaces.map((workspace) => workspace.id));
+  const result: ConversationGroup[] = props.workspaces.map((workspace) => ({
+    key: `workspace:${workspace.id}`,
+    testId: workspace.id,
+    label: workspace.name,
+    conversations: byWorkspace.get(workspace.id) ?? [],
+    workspace,
+    missingWorkspaceId: null,
+  }));
+
+  for (const [workspaceId, conversations] of byWorkspace) {
+    if (knownIds.has(workspaceId)) continue;
+    result.push({
+      key: `missing:${workspaceId}`,
+      testId: `missing-${workspaceId}`,
+      label: workspaceId,
+      conversations,
+      workspace: null,
+      missingWorkspaceId: workspaceId,
+    });
+  }
+
+  if (legacy.length > 0) {
+    result.push({
+      key: LEGACY_GROUP_ID,
+      testId: LEGACY_GROUP_ID,
+      label: 'No project',
+      conversations: legacy,
+      workspace: null,
+      missingWorkspaceId: null,
+    });
+  }
+
+  return result;
+});
+
+const collapsedGroups = ref(new Set<string>());
+
+function isGroupExpanded(groupId: string): boolean {
+  return !collapsedGroups.value.has(groupId);
+}
+
+function toggleGroup(groupId: string): void {
+  const next = new Set(collapsedGroups.value);
+  if (next.has(groupId)) next.delete(groupId);
+  else next.add(groupId);
+  collapsedGroups.value = next;
+}
+
+function groupIdForThread(threadId: string | null): string | null {
+  if (!threadId) return null;
+  const conversation = props.conversations.find((row) => row.threadId === threadId);
+  if (!conversation) return null;
+  if (!conversation.workspace) return LEGACY_GROUP_ID;
+  return props.workspaces.some((workspace) => workspace.id === conversation.workspace)
+    ? `workspace:${conversation.workspace}`
+    : `missing:${conversation.workspace}`;
+}
+
+watch(
+  () => props.currentThreadId,
+  (threadId, previousThreadId) => {
+    if (threadId === previousThreadId) return;
+    const groupId = groupIdForThread(threadId);
+    if (!groupId || !collapsedGroups.value.has(groupId)) return;
+    const next = new Set(collapsedGroups.value);
+    next.delete(groupId);
+    collapsedGroups.value = next;
+  }
+);
+
+function canStartConversation(group: ConversationGroup): boolean {
+  return group.workspace !== null && isWorkspaceSelectable(group.workspace);
+}
 
 const currentSortLabel = computed(
   () => sortModes.find((m) => m.id === props.sortMode)?.label ?? ''
@@ -178,49 +285,106 @@ function handleDelete(event: Event, threadId: string): void {
         Loading conversations...
       </div>
 
-      <div v-else-if="conversations.length === 0" class="empty-state">
+      <div v-else-if="groups.length === 0" class="empty-state">
         No conversations yet.
         <br />
         Click "New Chat" to start.
       </div>
 
-      <ul v-else class="conversation-list">
+      <ul v-else class="project-list">
         <li
-          v-for="conv in conversations"
-          :key="conv.threadId"
-          :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
-          data-testid="conversation-item"
-          :data-thread-id="conv.threadId"
-          @click="emit('selectConversation', conv.threadId)"
+          v-for="group in groups"
+          :key="group.key"
+          class="project-folder"
+          data-testid="project-folder"
+          :data-testid-group="group.key"
+          :data-missing-workspace-id="group.missingWorkspaceId ?? undefined"
+          :data-project-id="group.workspace?.id ?? undefined"
+          :id="`project-folder-${group.testId}`"
         >
-          <div class="conversation-content">
-            <div class="conversation-title">
-              {{ truncateText(conv.title, 30) }}
-            </div>
-            <div v-if="conv.preview" class="conversation-preview">
-              {{ truncateText(conv.preview, 50) }}
-            </div>
-            <div class="conversation-date">
-              {{ formatDate(conv.lastUpdated) }}
-            </div>
+          <div class="project-heading" :data-testid="`project-folder-${group.testId}`">
+            <button
+              class="project-toggle"
+              type="button"
+              :data-testid="`project-toggle-${group.testId}`"
+              :aria-expanded="isGroupExpanded(group.key)"
+              :aria-controls="`project-conversations-${group.testId}`"
+              @click="toggleGroup(group.key)"
+            >
+              <span class="disclosure-icon" aria-hidden="true">{{ isGroupExpanded(group.key) ? '⌄' : '›' }}</span>
+              <svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M1.75 4.25h4l1.35 1.5h7.15v6.75H1.75z" />
+              </svg>
+              <span class="project-name">{{ group.label }}</span>
+            </button>
           </div>
-          <button
-            class="delete-btn"
-            @click="handleDelete($event, conv.threadId)"
-            title="Delete conversation"
+
+          <ul
+            v-show="isGroupExpanded(group.key)"
+            :id="`project-conversations-${group.testId}`"
+            class="conversation-list project-conversations"
+            :data-testid="`project-conversations-${group.testId}`"
           >
-            X
-          </button>
+            <li v-if="canStartConversation(group)" class="start-conversation-row">
+              <button
+                class="start-conversation-btn"
+                type="button"
+                :data-testid="`start-conversation-${group.workspace!.id}`"
+                @click="emit('newChatInWorkspace', group.workspace!.id)"
+              >
+                + Start a conversation
+              </button>
+            </li>
+
+            <li
+              v-for="conv in group.conversations"
+              :key="conv.threadId"
+              :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
+              data-testid="conversation-item"
+              :data-thread-id="conv.threadId"
+            >
+              <button
+                type="button"
+                class="conversation-select-btn"
+                @click="emit('selectConversation', conv.threadId)"
+              >
+                <div class="conversation-content">
+                  <div class="conversation-title">
+                    {{ truncateText(conv.title, 30) }}
+                  </div>
+                  <div v-if="conv.preview" class="conversation-preview">
+                    {{ truncateText(conv.preview, 50) }}
+                  </div>
+                  <div class="conversation-date">
+                    {{ formatDate(conv.lastUpdated) }}
+                  </div>
+                </div>
+              </button>
+              <button
+                class="delete-btn"
+                @click="handleDelete($event, conv.threadId)"
+                title="Delete conversation"
+              >
+                X
+              </button>
+            </li>
+
+          </ul>
         </li>
 
-        <!-- Only ever shown while a page is actually in flight: once the list is exhausted the
-             parent stops loading, and the bottom of the list is simply the bottom of the list. -->
-        <li
-          v-if="isLoadingMore"
-          class="loading-more"
-          data-testid="conversations-loading-more"
-        >
-          Loading more...
+        <li v-if="hasMore || isLoadingMore" class="load-more-row">
+          <button
+            class="load-more-btn"
+            type="button"
+            data-testid="conversations-load-more"
+            :disabled="isLoadingMore"
+            @click="emit('loadMore')"
+          >
+            {{ isLoadingMore ? 'Loading more...' : 'Load more' }}
+            <span v-if="isLoadingMore" data-testid="conversations-loading-more" class="sr-only">
+              Loading more conversations
+            </span>
+          </button>
         </li>
       </ul>
     </div>
@@ -436,21 +600,176 @@ function handleDelete(event: Event, threadId: string): void {
   font-size: 14px;
 }
 
+.project-list,
 .conversation-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
+.project-folder {
+  border-bottom: 1px solid #e2e5e9;
+}
+
+.project-heading {
+  padding: 5px 8px;
+}
+
+.project-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #343a40;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-toggle:hover,
+.project-toggle:focus-visible {
+  background: #e9ecef;
+}
+
+.project-toggle:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.disclosure-icon {
+  width: 12px;
+  color: #6c757d;
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+}
+
+.folder-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: #667085;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+
+.project-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-conversations .conversation-item {
+  padding: 9px 12px 9px 68px;
+  border-bottom: 0;
+}
+
+.project-conversations .conversation-item.active {
+  padding-left: 65px;
+}
+
+.project-conversations .conversation-item::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 68px;
+  height: 1px;
+  background: #e0e0e0;
+}
+
+.project-conversations .conversation-item.active::after {
+  left: 65px;
+}
+
+.start-conversation-row {
+  padding: 2px 10px 8px 68px;
+}
+
+.start-conversation-btn,
+.load-more-btn {
+  border: 0;
+  background: transparent;
+  color: #59636e;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.start-conversation-btn {
+  padding: 5px 0;
+}
+
+.start-conversation-btn:hover,
+.load-more-btn:hover:not(:disabled) {
+  color: #0056b3;
+}
+
+.load-more-row {
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.load-more-btn {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #d6d9dd;
+  border-radius: 5px;
+  text-align: center;
+}
+
+.load-more-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .conversation-item {
   padding: 12px 16px;
   border-bottom: 1px solid #e0e0e0;
-  cursor: pointer;
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   transition: background 0.1s;
+}
+
+.conversation-select-btn {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.conversation-select-btn:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .conversation-item:hover {

@@ -220,6 +220,50 @@ describe('WorkspaceSelector', () => {
   });
 });
 
+describe('WorkspaceSelector project presentation', () => {
+  it('renders an empty project disclosure with its accessible relationship', async () => {
+    const wrapper = mountSelector({
+      presentation: 'project',
+      selectedWorkspaceId: null,
+    });
+
+    const trigger = wrapper.get('[data-testid="workspace-selector-button"]');
+    expect(trigger.text()).toContain('Choose project');
+    expect(trigger.text()).not.toContain('Workspace:');
+    expect(trigger.classes()).toContain('selector-btn-project');
+    expect(trigger.attributes('aria-expanded')).toBe('false');
+    expect(trigger.attributes('aria-controls')).toBe('workspace-selector-menu');
+
+    await trigger.trigger('click');
+    await nextTick();
+
+    expect(trigger.attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('#workspace-selector-menu').classes()).toContain('dropdown-menu-project');
+  });
+
+  it('shows the selected project name and preserves selection behavior', async () => {
+    const wrapper = mountSelector({ presentation: 'project' });
+
+    expect(wrapper.get('[data-testid="workspace-selector-button"]').text()).toContain('Default');
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-option-ws-user"]').trigger('click');
+
+    expect(wrapper.emitted('select-workspace')?.[0]).toEqual(['ws-user']);
+  });
+
+  it('uses project wording for the locked badge', () => {
+    const wrapper = mountSelector({
+      presentation: 'project',
+      lockedWorkspaceId: 'ws-user',
+    });
+
+    const badge = wrapper.get('[data-testid="workspace-locked-badge"]');
+    expect(badge.text()).toContain('Project:');
+    expect(badge.text()).toContain('My Project');
+    expect(badge.text()).not.toContain('Workspace:');
+  });
+});
+
 // --- Per-plugin selection -----------------------------------------------------------------
 
 type CreatePayload = {
