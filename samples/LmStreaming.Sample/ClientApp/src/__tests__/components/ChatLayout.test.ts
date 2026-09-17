@@ -13,6 +13,7 @@ import {
 } from '@/api/workspacesApi';
 import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
+import type { SubAgentSummary } from '@/api/subAgentsApi';
 
 // Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
 // replaced optional-ized every field and silently drifted from the server DTO — `visibility` (#445)
@@ -116,6 +117,7 @@ const sharedMocks = vi.hoisted(() => ({
   // The latest conversation_todo frame ref inside the useChat mock. The REAL useTodoBoard watches
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
+  subAgentChildren: [] as SubAgentSummary[],
   cumulativeTotalTokens: 0,
 }));
 
@@ -203,6 +205,8 @@ vi.mock('@/composables/useChat', async () => {
   const { ref, computed } = await import('vue');
   return {
     getDisplayText: vi.fn((text: string) => text),
+    isTestInstruction: (text: string) =>
+      text.includes('<|instruction_start|>') && text.includes('<|instruction_end|>'),
     useChat: (options: { provisionThreadId?: () => Promise<string> }) => {
       // Captured so a test can invoke the provisioning hook the way the real `useChat` does on the
       // first send of a session — the send path, unlike the "New chat" button, is reachable before
@@ -351,7 +355,7 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
         sharedMocks.subAgentThreadGetter = getParentThreadId;
       }
       return {
-        children: ref([]),
+        children: ref(sharedMocks.subAgentChildren),
         focusedAgentId: ref<string | null>(null),
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
@@ -480,6 +484,81 @@ describe('ChatLayout view preference', () => {
     expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
     expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
     expect(document.activeElement).toBe(wrapper.get('[data-testid="conversation-inspector-launcher"]').element);
+    wrapper.unmount();
+  });
+});
+
+describe('ChatLayout inspector agent selection', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-42',
+    name: 'Reviewer',
+    template: 'review',
+    task: 'Review the result',
+    status: 'running',
+    threadId: 'subagent-agent-42',
+    lastActivityUtc: null,
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.subAgentChildren = [child];
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+    document.body.replaceChildren();
+  });
+
+  async function openAgents(wrapper: ReturnType<typeof mountLayout>): Promise<void> {
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    await wrapper.get('#inspector-tab-agents').trigger('click');
+  }
+
+  it('closes the narrow drawer, activates the child, and focuses its conversation tab', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
+    const wrapper = mountLayout();
+    await openAgents(wrapper);
+
+    await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
+    expect(childTab.attributes('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(childTab.element);
+    wrapper.unmount();
+  });
+
+  it('keeps the wide dock open while activating a child', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    const wrapper = mountLayout();
+    await openAgents(wrapper);
+
+    await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
+    expect(childTab.attributes('aria-selected')).toBe('true');
     wrapper.unmount();
   });
 });

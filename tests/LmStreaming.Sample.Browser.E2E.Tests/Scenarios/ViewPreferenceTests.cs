@@ -30,7 +30,7 @@ public sealed class ViewPreferenceTests
                     }
                 )
             )
-            .Turn(t => t.Text("The answer is five."))
+            .Turn(t => t.Text("The answer is five.").TextLen(3_000))
             .Build();
 
         await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
@@ -55,10 +55,27 @@ public sealed class ViewPreferenceTests
 
         await page.Textarea().FillAsync("calculate two plus three");
         await page.SendButton().ClickAsync();
-        await page.WaitForStreamIdleAsync();
+        await page.WaitForStreamActiveAsync();
+
+        await Assertions.Expect(page.TurnActivity()).ToHaveCountAsync(1);
+        await Assertions.Expect(page.TurnActivityToggle()).ToContainTextAsync("Working");
+        await Assertions.Expect(page.StopButton()).ToBeVisibleAsync();
+
+        await page.SelectDeveloperViewAsync();
+        await Assertions.Expect(page.TurnActivity()).ToHaveCountAsync(0);
+        await Assertions.Expect(page.ToolCallPills()).ToHaveCountAsync(1);
+        await Assertions.Expect(page.StopButton()).ToBeVisibleAsync();
+
+        await page.SelectConsumerViewAsync();
+        await Assertions.Expect(page.TurnActivity()).ToHaveCountAsync(1);
+        await Assertions.Expect(page.TurnActivityToggle()).ToContainTextAsync("Working");
+        await Assertions.Expect(page.StopButton()).ToBeVisibleAsync();
+
+        await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
 
         await Assertions.Expect(page.AssistantText()).ToContainTextAsync("The answer is five.");
         await Assertions.Expect(page.TurnActivity()).ToHaveCountAsync(1);
+        await Assertions.Expect(page.TurnActivityToggle()).Not.ToContainTextAsync("Working");
         await Assertions.Expect(page.ToolCallPills()).ToHaveCountAsync(0);
         await session.SaveSuccessScreenshotAsync("ViewPreference.consumer_activity");
 
