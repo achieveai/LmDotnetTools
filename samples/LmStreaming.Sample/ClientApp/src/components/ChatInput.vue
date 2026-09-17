@@ -47,54 +47,68 @@ function handleKeydown(event: KeyboardEvent) {
         data-testid="chat-input-textarea"
         @keydown="handleKeydown"
       />
+    </div>
+    <div class="composer-footer" data-testid="chat-input-footer">
       <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
         Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
       </p>
+      <div class="composer-actions" data-testid="chat-input-actions">
+        <slot name="context-control" />
+        <button
+          v-if="streaming && inputText.trim()"
+          class="queue-button"
+          data-testid="queue-button"
+          @click="handleSubmit"
+        >
+          Queue
+        </button>
+        <button
+          v-else-if="streaming"
+          class="stop-button"
+          data-testid="stop-button"
+          @click="handleCancel"
+        >
+          Stop
+        </button>
+        <button
+          v-else
+          class="send-button"
+          :disabled="disabled || !inputText.trim()"
+          data-testid="send-button"
+          aria-label="Send message"
+          title="Send message"
+          @click="handleSubmit"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" />
+          </svg>
+        </button>
+      </div>
     </div>
-    <button
-      v-if="streaming && inputText.trim()"
-      class="queue-button"
-      data-testid="queue-button"
-      @click="handleSubmit"
-    >
-      Queue
-    </button>
-    <button
-      v-else-if="streaming"
-      class="stop-button"
-      data-testid="stop-button"
-      @click="handleCancel"
-    >
-      Stop
-    </button>
-    <button
-      v-else
-      class="send-button"
-      :disabled="disabled || !inputText.trim()"
-      data-testid="send-button"
-      aria-label="Send message"
-      title="Send message"
-      @click="handleSubmit"
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" />
-      </svg>
-    </button>
   </div>
 </template>
 
 <style scoped>
 .chat-input {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 12px 16px;
-  border-top: 1px solid #e0e0e0;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  margin: 12px 16px;
+  padding: 12px 12px 10px;
+  border: 1px solid #d9dde3;
+  border-radius: 22px;
   background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.chat-input:focus-within {
+  border-color: #9da7b3;
+  box-shadow: 0 0 0 2px rgb(45 108 223 / 16%);
 }
 
 .input-field {
-  flex: 1;
+  width: 100%;
   min-width: 0;
 }
 
@@ -114,28 +128,79 @@ textarea {
   display: block;
   width: 100%;
   box-sizing: border-box;
-  padding: 12px;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  min-height: 48px;
+  padding: 2px 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-family: inherit;
   font-size: 14px;
+  line-height: 1.5;
   resize: none;
 }
 
 textarea:focus-visible {
-  outline: 2px solid #2d6cdf;
-  outline-offset: 2px;
-  border-color: #007bff;
+  outline: none;
 }
 
 textarea:disabled {
-  background: #f5f5f5;
+  color: #777;
+  background: transparent;
+}
+
+.composer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.composer-actions {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.composer-actions :deep(.provider-selector) {
+  min-width: 0;
+}
+
+.composer-actions :deep(.selector-btn) {
+  max-width: min(52vw, 220px);
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.composer-actions :deep(.selector-btn:hover:not(:disabled)) {
+  background: #f1f2f4;
+}
+
+.composer-actions :deep(.provider-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .input-hint {
-  margin: 5px 2px 0;
-  color: #687481;
-  font-size: 12px;
+  flex: 1 1 230px;
+  min-width: 0;
+  margin: 0 4px;
+  color: #818892;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -158,12 +223,20 @@ button:focus-visible {
 
 @media (max-width: 520px) {
   .chat-input {
-    gap: 8px;
-    padding: 10px 12px;
+    margin: 8px 10px;
+    padding: 10px 10px 8px;
   }
 
   button {
     padding-inline: 16px;
+  }
+
+  .input-hint {
+    flex-basis: 165px;
+  }
+
+  .composer-actions :deep(.selector-btn) {
+    max-width: 48vw;
   }
 }
 

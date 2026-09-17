@@ -744,6 +744,80 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
   });
 });
 
+describe('ChatLayout provider placement', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-provider-placement',
+    name: 'Child agent',
+    template: 'default',
+    task: 'Reply to the parent',
+    status: 'running',
+    threadId: 'subagent-provider-placement',
+    lastActivityUtc: null,
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          WorkspaceSelector: { template: '<div data-testid="workspace-selector-stub">Workspace</div>' },
+          ModeSelector: { template: '<div data-testid="mode-selector-stub">Mode</div>' },
+          HeaderActionsMenu: { template: '<div data-testid="header-actions-stub">More</div>' },
+          ProviderSelector: {
+            props: ['disabled'],
+            emits: ['select-provider'],
+            template:
+              '<button data-testid="provider-selector-stub" :disabled="disabled" @click="$emit(\'select-provider\', \'openai\')">Provider</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.subAgentChildren = [child];
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+  });
+
+  it('keeps Workspace, Mode, and More in context while placing Provider before root Send', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const context = wrapper.get('.header-context');
+    expect(context.get('[data-testid="workspace-selector-stub"]').text()).toBe('Workspace');
+    expect(context.get('[data-testid="mode-selector-stub"]').text()).toBe('Mode');
+    expect(context.get('[data-testid="header-actions-stub"]').text()).toBe('More');
+    expect(context.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+
+    const provider = wrapper.get('[data-testid="provider-selector-stub"]');
+    const rootComposer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
+    const actions = rootComposer.get('[data-testid="chat-input-actions"]');
+    expect(actions.get('[data-testid="provider-selector-stub"]').element).toBe(provider.element);
+    expect(provider.element.nextElementSibling).toBe(actions.get('[data-testid="send-button"]').element);
+    expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+  });
+
+  it('does not add the root provider control to the sub-agent composer', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agent-provider-placement"]').trigger('click');
+    await flushPromises();
+
+    const childComposer = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input"]');
+    expect(childComposer.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+  });
+});
+
 // Provider is mutable while the conversation is idle and locked only while streaming (mirrors mode).
 // A messageless thread applies the pick locally; a started conversation switches the backend provider
 // and reflects it in the sidebar summary; while streaming the selector is disabled and does neither.
@@ -755,7 +829,7 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="context-control" /></div>' },
           ProviderSelector: {
             props: ['disabled'],
             template:
@@ -1065,7 +1139,7 @@ describe('ChatLayout client-tool question gating (#246)', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="context-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template: '<button data-test="mode-select" :disabled="disabled">Mode</button>',

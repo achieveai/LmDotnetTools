@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import type { ProviderDescriptor } from '@/types/providers';
 
 const props = defineProps<{
@@ -20,9 +20,14 @@ const emit = defineEmits<{
 
 const dropdownOpen = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
+const selectorButtonRef = ref<HTMLButtonElement | null>(null);
+const menuRef = ref<HTMLElement | null>(null);
 
 const selectedProvider = computed<ProviderDescriptor | null>(() =>
   props.providers.find((p) => p.id === props.selectedProviderId) ?? null
+);
+const selectorLabel = computed(
+  () => `Select provider, current: ${selectedProvider.value?.displayName ?? 'Loading'}`
 );
 
 /**
@@ -89,8 +94,13 @@ function handleClickOutside(event: MouseEvent): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
-    closeDropdown();
+  if (event.key !== 'Escape' || !dropdownOpen.value) return;
+
+  const restoreTriggerFocus = menuRef.value?.contains(document.activeElement) ?? false;
+  closeDropdown();
+  if (restoreTriggerFocus) {
+    event.preventDefault();
+    void nextTick(() => selectorButtonRef.value?.focus());
   }
 }
 
@@ -117,18 +127,32 @@ watch(
 <template>
   <div class="provider-selector" ref="dropdownRef" data-testid="provider-selector">
     <button
+      id="provider-selector-button"
+      ref="selectorButtonRef"
+      type="button"
       class="selector-btn"
       :class="{ open: dropdownOpen }"
       data-testid="provider-selector-button"
-      @click="toggleDropdown"
       :disabled="isLoading || disabled"
+      :aria-label="selectorLabel"
+      :aria-expanded="dropdownOpen"
+      aria-controls="provider-selector-menu"
+      @click="toggleDropdown"
     >
       <span class="provider-label">Provider:</span>
       <span class="provider-name">{{ selectedProvider?.displayName ?? 'Loading...' }}</span>
-      <span class="dropdown-arrow">{{ dropdownOpen ? '▲' : '▼' }}</span>
+      <span class="dropdown-arrow" aria-hidden="true">{{ dropdownOpen ? '▲' : '▼' }}</span>
     </button>
 
-    <div v-if="dropdownOpen" class="dropdown-menu" data-testid="provider-selector-menu">
+    <div
+      v-if="dropdownOpen"
+      id="provider-selector-menu"
+      ref="menuRef"
+      class="dropdown-menu"
+      data-testid="provider-selector-menu"
+      role="region"
+      aria-labelledby="provider-selector-button"
+    >
       <template v-for="group in groupedProviders" :key="group.label ?? '__ungrouped__'">
         <div
           v-if="group.label"
@@ -141,6 +165,7 @@ watch(
         <button
           v-for="provider in group.providers"
           :key="provider.id"
+          type="button"
           class="menu-item"
           :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
           :data-testid="`provider-option-${provider.id}`"
@@ -216,9 +241,9 @@ watch(
 
 .dropdown-menu {
   position: absolute;
-  top: 100%;
+  top: auto;
   right: 0;
-  margin-top: 4px;
+  bottom: calc(100% + 4px);
   min-width: 200px;
   /* Cap the height so a long (dynamically discovered) model list scrolls instead of
      running off-screen. Viewport-relative with a fixed upper bound so it adapts to

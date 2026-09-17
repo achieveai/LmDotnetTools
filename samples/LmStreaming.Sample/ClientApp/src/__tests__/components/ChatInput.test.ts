@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import ChatInput from '@/components/ChatInput.vue';
+import chatInputSource from '@/components/ChatInput.vue?raw';
 
 const SEND = '[data-testid="send-button"]';
 const STOP = '[data-testid="stop-button"]';
 const QUEUE = '[data-testid="queue-button"]';
 const TEXTAREA = '[data-testid="chat-input-textarea"]';
 const HINT = '[data-testid="chat-input-hint"]';
+const FOOTER = '[data-testid="chat-input-footer"]';
+const ACTIONS = '[data-testid="chat-input-actions"]';
 
 describe('ChatInput button states', () => {
   it('gives the composer a label and associates its keyboard hint', async () => {
@@ -29,6 +32,50 @@ describe('ChatInput button states', () => {
 
     expect(wrapper.emitted('send')).toBeFalsy();
     expect((textarea.element as HTMLTextAreaElement).value).toBe('first line');
+  });
+
+  it('places an optional context control beside and immediately before the send control', () => {
+    const wrapper = mount(ChatInput, {
+      props: { streaming: false },
+      slots: {
+        'context-control': '<button data-testid="context-control">Provider</button>',
+      },
+    });
+
+    const footer = wrapper.get(FOOTER);
+    const actions = footer.get(ACTIONS);
+    const contextControl = actions.get('[data-testid="context-control"]');
+    const send = actions.get(SEND);
+
+    expect(footer.get(HINT).text()).toContain('Enter to send');
+    expect(contextControl.element.nextElementSibling).toBe(send.element);
+    expect(wrapper.get(TEXTAREA).element.compareDocumentPosition(footer.element)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  });
+
+  it('renders the shared composer without a context control when the slot is omitted', () => {
+    const wrapper = mount(ChatInput, { props: { streaming: false } });
+
+    expect(wrapper.get(ACTIONS).find('[data-testid="context-control"]').exists()).toBe(false);
+    expect(wrapper.get(ACTIONS).get(SEND).attributes('aria-label')).toBe('Send message');
+  });
+
+  it('uses one rounded composer surface with a borderless message area and internal footer', () => {
+    const rule = (selector: string): string => {
+      const start = chatInputSource.indexOf(`${selector} {`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const end = chatInputSource.indexOf('}', start);
+      return chatInputSource.slice(start, end);
+    };
+
+    expect(rule('.chat-input')).toMatch(/flex-direction:\s*column\s*;/);
+    expect(rule('.chat-input')).toMatch(/border:\s*1px\s+solid\s+[^;]+;/);
+    expect(rule('.chat-input')).toMatch(/border-radius:\s*[^;]+;/);
+    expect(rule('textarea')).toMatch(/border:\s*(?:0|none)\s*;/);
+    expect(rule('.composer-footer')).toMatch(/display:\s*flex\s*;/);
+    expect(rule('.composer-actions')).toMatch(/display:\s*flex\s*;/);
+    expect(chatInputSource).toMatch(/\.composer-actions\s+:deep\(\.provider-label\)/);
   });
 
   describe('Not streaming', () => {

@@ -981,13 +981,6 @@ onBeforeUnmount(() => {
               @create-workspace="handleCreateWorkspace"
               @update-workspace="handleUpdateWorkspace"
             />
-            <ProviderSelector
-              :providers="providers"
-              :selected-provider-id="selectedProviderId"
-              :is-loading="providersLoading"
-              :disabled="providerSelectorDisabled"
-              @select-provider="handleSelectProvider"
-            />
             <ModeSelector
               :modes="modes"
               :current-mode-id="currentModeId"
@@ -1116,7 +1109,17 @@ onBeforeUnmount(() => {
             :streaming="chatLoading"
             @send="handleSend"
             @cancel="handleCancel"
-          />
+          >
+            <template #context-control>
+              <ProviderSelector
+                :providers="providers"
+                :selected-provider-id="selectedProviderId"
+                :is-loading="providersLoading"
+                :disabled="providerSelectorDisabled"
+                @select-provider="handleSelectProvider"
+              />
+            </template>
+          </ChatInput>
         </div>
 
         <!-- SUB-AGENT view: mounted only while a sub-agent tab is active; its own error banner + input
