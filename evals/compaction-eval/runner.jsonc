@@ -125,6 +125,75 @@
       ]
     },
     {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c96",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c80",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=80000"
+      ]
+    },
+    {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Round 8, the duplicate-arm test. `rep-a` and `rep-b` are identical in every respect; only the name
+      // differs, so each gets its own workspace. Round 7's dose-c96 was configured exactly like round 6's
+      // compact-v0-tok-keep99 yet scored 0.222 lower on s1, wider than round 6's whole four-arm spread.
+      // Two readings, both committed before the run: if these two arms differ by something near 0.2 the
+      // variance is WITHIN an arm, which kills round 6's internal s1 ranking; if they agree closely the
+      // variance is BETWEEN sweeps, which kills only cross-sweep comparison.
+      "name": "rep-a",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // The twin of rep-a. Any difference between them is noise by construction.
+      "name": "rep-b",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
       // H7 bound and the 128k clamp together: no proactive clear and no genuine overflow on the scaled tasks.
       "name": "compact-v0-tok-keep99-128k",
       "compacts": true,
