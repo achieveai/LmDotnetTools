@@ -32,6 +32,16 @@ describe('ChatInput button states', () => {
   });
 
   describe('Not streaming', () => {
+    it('renders Send as an accessible icon-only control', () => {
+      const wrapper = mount(ChatInput, { props: { streaming: false } });
+      const send = wrapper.get(SEND);
+
+      expect(send.attributes('aria-label')).toBe('Send message');
+      expect(send.attributes('title')).toBe('Send message');
+      expect(send.text()).toBe('');
+      expect(send.get('svg').attributes('aria-hidden')).toBe('true');
+    });
+
     it('shows the Send button (no Stop, no Queue)', () => {
       const wrapper = mount(ChatInput, { props: { streaming: false } });
       expect(wrapper.find(SEND).exists()).toBe(true);

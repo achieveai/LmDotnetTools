@@ -69,11 +69,16 @@ function handleKeydown(event: KeyboardEvent) {
     </button>
     <button
       v-else
+      class="send-button"
       :disabled="disabled || !inputText.trim()"
       data-testid="send-button"
+      aria-label="Send message"
+      title="Send message"
       @click="handleSubmit"
     >
-      Send
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" />
+      </svg>
     </button>
   </div>
 </template>
@@ -185,5 +190,36 @@ button:disabled {
 
 .queue-button:hover:not(:disabled) {
   background: #0b5ed7;
+}
+
+.send-button {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  background: #111;
+}
+
+.send-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.send-button:hover:not(:disabled) {
+  background: #000;
+}
+
+.send-button:disabled {
+  background: #e2e4e7;
+  color: #8a9097;
 }
 </style>
