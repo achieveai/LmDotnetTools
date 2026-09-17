@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace LmStreaming.Sample.Services;
@@ -19,6 +20,12 @@ namespace LmStreaming.Sample.Services;
 ///     includes reasoning: the mirror writes the conversation's own full-fidelity record into its own
 ///     workspace, which is the one read that is not cross-agent. See ADR
 ///     <c>0011-workspace-transcript-files</c>.
+///     </para>
+///     <para>
+///     One row is dropped for EVERY reader, mirror included: the experimental elapsed-time notice
+///     (<see cref="ElapsedTimeNotice"/>). It is addressed to the model of the run it was appended to and
+///     to nobody else, so no reader that is handed a transcript should see it. The store row stays; the
+///     loop reads its own history from the store, not through here.
 ///     </para>
 /// </remarks>
 public static class TranscriptProjection
@@ -54,6 +61,11 @@ public static class TranscriptProjection
                 // An unparseable row is passed through exactly as stored: the reader that has always
                 // tolerated it keeps working, and nothing is silently dropped.
                 normalized.Add(m);
+                continue;
+            }
+
+            if (ElapsedTimeNotice.IsNotice(msg))
+            {
                 continue;
             }
 

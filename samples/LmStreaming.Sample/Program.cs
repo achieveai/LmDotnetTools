@@ -757,6 +757,12 @@ try
     // conversations controller's manual-compaction capability.
     _ = builder.Services.AddSingleton(sp => CompactionHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>()));
 
+    // Experimental elapsed-time notice: bound once, handed to every root loop the pool builds. On by
+    // default in this sample; see ElapsedTimeNoticeHostSetup.
+    _ = builder.Services.AddSingleton(sp =>
+        ElapsedTimeNoticeHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>())
+    );
+
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -780,6 +786,7 @@ try
         // CompactionHostSetup for the test-profile knobs.
         var compactionOptions =
             sp.GetRequiredService<AchieveAi.LmDotnetTools.LmMultiTurn.Compaction.CompactionOptions>();
+        var elapsedTimeNoticeOptions = sp.GetRequiredService<ElapsedTimeNoticeHostOptions>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
@@ -2169,7 +2176,11 @@ try
                             compactionOptions,
                             capacityResolver,
                             normalizedProviderId
-                        )
+                        ),
+                        // Experimental: null when the ElapsedTimeNotice section is disabled, which leaves
+                        // the turn loop exactly as before. ConversationsController.GetMessages hides the
+                        // persisted notice rows from the browser on reload.
+                        elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
                     );
 
                     // #676: whatever the LAST process wrote about this root's agents is reconciled into

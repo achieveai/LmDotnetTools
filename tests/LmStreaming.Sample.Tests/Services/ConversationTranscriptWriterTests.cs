@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
@@ -479,6 +480,42 @@ public sealed class ConversationTranscriptWriterTests
             .Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
         _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
+    }
+
+    /// <summary>
+    /// The experimental elapsed-time notice is persisted for the model and must not reach the workspace
+    /// file: a browser user can list and download <c>.conversations</c>. The mirror reads through
+    /// <see cref="TranscriptProjection"/>, which drops the marked row for every reader.
+    /// </summary>
+    [Fact]
+    public async Task FirstFlush_OmitsTheElapsedTimeNoticeRow_AndKeepsItInTheStore()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var notice = MessagePersistenceConverter.ToPersistedMessage(
+            ElapsedTimeNotice.Build(
+                TimeSpan.FromSeconds(61),
+                new DateTimeOffset(2026, 9, 15, 14, 3, 20, TimeSpan.Zero)
+            ),
+            ThreadId,
+            "run-1"
+        );
+        PersistedMessage[] messages =
+        [
+            Msg("m1", 1, "User"),
+            Msg("m2", 2, "User", messageType: notice.MessageType, messageJson: notice.MessageJson),
+            Msg("m3", 3),
+        ];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = payload.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(2);
+        _ = payload.Should().NotContain(ElapsedTimeNotice.MetadataKey).And.NotContain("elapsed-time-notice");
+        _ = payload.Should().Contain("opaque-m1").And.Contain("opaque-m3");
+        _ = (await store.LoadMessagesAsync(ThreadId)).Should().HaveCount(3, "hidden from the mirror, not deleted");
     }
 
     // ---------------------------------------------------------------- AC 2, 3
