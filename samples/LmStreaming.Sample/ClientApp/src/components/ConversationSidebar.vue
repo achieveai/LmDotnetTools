@@ -694,7 +694,8 @@ function handleDelete(event: Event, threadId: string): void {
   min-width: 0;
   overflow: hidden;
   font-size: 13px;
-  font-weight: 600;
+  color: #5f6874;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -828,13 +829,13 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .conversation-title {
-  font-weight: 500;
+  font-weight: 400;
   font-size: 14px;
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #212529;
+  color: #5f6874;
 }
 
 .conversation-date {

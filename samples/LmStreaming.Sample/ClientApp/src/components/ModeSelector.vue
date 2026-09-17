@@ -237,6 +237,7 @@ watch(
   border: 1px solid #ddd;
   border-radius: 6px;
   font-size: 13px;
+  color: #5f6874;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
 }
@@ -267,8 +268,8 @@ watch(
 }
 
 .mode-name {
-  color: #333;
-  font-weight: 500;
+  color: #5f6874;
+  font-weight: 400;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;

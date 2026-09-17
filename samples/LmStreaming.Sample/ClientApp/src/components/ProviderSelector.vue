@@ -221,12 +221,12 @@ watch(
 }
 
 .provider-label {
-  color: #666;
+  color: #5f6874;
 }
 
 .provider-name {
-  color: #333;
-  font-weight: 500;
+  color: #5f6874;
+  font-weight: 400;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
