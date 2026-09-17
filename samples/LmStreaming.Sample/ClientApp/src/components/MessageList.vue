@@ -610,14 +610,26 @@ watch(
 }
 
 .text-bubble {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   padding: 4px 36px 8px 0;
   color: #202832;
   overflow-wrap: anywhere;
 }
 
-.text-bubble :deep(.markdown-content > :is(p, ul, ol, blockquote)) {
-  max-width: 72ch;
+.assistant-content :deep(.text-message),
+.assistant-content :deep(.markdown-content) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The shared markdown rule keeps tables block-level and locally scrollable. Assistant tables fill
+   the response row until their contents need that overflow behavior on a narrow screen. */
+.assistant-content :deep(.markdown-content table) {
+  width: 100%;
 }
 
 /* The row is exactly the bubble's box (a block wrapper around one block child), so the button can be

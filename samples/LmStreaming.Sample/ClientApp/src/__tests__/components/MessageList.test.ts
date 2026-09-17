@@ -94,7 +94,7 @@ describe('MessageList', () => {
     expect(wrapper.findAll('.waiting-indicator')).toHaveLength(2);
   });
 
-  it('keeps direct prose readable while rich answer blocks use the full answer row', () => {
+  it('keeps prose and rich answer blocks in the same full-width answer row', () => {
     const wrapper = mount(MessageList, {
       props: {
         displayItems: [
@@ -363,6 +363,27 @@ describe('MessageList', () => {
     it('should have min-width 0 on message containers to prevent flex overflow', () => {
       // The combined rule targets both user and assistant containers
       expect(componentSource).toMatch(/\.assistant-message-container[^{]*\{[^}]*min-width:\s*0/);
+    });
+
+    it('lets assistant markdown fill its row while user messages retain their compact bubble', () => {
+      expect(componentSource).toMatch(
+        /\.assistant-message-wrapper\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%/
+      );
+      expect(componentSource).toMatch(
+        /\.user-message-wrapper\s*\{[^}]*margin-left:\s*auto[^}]*max-width:\s*70%/
+      );
+      expect(componentSource).toMatch(
+        /\.assistant-content\s+:deep\(\.text-message\)\s*,\s*\.assistant-content\s+:deep\(\.markdown-content\)\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%[^}]*min-width:\s*0/
+      );
+      expect(componentSource).toMatch(
+        /\.assistant-content\s+:deep\(\.markdown-content table\)\s*\{[^}]*width:\s*100%/
+      );
+      expect(componentSource).toMatch(
+        /\.text-bubble\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%[^}]*min-width:\s*0[^}]*box-sizing:\s*border-box/
+      );
+      expect(componentSource).not.toMatch(
+        /\.text-bubble\s+:deep\(\.markdown-content\s*>\s*:is\(p,\s*ul,\s*ol,\s*blockquote\)\)\s*\{[^}]*max-width/
+      );
     });
   });
 });
