@@ -214,7 +214,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 }
 
 .inspector-close {
-  position: absolute;
+  position: fixed;
   top: 12px;
   right: 12px;
   display: inline-flex;
@@ -247,6 +247,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 .inspector-close:focus-visible {
   outline: 2px solid #2d6cdf;
   outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .inspector-close {
+    top: 10px;
+  }
 }
 
 .inspector-tabs {

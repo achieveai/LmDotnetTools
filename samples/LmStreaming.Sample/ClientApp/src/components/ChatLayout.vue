@@ -873,8 +873,77 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-layout" data-testid="chat-layout">
+    <header :class="['app-header', { 'focus-mode': focusMode }]" data-testid="app-header">
+      <div class="app-header-left">
+        <button
+          v-if="!focusMode"
+          class="sidebar-toggle"
+          data-testid="sidebar-toggle"
+          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :aria-expanded="!sidebarCollapsed"
+          @click="handleToggleCollapse"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M7.5 3v14" />
+          </svg>
+        </button>
+        <h1>{{ headerTitle }}</h1>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-center">
+        <fieldset class="view-preference" aria-label="Conversation view">
+          <legend class="sr-only">Conversation view</legend>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="consumer"
+              data-testid="view-preference-consumer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Consumer</span>
+          </label>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="developer"
+              data-testid="view-preference-developer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Developer</span>
+          </label>
+        </fieldset>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-right">
+        <button
+          v-show="!inspectorOpen"
+          ref="inspectorLauncherRef"
+          class="inspector-launcher"
+          data-testid="conversation-inspector-launcher"
+          aria-label="Open Work and agents"
+          title="Open Work and agents"
+          aria-controls="conversation-inspector"
+          :aria-expanded="inspectorOpen"
+          @click="openInspector"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M12.5 3v14" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="shell-body" data-testid="shell-body">
     <ConversationSidebar
       v-if="!focusMode"
+      class="hosted-sidebar"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
@@ -891,14 +960,6 @@ onBeforeUnmount(() => {
 
     <main class="chat-main">
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
-        <button
-          v-if="sidebarCollapsed && !focusMode"
-          class="menu-btn not-found-menu-btn"
-          @click="handleToggleCollapse"
-          title="Open sidebar"
-        >
-          =
-        </button>
         <div class="not-found-content">
           <h2>Conversation not found</h2>
           <p>The conversation "{{ notFoundThreadId }}" does not exist or is no longer available.</p>
@@ -906,63 +967,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="chat-view">
-        <header :class="['chat-header', { 'has-inspector-launcher': !focusMode && !inspectorOpen }]">
-          <div class="header-primary">
-            <button
-              v-if="sidebarCollapsed && !focusMode"
-              class="menu-btn"
-              @click="handleToggleCollapse"
-              title="Open sidebar"
-            >
-              =
-            </button>
-            <div class="header-heading">
-              <h1>{{ headerTitle }}</h1>
-              <fieldset v-if="!focusMode" class="view-preference" aria-label="Conversation view">
-              <legend class="sr-only">Conversation view</legend>
-              <label>
-                <input
-                  v-model="viewPreference"
-                  type="radio"
-                  name="view-preference"
-                  value="consumer"
-                  data-testid="view-preference-consumer"
-                  @change="handleViewPreferenceChange"
-                />
-                <span>Consumer</span>
-              </label>
-              <label>
-                <input
-                  v-model="viewPreference"
-                  type="radio"
-                  name="view-preference"
-                  value="developer"
-                  data-testid="view-preference-developer"
-                  @change="handleViewPreferenceChange"
-                />
-                <span>Developer</span>
-              </label>
-              </fieldset>
-            </div>
-            <button
-              v-if="!focusMode"
-              v-show="!inspectorOpen"
-              ref="inspectorLauncherRef"
-              class="inspector-launcher"
-              data-testid="conversation-inspector-launcher"
-              aria-label="Open Work and agents"
-              title="Open Work and agents"
-              aria-controls="conversation-inspector"
-              :aria-expanded="inspectorOpen"
-              @click="openInspector"
-            >
-              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <rect x="2.5" y="3" width="15" height="14" rx="2" />
-                <path d="M12.5 3v14" />
-              </svg>
-            </button>
-          </div>
-          <div v-if="!focusMode" class="header-context">
+        <header v-if="!focusMode" class="chat-context-header">
+          <div class="header-context">
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"
@@ -1162,7 +1168,7 @@ onBeforeUnmount(() => {
       :beside-sidebar="!sidebarCollapsed && !focusMode"
       @close="artifactPreview = null"
     />
-
+    </div>
   </div>
 </template>
 
@@ -1170,8 +1176,75 @@ onBeforeUnmount(() => {
 .chat-layout {
   position: relative;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+.app-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-width: 0;
+  padding: 12px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.app-header.focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-header-left,
+.app-header-center,
+.app-header-right {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.app-header-left {
+  gap: 10px;
+}
+
+.app-header-center {
+  justify-content: center;
+}
+
+.app-header-right {
+  justify-content: flex-end;
+}
+
+.app-header h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.hosted-sidebar :deep(.toggle-btn) {
+  display: none;
+}
+
+.shell-body > .hosted-sidebar.conversation-sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 0;
 }
 
 .chat-main {
@@ -1179,8 +1252,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  container-name: chat-main;
-  container-type: inline-size;
 }
 
 .chat-view {
@@ -1202,29 +1273,22 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-.chat-header {
+.chat-context-header {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #f8f9fa;
-  gap: 10px;
   min-width: 0;
 }
 
-.header-primary,
 .header-context {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
   min-width: 0;
-}
-
-.header-primary {
-  justify-content: space-between;
-  box-sizing: border-box;
 }
 
 .header-context {
@@ -1235,36 +1299,36 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 
-.menu-btn {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 16px;
-  color: #666;
-  flex-shrink: 0;
-}
-
-.menu-btn:hover {
-  background: #e9ecef;
-}
-
-.header-heading {
-  display: flex;
+.sidebar-toggle,
+.inspector-launcher {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   align-items: center;
-  gap: 12px;
-  flex: 1;
-  min-width: 0;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #394553;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
 }
 
-.chat-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  flex: 1;
+.sidebar-toggle svg,
+.inspector-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.sidebar-toggle:hover,
+.inspector-launcher:hover {
+  border-color: #aeb7c2;
+  background: #eef1f4;
 }
 
 .view-preference {
@@ -1272,7 +1336,7 @@ onBeforeUnmount(() => {
   height: 34px;
   box-sizing: border-box;
   align-items: center;
-  margin: 0 0 0 auto;
+  margin: 0;
   padding: 2px;
   border: 1px solid #cbd1d8;
   border-radius: 7px;
@@ -1323,65 +1387,51 @@ onBeforeUnmount(() => {
 }
 
 .inspector-launcher {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 30;
-  display: inline-flex;
-  width: 34px;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid #cbd1d8;
-  border-radius: 6px;
-  background: #fff;
-  color: #394553;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
+  position: static;
 }
 
-.inspector-launcher svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-}
-
-.inspector-launcher:hover {
-  border-color: #aeb7c2;
-  background: #eef1f4;
-}
-
+.sidebar-toggle:focus-visible,
 .inspector-launcher:focus-visible {
   outline: 2px solid #2d6cdf;
   outline-offset: 2px;
 }
 
 @media (max-width: 520px) {
-  .chat-header {
+  .app-header {
+    grid-template-columns: minmax(0, 1fr) auto;
     padding: 10px 12px;
   }
 
-  .header-primary {
-    align-items: flex-start;
-    flex-wrap: wrap;
+  .app-header-left {
+    grid-column: 1;
+    grid-row: 1;
   }
 
-  .header-heading {
-    flex-basis: calc(100% - 44px);
-    flex-wrap: wrap;
+  .app-header-right {
+    grid-column: 2;
+    grid-row: 1;
   }
 
-  .chat-header h1 {
+  .app-header-center {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+  }
+
+  .app-header h1 {
     font-size: 18px;
+  }
+
+  .app-header.focus-mode {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
-@container chat-main (max-width: 980px) {
-  .chat-header.has-inspector-launcher {
-    padding-right: 58px;
+@media (max-width: 768px) {
+  .shell-body > .hosted-sidebar.conversation-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
   }
 }
 
@@ -1405,12 +1455,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   position: relative;
-}
-
-.not-found-menu-btn {
-  position: absolute;
-  top: 16px;
-  left: 16px;
 }
 
 .not-found-content {

@@ -425,9 +425,29 @@ describe('ChatLayout view preference', () => {
     expect(launcher.attributes('title')).toBe('Open Work and agents');
     expect(launcher.text()).toBe('');
     expect(launcher.find('svg[aria-hidden="true"]').exists()).toBe(true);
-    expect(launcher.element.closest('.header-primary')).not.toBeNull();
-    expect(wrapper.get('.chat-header').classes()).toContain('has-inspector-launcher');
+    expect(launcher.element.closest('.app-header-right')).not.toBeNull();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+  });
+
+  it('uses one full-width app header above the hosted sidebar and chat body', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const appHeader = wrapper.get('[data-testid="app-header"]');
+    const shellBody = wrapper.get('[data-testid="shell-body"]');
+    expect(appHeader.element.parentElement).toBe(wrapper.get('[data-testid="chat-layout"]').element);
+    expect(shellBody.element.parentElement).toBe(wrapper.get('[data-testid="chat-layout"]').element);
+    expect(appHeader.get('.app-header-left').text()).toContain('LmStreaming Chat');
+    expect(appHeader.get('[data-testid="sidebar-toggle"]').attributes('aria-label')).toBe('Collapse sidebar');
+    expect(appHeader.get('.app-header-center [aria-label="Conversation view"]')).toBeTruthy();
+    expect(appHeader.get('.app-header-right [data-testid="conversation-inspector-launcher"]')).toBeTruthy();
+    expect(shellBody.findComponent({ name: 'ConversationSidebar' }).classes()).toContain('hosted-sidebar');
+    expect(shellBody.get('main.chat-main')).toBeTruthy();
+    expect(wrapper.find('.not-found-menu-btn').exists()).toBe(false);
+
+    await appHeader.get('[data-testid="sidebar-toggle"]').trigger('click');
+    expect(appHeader.get('[data-testid="sidebar-toggle"]').attributes('aria-label')).toBe('Expand sidebar');
+    expect(shellBody.findComponent({ name: 'ConversationSidebar' }).attributes('iscollapsed')).toBe('true');
   });
 
   it('restores Developer and reveals context and token diagnostics', async () => {
@@ -454,7 +474,11 @@ describe('ChatLayout view preference', () => {
     expect(wrapper.find('[data-testid="conversation-inspector-launcher"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="header-actions-menu-button"]').exists()).toBe(false);
-    expect(wrapper.get('.chat-header').classes()).not.toContain('has-inspector-launcher');
+    expect(wrapper.get('[data-testid="app-header"] h1').text()).toContain('LmStreaming Chat');
+    expect(wrapper.find('[data-testid="sidebar-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('.app-header-center').exists()).toBe(false);
+    expect(wrapper.find('.app-header-right').exists()).toBe(false);
+    expect(wrapper.find('.chat-context-header').exists()).toBe(false);
   });
 
   it('switches views without remounting chat state or touching the connection', async () => {
@@ -489,7 +513,6 @@ describe('ChatLayout view preference', () => {
     const composer = wrapper.get('[data-testid="chat-input-textarea"]').element;
     await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
-    expect(wrapper.get('.chat-header').classes()).not.toContain('has-inspector-launcher');
     expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(false);
     const close = wrapper.get('.inspector-close');
     expect(close.attributes('aria-label')).toBe('Close Work and agents');
@@ -498,7 +521,6 @@ describe('ChatLayout view preference', () => {
     await close.trigger('click');
     await flushPromises();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
-    expect(wrapper.get('.chat-header').classes()).toContain('has-inspector-launcher');
     expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
     expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
     expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(true);

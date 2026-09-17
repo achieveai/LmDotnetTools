@@ -208,6 +208,7 @@ public sealed class ChatClientLayoutRegressionTests
             (1101, false),
             (946, false),
             (768, true),
+            (520, true),
             (390, true),
         };
         foreach (var (width, sidebarCollapsed) in geometryCases)
@@ -229,59 +230,71 @@ public sealed class ChatClientLayoutRegressionTests
                 var sidebarIsCollapsed = await sidebar.EvaluateAsync<bool>("el => el.classList.contains('collapsed')");
                 if (sidebarIsCollapsed != sidebarCollapsed)
                 {
-                    var sidebarToggle = sidebarIsCollapsed
-                        ? page.Locator(".chat-header .menu-btn")
-                        : sidebar.Locator(".toggle-btn");
+                    var sidebarToggle = page.GetByTestId("sidebar-toggle");
                     await sidebarToggle.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
                 }
-                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", sidebarCollapsed ? "48px" : "280px");
+                await Assertions.Expect(sidebar).ToHaveCSSAsync("width", sidebarCollapsed ? "0px" : "280px");
             }
             var geometryLabel = $"{width}px with sidebar {(sidebarCollapsed ? "collapsed" : "expanded")}";
 
-            var headerBox = await page.Locator(".chat-header").BoundingBoxAsync();
+            var headerBox = await page.GetByTestId("app-header").BoundingBoxAsync();
             var moreBox = await page.HeaderActionsMenuButton().BoundingBoxAsync();
             var launcherBox = await page.ConversationInspectorLauncher().BoundingBoxAsync();
-            var titleBox = await page.Locator(".chat-header h1").BoundingBoxAsync();
+            var sidebarToggleBox = await page.GetByTestId("sidebar-toggle").BoundingBoxAsync();
+            var titleBox = await page.Locator(".app-header h1").BoundingBoxAsync();
             var viewPreference = page.Locator(".view-preference");
             var viewPreferenceBox = await viewPreference.BoundingBoxAsync();
-            var headerPaddingRight = await page.Locator(".chat-header")
-                .EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).paddingRight)");
-            var moreFontSize = await page.HeaderActionsMenuButton()
-                .EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).fontSize)");
-            var viewFontSize = await viewPreference
-                .Locator("span")
-                .First.EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).fontSize)");
-
-            headerBox.Should().NotBeNull("the centered transcript header must have a measurable layout box");
+            headerBox.Should().NotBeNull("the full-width app header must have a measurable layout box");
             moreBox.Should().NotBeNull("More must remain visible in the header context row");
-            launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible at app top-right");
+            launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible in the app header");
+            sidebarToggleBox.Should().NotBeNull("the app header must expose the sidebar control");
             titleBox.Should().NotBeNull("the conversation title must have a measurable layout box");
             viewPreferenceBox.Should().NotBeNull("the view switch must have a measurable layout box");
 
-            Math.Abs(moreBox!.X + moreBox.Width - (headerBox!.X + headerBox.Width - headerPaddingRight))
-                .Should()
-                .BeLessThanOrEqualTo(1, $"More must align with the header's inner right edge at {geometryLabel}");
-            Math.Abs(viewPreferenceBox!.X + viewPreferenceBox.Width - (moreBox.X + moreBox.Width))
-                .Should()
-                .BeLessThanOrEqualTo(1, $"the view switch and More must share a right edge at {geometryLabel}");
-            Math.Abs(viewPreferenceBox.Height - moreBox.Height)
-                .Should()
-                .BeLessThanOrEqualTo(1, $"the view switch and More must have equal height at {geometryLabel}");
-            Math.Abs(viewFontSize - moreFontSize)
-                .Should()
-                .BeLessThanOrEqualTo(0.1, $"the view switch and More must use equal type size at {geometryLabel}");
-            (width - (launcherBox!.X + launcherBox.Width))
-                .Should()
-                .BeInRange(0, 20, $"the inspector launcher must stay at the app's top-right edge at {geometryLabel}");
-            launcherBox
+            headerBox!
+                .X.Should()
+                .BeApproximately(0, 1, $"the app header must start at the viewport edge at {geometryLabel}");
+            headerBox
+                .Width.Should()
+                .BeApproximately(width, 1, $"the app header must span the viewport at {geometryLabel}");
+            headerBox
                 .Y.Should()
-                .BeInRange(0, 20, $"the inspector launcher must stay at the app top at {geometryLabel}");
+                .BeApproximately(0, 1, $"the app header must stay at the viewport top at {geometryLabel}");
+            (launcherBox!.X + launcherBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    headerBox.X + headerBox.Width,
+                    $"the inspector control must stay in the header at {geometryLabel}"
+                );
+            AssertRectanglesDoNotOverlap(sidebarToggleBox!, titleBox!, $"sidebar control and title at {geometryLabel}");
             AssertRectanglesDoNotOverlap(launcherBox, titleBox!, $"launcher and title at {geometryLabel}");
             AssertRectanglesDoNotOverlap(
                 launcherBox,
-                viewPreferenceBox,
+                viewPreferenceBox!,
                 $"launcher and view switch at {geometryLabel}"
             );
+            AssertRectanglesDoNotOverlap(
+                sidebarToggleBox!,
+                viewPreferenceBox!,
+                $"sidebar control and view switch at {geometryLabel}"
+            );
+
+            var shellBodyBox = await page.GetByTestId("shell-body").BoundingBoxAsync();
+            var mainBox = await page.Locator(".chat-main").BoundingBoxAsync();
+            shellBodyBox.Should().NotBeNull("the body below the app header must be measurable");
+            mainBox.Should().NotBeNull("the transcript panel must be measurable");
+            Math.Abs(shellBodyBox!.Y - (headerBox.Y + headerBox.Height))
+                .Should()
+                .BeLessThanOrEqualTo(1, $"the shell body must begin below the header at {geometryLabel}");
+            if (sidebarCollapsed)
+            {
+                Math.Abs(mainBox!.X - shellBodyBox.X)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        1,
+                        $"a collapsed sidebar must release its horizontal space at {geometryLabel}"
+                    );
+            }
 
             if (width is 1597 or ViewportWidth or 768 or 390)
             {
@@ -387,21 +400,47 @@ public sealed class ChatClientLayoutRegressionTests
             await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeHiddenAsync();
             var closeButton = page.ConversationInspector()
                 .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" });
+            var inspectorBox = await page.ConversationInspector().BoundingBoxAsync();
             var closeBox = await closeButton.BoundingBoxAsync();
             var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();
+            inspectorBox.Should().NotBeNull("the open inspector must have a measurable panel");
             closeBox.Should().NotBeNull("the open inspector must expose a measurable close control");
             inspectorTabsBox.Should().NotBeNull("the inspector tabs must have a measurable layout box");
+            if (width > 1100)
+            {
+                Math.Abs(inspectorBox!.Y - (headerBox.Y + headerBox.Height))
+                    .Should()
+                    .BeLessThanOrEqualTo(1, $"the docked inspector must begin below the app header at {geometryLabel}");
+                (inspectorBox.Y + inspectorBox.Height)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        ViewportHeight + 1,
+                        $"the docked inspector must end inside the viewport at {geometryLabel}"
+                    );
+            }
+            else
+            {
+                inspectorBox!
+                    .X.Should()
+                    .BeGreaterThanOrEqualTo(0, $"the drawer must stay in the viewport at {geometryLabel}");
+                inspectorBox
+                    .Y.Should()
+                    .BeApproximately(0, 1, $"the narrow drawer must cover from the viewport top at {geometryLabel}");
+                (inspectorBox.X + inspectorBox.Width)
+                    .Should()
+                    .BeLessThanOrEqualTo(width + 1, $"the drawer must stay in the viewport at {geometryLabel}");
+            }
             Math.Abs(closeBox!.X - launcherBox.X)
                 .Should()
                 .BeLessThanOrEqualTo(
                     1,
-                    $"opening the inspector must not move the top-right control at {geometryLabel}"
+                    $"opening the inspector must preserve the top-right control x at {geometryLabel}"
                 );
             Math.Abs(closeBox.Y - launcherBox.Y)
                 .Should()
                 .BeLessThanOrEqualTo(
                     1,
-                    $"opening the inspector must not move the top-right control at {geometryLabel}"
+                    $"opening the inspector must preserve the top-right control y at {geometryLabel}"
                 );
             Math.Abs(closeBox.Width - launcherBox.Width)
                 .Should()
@@ -412,12 +451,15 @@ public sealed class ChatClientLayoutRegressionTests
                     1,
                     $"open and closed inspector controls must have equal height at {geometryLabel}"
                 );
-            (closeBox.Y + closeBox.Height)
-                .Should()
-                .BeLessThanOrEqualTo(
-                    inspectorTabsBox!.Y,
-                    $"the fixed-size inspector close control must not overlap its tabs at {geometryLabel}"
-                );
+            if (width <= 1100)
+            {
+                (closeBox.Y + closeBox.Height)
+                    .Should()
+                    .BeLessThanOrEqualTo(
+                        inspectorTabsBox!.Y,
+                        $"the narrow drawer close control must not overlap its tabs at {geometryLabel}"
+                    );
+            }
             await page.Keyboard.PressAsync("Escape");
             await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
             await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();
