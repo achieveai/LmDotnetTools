@@ -454,6 +454,11 @@ function openInspector(): void {
   inspectorOpen.value = true;
 }
 
+function toggleInspector(): void {
+  if (inspectorOpen.value) closeInspector();
+  else openInspector();
+}
+
 function closeInspector(restoreFocus = true): void {
   inspectorOpen.value = false;
   if (restoreFocus) void nextTick(() => inspectorLauncherRef.value?.focus());
@@ -1089,15 +1094,15 @@ onBeforeUnmount(() => {
           @clear="clearMessages"
         />
         <button
-          v-show="!inspectorOpen"
+          id="conversation-inspector-toggle"
           ref="inspectorLauncherRef"
-          class="inspector-launcher"
+          :class="['inspector-launcher', { 'above-inspector-overlay': inspectorOpen }]"
           data-testid="conversation-inspector-launcher"
-          aria-label="Open Work and agents"
-          title="Open Work and agents"
+          :aria-label="`${inspectorOpen ? 'Close' : 'Open'} Work and agents`"
+          :title="`${inspectorOpen ? 'Close' : 'Open'} Work and agents`"
           aria-controls="conversation-inspector"
           :aria-expanded="inspectorOpen"
-          @click="openInspector"
+          @click="toggleInspector"
         >
           <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
             <rect x="2.5" y="3" width="15" height="14" rx="2" />
@@ -1330,6 +1335,7 @@ onBeforeUnmount(() => {
       :has-work="hasTodoBoard"
       :children="subAgentChildren"
       :active-conversation-tab-id="activeTabId"
+      external-close-control-id="conversation-inspector-toggle"
       @close="closeInspector"
       @select-section="inspectorSection = $event"
       @open-artifact="openArtifactPreview"
@@ -1550,6 +1556,11 @@ onBeforeUnmount(() => {
 
 .inspector-launcher {
   position: static;
+}
+
+.inspector-launcher.above-inspector-overlay {
+  position: relative;
+  z-index: 102;
 }
 
 .sidebar-toggle:focus-visible,

@@ -97,6 +97,33 @@ describe('ConversationInspector', () => {
     expect(document.activeElement).toBe(activeTab.element);
   });
 
+  it('uses an external header close as the overlay focus boundary when provided', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
+    const externalClose = document.createElement('button');
+    externalClose.id = 'external-inspector-close';
+    document.body.appendChild(externalClose);
+    const wrapper = mountInspector({
+      tasks: [],
+      hasWork: false,
+      externalCloseControlId: externalClose.id,
+    });
+    await wrapper.vm.$nextTick();
+    const activeTab = wrapper.findAll('[role="tab"]')[0];
+
+    expect(wrapper.find('.inspector-close').exists()).toBe(false);
+    await activeTab.trigger('keydown', { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(externalClose);
+    externalClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(activeTab.element);
+    externalClose.focus();
+    externalClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(activeTab.element);
+    await activeTab.trigger('keydown', { key: 'Tab' });
+    expect(document.activeElement).toBe(externalClose);
+    await activeTab.trigger('keydown', { key: 'Escape' });
+    expect(wrapper.emitted('close')).toHaveLength(1);
+  });
+
   it('closes on Escape and emits selected agents through the existing row', async () => {
     const wrapper = mountInspector({ activeSection: 'agents' });
     await wrapper.get('[data-testid="conversation-inspector"]').trigger('keydown', { key: 'Escape' });
