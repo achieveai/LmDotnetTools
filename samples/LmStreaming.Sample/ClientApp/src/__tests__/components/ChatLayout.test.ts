@@ -814,11 +814,10 @@ describe('ChatLayout provider placement', () => {
     const wrapper = mountLayout();
     await flushPromises();
 
-    const context = wrapper.get('.header-context');
-    expect(context.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
-    expect(context.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
-    expect(context.get('[data-testid="header-actions-stub"]').text()).toBe('More');
-    expect(context.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+    const headerActions = wrapper.get('.app-header-right [data-testid="header-actions-stub"]');
+    expect(headerActions.text()).toBe('More');
+    expect(wrapper.find('.chat-context-header').exists()).toBe(false);
+    expect(wrapper.find('.header-context').exists()).toBe(false);
 
     const provider = wrapper.get('[data-testid="provider-selector-stub"]');
     const rootComposer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');

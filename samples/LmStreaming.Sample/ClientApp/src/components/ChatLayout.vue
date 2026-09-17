@@ -959,6 +959,17 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="!focusMode" class="app-header-right">
+        <HeaderActionsMenu
+          ref="headerActionsMenuRef"
+          :files-disabled="!currentThreadId"
+          :share-disabled="!currentThreadId"
+          :clear-disabled="chatLoading"
+          @open-marketplaces="openHeaderActionModal('marketplace')"
+          @open-egress="openHeaderActionModal('egress')"
+          @open-files="openHeaderActionModal('files')"
+          @open-share="openHeaderActionModal('share')"
+          @clear="clearMessages"
+        />
         <button
           v-show="!inspectorOpen"
           ref="inspectorLauncherRef"
@@ -1008,22 +1019,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="chat-view">
-        <header v-if="!focusMode" class="chat-context-header">
-          <div class="header-context">
-            <HeaderActionsMenu
-              ref="headerActionsMenuRef"
-              :files-disabled="!currentThreadId"
-              :share-disabled="!currentThreadId"
-              :clear-disabled="chatLoading"
-              @open-marketplaces="openHeaderActionModal('marketplace')"
-              @open-egress="openHeaderActionModal('egress')"
-              @open-files="openHeaderActionModal('files')"
-              @open-share="openHeaderActionModal('share')"
-              @clear="clearMessages"
-            />
-          </div>
-        </header>
-
         <MarketplaceModal
           v-if="marketplaceModalOpen"
           @close="closeMarketplaceModal"
@@ -1265,6 +1260,7 @@ onBeforeUnmount(() => {
 
 .app-header-right {
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .app-header h1 {
@@ -1321,32 +1317,6 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.chat-context-header {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 10px 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #f8f9fa;
-  min-width: 0;
-}
-
-.header-context {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-}
-
-.header-context {
-  flex-wrap: wrap;
-}
-
-.header-context :deep(.header-actions-menu) {
-  margin-left: auto;
 }
 
 .sidebar-toggle,
