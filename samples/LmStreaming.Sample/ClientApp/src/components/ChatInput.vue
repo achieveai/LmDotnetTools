@@ -52,10 +52,13 @@ function handleKeydown(event: KeyboardEvent) {
           @keydown="handleKeydown"
         />
       </div>
+      <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
+        Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
+      </p>
       <div class="composer-footer" data-testid="chat-input-footer">
-        <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
-          Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
-        </p>
+        <div v-if="$slots['mode-control']" class="composer-mode" data-testid="chat-input-mode-control">
+          <slot name="mode-control" />
+        </div>
         <div class="composer-actions" data-testid="chat-input-actions">
           <slot name="context-control" />
           <button
@@ -166,7 +169,7 @@ textarea:disabled {
 
 .composer-footer {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -182,6 +185,28 @@ textarea:disabled {
   justify-content: flex-end;
   gap: 6px;
   margin-left: auto;
+}
+
+.composer-mode {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  position: relative;
+  z-index: 5;
+}
+
+.composer-mode :deep(.selector-btn) {
+  width: 100%;
+  max-width: 220px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.composer-mode :deep(.selector-btn:hover:not(:disabled)) {
+  background: #f1f2f4;
 }
 
 .composer-actions :deep(.provider-selector) {
@@ -212,9 +237,7 @@ textarea:disabled {
 }
 
 .input-hint {
-  flex: 1 1 230px;
-  min-width: 0;
-  margin: 0 4px;
+  margin: -2px 4px 0;
   color: #818892;
   font-size: 11px;
   line-height: 1.35;
@@ -250,12 +273,12 @@ button:focus-visible {
     padding-inline: 16px;
   }
 
-  .input-hint {
-    flex-basis: 165px;
+  .composer-actions :deep(.selector-btn) {
+    max-width: 42vw;
   }
 
-  .composer-actions :deep(.selector-btn) {
-    max-width: 48vw;
+  .composer-mode :deep(.selector-btn) {
+    max-width: 100%;
   }
 }
 

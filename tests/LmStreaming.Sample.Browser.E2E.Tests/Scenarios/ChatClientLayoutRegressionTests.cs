@@ -124,8 +124,8 @@ public sealed class ChatClientLayoutRegressionTests
         await page.GetByTestId("egress-auth-button").PressAsync("Escape");
         await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
 
-        // Menu items are roving-focus targets rather than independent tab stops. Tab and Shift+Tab
-        // close the menu and continue from More to the natural controls on either side.
+        // Menu items are roving-focus targets rather than independent tab stops. Tab closes the
+        // menu and continues from More to the composer textarea.
         await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
         await page.MarketplaceButton().PressAsync("Tab");
         await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
@@ -135,7 +135,14 @@ public sealed class ChatClientLayoutRegressionTests
         await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
         await page.MarketplaceButton().PressAsync("Shift+Tab");
         await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
-        await Assertions.Expect(page.ModeSelectorButton()).ToBeFocusedAsync();
+
+        // Mode now lives at the bottom-left of the root composer. Exercise the real menu option,
+        // rather than checking only its DOM bounds: an overflow-clipped upward menu can report as
+        // visible while still being impossible for a user to click.
+        await page.ModeSelectorButton().FocusAsync();
+        await page.ModeSelectorButton().PressAsync("Enter");
+        await page.ModeOption("default").ClickAsync();
+        await Assertions.Expect(page.ModeOption("default")).ToHaveCountAsync(0);
 
         // Open a fresh conversation, then run the scripted plan to completion so every pill and the
         // long final text are rendered before we measure layout.

@@ -989,18 +989,6 @@ onBeforeUnmount(() => {
       <div v-else class="chat-view">
         <header v-if="!focusMode" class="chat-context-header">
           <div class="header-context">
-            <ModeSelector
-              :modes="modes"
-              :current-mode-id="currentModeId"
-              :tools="availableTools"
-              :is-loading="modesLoading"
-              :disabled="modeSwitchDisabled"
-              @select-mode="handleSelectMode"
-              @create-mode="handleCreateMode"
-              @update-mode="handleUpdateMode"
-              @delete-mode="handleDeleteMode"
-              @copy-mode="handleCopyMode"
-            />
             <HeaderActionsMenu
               ref="headerActionsMenuRef"
               :files-disabled="!currentThreadId"
@@ -1118,6 +1106,20 @@ onBeforeUnmount(() => {
             @send="handleSend"
             @cancel="handleCancel"
           >
+            <template v-if="!focusMode" #mode-control>
+              <ModeSelector
+                :modes="modes"
+                :current-mode-id="currentModeId"
+                :tools="availableTools"
+                :is-loading="modesLoading"
+                :disabled="modeSwitchDisabled"
+                @select-mode="handleSelectMode"
+                @create-mode="handleCreateMode"
+                @update-mode="handleUpdateMode"
+                @delete-mode="handleDeleteMode"
+                @copy-mode="handleCopyMode"
+              />
+            </template>
             <template v-if="currentThreadId === null && !focusMode" #project-control>
               <WorkspaceSelector
                 ref="workspaceSelectorRef"

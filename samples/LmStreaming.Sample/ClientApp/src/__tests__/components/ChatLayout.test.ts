@@ -549,7 +549,7 @@ describe('ChatLayout inspector agent selection', () => {
           MessageList: true,
           PendingMessageQueue: true,
           PendingQuestionDock: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
         },
       },
     });
@@ -633,7 +633,7 @@ describe('ChatLayout mode switching', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -660,7 +660,7 @@ describe('ChatLayout mode switching', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -693,7 +693,7 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -788,22 +788,25 @@ describe('ChatLayout provider placement', () => {
     sharedMocks.subAgentChildren = [];
   });
 
-  it('keeps Mode and More in context while placing Provider before root Send', async () => {
+  it('places one Mode on the root composer left and Provider before Send on the right', async () => {
     const wrapper = mountLayout();
     await flushPromises();
 
     const context = wrapper.get('.header-context');
     expect(context.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
-    expect(context.get('[data-testid="mode-selector-stub"]').text()).toBe('Mode');
+    expect(context.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
     expect(context.get('[data-testid="header-actions-stub"]').text()).toBe('More');
     expect(context.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
 
     const provider = wrapper.get('[data-testid="provider-selector-stub"]');
     const rootComposer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
+    const mode = rootComposer.get('[data-testid="chat-input-mode-control"]');
+    expect(mode.get('[data-testid="mode-selector-stub"]').text()).toBe('Mode');
     const actions = rootComposer.get('[data-testid="chat-input-actions"]');
     expect(actions.get('[data-testid="provider-selector-stub"]').element).toBe(provider.element);
     expect(provider.element.nextElementSibling).toBe(actions.get('[data-testid="send-button"]').element);
     expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="mode-selector-stub"]')).toHaveLength(1);
   });
 
   it('does not add the root provider control to the sub-agent composer', async () => {
@@ -814,7 +817,9 @@ describe('ChatLayout provider placement', () => {
 
     const childComposer = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input"]');
     expect(childComposer.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+    expect(childComposer.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
     expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="mode-selector-stub"]')).toHaveLength(1);
   });
 });
 
@@ -959,7 +964,9 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: { template: '<div><slot name="context-control" /></div>' },
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
           ProviderSelector: {
             props: ['disabled'],
             template:
@@ -1269,7 +1276,9 @@ describe('ChatLayout client-tool question gating (#246)', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: { template: '<div><slot name="context-control" /></div>' },
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
           ModeSelector: {
             props: ['disabled'],
             template: '<button data-test="mode-select" :disabled="disabled">Mode</button>',

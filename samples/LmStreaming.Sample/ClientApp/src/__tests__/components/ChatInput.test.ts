@@ -11,6 +11,7 @@ const HINT = '[data-testid="chat-input-hint"]';
 const FOOTER = '[data-testid="chat-input-footer"]';
 const ACTIONS = '[data-testid="chat-input-actions"]';
 const PROJECT = '[data-testid="chat-input-project-control"]';
+const MODE = '[data-testid="chat-input-mode-control"]';
 
 describe('ChatInput button states', () => {
   it('gives the composer a label and associates its keyboard hint', async () => {
@@ -35,7 +36,7 @@ describe('ChatInput button states', () => {
     expect((textarea.element as HTMLTextAreaElement).value).toBe('first line');
   });
 
-  it('places an optional context control beside and immediately before the send control', () => {
+  it('places an optional context control immediately before Send on the right', () => {
     const wrapper = mount(ChatInput, {
       props: { streaming: false },
       slots: {
@@ -48,10 +49,31 @@ describe('ChatInput button states', () => {
     const contextControl = actions.get('[data-testid="context-control"]');
     const send = actions.get(SEND);
 
-    expect(footer.get(HINT).text()).toContain('Enter to send');
+    expect(wrapper.get(HINT).text()).toContain('Enter to send');
+    expect(footer.find(HINT).exists()).toBe(false);
     expect(contextControl.element.nextElementSibling).toBe(send.element);
     expect(wrapper.get(TEXTAREA).element.compareDocumentPosition(footer.element)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  });
+
+  it('places an optional mode control on the left outside the Provider and Send actions', () => {
+    const wrapper = mount(ChatInput, {
+      props: { streaming: false },
+      slots: {
+        'mode-control': '<button data-testid="mode-picker">Full access</button>',
+        'context-control': '<button data-testid="context-control">Provider</button>',
+      },
+    });
+
+    const footer = wrapper.get(FOOTER);
+    const mode = footer.get(MODE);
+    const actions = footer.get(ACTIONS);
+    expect(mode.get('[data-testid="mode-picker"]').text()).toBe('Full access');
+    expect(mode.element.nextElementSibling).toBe(actions.element);
+    expect(actions.find('[data-testid="mode-picker"]').exists()).toBe(false);
+    expect(actions.get('[data-testid="context-control"]').element.nextElementSibling).toBe(
+      actions.get(SEND).element
     );
   });
 
@@ -59,6 +81,7 @@ describe('ChatInput button states', () => {
     const wrapper = mount(ChatInput, { props: { streaming: false } });
 
     expect(wrapper.get(ACTIONS).find('[data-testid="context-control"]').exists()).toBe(false);
+    expect(wrapper.find(MODE).exists()).toBe(false);
     expect(wrapper.get(ACTIONS).get(SEND).attributes('aria-label')).toBe('Send message');
   });
 

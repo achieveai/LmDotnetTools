@@ -61,7 +61,7 @@ public static class UiHelpers
     /// <summary>New-chat button in the sidebar.</summary>
     public static ILocator NewChatButton(this IPage page)
     {
-        return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "+ New Chat" });
+        return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "New Chat", Exact = true });
     }
 
     /// <summary>All conversation list items in the sidebar (one per started conversation).</summary>
@@ -211,7 +211,7 @@ public static class UiHelpers
             );
     }
 
-    /// <summary>Mode selector button in the header.</summary>
+    /// <summary>Mode selector button in the root composer.</summary>
     public static ILocator ModeSelectorButton(this IPage page)
     {
         return page.GetByTestId("mode-selector-button");
@@ -223,7 +223,7 @@ public static class UiHelpers
         return page.GetByTestId($"mode-option-{modeId}");
     }
 
-    /// <summary>Provider selector button in the header (a dropdown when idle; disabled while streaming).</summary>
+    /// <summary>Provider selector button in the root composer (a dropdown when idle; disabled while streaming).</summary>
     public static ILocator ProviderSelectorButton(this IPage page)
     {
         return page.GetByTestId("provider-selector-button");
