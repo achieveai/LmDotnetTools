@@ -37,6 +37,16 @@ describe('ConversationInspector', () => {
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
   });
 
+  it('uses an icon-only close control with a clear accessible name and tooltip', () => {
+    const wrapper = mountInspector();
+    const close = wrapper.get('.inspector-close');
+
+    expect(close.attributes('aria-label')).toBe('Close Work and agents');
+    expect(close.attributes('title')).toBe('Close Work and agents');
+    expect(close.text()).toBe('');
+    expect(close.find('svg[aria-hidden="true"]').exists()).toBe(true);
+  });
+
   it('shows exactly one embedded renderer and preserves artifact events', async () => {
     const wrapper = mountInspector();
     expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);

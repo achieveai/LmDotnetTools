@@ -112,7 +112,17 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
     >
       <header class="inspector-header">
         <h2 id="conversation-inspector-title">Work &amp; agents</h2>
-        <button class="inspector-close" aria-label="Close Work and agents" @click="emit('close')">×</button>
+        <button
+          class="inspector-close"
+          aria-label="Close Work and agents"
+          title="Close Work and agents"
+          @click="emit('close')"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M12.5 3v14" />
+          </svg>
+        </button>
       </header>
       <div class="inspector-tabs" role="tablist" aria-label="Conversation details" @keydown="onTabKeydown">
         <button
@@ -159,6 +169,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 
 <style scoped>
 .conversation-inspector {
+  position: relative;
   width: 320px;
   min-width: 300px;
   height: 100%;
@@ -190,9 +201,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 
 .inspector-header {
   display: flex;
+  min-height: 54px;
+  box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px 8px;
+  padding: 12px 54px 8px 14px;
 }
 
 .inspector-header h2 {
@@ -201,12 +214,39 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 }
 
 .inspector-close {
-  border: 0;
-  background: transparent;
-  padding: 4px 8px;
-  font-size: 24px;
-  line-height: 1;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #394553;
   cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.inspector-close svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.inspector-close:hover {
+  border-color: #aeb7c2;
+  background: #eef1f4;
+}
+
+.inspector-close:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
 }
 
 .inspector-tabs {

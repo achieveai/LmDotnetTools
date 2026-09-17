@@ -907,7 +907,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="chat-view">
         <header class="chat-header">
-          <div class="header-primary">
+          <div :class="['header-primary', { 'has-inspector-launcher': !focusMode }]">
             <button
               v-if="sidebarCollapsed && !focusMode"
               class="menu-btn"
@@ -946,14 +946,20 @@ onBeforeUnmount(() => {
             </div>
             <button
               v-if="!focusMode"
+              v-show="!inspectorOpen"
               ref="inspectorLauncherRef"
               class="inspector-launcher"
               data-testid="conversation-inspector-launcher"
+              aria-label="Open Work and agents"
+              title="Open Work and agents"
               aria-controls="conversation-inspector"
               :aria-expanded="inspectorOpen"
-              @click="inspectorOpen ? closeInspector() : openInspector()"
+              @click="openInspector"
             >
-              Work &amp; agents
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <rect x="2.5" y="3" width="15" height="14" rx="2" />
+                <path d="M12.5 3v14" />
+              </svg>
             </button>
           </div>
           <div v-if="!focusMode" class="header-context">
@@ -1162,6 +1168,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chat-layout {
+  position: relative;
   display: flex;
   height: 100vh;
   overflow: hidden;
@@ -1215,10 +1222,19 @@ onBeforeUnmount(() => {
 
 .header-primary {
   justify-content: space-between;
+  box-sizing: border-box;
+}
+
+.header-primary.has-inspector-launcher {
+  padding-right: 42px;
 }
 
 .header-context {
   flex-wrap: wrap;
+}
+
+.header-context :deep(.header-actions-menu) {
+  margin-left: auto;
 }
 
 .menu-btn {
@@ -1306,25 +1322,35 @@ onBeforeUnmount(() => {
 }
 
 .inspector-launcher {
-  padding: 7px 12px;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 30;
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 1px solid #cbd1d8;
   border-radius: 6px;
   background: #fff;
   color: #394553;
-  font-size: 14px;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
+}
+
+.inspector-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
 }
 
 .inspector-launcher:hover {
   border-color: #aeb7c2;
   background: #eef1f4;
-}
-
-.inspector-launcher[aria-expanded='true'] {
-  border-color: #9bb7e8;
-  background: #e8f0fc;
-  color: #174ea6;
 }
 
 .inspector-launcher:focus-visible {

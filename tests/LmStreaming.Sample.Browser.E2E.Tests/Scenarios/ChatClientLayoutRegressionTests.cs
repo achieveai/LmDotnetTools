@@ -180,12 +180,72 @@ public sealed class ChatClientLayoutRegressionTests
         // shell clip and re-introduce the whole-page scrollbar.
         await AssertPageDoesNotScrollAsync(page, "with every tool pill expanded (largest sr-only leak)");
 
-        // The compact action menu must remain on-screen without introducing document overflow from
-        // phone width through the preview and desktop widths. Keyboard navigation skips no enabled
-        // action: ArrowDown opens on Marketplaces, End reaches Clear, and Escape restores the trigger.
-        foreach (var width in new[] { 390, 768, 946, ViewportWidth })
+        // More belongs to the centered header's context row, while the inspector toggle belongs to
+        // the app chrome at the top-right. Prove both positions in a real renderer from phone width
+        // through the user's 1597px desktop viewport. Opening the inspector replaces its launcher
+        // with an equal-size close control at the same screen coordinates, so the affordance does
+        // not jump as the panel changes the available transcript width.
+        foreach (var width in new[] { 390, 768, 946, ViewportWidth, 1597 })
         {
             await page.SetViewportSizeAsync(width, ViewportHeight);
+
+            var headerBox = await page.Locator(".chat-header").BoundingBoxAsync();
+            var moreBox = await page.HeaderActionsMenuButton().BoundingBoxAsync();
+            var launcherBox = await page.ConversationInspectorLauncher().BoundingBoxAsync();
+            var headingBox = await page.Locator(".header-heading").BoundingBoxAsync();
+            var headerPaddingRight = await page.Locator(".chat-header")
+                .EvaluateAsync<double>("el => parseFloat(getComputedStyle(el).paddingRight)");
+
+            headerBox.Should().NotBeNull("the centered transcript header must have a measurable layout box");
+            moreBox.Should().NotBeNull("More must remain visible in the header context row");
+            launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible at app top-right");
+            headingBox.Should().NotBeNull("the title and view controls must have a measurable layout box");
+
+            Math.Abs(moreBox!.X + moreBox.Width - (headerBox!.X + headerBox.Width - headerPaddingRight))
+                .Should()
+                .BeLessThanOrEqualTo(1, $"More must align with the header's inner right edge at {width}px");
+            (width - (launcherBox!.X + launcherBox.Width))
+                .Should()
+                .BeInRange(0, 20, $"the inspector launcher must stay at the app's top-right edge at {width}px");
+            launcherBox.Y.Should().BeInRange(0, 20, $"the inspector launcher must stay at the app top at {width}px");
+            launcherBox
+                .X.Should()
+                .BeGreaterThanOrEqualTo(
+                    headingBox!.X + headingBox.Width,
+                    $"the inspector launcher must not overlap the title or view controls at {width}px"
+                );
+
+            await page.ConversationInspectorLauncher().ClickAsync();
+            await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
+            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeHiddenAsync();
+            var closeButton = page.ConversationInspector()
+                .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" });
+            var closeBox = await closeButton.BoundingBoxAsync();
+            var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();
+            closeBox.Should().NotBeNull("the open inspector must expose a measurable close control");
+            inspectorTabsBox.Should().NotBeNull("the inspector tabs must have a measurable layout box");
+            Math.Abs(closeBox!.X - launcherBox.X)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"opening the inspector must not move the top-right control at {width}px");
+            Math.Abs(closeBox.Y - launcherBox.Y)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"opening the inspector must not move the top-right control at {width}px");
+            Math.Abs(closeBox.Width - launcherBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal width at {width}px");
+            Math.Abs(closeBox.Height - launcherBox.Height)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"open and closed inspector controls must have equal height at {width}px");
+            (closeBox.Y + closeBox.Height)
+                .Should()
+                .BeLessThanOrEqualTo(
+                    inspectorTabsBox!.Y,
+                    $"the fixed-size inspector close control must not overlap its tabs at {width}px"
+                );
+            await page.Keyboard.PressAsync("Escape");
+            await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
+            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();
+
             await page.HeaderActionsMenuButton().FocusAsync();
             await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
             await Assertions.Expect(page.MarketplaceButton()).ToBeFocusedAsync();

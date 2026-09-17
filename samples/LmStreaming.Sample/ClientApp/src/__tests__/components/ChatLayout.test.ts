@@ -419,7 +419,13 @@ describe('ChatLayout view preference', () => {
     expect((wrapper.get('[data-testid="view-preference-consumer"]').element as HTMLInputElement).checked).toBe(true);
     expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(false);
     expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(false);
-    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').attributes('aria-expanded')).toBe('false');
+    const launcher = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    expect(launcher.attributes('aria-expanded')).toBe('false');
+    expect(launcher.attributes('aria-label')).toBe('Open Work and agents');
+    expect(launcher.attributes('title')).toBe('Open Work and agents');
+    expect(launcher.text()).toBe('');
+    expect(launcher.find('svg[aria-hidden="true"]').exists()).toBe(true);
+    expect(launcher.element.closest('.header-primary')).not.toBeNull();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
   });
 
@@ -481,11 +487,17 @@ describe('ChatLayout view preference', () => {
     const composer = wrapper.get('[data-testid="chat-input-textarea"]').element;
     await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
-    await wrapper.get('.inspector-close').trigger('click');
+    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(false);
+    const close = wrapper.get('.inspector-close');
+    expect(close.attributes('aria-label')).toBe('Close Work and agents');
+    expect(close.attributes('title')).toBe('Close Work and agents');
+    expect(close.find('svg[aria-hidden="true"]').exists()).toBe(true);
+    await close.trigger('click');
     await flushPromises();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
     expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
     expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
+    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(true);
     expect(document.activeElement).toBe(wrapper.get('[data-testid="conversation-inspector-launcher"]').element);
     wrapper.unmount();
   });
