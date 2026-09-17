@@ -95,7 +95,11 @@ const hasFailure = computed(() => toolStates.value.some((state) => state.state =
       data-testid="turn-activity-details"
     >
       <template v-for="item in items" :key="item.id">
-        <MetadataPill v-if="item.type === 'pill'" :items="item.items" />
+        <MetadataPill
+          v-if="item.type === 'pill'"
+          :items="item.items"
+          presentation="activity-row"
+        />
         <NotificationPill
           v-else-if="item.type === 'notification'"
           :notification="item.notification"
