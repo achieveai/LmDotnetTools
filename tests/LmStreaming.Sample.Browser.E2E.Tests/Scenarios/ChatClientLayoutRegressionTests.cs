@@ -201,6 +201,60 @@ public sealed class ChatClientLayoutRegressionTests
         // shell clip and re-introduce the whole-page scrollbar.
         await AssertPageDoesNotScrollAsync(page, "with every tool pill expanded (largest sr-only leak)");
 
+        // The desktop panel separators are real input controls, not decorative gutters. Exercise
+        // pointer capture on the projects side, keyboard input on the workspace side, persistence
+        // across a full Vue reload, and the documented double-click reset before the viewport matrix.
+        await page.SetViewportSizeAsync(1597, ViewportHeight);
+        var sidebarForResize = page.Locator(".conversation-sidebar");
+        if (await sidebarForResize.EvaluateAsync<bool>("el => el.classList.contains('collapsed')"))
+        {
+            await page.GetByTestId("sidebar-toggle").ClickAsync();
+        }
+
+        var projectsSplitter = page.GetByTestId("projects-splitter");
+        await Assertions.Expect(projectsSplitter).ToHaveAttributeAsync("role", "separator");
+        var projectsSplitterBox = await projectsSplitter.BoundingBoxAsync();
+        projectsSplitterBox.Should().NotBeNull("the desktop projects divider must be draggable");
+        await page.Mouse.MoveAsync(
+            projectsSplitterBox!.X + (projectsSplitterBox.Width / 2),
+            projectsSplitterBox.Y + (projectsSplitterBox.Height / 2)
+        );
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(
+            projectsSplitterBox.X + (projectsSplitterBox.Width / 2) + 48,
+            projectsSplitterBox.Y + (projectsSplitterBox.Height / 2)
+        );
+        await page.Mouse.UpAsync();
+        var draggedProjectsWidth = await sidebarForResize.EvaluateAsync<double>(
+            "el => el.getBoundingClientRect().width"
+        );
+        draggedProjectsWidth.Should().BeApproximately(328, 3, "dragging the projects separator must resize the panel");
+
+        await page.ConversationInspectorLauncher().ClickAsync();
+        var workspaceSplitter = page.GetByTestId("workspace-splitter");
+        await workspaceSplitter.FocusAsync();
+        await workspaceSplitter.PressAsync("ArrowLeft");
+        await Assertions.Expect(workspaceSplitter).ToHaveAttributeAsync("aria-valuenow", "328");
+        await workspaceSplitter.PressAsync("ArrowLeft");
+        await Assertions.Expect(workspaceSplitter).ToHaveAttributeAsync("aria-valuenow", "336");
+
+        await page.ReloadAsync();
+        await page.SelectDeveloperViewAsync();
+        await page.SetViewportSizeAsync(1597, ViewportHeight);
+        await Assertions.Expect(sidebarForResize).ToHaveCSSAsync("width", "328px");
+        if (await page.ConversationInspector().CountAsync() == 0)
+        {
+            await page.ConversationInspectorLauncher().ClickAsync();
+        }
+        await Assertions.Expect(page.ConversationInspector()).ToHaveCSSAsync("width", "336px");
+
+        await page.GetByTestId("projects-splitter").DblClickAsync();
+        await page.GetByTestId("workspace-splitter").DblClickAsync();
+        await Assertions.Expect(sidebarForResize).ToHaveCSSAsync("width", "280px");
+        await Assertions.Expect(page.ConversationInspector()).ToHaveCSSAsync("width", "320px");
+        await page.ConversationInspectorLauncher().ClickAsync();
+        await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
+
         // More and the inspector toggle belong together in the app chrome at the top-right. Prove
         // their placement in a real renderer from phone width through the user's 1597px desktop
         // viewport. Opening the inspector replaces its launcher with an equal-size close control at
@@ -429,10 +483,12 @@ public sealed class ChatClientLayoutRegressionTests
             await Assertions.Expect(closeButton).ToHaveAttributeAsync("aria-expanded", "true");
             var inspectorBox = await page.ConversationInspector().BoundingBoxAsync();
             var closeBox = await closeButton.BoundingBoxAsync();
-            var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();
+            var inspectorSectionsBox = await page.ConversationInspector()
+                .GetByRole(AriaRole.Button, new() { Name = "Work" })
+                .BoundingBoxAsync();
             inspectorBox.Should().NotBeNull("the open inspector must have a measurable panel");
             closeBox.Should().NotBeNull("the open inspector must expose a measurable close control");
-            inspectorTabsBox.Should().NotBeNull("the inspector tabs must have a measurable layout box");
+            inspectorSectionsBox.Should().NotBeNull("the inspector disclosures must have a measurable layout box");
             if (width > 1100)
             {
                 Math.Abs(inspectorBox!.Y - (headerBox.Y + headerBox.Height))
@@ -483,10 +539,19 @@ public sealed class ChatClientLayoutRegressionTests
                 (closeBox.Y + closeBox.Height)
                     .Should()
                     .BeLessThanOrEqualTo(
-                        inspectorTabsBox!.Y,
-                        $"the narrow drawer close control must not overlap its tabs at {geometryLabel}"
+                        inspectorSectionsBox!.Y,
+                        $"the narrow drawer close control must not overlap its disclosures at {geometryLabel}"
                     );
             }
+            if (width == 1597)
+            {
+                await session.SaveSuccessScreenshotAsync("ChatClientLayout.workspace_wide");
+            }
+            else if (width == 390)
+            {
+                await session.SaveSuccessScreenshotAsync("ChatClientLayout.workspace_phone");
+            }
+            await AssertPageDoesNotScrollAsync(page, $"with the workspace open at {geometryLabel}");
             await page.Keyboard.PressAsync("Escape");
             await Assertions.Expect(page.ConversationInspector()).ToHaveCountAsync(0);
             await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();

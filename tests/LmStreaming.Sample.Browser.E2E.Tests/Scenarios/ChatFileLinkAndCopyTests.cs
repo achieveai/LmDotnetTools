@@ -6,8 +6,8 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 
 /// <summary>
 /// Assistant-message affordances through the real chat client: the per-bubble Copy button puts the RAW
-/// markdown on the clipboard, a file link opens the preview modal (resolved against the conversation's
-/// workspace), and a web link opens in a new tab instead of navigating the chat away.
+/// markdown on the clipboard, file links open tabbed workspace previews (resolved against the
+/// conversation's workspace), and a web link opens in a new tab instead of navigating the chat away.
 /// </summary>
 /// <remarks>
 /// The deterministic suite has no sandbox gateway, so — like <see cref="FileBrowserTests"/> — the file REST
@@ -89,7 +89,7 @@ public sealed class ChatFileLinkAndCopyTests
                 {
                     var text =
                         query["path"] == "docs/report.md"
-                            ? "# Quarterly report\\n\\nAll good."
+                            ? "# Quarterly report\\n\\nAll good.\\n\\n```mermaid\\ngraph LR; A-->B\\n```"
                             : "name,qty\\nWidget,3\\nBolt,10";
                     await route.FulfillAsync(
                         new RouteFulfillOptions
@@ -153,16 +153,73 @@ public sealed class ChatFileLinkAndCopyTests
         // --- Markdown file link: resolved for this thread, rendered as markdown. ---
         var urlBefore = page.Url;
         await bubble.GetByRole(AriaRole.Link, new() { Name = "report" }).ClickAsync();
-        var modal = page.GetByTestId("artifact-preview-modal");
+        var workspace = page.ConversationInspector();
+        await Assertions.Expect(workspace).ToBeVisibleAsync();
+        var preview = page.GetByTestId("artifact-preview-surface");
         await Assertions
-            .Expect(modal.GetByTestId("artifact-preview-markdown").Locator("h1"))
+            .Expect(preview.GetByTestId("artifact-preview-markdown").Locator("h1"))
             .ToHaveTextAsync("Quarterly report");
-        await Assertions.Expect(modal).ToContainTextAsync("docs/report.md");
-        await Assertions.Expect(modal.GetByTestId("artifact-preview-download")).ToBeVisibleAsync();
+        await Assertions.Expect(preview).ToContainTextAsync("docs/report.md");
+        await Assertions.Expect(preview.GetByTestId("artifact-preview-download")).ToBeVisibleAsync();
+        await Assertions.Expect(preview.GetByTestId("diagram-image")).ToBeVisibleAsync();
         page.Url.Should().Be(urlBefore, "an intercepted file link must not navigate the page");
         await session.SaveSuccessScreenshotAsync("ChatFileLink.Markdown_preview");
-        await page.GetByTestId("artifact-preview-modal-close").ClickAsync();
-        await Assertions.Expect(modal).ToBeHiddenAsync();
+
+        // Work and Agents are independent disclosures: collapsing one leaves the other open.
+        var workDisclosure = workspace.GetByRole(AriaRole.Button, new() { Name = "Work" });
+        var agentsDisclosure = workspace.GetByRole(AriaRole.Button, new() { Name = "Agents 0" });
+        await Assertions.Expect(workDisclosure).ToHaveAttributeAsync("aria-expanded", "true");
+        await Assertions.Expect(agentsDisclosure).ToHaveAttributeAsync("aria-expanded", "true");
+        await workDisclosure.ClickAsync();
+        await Assertions.Expect(workDisclosure).ToHaveAttributeAsync("aria-expanded", "false");
+        await Assertions.Expect(agentsDisclosure).ToHaveAttributeAsync("aria-expanded", "true");
+
+        // A nested diagram dialog consumes the first Escape. The workspace itself remains mounted;
+        // a second Escape closes it and restores focus to its stable header launcher.
+        await preview.GetByTestId("diagram-expand").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("diagram-modal")).ToBeVisibleAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("diagram-modal")).ToHaveCountAsync(0);
+        await Assertions.Expect(workspace).ToBeVisibleAsync();
+
+        // The horizontal separator is keyboard operable and reports the applied size.
+        var previewSplitter = page.GetByTestId("workspace-vertical-splitter");
+        if (await previewSplitter.CountAsync() > 0)
+        {
+            var before = int.Parse((await previewSplitter.GetAttributeAsync("aria-valuenow"))!);
+            await previewSplitter.FocusAsync();
+            await previewSplitter.PressAsync("ArrowUp");
+            await Assertions.Expect(previewSplitter).ToHaveAttributeAsync("aria-valuenow", (before - 8).ToString());
+        }
+
+        // Expanded reading uses the available drawer width at medium and phone breakpoints, then
+        // restores the same mounted monitoring surface instead of rebuilding the workspace.
+        foreach (var width in new[] { 1000, 390 })
+        {
+            await page.SetViewportSizeAsync(width, 800);
+            await preview.GetByTestId("artifact-preview-expand").ClickAsync();
+            var expandedBox = await workspace.BoundingBoxAsync();
+            expandedBox.Should().NotBeNull($"the expanded workspace must be measurable at {width}px");
+            expandedBox!
+                .X.Should()
+                .BeGreaterThanOrEqualTo(0, $"the expanded workspace must stay onscreen at {width}px");
+            (expandedBox.X + expandedBox.Width)
+                .Should()
+                .BeLessThanOrEqualTo(width + 1, $"the expanded workspace must stay inside {width}px");
+            var minimumExpandedRatio = width > 768 ? 0.68f : 0.88f;
+            expandedBox
+                .Width.Should()
+                .BeGreaterThan(
+                    width * minimumExpandedRatio,
+                    $"expanded reading should use the space beside the projects panel at {width}px"
+                );
+            (await page.EvaluateAsync<double>("() => document.documentElement.scrollHeight - window.innerHeight"))
+                .Should()
+                .BeLessThanOrEqualTo(1, $"expanded reading must not create page scrolling at {width}px");
+            await preview.GetByTestId("artifact-preview-expand").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("workspace-monitoring-region")).ToBeVisibleAsync();
+        }
+        await page.SetViewportSizeAsync(1280, 800);
 
         // --- CSV file link: a table. ---
         await bubble.GetByRole(AriaRole.Link, new() { Name = "data" }).ClickAsync();
@@ -171,7 +228,32 @@ public sealed class ChatFileLinkAndCopyTests
         await Assertions.Expect(table.Locator("tbody tr")).ToHaveCountAsync(2);
         await session.SaveSuccessScreenshotAsync("ChatFileLink.Csv_preview");
 
-        resolveRequests.Should().HaveCount(2);
+        var fileTabs = workspace.GetByRole(AriaRole.Tablist, new() { Name = "Open files" });
+        await Assertions.Expect(fileTabs.GetByRole(AriaRole.Tab)).ToHaveCountAsync(2);
+        await bubble.GetByRole(AriaRole.Link, new() { Name = "report" }).ClickAsync();
+        await Assertions.Expect(fileTabs.GetByRole(AriaRole.Tab)).ToHaveCountAsync(2);
+        await Assertions
+            .Expect(fileTabs.GetByRole(AriaRole.Tab, new() { Name = "report.md" }))
+            .ToHaveAttributeAsync("aria-selected", "true");
+        await fileTabs
+            .GetByRole(AriaRole.Tab, new() { Name = "report.md" })
+            .Locator("xpath=..")
+            .Locator(".preview-tab-close")
+            .ClickAsync();
+        await Assertions
+            .Expect(fileTabs.GetByRole(AriaRole.Tab, new() { Name = "items.csv" }))
+            .ToHaveAttributeAsync("aria-selected", "true");
+        await fileTabs
+            .GetByRole(AriaRole.Tab, new() { Name = "items.csv" })
+            .Locator("xpath=..")
+            .Locator(".preview-tab-close")
+            .ClickAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-preview-region")).ToBeHiddenAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-monitoring-region")).ToBeVisibleAsync();
+
+        resolveRequests
+            .Should()
+            .HaveCount(4, "reselecting a tab and revealing the remaining tab fetch only the active preview");
         resolveRequests.Should().OnlyContain(u => u.Contains("/files/resolve?target=", StringComparison.Ordinal));
     }
 }
