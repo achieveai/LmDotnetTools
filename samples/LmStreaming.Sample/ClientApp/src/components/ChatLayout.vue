@@ -1001,7 +1001,11 @@ onBeforeUnmount(() => {
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
         <div v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view">
-          <MessageList :display-items="displayItems" :is-loading="chatLoading" />
+          <MessageList
+            :display-items="displayItems"
+            :is-loading="chatLoading"
+            :view-preference="viewPreference"
+          />
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
@@ -1066,6 +1070,7 @@ onBeforeUnmount(() => {
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
           :submit-client-tool-result="submitToFocusedChild"
+          :view-preference="viewPreference"
           @send="handleSubAgentSend"
         />
       </div>

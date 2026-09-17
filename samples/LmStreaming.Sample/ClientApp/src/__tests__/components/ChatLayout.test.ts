@@ -375,7 +375,10 @@ describe('ChatLayout view preference', () => {
       global: {
         stubs: {
           ConversationSidebar: true,
-          MessageList: { template: '<div data-test="message-list-probe">Transcript</div>' },
+          MessageList: {
+            props: ['viewPreference'],
+            template: '<div data-test="message-list-probe" :data-view="viewPreference">Transcript</div>',
+          },
           PendingMessageQueue: true,
           PendingQuestionDock: true,
           ContextCostPanel: { template: '<div data-testid="context-cost-panel">Context</div>' },
@@ -443,6 +446,7 @@ describe('ChatLayout view preference', () => {
     const composer = composerWrapper.element;
 
     await wrapper.get('[data-testid="view-preference-developer"]').setValue(true);
+    expect(wrapper.get('[data-test="message-list-probe"]').attributes('data-view')).toBe('developer');
     await wrapper.get('[data-testid="view-preference-consumer"]').setValue(true);
 
     expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
