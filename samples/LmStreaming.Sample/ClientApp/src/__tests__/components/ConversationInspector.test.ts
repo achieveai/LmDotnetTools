@@ -54,6 +54,15 @@ describe('ConversationInspector', () => {
     expect(wrapper.emitted('closePreview')).toEqual([[tabs[0].id]]);
   });
 
+  it('labels the shared preview panel with the active tab and updates when it changes (F-002, #784)', async () => {
+    const tabs = [{ id: 'path:a.md', label: 'a.md', path: 'docs/a.md' }, { id: 'path:b.md', label: 'b.md', path: 'docs/b.md' }];
+    const wrapper = mountInspector({ previewTabs: tabs, activePreviewId: tabs[0].id });
+    expect(wrapper.get('#workspace-preview-panel').attributes('aria-labelledby')).toBe('preview-tab-0');
+
+    await wrapper.setProps({ activePreviewId: tabs[1].id });
+    expect(wrapper.get('#workspace-preview-panel').attributes('aria-labelledby')).toBe('preview-tab-1');
+  });
+
   it('uses a drawer at 1100px and no vertical splitter there', async () => {
     const wrapper = mountInspector({ previewTabs: [{ id: 'a', label: 'a', path: 'a' }], activePreviewId: 'a' });
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1100 });

@@ -322,6 +322,9 @@ describe('ArtifactPreviewModal — chat file links (target resolved on the serve
     );
     expect(wrapper.get('[data-testid="artifact-preview-markdown"]').find('h1').text()).toBe('Report');
     expect(wrapper.get('[data-testid="artifact-preview-modal"]').text()).toContain('docs/report.md');
+    // F-001 (#784): the parent needs the server-resolved path to reconcile this tab's identity
+    // against a tab already open for the same file via a `path` opener.
+    expect(wrapper.emitted('resolved')).toEqual([['docs/report.md']]);
   });
 
   it.each([

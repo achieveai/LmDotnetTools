@@ -295,6 +295,14 @@ type FilePreviewRequest = { id: string; path: string; target?: undefined; label:
 const previewTabs = ref<FilePreviewRequest[]>([]);
 const activePreviewId = ref<string | null>(null);
 const artifactPreview = computed(() => previewTabs.value.find((tab) => tab.id === activePreviewId.value) ?? null);
+// F-003 (#784): a computed instead of an inline template `.map()` — ConversationInspector's own props
+// (like `previewHeight`, updated on every splitter `pointermove`) re-render this component constantly
+// while dragging, and an inline map would rebuild a brand-new tab array and tab objects on every one
+// of those renders even though the tabs themselves did not change. This only recomputes when
+// `previewTabs` itself does.
+const previewTabSummaries = computed(() =>
+  previewTabs.value.map((tab) => ({ id: tab.id, label: tab.label, path: tab.path ?? tab.target }))
+);
 
 function previewLabel(value: string): string {
   const parts = value.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -314,6 +322,27 @@ function addPreview(request: { path: string } | { target: string }): void {
 
 function openArtifactPreview(path: string): void {
   addPreview({ path });
+}
+
+// F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) never agree on
+// the same raw id even when they resolve to the identical workspace file — `target` is only resolved
+// to a canonical path by the server, inside ArtifactPreviewModal, once it mounts for the active tab.
+// Rather than resolving `target` here (that stays server-owned) or blocking the tab open on the
+// resolve round trip, the modal reports its resolved path back once known and this reconciles the
+// tab's id onto it: dedupe into an existing canonical tab if one is already open, otherwise rename
+// this tab in place (as a resolved `path` tab) so a later opener for the same file matches it.
+function reconcilePreviewResolution(tabId: string, resolvedPath: string): void {
+  const canonicalId = `path:${resolvedPath}`;
+  if (canonicalId === tabId) return;
+  const tabIndex = previewTabs.value.findIndex((tab) => tab.id === tabId);
+  if (tabIndex === -1) return;
+  const existingIndex = previewTabs.value.findIndex((tab) => tab.id === canonicalId);
+  if (existingIndex !== -1) {
+    previewTabs.value.splice(tabIndex, 1);
+  } else {
+    previewTabs.value[tabIndex] = { id: canonicalId, path: resolvedPath, label: previewLabel(resolvedPath) };
+  }
+  if (activePreviewId.value === tabId) activePreviewId.value = canonicalId;
 }
 
 // Provided to every TextMessage below (main chat and sub-agent transcripts). A link rendered for an
@@ -515,32 +544,20 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
+// F-003 (#784): these only update the live in-memory value now. Persisting to `localStorage` moved
+// onto the driving PanelSplitter itself (`persist-key`), which flushes once per gesture instead of on
+// every `pointermove` tick these setters used to receive.
 function setSidebarWidth(value: number): void {
   sidebarWidth.value = clamp(value, 220, desktopLeftMax.value);
-  try {
-    localStorage.setItem(LEFT_WIDTH_KEY, String(sidebarWidth.value));
-  } catch {
-    // Storage is optional.
-  }
 }
 
 function setInspectorWidth(value: number): void {
   inspectorWidth.value = clamp(value, 300, desktopRightMax.value);
   hasWorkspaceWidthPreference.value = true;
-  try {
-    localStorage.setItem(RIGHT_WIDTH_KEY, String(inspectorWidth.value));
-  } catch {
-    // Storage is optional.
-  }
 }
 
 function setPreviewHeight(value: number): void {
   previewHeight.value = clamp(value, 180, previewMaxHeight.value);
-  try {
-    localStorage.setItem(PREVIEW_HEIGHT_KEY, String(previewHeight.value));
-  } catch {
-    // Storage is optional.
-  }
 }
 function closePreview(id: string): void {
   const index = previewTabs.value.findIndex((tab) => tab.id === id);
@@ -1262,7 +1279,7 @@ onBeforeUnmount(() => {
     <PanelSplitter
       v-if="!focusMode && !sidebarCollapsed && viewportWidth > 768"
       data-testid="projects-splitter" label="Resize projects" orientation="vertical"
-      controls="projects-sidebar"
+      controls="projects-sidebar" :persist-key="LEFT_WIDTH_KEY"
       :value="clampedSidebarWidth" :min="220" :max="desktopLeftMax" :default-value="LEFT_DEFAULT"
       @update:value="setSidebarWidth" @dragging="shellDragging = $event"
     />
@@ -1464,7 +1481,7 @@ onBeforeUnmount(() => {
     <PanelSplitter
       v-if="!focusMode && inspectorOpen && !previewExpanded && viewportWidth > 1100"
       data-testid="workspace-splitter" label="Resize workspace" orientation="vertical" :direction="-1"
-      controls="conversation-inspector"
+      controls="conversation-inspector" :persist-key="RIGHT_WIDTH_KEY"
       :value="clampedInspectorWidth" :min="300" :max="desktopRightMax" :default-value="RIGHT_DEFAULT"
       @update:value="setInspectorWidth" @dragging="shellDragging = $event"
     />
@@ -1473,7 +1490,7 @@ onBeforeUnmount(() => {
       :open="inspectorOpen"
       :active-section="inspectorSection"
       :desktop-width="renderedInspectorWidth"
-      :preview-tabs="previewTabs.map(tab => ({ id: tab.id, label: tab.label, path: tab.path ?? tab.target }))"
+      :preview-tabs="previewTabSummaries"
       :active-preview-id="activePreviewId"
       :preview-height="clampedPreviewHeight"
       :preview-max-height="previewMaxHeight"
@@ -1499,6 +1516,7 @@ onBeforeUnmount(() => {
           :thread-id="subAgentParentThreadId" :path="artifactPreview.path" :target="artifactPreview.target"
           embedded :expanded="previewExpanded" @toggle-expand="previewExpanded = !previewExpanded"
           @close="closePreview(artifactPreview.id)"
+          @resolved="reconcilePreviewResolution(artifactPreview.id, $event)"
         />
       </template>
     </ConversationInspector>

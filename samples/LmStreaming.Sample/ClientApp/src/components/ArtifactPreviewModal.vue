@@ -54,7 +54,15 @@ const props = defineProps<{
   expanded?: boolean;
 }>();
 
-const emit = defineEmits<{ close: []; toggleExpand: [] }>();
+const emit = defineEmits<{
+  close: [];
+  toggleExpand: [];
+  /** Fired once a `target` opener resolves to its canonical workspace path (F-001, #784): lets the
+   * parent reconcile this tab's identity onto the server-resolved path so it dedupes against a tab
+   * opened the other way (by `path`) for the same file. Never fired when `path` was given directly —
+   * that identity is already canonical. */
+  resolved: [path: string];
+}>();
 
 /** Images above this are not pulled into the page; the Download button still works. */
 const MAX_INLINE_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -172,6 +180,7 @@ async function load(): Promise<void> {
   if (resolvedPath.value === null && props.target !== undefined) {
     const resolved = await resolveWorkspaceLink(props.threadId, props.target, abort.signal);
     resolvedPath.value = resolved.path;
+    emit('resolved', resolved.path);
     size = resolved.size;
     if (resolved.type === 'directory') {
       isFolder.value = true;

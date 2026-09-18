@@ -2911,11 +2911,15 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
       path: { type: String, default: undefined },
       target: { type: String, default: undefined },
     },
-    emits: ['close', 'toggle-expand'],
+    emits: ['close', 'toggle-expand', 'resolved'],
     template:
       '<div data-test-id="artifact-preview-modal">'
       + '<button data-test="modal-close" @click="$emit(\'close\')">close</button>'
       + '<button data-test="modal-expand" @click="$emit(\'toggle-expand\')">expand</button>'
+      // Stands in for the real modal reporting a `target` opener's server-resolved canonical path
+      // (F-001, #784) — always the same file the board chip below opens by `path`, so a test can
+      // drive either opener order and assert they land in one tab.
+      + '<button data-test="modal-resolved" @click="$emit(\'resolved\', \'docs/spec.md\')">resolved</button>'
       + '</div>',
   });
 
@@ -3123,6 +3127,50 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
       sharedMocks.chatThreadIdRef!.value = 'thread-2';
       await flushPromises();
       expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(0);
+    });
+
+    // F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) build
+    // their tab id from the raw opener-specific string, so the same server-resolved file opened
+    // once each way used to land in two tabs. Both orders must converge on one.
+    it('dedupes a path opener into a tab already resolved from a target opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      // The modal reports the target's server-resolved canonical path — the same file the board
+      // chip below opens by `path` ('docs/spec.md').
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+    });
+
+    it('dedupes a target opener into a tab already open from a path opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      // The now-active target tab resolves to the same canonical path the chip's tab already carries.
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      const tabs = wrapper.findAll('.preview-tabs [role="tab"]');
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0].attributes('aria-selected')).toBe('true');
     });
   });
 });

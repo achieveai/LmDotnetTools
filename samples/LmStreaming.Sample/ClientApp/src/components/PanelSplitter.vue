@@ -11,6 +11,14 @@ const props = withDefaults(
     defaultValue: number;
     direction?: 1 | -1;
     controls?: string;
+    /**
+     * F-003 (#784): a `localStorage` key this splitter persists its own value to. Reads and writes
+     * happen here rather than on the value's owner, so a pointer drag — which calls `update()` on
+     * every `pointermove`, potentially dozens of times a second — writes storage at most once, on
+     * gesture completion, instead of on every intermediate tick. Discrete changes (arrow keys,
+     * double-click reset) still persist immediately; each is already one user action, not a stream.
+     */
+    persistKey?: string;
   }>(),
   { direction: 1 },
 );
@@ -23,13 +31,26 @@ const emit = defineEmits<{
 const activePointer = ref<number | null>(null);
 let pointerStart = 0;
 let valueStart = 0;
+let lastValue = props.value;
 
 function clamp(value: number): number {
   return Math.min(props.max, Math.max(props.min, Math.round(value)));
 }
 
+function persist(value: number): void {
+  if (!props.persistKey) return;
+  try {
+    localStorage.setItem(props.persistKey, String(value));
+  } catch {
+    // Storage is optional.
+  }
+}
+
 function update(value: number): void {
-  emit("update:value", clamp(value));
+  lastValue = clamp(value);
+  emit("update:value", lastValue);
+  // Mid-drag ticks (activePointer set) flush once in finishPointer instead of on every tick.
+  if (activePointer.value === null) persist(lastValue);
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -73,6 +94,7 @@ function finishPointer(event: PointerEvent): void {
     target.releasePointerCapture(event.pointerId);
   activePointer.value = null;
   emit("dragging", false);
+  persist(lastValue);
 }
 </script>
 

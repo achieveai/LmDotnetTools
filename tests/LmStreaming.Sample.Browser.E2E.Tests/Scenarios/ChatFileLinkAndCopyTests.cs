@@ -182,6 +182,13 @@ public sealed class ChatFileLinkAndCopyTests
         await Assertions.Expect(page.GetByTestId("diagram-modal")).ToHaveCountAsync(0);
         await Assertions.Expect(workspace).ToBeVisibleAsync();
 
+        // A second Escape closes the workspace itself and restores focus to its stable header launcher.
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(workspace).ToHaveCountAsync(0);
+        await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();
+        await page.ConversationInspectorLauncher().ClickAsync();
+        await Assertions.Expect(workspace).ToBeVisibleAsync();
+
         // The horizontal separator is keyboard operable and reports the applied size.
         var previewSplitter = page.GetByTestId("workspace-vertical-splitter");
         if (await previewSplitter.CountAsync() > 0)
@@ -251,9 +258,20 @@ public sealed class ChatFileLinkAndCopyTests
         await Assertions.Expect(page.GetByTestId("workspace-preview-region")).ToBeHiddenAsync();
         await Assertions.Expect(page.GetByTestId("workspace-monitoring-region")).ToBeVisibleAsync();
 
+        // F-001 (#784): once a `target` opener resolves, ChatLayout reconciles that tab onto its
+        // canonical server-resolved `path` (see ChatLayout.reconcilePreviewResolution), so remounting
+        // it — e.g. revealing items.csv again after report.md's tab closes — no longer re-fetches
+        // `files/resolve`: the tab already carries its own resolved path. Re-clicking the SAME link a
+        // second time still issues one more resolve, though: the click still opens a `target` tab
+        // under the raw link string, which briefly duplicates the canonical tab before this same
+        // reconciliation merges them back into one (asserted above) — hence 3, not the 2 a fully
+        // link-aware cache would need, and not the 4 every activation used to cost pre-#784.
         resolveRequests
             .Should()
-            .HaveCount(4, "reselecting a tab and revealing the remaining tab fetch only the active preview");
+            .HaveCount(
+                3,
+                "a tab already reconciled onto its resolved path is not re-fetched when it becomes active again"
+            );
         resolveRequests.Should().OnlyContain(u => u.Contains("/files/resolve?target=", StringComparison.Ordinal));
     }
 }

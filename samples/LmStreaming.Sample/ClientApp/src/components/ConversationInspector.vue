@@ -66,6 +66,14 @@ const agentsOpen = ref(true);
 const resizing = ref(false);
 const workCounts = computed(() => countTodoTasks(props.tasks));
 const hasPreview = computed(() => props.previewTabs.length > 0);
+// F-002 (#784): the tabs share one panel, so its accessible name must track whichever tab is active
+// rather than always pointing at the first — otherwise a screen reader announces the wrong file.
+const activePreviewIndex = computed(() =>
+  props.previewTabs.findIndex((tab) => tab.id === props.activePreviewId),
+);
+const activePreviewTabId = computed(() =>
+  activePreviewIndex.value === -1 ? undefined : `preview-tab-${activePreviewIndex.value}`,
+);
 const inspectorStyle = computed(() => ({
   "--inspector-width": `${props.desktopWidth}px`,
   "--preview-height": `${props.previewHeight}px`,
@@ -275,6 +283,7 @@ onBeforeUnmount(() => {
           id="workspace-preview-panel"
           class="preview-content"
           role="tabpanel"
+          :aria-labelledby="activePreviewTabId"
         >
           <slot name="preview" />
         </div>
@@ -285,6 +294,7 @@ onBeforeUnmount(() => {
         label="Resize file preview"
         orientation="horizontal"
         controls="workspace-preview-panel"
+        persist-key="lmstreaming.previewHeight"
         :value="previewHeight"
         :min="previewMinHeight"
         :max="previewMaxHeight"
