@@ -200,7 +200,7 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .Equal(ExpectedLastUsedTitles(), "the paged list must stay in last-used order across the page boundary");
 
-        listRequests.Snapshot().Should().HaveCount(2, "45 rows at a page size of 30 is exactly two page requests");
+        listRequests.UniquePages().Should().HaveCount(2, "45 rows at a page size of 30 is exactly two distinct pages");
     }
 
     /// <summary>
@@ -234,9 +234,9 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .Be(0, "the list is exhausted, so no further page is in flight");
         listRequests
-            .Snapshot()
+            .UniquePages()
             .Should()
-            .HaveCount(2, "a short page proved exhaustion — scrolling again must not ask for a third page");
+            .HaveCount(2, "a short page proved exhaustion — scrolling again must not ask for a third distinct page");
     }
 
     /// <summary>
@@ -305,7 +305,7 @@ public sealed class ConversationPagingAndSortTests
                 "the switch must start a fresh single page in the new order, never merge the pages fetched under the old one"
             );
 
-        var requests = listRequests.Snapshot();
+        var requests = listRequests.UniquePages();
         requests.Should().HaveCount(3, "two pages under last-used, then one fresh page under created");
         requests[^1]
             .Should()
@@ -484,12 +484,15 @@ public sealed class ConversationPagingAndSortTests
     }
 
     /// <summary>
-    /// Records every sidebar PAGE request (<c>GET /api/conversations?...</c>) the client issues.
+    /// Records each distinct conversation-list page (<c>GET /api/conversations?...</c>) the client requests.
     /// </summary>
     /// <remarks>
-    /// Needed because two of the claims here are about a request that must NOT happen — no third page
-    /// once the list is exhausted, and no page appended across a sort switch. Those are invisible in
-    /// the DOM: a pager that correctly declined to fetch and a pager that never ran look identical.
+    /// Needed because two of the claims here are about a page that must NOT be requested — no third
+    /// page once the list is exhausted, and no page appended across a sort switch. Those are invisible
+    /// in the DOM: a pager that correctly declined to fetch and a pager that never ran look identical.
+    /// The global pending-question inbox also reads this endpoint, so identical URLs may occur more
+    /// than once without representing an extra sidebar page. Distinct URLs preserve the page-boundary
+    /// assertion while excluding those legitimate duplicate reads.
     /// The per-conversation routes (<c>/api/conversations/{id}/...</c>) carry a path segment where
     /// this one carries a query string, so matching on <c>"/api/conversations?"</c> tells them apart.
     /// </remarks>
@@ -503,12 +506,12 @@ public sealed class ConversationPagingAndSortTests
             page.Request += OnRequest;
         }
 
-        /// <summary>The recorded page-request URLs so far, in issue order.</summary>
-        public IReadOnlyList<string> Snapshot()
+        /// <summary>The distinct page-request URLs so far, in first-issue order.</summary>
+        public IReadOnlyList<string> UniquePages()
         {
             lock (_urls)
             {
-                return [.. _urls];
+                return [.. _urls.Distinct(StringComparer.Ordinal)];
             }
         }
 

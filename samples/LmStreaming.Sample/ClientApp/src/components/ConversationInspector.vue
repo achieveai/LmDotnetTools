@@ -15,6 +15,8 @@ const props = defineProps<{
   hasWork: boolean;
   children: SubAgentSummary[];
   activeConversationTabId: string;
+  /** Header-owned close control used by ChatLayout. Omit to render the standalone close button. */
+  externalCloseControlId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -75,6 +77,37 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+function onRootKeydown(event: KeyboardEvent): void {
+  // The document listener owns the hosted overlay because its external header toggle is one edge
+  // of that focus loop. A hosted desktop dock still needs its own Escape handler.
+  if (props.externalCloseControlId && overlay.value) return;
+  onKeydown(event);
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (!props.open || !overlay.value || !props.externalCloseControlId) return;
+  const externalClose = document.getElementById(props.externalCloseControlId);
+  if (!externalClose || (!rootEl.value?.contains(event.target as Node) && event.target !== externalClose)) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    emit('close');
+    return;
+  }
+  if (event.key !== 'Tab' || !rootEl.value) return;
+  const focusable = Array.from(
+    rootEl.value.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])')
+  ).filter((element) => element.tabIndex >= 0 && !element.closest('[hidden]'));
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.target === externalClose) {
+    event.preventDefault();
+    (event.shiftKey ? last : first)?.focus();
+  } else if ((event.target === first && event.shiftKey) || (event.target === last && !event.shiftKey)) {
+    event.preventDefault();
+    externalClose.focus();
+  }
+}
+
 watch(
   () => props.open,
   (open) => {
@@ -85,9 +118,13 @@ watch(
 onMounted(() => {
   syncOverlay();
   window.addEventListener('resize', syncOverlay);
+  document.addEventListener('keydown', onDocumentKeydown);
 });
 
-onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncOverlay);
+  document.removeEventListener('keydown', onDocumentKeydown);
+});
 </script>
 
 <template>
@@ -108,11 +145,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
       :role="overlay ? 'dialog' : undefined"
       :aria-modal="overlay ? 'true' : undefined"
       aria-labelledby="conversation-inspector-title"
-      @keydown="onKeydown"
+      @keydown="onRootKeydown"
     >
       <header class="inspector-header">
         <h2 id="conversation-inspector-title">Work &amp; agents</h2>
         <button
+          v-if="!props.externalCloseControlId"
           class="inspector-close"
           aria-label="Close Work and agents"
           title="Close Work and agents"
@@ -205,7 +243,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
   box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 54px 8px 14px;
+  padding: 12px 14px 8px;
 }
 
 .inspector-header h2 {
@@ -214,9 +252,6 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 }
 
 .inspector-close {
-  position: fixed;
-  top: 12px;
-  right: 12px;
   display: inline-flex;
   width: 34px;
   height: 34px;
@@ -247,12 +282,6 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncOverlay));
 .inspector-close:focus-visible {
   outline: 2px solid #2d6cdf;
   outline-offset: 2px;
-}
-
-@media (max-width: 520px) {
-  .inspector-close {
-    top: 10px;
-  }
 }
 
 .inspector-tabs {

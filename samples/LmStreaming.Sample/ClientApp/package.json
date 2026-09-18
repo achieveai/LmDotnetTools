@@ -14,10 +14,12 @@
   },
   "dependencies": {
     "@azure/msal-browser": "^5.19.0",
+    "@plantuml/core": "^1.2026.8",
     "dompurify": "^3.4.13",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.1",
     "marked-highlight": "^2.2.4",
+    "mermaid": "^11.12.1",
     "vue": "^3.5.13"
   },
   "devDependencies": {

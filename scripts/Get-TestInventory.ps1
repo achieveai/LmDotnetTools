@@ -386,7 +386,11 @@ if ($IncludeDeclarations) {
                         schemaVersion = 2; kind = "test-declaration"; containerKind = "dotnet-project"; path = $container.path
                         id = "dotnet|$($container.path)|$methodIdentity"
                         sourcePath = $source; sourceLine = $method.GetLocation().GetLineSpan().StartLinePosition.Line + 1
-                        sourceHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($method.ToFullString())))
+                        # Git may materialize the same source with LF or CRLF depending on checkout
+                        # settings. Source hashes ignore checkout newline conventions.
+                        sourceHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
+                            [System.Text.Encoding]::UTF8.GetBytes(($method.ToFullString() -replace "`r`n?", "`n"))
+                        ))
                         testFramework = if ($testAttributes -contains "TestMethod" -or $testAttributes -contains "DataTestMethod") { "mstest" } else { "xunit" }
                         namespace = $namespaceName; declaringType = $typeName; method = $method.Identifier.ValueText
                         fullyQualifiedName = $fullyQualifiedName; executableFullyQualifiedNames = @($executableFullyQualifiedNames)

@@ -15,6 +15,8 @@ import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
+import type { QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { ToolCallResultMessage } from '@/types';
 import { closeEgressDialog, openEgressDialog } from '@/composables/useEgressAuth';
 
 // Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
@@ -32,6 +34,8 @@ const makeConversation = (overrides: Partial<ConversationSummary> = {}): Convers
 });
 
 const sharedMocks = vi.hoisted(() => ({
+  questionEntries: [] as QuestionInboxEntry[],
+  questionEntriesRef: null as Ref<QuestionInboxEntry[]> | null,
   chatLoading: false,
   isSending: false,
   modesLoading: false,
@@ -127,6 +131,9 @@ const sharedMocks = vi.hoisted(() => ({
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
   subAgentChildren: [] as SubAgentSummary[],
+  focusedAgentIdRef: null as Ref<string | null> | null,
+  focusChild: vi.fn(async (_agentId: string) => {}),
+  subAgentQuestionResult: null as ToolCallResultMessage | null,
   cumulativeTotalTokens: 0,
 }));
 
@@ -369,6 +376,15 @@ vi.mock('@/api/contextApi', () => ({
 
 // The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
 // mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
+vi.mock('@/composables/useQuestionInbox', async () => {
+  const { ref } = await import('vue');
+  return { useQuestionInbox: () => {
+    const entries = ref(sharedMocks.questionEntries);
+    sharedMocks.questionEntriesRef = entries;
+    return { entries, isRefreshing: ref(false), error: ref(null), refresh: vi.fn(async () => {}) };
+  } };
+});
+
 vi.mock('@/composables/useSubAgentPanel', async () => {
   const { ref } = await import('vue');
   return {
@@ -378,20 +394,22 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       if (getParentThreadId) {
         sharedMocks.subAgentThreadGetter = getParentThreadId;
       }
+      const focusedAgentId = ref<string | null>(null);
+      sharedMocks.focusedAgentIdRef = focusedAgentId;
       return {
         children: ref(sharedMocks.subAgentChildren),
-        focusedAgentId: ref<string | null>(null),
+        focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
         error: ref<string | null>(null),
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
         refreshChildren: vi.fn(async () => {}),
-        focusChild: vi.fn(async () => {}),
+        focusChild: sharedMocks.focusChild,
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
         submitToFocusedChild: sharedMocks.submitToFocusedChild,
-        getResultForToolCall: vi.fn(() => null),
+        getResultForToolCall: vi.fn(() => sharedMocks.subAgentQuestionResult),
       };
     },
   };
@@ -535,17 +553,22 @@ describe('ChatLayout view preference', () => {
     const composer = wrapper.get('[data-testid="chat-input-textarea"]').element;
     await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(false);
-    const close = wrapper.get('.inspector-close');
-    expect(close.attributes('aria-label')).toBe('Close Work and agents');
-    expect(close.attributes('title')).toBe('Close Work and agents');
-    expect(close.find('svg[aria-hidden="true"]').exists()).toBe(true);
-    await close.trigger('click');
+    const inspectorToggle = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    expect(inspectorToggle.isVisible()).toBe(true);
+    expect(inspectorToggle.attributes('aria-expanded')).toBe('true');
+    expect(inspectorToggle.attributes('aria-label')).toBe('Close Work and agents');
+    const more = wrapper.get('[data-testid="header-actions-menu-button"]');
+    expect(more.isVisible()).toBe(true);
+    await more.trigger('click');
+    expect(wrapper.get('[data-testid="header-actions-menu"]').isVisible()).toBe(true);
+    expect(wrapper.find('.inspector-close').exists()).toBe(false);
+    await inspectorToggle.trigger('click');
     await flushPromises();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
     expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
     expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
-    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').isVisible()).toBe(true);
+    expect(inspectorToggle.attributes('aria-expanded')).toBe('false');
+    expect(inspectorToggle.attributes('aria-label')).toBe('Open Work and agents');
     expect(document.activeElement).toBe(wrapper.get('[data-testid="conversation-inspector-launcher"]').element);
     wrapper.unmount();
   });
@@ -605,7 +628,7 @@ describe('ChatLayout inspector agent selection', () => {
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
     const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
       .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
-    expect(childTab.attributes('aria-selected')).toBe('true');
+    expect(childTab.classes()).toContain('active');
     expect(document.activeElement).toBe(childTab.element);
     wrapper.unmount();
   });
@@ -621,7 +644,128 @@ describe('ChatLayout inspector agent selection', () => {
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
     const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
       .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
-    expect(childTab.attributes('aria-selected')).toBe('true');
+    expect(childTab.classes()).toContain('active');
+    wrapper.unmount();
+  });
+});
+
+describe('ChatLayout question inbox automatic retry', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-question',
+    name: 'Question agent',
+    template: 'research',
+    task: 'Ask for input',
+    status: 'running',
+    threadId: 'child-question',
+    lastActivityUtc: null,
+  };
+  const deferredResult = {
+    $type: 'tool_call_result',
+    tool_call_id: 'question-1',
+    result: '',
+    is_deferred: true,
+  } as ToolCallResultMessage;
+  const entry: QuestionInboxEntry = {
+    key: 'root:thread-1/agent:agent-question/child:child-question/tool:question-1',
+    rootThreadId: 'thread-1',
+    conversationTitle: 'Current conversation',
+    conversation: makeConversation({ threadId: 'thread-1', title: 'Current conversation' }),
+    agentId: child.agentId,
+    agentName: child.name ?? null,
+    childThreadId: child.threadId,
+    toolCallId: 'question-1',
+    toolCall: {
+      tool_call_id: 'question-1',
+      function_name: 'AskUserQuestion',
+      function_args: JSON.stringify({ question: 'Which option?' }),
+    },
+    result: deferredResult,
+    prompt: 'Which option?',
+  };
+
+  beforeEach(() => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [entry.conversation];
+    sharedMocks.subAgentChildren = [child];
+    sharedMocks.questionEntries = [entry];
+    sharedMocks.subAgentQuestionResult = deferredResult;
+    sharedMocks.focusChild.mockReset();
+    sharedMocks.focusChild.mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    sharedMocks.questionEntries = [];
+    sharedMocks.questionEntriesRef = null;
+    sharedMocks.subAgentChildren = [];
+    sharedMocks.focusedAgentIdRef = null;
+    sharedMocks.subAgentQuestionResult = null;
+  });
+
+  it('retries a current child question after the first focus attempt fails', async () => {
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="question-inbox-trigger"]').trigger('click');
+    await wrapper.get('.question-inbox-item').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Could not connect to this agent. Try again.');
+    expect(sharedMocks.focusChild).toHaveBeenCalledTimes(1);
+
+    sharedMocks.focusChild.mockImplementation(async (agentId: string) => {
+      sharedMocks.focusedAgentIdRef!.value = agentId;
+    });
+    await wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === 'main')!
+      .trigger('click');
+    await flushPromises();
+    sharedMocks.questionEntriesRef!.value = [];
+    await flushPromises();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    sharedMocks.questionEntriesRef!.value = [entry];
+    await flushPromises();
+
+    expect(sharedMocks.focusChild).toHaveBeenCalledTimes(2);
+    expect(wrapper.getComponent({ name: 'SubAgentTranscript' }).props('requestedQuestionId'))
+      .toBe('question-1');
+    wrapper.unmount();
+  });
+
+  it('leaves another conversation in the inbox until the user selects it', async () => {
+    const otherEntry: QuestionInboxEntry = {
+      ...entry,
+      key: 'root:thread-2/agent:root/child:root/tool:question-1',
+      rootThreadId: 'thread-2',
+      conversationTitle: 'Other conversation',
+      conversation: makeConversation({ threadId: 'thread-2', title: 'Other conversation' }),
+      agentId: null,
+      agentName: 'Main agent',
+      childThreadId: null,
+    };
+    sharedMocks.questionEntries = [otherEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mount(ChatLayout, { global: { stubs: {
+      ConversationSidebar: true, MessageList: true, PendingMessageQueue: true,
+      PendingQuestionDock: true, ChatInput: true,
+    } } });
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(wrapper.findComponent({ name: 'SubAgentTranscript' }).exists()).toBe(false);
+
+    await wrapper.get('[data-testid="question-inbox-trigger"]').trigger('click');
+    await wrapper.get('.question-inbox-item').trigger('click');
+    await flushPromises();
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 });
@@ -814,11 +958,10 @@ describe('ChatLayout provider placement', () => {
     const wrapper = mountLayout();
     await flushPromises();
 
-    const context = wrapper.get('.header-context');
-    expect(context.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
-    expect(context.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
-    expect(context.get('[data-testid="header-actions-stub"]').text()).toBe('More');
-    expect(context.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+    const headerActions = wrapper.get('.app-header-right [data-testid="header-actions-stub"]');
+    expect(headerActions.text()).toBe('More');
+    expect(wrapper.find('.chat-context-header').exists()).toBe(false);
+    expect(wrapper.find('.header-context').exists()).toBe(false);
 
     const provider = wrapper.get('[data-testid="provider-selector-stub"]');
     const rootComposer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
@@ -834,7 +977,8 @@ describe('ChatLayout provider placement', () => {
   it('does not add the root provider control to the sub-agent composer', async () => {
     const wrapper = mountLayout();
     await flushPromises();
-    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agent-provider-placement"]').trigger('click');
+    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agents"]').trigger('click');
+    await wrapper.get('[data-testid="agent-picker-option"][data-agent-id="agent-provider-placement"]').trigger('click');
     await flushPromises();
 
     const childComposer = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input"]');
@@ -846,6 +990,9 @@ describe('ChatLayout provider placement', () => {
 });
 
 describe('ChatLayout workspace project integration', () => {
+  const openCreateForm = vi.fn();
+  const openEditForm = vi.fn();
+  const closeDropdown = vi.fn();
   const repoWorkspace: Workspace = {
     id: 'repo',
     name: 'Repository',
@@ -861,14 +1008,20 @@ describe('ChatLayout workspace project integration', () => {
 
   const sidebarStub = defineComponent({
     props: { isCollapsed: Boolean },
-    emits: ['newChatInWorkspace'],
+    emits: ['newChatInWorkspace', 'newProject', 'editProject'],
     template:
-      '<button data-testid="folder-new-chat" :data-collapsed="String(isCollapsed)" @click="$emit(\'newChatInWorkspace\', \'repo\')">Start in Repository</button>',
+      '<div><button data-testid="folder-new-chat" :data-collapsed="String(isCollapsed)" @click="$emit(\'newChatInWorkspace\', \'repo\')">Start in Repository</button><button data-testid="sidebar-new-project" @click="$emit(\'newProject\')">New project</button><button data-testid="sidebar-edit-project" @click="$emit(\'editProject\', \'repo\')">Project settings</button></div>',
   });
 
   const workspaceSelectorStub = defineComponent({
     inheritAttrs: false,
-    template: '<button data-testid="workspace-selector-stub">Repository</button>',
+    props: { presentation: String },
+    setup(_, { expose }) {
+      expose({ openCreateForm, openEditForm, closeDropdown });
+      return {};
+    },
+    template:
+      '<div v-if="presentation === \'management\'" data-testid="workspace-management-stub" /><button v-else data-testid="workspace-selector-stub">Repository</button>',
   });
 
   const mountLayout = () =>
@@ -903,6 +1056,9 @@ describe('ChatLayout workspace project integration', () => {
     sharedMocks.createNewConversation.mockReset();
     sharedMocks.createNewConversation.mockResolvedValue('thread-provisioned');
     sharedMocks.setThreadId.mockReset();
+    openCreateForm.mockReset();
+    openEditForm.mockReset();
+    closeDropdown.mockReset();
   });
 
   afterEach(() => {
@@ -942,6 +1098,7 @@ describe('ChatLayout workspace project integration', () => {
       composer.get('[data-testid="chat-input-surface"]').element
     );
     expect(wrapper.findAll('[data-testid="workspace-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="workspace-management-stub"]')).toHaveLength(1);
     expect(wrapper.find('.chat-context-header [data-testid="workspace-selector-stub"]').exists()).toBe(false);
 
     wrapper.unmount();
@@ -958,7 +1115,20 @@ describe('ChatLayout workspace project integration', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-management-stub"]').exists()).toBe(false);
     window.history.pushState({}, '', '/');
+  });
+
+  it('routes sidebar project management actions to the shared form host', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="sidebar-new-project"]').trigger('click');
+    expect(closeDropdown).toHaveBeenCalledOnce();
+    expect(openCreateForm).toHaveBeenCalledOnce();
+
+    await wrapper.get('[data-testid="sidebar-edit-project"]').trigger('click');
+    expect(openEditForm).toHaveBeenCalledWith('repo');
   });
 
   it('collapses the sidebar after a folder starts a mobile draft', async () => {
@@ -1428,6 +1598,9 @@ describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
     await flushPromises();
 
     const mainView = wrapper.get('[data-testid="main-view"]');
+    expect(mainView.attributes('id')).toBe('conversation-main-view');
+    expect(mainView.attributes('role')).toBe('region');
+    expect(mainView.attributes('aria-label')).toBe('Main conversation');
     expect((mainView.element as HTMLElement).style.display).toBe('none');
   });
 });

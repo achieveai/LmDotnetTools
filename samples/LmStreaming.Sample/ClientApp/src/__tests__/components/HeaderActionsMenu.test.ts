@@ -12,6 +12,10 @@ describe('HeaderActionsMenu', () => {
   it('publishes the menu-button ARIA contract and emits every action after closing', async () => {
     const wrapper = mountMenu();
     const trigger = wrapper.get('[data-testid="header-actions-menu-button"]');
+    expect(trigger.attributes('aria-label')).toBe('More');
+    expect(trigger.attributes('title')).toBe('More');
+    expect(trigger.find('svg').exists()).toBe(true);
+    expect(trigger.text()).toBe('');
     expect(trigger.attributes('aria-haspopup')).toBe('menu');
     expect(trigger.attributes('aria-expanded')).toBe('false');
 

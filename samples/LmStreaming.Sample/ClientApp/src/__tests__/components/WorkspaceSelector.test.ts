@@ -274,6 +274,87 @@ describe('WorkspaceSelector project presentation', () => {
   });
 });
 
+describe('WorkspaceSelector management presentation', () => {
+  it('stays open when launched by a real sibling sidebar click', async () => {
+    const wrapper = mountSelector({ presentation: 'management' });
+    const opener = document.createElement('button');
+    opener.textContent = 'New project';
+    opener.addEventListener('click', () => {
+      (wrapper.vm as unknown as { openCreateForm: () => void }).openCreateForm();
+    });
+    document.body.appendChild(opener);
+
+    opener.click();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(true);
+    opener.remove();
+  });
+
+  it('opens the existing create form in an accessible modal and closes it on cancel', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const wrapper = mountSelector({ presentation: 'management' });
+
+    expect(wrapper.find('[data-testid="workspace-selector-button"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(false);
+
+    (wrapper.vm as unknown as { openCreateForm: () => void }).openCreateForm();
+    await nextTick();
+
+    const modal = wrapper.get('[data-testid="workspace-management-modal"]');
+    expect(modal.get('[role="dialog"]').attributes('aria-modal')).toBe('true');
+    expect(modal.text()).toContain('New project');
+    expect(modal.find('[data-testid="workspace-create-form"]').exists()).toBe(true);
+
+    await modal.get('[data-testid="workspace-create-cancel"]').trigger('click');
+    await nextTick();
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('opens settings for a user project and refuses a system project', async () => {
+    const wrapper = mountSelector({ presentation: 'management' });
+    const exposed = wrapper.vm as unknown as { openEditForm: (workspaceId: string) => void };
+
+    exposed.openEditForm('default');
+    await nextTick();
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(false);
+
+    exposed.openEditForm('ws-user');
+    await nextTick();
+    const modal = wrapper.get('[data-testid="workspace-management-modal"]');
+    expect(modal.text()).toContain('Project settings');
+    expect(modal.get<HTMLInputElement>('[data-testid="workspace-edit-name"]').attributes('readonly')).toBeDefined();
+    expect(modal.get<HTMLInputElement>('[data-testid="workspace-edit-directory"]').attributes('readonly')).toBeDefined();
+  });
+
+  it('keeps an in-flight management form mounted until the parent resolves it', async () => {
+    const wrapper = mountSelector({ presentation: 'management' });
+    const exposed = wrapper.vm as unknown as {
+      openCreateForm: () => void;
+      closeForm: () => void;
+    };
+    exposed.openCreateForm();
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('New Project');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+    expect(wrapper.emitted('create-workspace')).toHaveLength(1);
+
+    await wrapper.get('[data-testid="workspace-management-modal-close"]').trigger('click');
+    await wrapper.get('[data-testid="workspace-create-cancel"]').trigger('click');
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(true);
+
+    // The API-owning parent can still close the exact initiating form on success.
+    exposed.closeForm();
+    await nextTick();
+    expect(wrapper.find('[data-testid="workspace-management-modal"]').exists()).toBe(false);
+  });
+});
+
 // --- Per-plugin selection -----------------------------------------------------------------
 
 type CreatePayload = {

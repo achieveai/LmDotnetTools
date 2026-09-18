@@ -24,7 +24,9 @@ jobs:
   test-tooling:
     name: Test inventory and priority tooling
     runs-on: windows-latest
-    timeout-minutes: 10
+    # The full-repository policy regression takes about nine minutes on hosted Windows.
+    # Leave room for checkout, the other tooling tests, and runner speed variation.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout

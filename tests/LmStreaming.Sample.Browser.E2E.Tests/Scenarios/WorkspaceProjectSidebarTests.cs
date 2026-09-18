@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -38,7 +39,11 @@ public sealed class WorkspaceProjectSidebarTests
             .Turn(t => t.Text("Beacon is ready."))
             .Build();
 
-        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        await using var session = await _fixture.OpenAsync(
+            "test",
+            responder.HandlerFor("test"),
+            catalogClient: FakeMarketplaceCatalogClient.WithAliases()
+        );
         var page = session.Page;
         await page.SetViewportSizeAsync(PhoneWidth, PhoneHeight);
 
@@ -68,8 +73,85 @@ public sealed class WorkspaceProjectSidebarTests
         // Legacy and orphaned metadata remain reachable but cannot start an ambiguously-bound chat.
         await Assertions.Expect(page.GetByTestId("project-toggle-legacy")).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("project-toggle-missing-retired-project")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("project-actions-legacy")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("project-actions-retired-project")).ToHaveCountAsync(0);
         await Assertions.Expect(page.GetByTestId("start-conversation-legacy")).ToHaveCountAsync(0);
         await Assertions.Expect(page.GetByTestId("start-conversation-retired-project")).ToHaveCountAsync(0);
+
+        // Project creation belongs in a roomy modal rather than the compact composer picker. Keep
+        // the form and its actions inside the phone viewport, then prove a successful save adds the
+        // new folder to the same sidebar without creating a conversation.
+        var createdProjectName = $"Orion Project {Guid.NewGuid():N}"[..24];
+        await page.GetByTestId("sidebar-new-project").ClickAsync();
+        var managementModal = page.GetByTestId("workspace-management-modal");
+        await Assertions.Expect(managementModal.GetByRole(AriaRole.Dialog)).ToBeVisibleAsync();
+        await Assertions.Expect(managementModal.GetByText("New project", new() { Exact = true })).ToBeVisibleAsync();
+
+        var modalBox = await managementModal.GetByRole(AriaRole.Dialog).BoundingBoxAsync();
+        modalBox.Should().NotBeNull("the project form must render as a measurable modal");
+        modalBox!.X.Should().BeGreaterThanOrEqualTo(0);
+        modalBox.Y.Should().BeGreaterThanOrEqualTo(0);
+        (modalBox.X + modalBox.Width).Should().BeLessThanOrEqualTo(PhoneWidth);
+        (modalBox.Y + modalBox.Height).Should().BeLessThanOrEqualTo(PhoneHeight);
+
+        await page.GetByTestId("workspace-create-name").FillAsync(createdProjectName);
+        await page.GetByTestId("workspace-create-directory").FillAsync($"orion-{Guid.NewGuid():N}"[..20]);
+        await Assertions.Expect(page.GetByTestId("workspace-create-cancel")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-create-submit")).ToBeVisibleAsync();
+        await session.SaveSuccessScreenshotAsync("WorkspaceProjectSidebar.new_project_phone");
+        await page.GetByTestId("workspace-create-submit").ClickAsync();
+        await Assertions.Expect(managementModal).ToHaveCountAsync(0);
+        await Assertions
+            .Expect(page.GetByTestId("project-folder").Filter(new() { HasText = createdProjectName }))
+            .ToHaveCountAsync(1);
+
+        // The folder menu is independent of disclosure. Keyboard open/Escape restores focus; the
+        // settings action opens the correct prefilled project and Cancel leaves the folder intact.
+        var beaconToggle = page.GetByTestId($"project-toggle-{beaconId}");
+        var beaconExpanded = await beaconToggle.GetAttributeAsync("aria-expanded");
+        var beaconActions = page.GetByTestId($"project-actions-{beaconId}");
+        await beaconActions.FocusAsync();
+        await beaconActions.PressAsync("Enter");
+        await Assertions.Expect(beaconActions).ToHaveAttributeAsync("aria-expanded", "true");
+        await Assertions.Expect(beaconToggle).ToHaveAttributeAsync("aria-expanded", beaconExpanded!);
+        var beaconMenu = page.GetByTestId($"project-actions-menu-{beaconId}");
+        await Assertions.Expect(beaconMenu).ToHaveAttributeAsync("role", "menu");
+        await Assertions
+            .Expect(page.GetByTestId($"start-conversation-{beaconId}"))
+            .ToHaveAttributeAsync("role", "menuitem");
+        await Assertions
+            .Expect(page.GetByTestId($"project-settings-{beaconId}"))
+            .ToHaveAttributeAsync("role", "menuitem");
+        var beaconMenuBox = await beaconMenu.BoundingBoxAsync();
+        beaconMenuBox.Should().NotBeNull("the open project menu must remain visible");
+        beaconMenuBox!.Y.Should().BeGreaterThanOrEqualTo(0);
+        (beaconMenuBox.Y + beaconMenuBox.Height)
+            .Should()
+            .BeLessThanOrEqualTo(PhoneHeight, "the folder menu must not be clipped below the phone viewport");
+        await session.SaveSuccessScreenshotAsync("WorkspaceProjectSidebar.project_menu_phone");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(beaconActions).ToBeFocusedAsync();
+
+        await beaconActions.ClickAsync();
+        await page.GetByTestId($"project-settings-{beaconId}").ClickAsync();
+        await Assertions
+            .Expect(page.GetByTestId("workspace-management-modal").GetByRole(AriaRole.Dialog))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-edit-name")).ToHaveValueAsync("Beacon Project");
+        await Assertions.Expect(page.GetByTestId("workspace-edit-directory")).ToHaveValueAsync(new Regex("^beacon-"));
+        await page.GetByTestId("workspace-edit-cancel").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-management-modal")).ToHaveCountAsync(0);
+        await Assertions.Expect(beaconActions).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId($"project-toggle-{beaconId}")).ToContainTextAsync("Beacon Project");
+
+        // Exercise the real sidebar settings save path as a no-op edit. The store round-trip should
+        // close the modal, restore focus, and preserve the folder identity used by existing chats.
+        await beaconActions.ClickAsync();
+        await page.GetByTestId($"project-settings-{beaconId}").ClickAsync();
+        await page.GetByTestId("workspace-edit-submit").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("workspace-management-modal")).ToHaveCountAsync(0);
+        await Assertions.Expect(beaconActions).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId($"project-toggle-{beaconId}")).ToContainTextAsync("Beacon Project");
 
         var provisionBodies = new ConcurrentQueue<string>();
         page.Request += (_, request) =>
@@ -82,6 +164,7 @@ public sealed class WorkspaceProjectSidebarTests
 
         // Start from Beacon's own folder. This creates only an unreserved draft and automatically
         // dismisses the mobile sidebar; the server must not mint anything until the first send.
+        await beaconActions.ClickAsync();
         await page.GetByTestId($"start-conversation-{beaconId}").ClickAsync();
         await Assertions.Expect(page.GetByTestId("sidebar-toggle")).ToHaveAttributeAsync("aria-expanded", "false");
         provisionBodies.Should().BeEmpty("choosing a project folder must not eagerly reserve a conversation");

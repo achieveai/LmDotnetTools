@@ -12,6 +12,7 @@ import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
 import { getConversationCapabilities } from '@/api/conversationsApi';
 import EnvEditor from './EnvEditor.vue';
+import BaseModal from './BaseModal.vue';
 
 /**
  * Whether the running gateway can apply per-sandbox env at all. False on a pre-0.1.11 gateway, and
@@ -70,12 +71,21 @@ const props = defineProps<{
    * Visual placement of the selector. The default preserves the compact workspace control used by
    * existing callers; `project` is the wide disclosure shown directly above the chat composer.
    */
-  presentation?: 'default' | 'project';
+  presentation?: 'default' | 'project' | 'management';
 }>();
 
 /** Any reason not to act on the workspace list right now — transient or terminal. */
 const interactionBlocked = computed(() => props.disabled === true || props.isLoading === true);
 const isProjectPresentation = computed(() => props.presentation === 'project');
+const isManagementPresentation = computed(() => props.presentation === 'management');
+const managementModalProps = computed(() =>
+  isManagementPresentation.value
+    ? {
+        title: formMode.value === 'create' ? 'New project' : 'Project settings',
+        dataTestId: 'workspace-management-modal',
+      }
+    : {}
+);
 
 const emit = defineEmits<{
   'select-workspace': [workspaceId: string];
@@ -365,6 +375,17 @@ function closeForm(): void {
   formMode.value = 'none';
   formError.value = null;
   submitting.value = false;
+  if (isManagementPresentation.value) dropdownOpen.value = false;
+}
+
+/** User-driven close. An in-flight management save owns this form until its parent resolves. */
+function requestCloseForm(): void {
+  if (isManagementPresentation.value) {
+    if (submitting.value) return;
+    closeDropdown();
+    return;
+  }
+  closeForm();
 }
 
 function handleSelect(workspaceId: string): void {
@@ -392,7 +413,8 @@ function slugify(raw: string): string {
 }
 
 function openCreateForm(): void {
-  if (interactionBlocked.value) return;
+  if (interactionBlocked.value || submitting.value) return;
+  if (isManagementPresentation.value) dropdownOpen.value = true;
   formMode.value = 'create';
   formError.value = null;
   createName.value = '';
@@ -484,10 +506,14 @@ function submitCreate(): void {
 
 // --- Edit form -----------------------------------------------------------
 
-function openEditForm(workspace: Workspace): void {
+function openEditForm(workspaceOrId: Workspace | string): void {
+  const workspace = typeof workspaceOrId === 'string'
+    ? props.workspaces.find((item) => item.id === workspaceOrId)
+    : workspaceOrId;
   // Seeding a form from a list that is mid-refresh would capture a stale `pluginsRevision`, so the
   // very first save would 409. Blocked while loading for the same reason as handleSelect.
-  if (interactionBlocked.value || workspace.isSystemDefined) return;
+  if (interactionBlocked.value || submitting.value || !workspace || workspace.isSystemDefined) return;
+  if (isManagementPresentation.value) dropdownOpen.value = true;
   formMode.value = 'edit';
   formError.value = null;
   editWorkspaceId.value = workspace.id;
@@ -601,7 +627,14 @@ function showFormError(message: string): void {
   submitting.value = false;
 }
 
-defineExpose({ showFormError, closeForm, reseedEditForm });
+defineExpose({
+  showFormError,
+  closeForm,
+  closeDropdown,
+  reseedEditForm,
+  openCreateForm,
+  openEditForm,
+});
 
 // --- Outside click / escape ---------------------------------------------
 
@@ -623,6 +656,9 @@ defineExpose({ showFormError, closeForm, reseedEditForm });
  * to close is the only answer this function can give truthfully.
  */
 function handleClickOutside(event: MouseEvent): void {
+  // BaseModal owns backdrop clicks for management. The sidebar opener is a sibling of this host;
+  // treating its still-bubbling click as "outside" closes the modal in the same event that opened it.
+  if (isManagementPresentation.value) return;
   const target = event.target as Node | null;
   if (target instanceof Node && !target.isConnected) {
     return;
@@ -633,6 +669,8 @@ function handleClickOutside(event: MouseEvent): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  // BaseModal owns Escape and focus restoration for management dialogs.
+  if (isManagementPresentation.value) return;
   if (event.key === 'Escape') {
     closeDropdown();
   }
@@ -679,12 +717,15 @@ watch(
 <template>
   <div
     class="workspace-selector"
-    :class="{ 'workspace-selector-project': isProjectPresentation }"
+    :class="{
+      'workspace-selector-project': isProjectPresentation,
+      'workspace-selector-management': isManagementPresentation,
+    }"
     ref="dropdownRef"
-    data-testid="workspace-selector"
+    :data-testid="isManagementPresentation ? 'workspace-management-selector' : 'workspace-selector'"
   >
     <span
-      v-if="isLocked"
+      v-if="!isManagementPresentation && isLocked"
       class="workspace-badge"
       :class="{ 'workspace-badge-project': isProjectPresentation }"
       data-testid="workspace-locked-badge"
@@ -694,7 +735,7 @@ watch(
       <span class="badge-name">{{ lockedWorkspace?.name ?? lockedWorkspaceId }}</span>
       <span class="badge-lock" aria-hidden="true">🔒</span>
     </span>
-    <template v-else>
+    <template v-else-if="!isManagementPresentation">
       <button
         class="selector-btn"
         :class="{ open: dropdownOpen, 'selector-btn-project': isProjectPresentation }"
@@ -722,11 +763,22 @@ watch(
         <span class="dropdown-arrow" aria-hidden="true">{{ dropdownOpen ? '▲' : '▼' }}</span>
       </button>
 
+    </template>
+
+    <component
+      :is="isManagementPresentation ? BaseModal : 'div'"
+      v-if="dropdownOpen"
+      v-bind="managementModalProps"
+      :class="{ 'workspace-dropdown-shell': !isManagementPresentation }"
+      @close="requestCloseForm"
+    >
       <div
-        v-if="dropdownOpen"
         id="workspace-selector-menu"
         class="dropdown-menu"
-        :class="{ 'dropdown-menu-project': isProjectPresentation }"
+        :class="{
+          'dropdown-menu-project': isProjectPresentation,
+          'dropdown-menu-management': isManagementPresentation,
+        }"
       >
         <div v-if="gateway" class="section-header" data-testid="workspace-gateway-status">
           {{ gateway.canonicalBaseUrl }} · {{ gateway.appId }}
@@ -814,7 +866,7 @@ watch(
           data-testid="workspace-create-form"
           @submit.prevent="submitCreate"
         >
-          <div class="form-title">New workspace</div>
+          <div v-if="!isManagementPresentation" class="form-title">New workspace</div>
           <label class="field">
             <span class="field-label">Name</span>
             <input
@@ -924,7 +976,7 @@ watch(
               type="button"
               class="btn-secondary"
               data-testid="workspace-create-cancel"
-              @click="closeForm"
+              @click="requestCloseForm"
             >
               Cancel
             </button>
@@ -946,7 +998,7 @@ watch(
           data-testid="workspace-edit-form"
           @submit.prevent="submitEdit"
         >
-          <div class="form-title">Edit workspace</div>
+          <div v-if="!isManagementPresentation" class="form-title">Edit workspace</div>
           <label class="field">
             <span class="field-label">Name</span>
             <input
@@ -1055,7 +1107,7 @@ watch(
               type="button"
               class="btn-secondary"
               data-testid="workspace-edit-cancel"
-              @click="closeForm"
+              @click="requestCloseForm"
             >
               Cancel
             </button>
@@ -1070,7 +1122,7 @@ watch(
           </div>
         </form>
       </div>
-    </template>
+    </component>
   </div>
 </template>
 
@@ -1082,6 +1134,14 @@ watch(
 .workspace-selector-project {
   width: 100%;
   min-width: 0;
+}
+
+.workspace-selector-management {
+  display: contents;
+}
+
+.workspace-dropdown-shell {
+  display: contents;
 }
 
 .selector-btn {
@@ -1188,6 +1248,22 @@ watch(
      height while its own scroll region keeps the full create/edit forms reachable. */
   max-height: min(50vh, 420px);
   overflow-y: auto;
+}
+
+.dropdown-menu-management {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.dropdown-menu-management .ws-form {
+  padding: 18px 20px 20px;
 }
 
 .menu-section {

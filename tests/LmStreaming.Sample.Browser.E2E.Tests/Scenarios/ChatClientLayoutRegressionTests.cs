@@ -124,17 +124,13 @@ public sealed class ChatClientLayoutRegressionTests
         await page.GetByTestId("egress-auth-button").PressAsync("Escape");
         await Assertions.Expect(page.HeaderActionsMenuButton()).ToBeFocusedAsync();
 
-        // Menu items are roving-focus targets rather than independent tab stops. Wait for the
-        // blank-chat project picker to become interactive so the assertion cannot race its loading
-        // state: Tab closes More and enters the composer's real DOM order, then continues to text.
-        var projectPicker = page.GetByTestId("workspace-selector-button");
-        await Assertions.Expect(projectPicker).ToBeEnabledAsync();
+        // Menu items are roving-focus targets rather than independent tab stops. More now belongs to
+        // the app header immediately before the inspector launcher, so Tab closes the popup and
+        // proceeds to that next control in the real DOM order.
         await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
         await page.MarketplaceButton().PressAsync("Tab");
         await Assertions.Expect(page.HeaderActionsMenu()).ToHaveCountAsync(0);
-        await Assertions.Expect(projectPicker).ToBeFocusedAsync();
-        await projectPicker.PressAsync("Tab");
-        await Assertions.Expect(page.Textarea()).ToBeFocusedAsync();
+        await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeFocusedAsync();
 
         await page.HeaderActionsMenuButton().FocusAsync();
         await page.HeaderActionsMenuButton().PressAsync("ArrowDown");
@@ -205,11 +201,11 @@ public sealed class ChatClientLayoutRegressionTests
         // shell clip and re-introduce the whole-page scrollbar.
         await AssertPageDoesNotScrollAsync(page, "with every tool pill expanded (largest sr-only leak)");
 
-        // More belongs to the centered header's context row, while the inspector toggle belongs to
-        // the app chrome at the top-right. Prove both positions in a real renderer from phone width
-        // through the user's 1597px desktop viewport. Opening the inspector replaces its launcher
-        // with an equal-size close control at the same screen coordinates, so the affordance does
-        // not jump as the panel changes the available transcript width.
+        // More and the inspector toggle belong together in the app chrome at the top-right. Prove
+        // their placement in a real renderer from phone width through the user's 1597px desktop
+        // viewport. Opening the inspector replaces its launcher with an equal-size close control at
+        // the same screen coordinates, so the affordance does not jump as the panel changes the
+        // available transcript width.
         var geometryCases = new (int Width, bool SidebarCollapsed)[]
         {
             (1597, false),
@@ -257,7 +253,7 @@ public sealed class ChatClientLayoutRegressionTests
             var viewPreference = page.Locator(".view-preference");
             var viewPreferenceBox = await viewPreference.BoundingBoxAsync();
             headerBox.Should().NotBeNull("the full-width app header must have a measurable layout box");
-            moreBox.Should().NotBeNull("More must remain visible in the header context row");
+            moreBox.Should().NotBeNull("More must remain visible in the app header");
             launcherBox.Should().NotBeNull("the closed inspector launcher must remain visible in the app header");
             sidebarToggleBox.Should().NotBeNull("the app header must expose the sidebar control");
             titleBox.Should().NotBeNull("the conversation title must have a measurable layout box");
@@ -278,8 +274,16 @@ public sealed class ChatClientLayoutRegressionTests
                     headerBox.X + headerBox.Width,
                     $"the inspector control must stay in the header at {geometryLabel}"
                 );
+            Math.Abs(moreBox!.Y - launcherBox.Y)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"More and the inspector control must align at {geometryLabel}");
+            Math.Abs(launcherBox.X - (moreBox.X + moreBox.Width) - 8)
+                .Should()
+                .BeLessThanOrEqualTo(1, $"More must sit beside the inspector control at {geometryLabel}");
             AssertRectanglesDoNotOverlap(sidebarToggleBox!, titleBox!, $"sidebar control and title at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(moreBox, titleBox!, $"More and title at {geometryLabel}");
             AssertRectanglesDoNotOverlap(launcherBox, titleBox!, $"launcher and title at {geometryLabel}");
+            AssertRectanglesDoNotOverlap(moreBox, viewPreferenceBox!, $"More and view switch at {geometryLabel}");
             AssertRectanglesDoNotOverlap(
                 launcherBox,
                 viewPreferenceBox!,
@@ -419,9 +423,10 @@ public sealed class ChatClientLayoutRegressionTests
 
             await page.ConversationInspectorLauncher().ClickAsync();
             await Assertions.Expect(page.ConversationInspector()).ToBeVisibleAsync();
-            await Assertions.Expect(page.ConversationInspectorLauncher()).ToBeHiddenAsync();
-            var closeButton = page.ConversationInspector()
-                .GetByRole(AriaRole.Button, new() { Name = "Close Work and agents" });
+            var closeButton = page.ConversationInspectorLauncher();
+            await Assertions.Expect(closeButton).ToBeVisibleAsync();
+            await Assertions.Expect(closeButton).ToHaveAttributeAsync("aria-label", "Close Work and agents");
+            await Assertions.Expect(closeButton).ToHaveAttributeAsync("aria-expanded", "true");
             var inspectorBox = await page.ConversationInspector().BoundingBoxAsync();
             var closeBox = await closeButton.BoundingBoxAsync();
             var inspectorTabsBox = await page.ConversationInspector().GetByRole(AriaRole.Tablist).BoundingBoxAsync();
