@@ -17,9 +17,53 @@ import {
   freshnessLabel,
   rowFromWire,
   temperatureLabel,
+  tokenBreakdown,
   utilizationOf,
   viewFromReport,
 } from '@/utils/contextReport';
+
+describe('tokenBreakdown', () => {
+  it('names every category and says which ones are already counted inside input or output', () => {
+    // The shape of the screenshot that prompted this: cache read is inside input, thinking inside output.
+    const lines = tokenBreakdown({
+      kind: 'value',
+      input: 23_235_406,
+      output: 29_730,
+      cacheRead: 22_102_481,
+      cacheWrite: 0,
+      reasoning: 4_547,
+      total: 23_265_136,
+    });
+
+    expect(lines).toEqual([
+      { key: 'input', label: 'Input', value: '23,235,406', note: null },
+      { key: 'cache-read', label: 'Cache read', value: '22,102,481', note: 'part of input' },
+      { key: 'uncached-input', label: 'Uncached input', value: '1,132,925', note: 'part of input' },
+      { key: 'cache-write', label: 'Cache write', value: '0', note: null },
+      { key: 'output', label: 'Output', value: '29,730', note: null },
+      { key: 'thinking', label: 'Thinking', value: '4,547', note: 'part of output' },
+      { key: 'total', label: 'Total', value: '23,265,136', note: null },
+    ]);
+  });
+
+  it('never reports negative uncached input when a provider reports cache reads above input', () => {
+    const lines = tokenBreakdown({
+      kind: 'value',
+      input: 10,
+      output: 1,
+      cacheRead: 50,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 11,
+    });
+
+    expect(lines.find((l) => l.key === 'uncached-input')?.value).toBe('0');
+  });
+
+  it('has no lines when no usage is recorded', () => {
+    expect(tokenBreakdown({ kind: 'none' })).toEqual([]);
+  });
+});
 
 function observation(overrides: Partial<ContextObservation> = {}): ContextObservation {
   return {

@@ -275,6 +275,11 @@ const {
   () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
 );
 
+// The context rows carry only agent ids ("agent-7"); label them the way the tabs and roster do.
+const contextAgentNames = computed<Record<string, string>>(() =>
+  Object.fromEntries(subAgentChildren.value.map((c) => [c.agentId, c.name || c.template]))
+);
+
 // Compact now (manual compaction) for the same conversation the panel shows. A committed compaction,
 // manual or automatic, re-reads the report so the panel's compaction state catches up at once.
 const { view: compactionControl, request: requestManualCompaction } = useManualCompaction(
@@ -1377,6 +1382,7 @@ onBeforeUnmount(() => {
             :status="contextStatus"
             :generated-at-utc="contextGeneratedAtUtc"
             :compaction="compactionControl"
+            :agent-names="contextAgentNames"
             @compact="requestManualCompaction"
           />
 

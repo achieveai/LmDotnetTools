@@ -68,7 +68,8 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
 - `CacheAccounting`: `SubsetOfInput` (default) or `Additive`.
 - `EffectiveDate`: `yyyy-MM-dd`.
 - `_source`: vendor URL, ignored by the binder.
-- `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Absent = window unknown (no gauge, no compaction pressure). Present-but-not-positive rejects the whole entry.
+- `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Present-but-not-positive rejects the whole entry.
+- `ContextWindow:MaxTokens` (top-level, not per model; default `156000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (every Copilot, Claude CLI and Codex id) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
 
 LmConfig JSON catalogs (`PricingConfig`) carry the same fields as `cache_read_per_million`, `cache_write_5m_per_million`, `cache_write_1h_per_million`, `reasoning_per_million`, `cache_accounting`, `effective_date`. Two routes sharing a model name must agree on every field or the name is dropped as conflicting.
 
@@ -81,6 +82,24 @@ All USD per million tokens. Verified 2026-09-02 against the vendor page. Re-veri
 | `gpt-4o` | — | 2.50 | 1.25 | — | — | 10.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `claude-sonnet-4-20250514` | `claude-sonnet-4` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
+
+Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
+
+| Model id | Aliases | Input | Cache read | Cache write 5m | Cache write 1h | Output | Accounting | Source |
+|---|---|---|---|---|---|---|---|---|
+| `gpt-5.6-sol` | — | 4.00 | 0.40 | — | — | 20.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-5.6-terra` | — | 2.00 | 0.20 | — | — | 12.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-5.6-luna` | — | 0.20 | 0.02 | — | — | 1.20 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `claude-opus-5` | — | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
+| `claude-sonnet-5` | — | 2.00 | 0.20 | 2.50 | 4.00 | 10.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
+| `claude-haiku-4.5` | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1.00 | 0.10 | 1.25 | 2.00 | 5.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
+| `deepseek-v4-pro` | — | 1.32 | 0.044 | — | — | 3.96 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
+
+- `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
+- OpenAI bills prompts over 272K input at 2x input and 1.5x output. The sample's 156K context cap keeps requests below that.
+- `deepseek-v4-pro` is the peak-hour rate. Off-peak is half price, so off-peak runs read high.
+- Copilot reports no cache reads for Claude ids (recorded `CacheReadTokens` is 0). Their estimates therefore price all input at the uncached rate, which is an upper bound.
+- The vendor windows (1M+) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 156K.
 
 Notes:
 
@@ -98,9 +117,9 @@ Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09
 
 ## Deliberately unpriced
 
-These ids appear in the sample's configuration but are served over a subscription transport with no per-token list price to cite. Their cost resolves null ("unavailable"). Do not add a guessed rate (#378).
+These ids appear in the sample's configuration but have no entry. Their cost resolves null ("unavailable"). Do not add a guessed rate (#378).
 
-- GitHub Copilot catalog ids (`SubAgentIntelligence.Tiers`, and the `copilot` provider default `claude-sonnet-4.5`).
+- Copilot catalog ids not in the table above (for example the `copilot` provider default `claude-sonnet-4.5`). Add one from its vendor page when it is used.
 - Claude CLI default `claude-sonnet-4-6` (Anthropic lists the API rate for Sonnet 4.6, but the CLI transport here is subscription-billed; an operator on the API can add it from the same Anthropic page).
 - Codex default `gpt-5.3-codex`.
 

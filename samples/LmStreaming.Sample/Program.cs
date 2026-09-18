@@ -754,7 +754,7 @@ try
     // runs no loop of its own and drives every review into a conversation here — so the catalog the
     // UsageLedger resolves against has to be composed and registered by THIS process. See PricingCatalog
     // for the configuration shape and docs/features/public-pricing-catalog.md for which rates are shipped
-    // (cited public list prices only, #682) and which ids are deliberately left unpriced.
+    // (cited public list prices only, #682; Copilot ids at their vendor's retail API price) and which are unpriced.
     _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
     // #721: the Compaction section, bound once for the process and shared by the pool's loops and the
@@ -783,8 +783,9 @@ try
         // so flat-rate Copilot ids resolve to null cost ("unavailable") — the correct state — while any
         // model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
-        // #681: the same Pricing:Models entries may carry MaxContextTokens; AddLmConfig registers this
-        // resolver over that catalog. Null only for a container that never registered LmConfig.
+        // #681: the same Pricing:Models entries may carry MaxContextTokens; AddConfiguredPricing registers this
+        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 156K, which is also the window
+        // of any model the catalog does not list). Null only for a container that never registered it.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
         // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see
         // CompactionHostSetup for the test-profile knobs.

@@ -188,6 +188,57 @@ describe('ContextCostPanel — structure', () => {
     expect(unlabeled).toHaveLength(0);
     wrapper.unmount();
   });
+
+  it('shows each agent model in its own column, and a labelled token breakdown in the details', async () => {
+    const wrapper = mountPanel([
+      row({ modelId: 'gpt-5.6-sol' }),
+      row({ agentId: 'agent-1', threadId: 'sub-1', parentAgentId: 'root', executionKind: 'SubAgent', modelId: null }),
+    ]);
+    await wrapper.get('[data-testid="context-panel-toggle"]').trigger('click');
+
+    expect(wrapper.findAll('thead th').map((th) => th.text())).toContain('Model');
+    expect(wrapper.findAll('[data-testid="context-model"]').map((c) => c.text())).toEqual(['gpt-5.6-sol', 'unknown']);
+
+    await wrapper.findAll('[data-testid="context-row-details-toggle"]')[0].trigger('click');
+    const details = wrapper.get('[data-testid="context-row-details"]');
+    expect(details.get('td').attributes('colspan')).toBe('7');
+    const breakdown = details.findAll('[data-testid="context-token-line"]');
+    expect(breakdown.map((l) => l.attributes('data-key'))).toEqual([
+      'input',
+      'cache-read',
+      'uncached-input',
+      'cache-write',
+      'output',
+      'thinking',
+      'total',
+    ]);
+    wrapper.unmount();
+  });
+
+  it('names a sub-agent by its roster name, falling back to the raw id only when the roster has none', async () => {
+    const wrapper = mount(ContextCostPanel, {
+      props: {
+        rows: [
+          row(),
+          row({ agentId: 'agent-1', threadId: 'sub-1', parentAgentId: 'root', executionKind: 'SubAgent' }),
+          row({ agentId: 'agent-2', threadId: 'sub-2', parentAgentId: 'root', executionKind: 'SubAgent' }),
+        ],
+        total: total(),
+        status: 'ready',
+        generatedAtUtc: '2026-09-02T10:00:05Z',
+        agentNames: { 'agent-1': 'Security reviewer' },
+      },
+      attachTo: document.body,
+    });
+    await wrapper.get('[data-testid="context-panel-toggle"]').trigger('click');
+
+    const names = wrapper.findAll('.context-agent-name').map((n) => n.text());
+    expect(names).toEqual(['Main agent', 'Security reviewer', 'agent-2']);
+    // The id stays the row's identity; only the label changes.
+    expect(wrapper.findAll('[data-testid="context-row"]')[1].attributes('data-agent-id')).toBe('agent-1');
+    expect(wrapper.find('[aria-label="Details for Security reviewer"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
 });
 
 describe('ContextCostPanel — zero is not unknown', () => {
@@ -318,7 +369,8 @@ describe('ContextCostPanel — per-row details and keyboard', () => {
     expect(details.attributes('id')).toBe(toggle.attributes('aria-controls'));
     expect(details.get('[data-testid="context-compaction"]').text()).toBe('Compaction rejected: validation_failed');
     expect(details.get('[data-testid="context-decision"]').text()).toBe('Skipped: cooldown');
-    expect(details.text()).toContain('claude-sonnet-4-5-20250929');
+    // The model moved to its own column; the details no longer repeat it.
+    expect(wrapper.get('[data-testid="context-model"]').text()).toBe('claude-sonnet-4-5-20250929');
     expect(details.text()).toContain('cp-1');
     expect(details.text()).toContain('200,000');
     wrapper.unmount();

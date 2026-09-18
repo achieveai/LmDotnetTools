@@ -456,6 +456,37 @@ export function tokensLabel(tokens: TokensView): string {
   return tokens.kind === 'none' ? 'No usage recorded' : `${formatTokens(tokens.total)} tokens`;
 }
 
+export interface TokenLine {
+  key: 'input' | 'cache-read' | 'uncached-input' | 'cache-write' | 'output' | 'thinking' | 'total';
+  label: string;
+  value: string;
+  /** Set when the figure is already counted inside another line, so a reader does not add it twice. */
+  note: string | null;
+}
+
+/**
+ * One labelled line per token category. The usage contract (ConversationUsageAggregate) counts cache
+ * reads inside input and thinking (reasoning) inside output; cache writes are separate. Uncached input
+ * is derived as input minus cache read, floored at zero.
+ */
+export function tokenBreakdown(tokens: TokensView): TokenLine[] {
+  if (tokens.kind === 'none') return [];
+  return [
+    { key: 'input', label: 'Input', value: formatTokens(tokens.input), note: null },
+    { key: 'cache-read', label: 'Cache read', value: formatTokens(tokens.cacheRead), note: 'part of input' },
+    {
+      key: 'uncached-input',
+      label: 'Uncached input',
+      value: formatTokens(Math.max(0, tokens.input - tokens.cacheRead)),
+      note: 'part of input',
+    },
+    { key: 'cache-write', label: 'Cache write', value: formatTokens(tokens.cacheWrite), note: null },
+    { key: 'output', label: 'Output', value: formatTokens(tokens.output), note: null },
+    { key: 'thinking', label: 'Thinking', value: formatTokens(tokens.reasoning), note: 'part of output' },
+    { key: 'total', label: 'Total', value: formatTokens(tokens.total), note: null },
+  ];
+}
+
 export function freshnessLabel(freshness: ContextFreshness): string {
   switch (freshness) {
     case 'Fresh':
