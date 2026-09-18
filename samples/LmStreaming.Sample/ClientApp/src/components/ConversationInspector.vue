@@ -1,134 +1,217 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import type { SubAgentSummary } from '@/api/subAgentsApi';
-import type { TodoTask } from '@/types/todo';
-import { countTodoTasks } from '@/utils/todoBoard';
-import TodoBoardPanel from './TodoBoardPanel.vue';
-import SubAgentListPanel from './SubAgentListPanel.vue';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
+import type { SubAgentSummary } from "@/api/subAgentsApi";
+import type { TodoTask } from "@/types/todo";
+import { countTodoTasks } from "@/utils/todoBoard";
+import TodoBoardPanel from "./TodoBoardPanel.vue";
+import SubAgentListPanel from "./SubAgentListPanel.vue";
+import PanelSplitter from "./PanelSplitter.vue";
 
-type InspectorSection = 'work' | 'agents';
-
-const props = defineProps<{
-  open: boolean;
-  activeSection: InspectorSection;
-  tasks: TodoTask[];
-  hasWork: boolean;
-  children: SubAgentSummary[];
-  activeConversationTabId: string;
-  /** Header-owned close control used by ChatLayout. Omit to render the standalone close button. */
-  externalCloseControlId?: string;
-}>();
-
+type InspectorSection = "work" | "agents";
+type PreviewTab = { id: string; label: string; path: string };
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    activeSection?: InspectorSection;
+    tasks: TodoTask[];
+    hasWork: boolean;
+    children: SubAgentSummary[];
+    activeConversationTabId: string;
+    externalCloseControlId?: string;
+    desktopWidth?: number;
+    previewTabs?: PreviewTab[];
+    activePreviewId?: string | null;
+    previewHeight?: number;
+    previewMinHeight?: number;
+  previewMaxHeight?: number;
+  previewDefaultHeight?: number;
+    expanded?: boolean;
+  }>(),
+  {
+    activeSection: "work",
+    desktopWidth: 320,
+    previewTabs: () => [],
+    activePreviewId: null,
+    previewHeight: 420,
+    previewMinHeight: 180,
+  previewMaxHeight: 700,
+  previewDefaultHeight: 420,
+    expanded: false,
+  },
+);
 const emit = defineEmits<{
   close: [];
   selectSection: [section: InspectorSection];
   openArtifact: [path: string];
   selectAgent: [agentId: string, closeDrawer: boolean];
+  selectPreview: [id: string];
+  closePreview: [id: string];
+  "update:previewHeight": [height: number];
 }>();
 
-const OVERLAY_MAX_WIDTH = 1100;
 const rootEl = ref<HTMLElement | null>(null);
-const workTab = ref<HTMLButtonElement | null>(null);
-const agentsTab = ref<HTMLButtonElement | null>(null);
+const workButton = ref<HTMLButtonElement | null>(null);
 const overlay = ref(false);
-
+const shortViewport = ref(false);
+const viewportWidth = ref(typeof window === "undefined" ? 1200 : window.innerWidth);
+const workOpen = ref(true);
+const agentsOpen = ref(true);
+const resizing = ref(false);
 const workCounts = computed(() => countTodoTasks(props.tasks));
-
+const hasPreview = computed(() => props.previewTabs.length > 0);
+// F-002 (#784): the tabs share one panel, so its accessible name must track whichever tab is active
+// rather than always pointing at the first — otherwise a screen reader announces the wrong file.
+const activePreviewIndex = computed(() =>
+  props.previewTabs.findIndex((tab) => tab.id === props.activePreviewId),
+);
+const activePreviewTabId = computed(() =>
+  activePreviewIndex.value === -1 ? undefined : `preview-tab-${activePreviewIndex.value}`,
+);
+const inspectorStyle = computed(() => ({
+  "--inspector-width": `${props.desktopWidth}px`,
+  "--preview-height": `${props.previewHeight}px`,
+  width:
+    overlay.value && props.expanded && viewportWidth.value > 768
+      ? `${props.desktopWidth}px`
+      : undefined,
+}));
 function syncOverlay(): void {
   const wasOverlay = overlay.value;
-  overlay.value = window.innerWidth <= OVERLAY_MAX_WIDTH;
-  if (!wasOverlay && overlay.value && props.open && !rootEl.value?.contains(document.activeElement)) {
-    void nextTick(() => (props.activeSection === 'work' ? workTab.value : agentsTab.value)?.focus());
-  }
+  viewportWidth.value = window.innerWidth;
+  overlay.value = window.innerWidth <= 1100;
+  shortViewport.value = window.innerHeight <= 620;
+  if (
+    !wasOverlay &&
+    overlay.value &&
+    props.open &&
+    !rootEl.value?.contains(document.activeElement)
+  )
+    void nextTick(() => workButton.value?.focus());
 }
-
-function selectSection(section: InspectorSection): void {
-  emit('selectSection', section);
-  void nextTick(() => (section === 'work' ? workTab.value : agentsTab.value)?.focus());
+function toggleSection(section: InspectorSection): void {
+  if (section === "work") workOpen.value = !workOpen.value;
+  else agentsOpen.value = !agentsOpen.value;
+  emit("selectSection", section);
 }
-
-function onTabKeydown(event: KeyboardEvent): void {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-  event.preventDefault();
-  if (event.key === 'Home') return selectSection('work');
-  if (event.key === 'End') return selectSection('agents');
-  selectSection(props.activeSection === 'work' ? 'agents' : 'work');
+function isNestedDialog(event: KeyboardEvent): boolean {
+  const dialog = (event.target as Element | null)?.closest?.('[role="dialog"]');
+  return !!dialog && dialog !== rootEl.value;
 }
-
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
+function focusable(): HTMLElement[] {
+  return rootEl.value
+    ? Array.from(
+        rootEl.value.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.tabIndex >= 0 && !el.closest("[hidden], [inert]"))
+    : [];
+}
+function handleKeys(event: KeyboardEvent): void {
+  if (isNestedDialog(event)) return;
+  if (event.key === "Escape") {
+    if (isNestedDialog(event)) return;
     event.preventDefault();
-    emit('close');
+    emit("close");
     return;
   }
-  if (!overlay.value || event.key !== 'Tab' || !rootEl.value) return;
-  const focusable = Array.from(
-    rootEl.value.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])')
-  ).filter((element) => element.tabIndex >= 0 && !element.closest('[hidden]'));
-  if (focusable.length === 0) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
+  if (!overlay.value || event.key !== "Tab") return;
+  const items = focusable(),
+    first = items[0],
+    last = items[items.length - 1];
   if (event.shiftKey && document.activeElement === first) {
     event.preventDefault();
-    last.focus();
+    last?.focus();
   } else if (!event.shiftKey && document.activeElement === last) {
     event.preventDefault();
-    first.focus();
+    first?.focus();
   }
 }
-
-function onRootKeydown(event: KeyboardEvent): void {
-  // The document listener owns the hosted overlay because its external header toggle is one edge
-  // of that focus loop. A hosted desktop dock still needs its own Escape handler.
-  if (props.externalCloseControlId && overlay.value) return;
-  onKeydown(event);
+function onPreviewTabKeydown(event: KeyboardEvent, index: number): void {
+  if (
+    !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) ||
+    !props.previewTabs.length
+  )
+    return;
+  event.preventDefault();
+  let next =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? props.previewTabs.length - 1
+        : (index +
+            (event.key === "ArrowRight" ? 1 : -1) +
+            props.previewTabs.length) %
+          props.previewTabs.length;
+  emit("selectPreview", props.previewTabs[next].id);
+  void nextTick(() =>
+    rootEl.value
+      ?.querySelectorAll<HTMLElement>("[data-preview-id]")
+      [next]?.focus(),
+  );
 }
-
+function onRootKeydown(event: KeyboardEvent): void {
+  if (!props.externalCloseControlId || !overlay.value) handleKeys(event);
+}
 function onDocumentKeydown(event: KeyboardEvent): void {
-  if (!props.open || !overlay.value || !props.externalCloseControlId) return;
-  const externalClose = document.getElementById(props.externalCloseControlId);
-  if (!externalClose || (!rootEl.value?.contains(event.target as Node) && event.target !== externalClose)) return;
-  if (event.key === 'Escape') {
+  if (
+    !props.open ||
+    !overlay.value ||
+    !props.externalCloseControlId ||
+    isNestedDialog(event)
+  )
+    return;
+  const external = document.getElementById(props.externalCloseControlId);
+  if (
+    !external ||
+    (!rootEl.value?.contains(event.target as Node) && event.target !== external)
+  )
+    return;
+  if (event.key === "Escape") {
     event.preventDefault();
-    emit('close');
+    emit("close");
     return;
   }
-  if (event.key !== 'Tab' || !rootEl.value) return;
-  const focusable = Array.from(
-    rootEl.value.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])')
-  ).filter((element) => element.tabIndex >= 0 && !element.closest('[hidden]'));
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.target === externalClose) {
+  if (event.key !== "Tab") return;
+  const items = focusable(),
+    first = items[0],
+    last = items[items.length - 1];
+  if (event.target === external) {
     event.preventDefault();
     (event.shiftKey ? last : first)?.focus();
-  } else if ((event.target === first && event.shiftKey) || (event.target === last && !event.shiftKey)) {
+  } else if (
+    (event.target === first && event.shiftKey) ||
+    (event.target === last && !event.shiftKey)
+  ) {
     event.preventDefault();
-    externalClose.focus();
+    external.focus();
   }
 }
-
 watch(
   () => props.open,
   (open) => {
-    if (open) void nextTick(() => (props.activeSection === 'work' ? workTab.value : agentsTab.value)?.focus());
-  }
+    if (open) void nextTick(() => workButton.value?.focus());
+  },
 );
-
 onMounted(() => {
   syncOverlay();
-  window.addEventListener('resize', syncOverlay);
-  document.addEventListener('keydown', onDocumentKeydown);
+  window.addEventListener("resize", syncOverlay);
+  document.addEventListener("keydown", onDocumentKeydown);
 });
-
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', syncOverlay);
-  document.removeEventListener('keydown', onDocumentKeydown);
+  window.removeEventListener("resize", syncOverlay);
+  document.removeEventListener("keydown", onDocumentKeydown);
 });
 </script>
 
 <template>
-  <template v-if="props.open">
+  <template v-if="open">
     <div
       v-if="overlay"
       class="inspector-backdrop"
@@ -140,7 +223,8 @@ onBeforeUnmount(() => {
     <aside
       id="conversation-inspector"
       ref="rootEl"
-      :class="['conversation-inspector', { overlay }]"
+      :class="['conversation-inspector', { overlay, expanded, resizing, 'has-preview': hasPreview }]"
+      :style="inspectorStyle"
       data-testid="conversation-inspector"
       :role="overlay ? 'dialog' : undefined"
       :aria-modal="overlay ? 'true' : undefined"
@@ -150,181 +234,294 @@ onBeforeUnmount(() => {
       <header class="inspector-header">
         <h2 id="conversation-inspector-title">Work &amp; agents</h2>
         <button
-          v-if="!props.externalCloseControlId"
+          v-if="!externalCloseControlId"
           class="inspector-close"
           aria-label="Close Work and agents"
           title="Close Work and agents"
           @click="emit('close')"
         >
-          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
             <rect x="2.5" y="3" width="15" height="14" rx="2" />
             <path d="M12.5 3v14" />
           </svg>
         </button>
       </header>
-      <div class="inspector-tabs" role="tablist" aria-label="Conversation details" @keydown="onTabKeydown">
-        <button
-          id="inspector-tab-work"
-          ref="workTab"
-          role="tab"
-          :aria-selected="props.activeSection === 'work'"
-          aria-controls="inspector-panel-work"
-          :tabindex="props.activeSection === 'work' ? 0 : -1"
-          @click="selectSection('work')"
-        >Work <span v-if="props.hasWork">{{ workCounts.done }}/{{ workCounts.total }}</span></button>
-        <button
-          id="inspector-tab-agents"
-          ref="agentsTab"
-          role="tab"
-          :aria-selected="props.activeSection === 'agents'"
-          aria-controls="inspector-panel-agents"
-          :tabindex="props.activeSection === 'agents' ? 0 : -1"
-          @click="selectSection('agents')"
-        >Agents <span>{{ props.children.length }}</span></button>
+      <section
+        v-show="hasPreview"
+        class="preview-region"
+        data-testid="workspace-preview-region"
+      >
+        <div class="preview-tabs" role="tablist" aria-label="Open files">
+          <div
+            v-for="(tab, index) in previewTabs"
+            :key="tab.id"
+            class="preview-tab-wrap"
+          >
+            <button
+              :id="`preview-tab-${index}`"
+              role="tab"
+              :aria-selected="tab.id === activePreviewId"
+              :aria-controls="'workspace-preview-panel'"
+              :tabindex="tab.id === activePreviewId ? 0 : -1"
+              :title="tab.path"
+              :data-preview-id="tab.id"
+              @click="emit('selectPreview', tab.id)"
+              @keydown="onPreviewTabKeydown($event, index)"
+            >
+              {{ tab.label }}
+            </button>
+            <button
+              class="preview-tab-close"
+              :aria-label="`Close ${tab.label}`"
+              @click.stop="emit('closePreview', tab.id)"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+        <div
+          id="workspace-preview-panel"
+          class="preview-content"
+          role="tabpanel"
+          :aria-labelledby="activePreviewTabId"
+        >
+          <slot name="preview" />
+        </div>
+      </section>
+      <PanelSplitter
+        v-if="hasPreview && !expanded && !overlay && !shortViewport"
+        data-testid="workspace-vertical-splitter"
+        label="Resize file preview"
+        orientation="horizontal"
+        controls="workspace-preview-panel"
+        persist-key="lmstreaming.previewHeight"
+        :value="previewHeight"
+        :min="previewMinHeight"
+        :max="previewMaxHeight"
+        :default-value="previewDefaultHeight"
+        @update:value="emit('update:previewHeight', $event)"
+        @dragging="resizing = $event"
+      />
+      <div
+        id="workspace-monitoring-region"
+        v-show="!expanded"
+        class="monitoring-region"
+        data-testid="workspace-monitoring-region"
+        :inert="expanded || undefined"
+      >
+        <section class="inspector-section">
+          <h3>
+            <button
+              id="inspector-tab-work"
+              ref="workButton"
+              :aria-expanded="workOpen"
+              aria-controls="inspector-panel-work"
+              @click="toggleSection('work')"
+            >
+              Work
+              <span v-if="hasWork"
+                >{{ workCounts.done }}/{{ workCounts.total }}</span
+              >
+            </button>
+          </h3>
+          <div
+            id="inspector-panel-work"
+            v-show="workOpen"
+            class="inspector-content"
+            :inert="!workOpen || undefined"
+          >
+            <TodoBoardPanel
+              v-if="hasWork"
+              embedded
+              :tasks="tasks"
+              @open-artifact="emit('openArtifact', $event)"
+            />
+            <p v-else class="inspector-empty">No work yet.</p>
+          </div>
+        </section>
+        <section class="inspector-section">
+          <h3>
+            <button
+              id="inspector-tab-agents"
+              :aria-expanded="agentsOpen"
+              aria-controls="inspector-panel-agents"
+              @click="toggleSection('agents')"
+            >
+              Agents <span>{{ children.length }}</span>
+            </button>
+          </h3>
+          <div
+            id="inspector-panel-agents"
+            v-show="agentsOpen"
+            class="inspector-content"
+            :inert="!agentsOpen || undefined"
+          >
+            <SubAgentListPanel
+              embedded
+              :children="children"
+              :active-tab-id="activeConversationTabId"
+              @select="emit('selectAgent', $event, overlay)"
+            />
+          </div>
+        </section>
       </div>
-      <section
-        v-if="props.activeSection === 'work'"
-        id="inspector-panel-work"
-        class="inspector-content"
-        role="tabpanel"
-        aria-labelledby="inspector-tab-work"
-      >
-        <TodoBoardPanel v-if="props.hasWork" embedded :tasks="props.tasks" @open-artifact="emit('openArtifact', $event)" />
-        <p v-else class="inspector-empty">No work yet.</p>
-      </section>
-      <section
-        v-else
-        id="inspector-panel-agents"
-        class="inspector-content"
-        role="tabpanel"
-        aria-labelledby="inspector-tab-agents"
-      >
-        <SubAgentListPanel embedded :children="props.children" :active-tab-id="props.activeConversationTabId" @select="emit('selectAgent', $event, overlay)" />
-      </section>
     </aside>
   </template>
 </template>
 
 <style scoped>
 .conversation-inspector {
+  box-sizing: border-box;
   position: relative;
-  width: 320px;
-  min-width: 300px;
+  width: var(--inspector-width);
+  min-width: var(--inspector-width);
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: #f8f9fa;
-  border-left: 1px solid #dfe3e7;
+  background: #f7f8fa;
+  border-left: 1px solid #e2e6eb;
   z-index: 20;
 }
-
 .conversation-inspector.overlay {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0 0 0 auto;
   width: min(92vw, 340px);
   min-width: 0;
   z-index: 101;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  box-shadow: -8px 0 24px #0003;
 }
 
+.conversation-inspector.overlay.has-preview {
+  width: min(92vw, 640px);
+}
 .inspector-backdrop {
   position: fixed;
   inset: 0;
-  border: 0;
-  background: rgba(0, 0, 0, 0.28);
+  background: #0004;
   z-index: 100;
 }
-
 .inspector-header {
   display: flex;
   min-height: 54px;
-  box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px 8px;
+  padding: 8px 14px;
 }
-
-.inspector-header h2 {
+.inspector-header h2,
+.inspector-section h3 {
   margin: 0;
   font-size: 16px;
 }
-
 .inspector-close {
   display: inline-flex;
   width: 34px;
   height: 34px;
   align-items: center;
   justify-content: center;
-  padding: 0;
   border: 1px solid #cbd1d8;
   border-radius: 6px;
   background: #fff;
   color: #394553;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
 }
-
 .inspector-close svg {
   width: 18px;
   height: 18px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
 }
-
-.inspector-close:hover {
-  border-color: #aeb7c2;
-  background: #eef1f4;
-}
-
-.inspector-close:focus-visible {
-  outline: 2px solid #2d6cdf;
-  outline-offset: 2px;
-}
-
-.inspector-tabs {
-  display: flex;
-  padding: 0 10px;
-  border-bottom: 1px solid #dfe3e7;
-}
-
-.inspector-tabs button {
-  flex: 1;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  padding: 9px 6px;
-  color: #5b626a;
-  cursor: pointer;
-}
-
-.inspector-tabs button[aria-selected='true'] {
-  color: #0b5ed7;
-  border-bottom-color: #0b5ed7;
-  font-weight: 600;
-}
-
-.inspector-tabs span {
-  margin-left: 4px;
-  color: #6c757d;
-  font-size: 11px;
-}
-
-.inspector-content {
-  flex: 1;
+.preview-region {
+  height: var(--preview-height);
   min-height: 0;
   display: flex;
-  overflow: hidden;
+  flex-direction: column;
+  background: #fff;
 }
-
-.inspector-empty {
+.expanded .preview-region {
+  height: auto;
+  flex: 1;
+}
+.preview-tabs {
+  display: flex;
+  overflow-x: auto;
+  min-height: 38px;
+  border-block: 1px solid #e2e6eb;
+  background: #f7f8fa;
+}
+.preview-tab-wrap {
+  display: flex;
+  align-items: center;
+  border-right: 1px solid #e2e6eb;
+}
+.preview-tabs button {
+  border: 0;
+  background: transparent;
+  color: #475569;
+  padding: 9px 5px 9px 10px;
+  white-space: nowrap;
+}
+.preview-tabs [role="tab"][aria-selected="true"] {
+  color: #1d4ed8;
+  background: #fff;
+}
+.preview-tab-close {
+  font-size: 16px;
+  padding-inline: 5px 9px !important;
+}
+.preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.monitoring-region {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+}
+.inspector-section {
+  border-bottom: 1px solid #e2e6eb;
+}
+.inspector-section h3 button {
   width: 100%;
-  margin: 0;
-  padding: 24px 16px;
-  text-align: center;
-  color: #6c757d;
+  display: flex;
+  gap: 8px;
+  padding: 11px 14px;
+  border: 0;
+  background: #f7f8fa;
+  color: #334155;
+  font: inherit;
+  text-align: left;
+}
+.inspector-section h3 button span {
+  margin-left: auto;
+}
+.inspector-section h3 button:before {
+  content: "▾";
+  color: #64748b;
+}
+.inspector-section h3 button[aria-expanded="false"]:before {
+  content: "▸";
+}
+.inspector-content {
+  padding: 8px 10px 12px;
+}
+.inspector-empty {
+  padding: 16px;
+  color: #64748b;
   font-size: 13px;
+}
+@media (max-height: 620px) {
+  .conversation-inspector.has-preview {
+    overflow-y: auto;
+  }
+  .conversation-inspector.has-preview .preview-region {
+    height: auto;
+    min-height: 260px;
+  }
+  .conversation-inspector.has-preview .monitoring-region {
+    flex: none;
+    overflow: visible;
+  }
 }
 </style>

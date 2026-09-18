@@ -151,4 +151,38 @@ describe('BaseModal focus management', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
     expect(document.activeElement).toBe(cfOk);
   });
+
+  it('lets only the topmost modal handle Escape', () => {
+    const outer = mountModal();
+    const inner = mount(BaseModal, {
+      props: { title: 'Diagram', dataTestId: 'diagram-modal' },
+      slots,
+      attachTo: document.body,
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(inner.emitted('close')).toHaveLength(1);
+    expect(outer.emitted('close')).toBeUndefined();
+    inner.unmount();
+    outer.unmount();
+  });
+
+  it('lets only the topmost modal own the Tab trap', () => {
+    const outer = mountModal();
+    const inner = mount(BaseModal, {
+      props: { title: 'Diagram', dataTestId: 'diagram-modal' },
+      slots,
+      attachTo: document.body,
+    });
+    const innerLast = inner.find('[data-testid="inner-b"]').element as HTMLElement;
+    const innerFirst = inner.find('[data-testid="diagram-modal-close"]').element as HTMLElement;
+
+    innerLast.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+
+    expect(document.activeElement).toBe(innerFirst);
+    inner.unmount();
+    outer.unmount();
+  });
 });

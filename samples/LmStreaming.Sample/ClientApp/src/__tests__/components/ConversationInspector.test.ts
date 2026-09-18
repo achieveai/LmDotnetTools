@@ -4,157 +4,118 @@ import ConversationInspector from '@/components/ConversationInspector.vue';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
 
-const task: TodoTask = {
-  id: '1', status: TodoStatus.Completed, title: 'Finished work', notes: [], artifacts: ['report.md'], subTasks: [],
-};
-const child: SubAgentSummary = {
-  agentId: 'agent-1', name: 'Reviewer', template: 'review', task: 'Review it', status: 'running', threadId: 'child-1', lastActivityUtc: null,
-};
-
+const task: TodoTask = { id: '1', status: TodoStatus.Completed, title: 'Done', notes: [], artifacts: ['report.md'], subTasks: [] };
+const child: SubAgentSummary = { agentId: 'agent-1', name: 'Reviewer', template: 'review', task: 'Review', status: 'running', threadId: 'child-1', lastActivityUtc: null };
 function mountInspector(overrides: Record<string, unknown> = {}) {
-  return mount(ConversationInspector, {
-    attachTo: document.body,
-    props: {
-      open: true,
-      activeSection: 'work',
-      tasks: [task],
-      hasWork: true,
-      children: [child],
-      activeConversationTabId: 'main',
-      ...overrides,
-    },
-  });
+  return mount(ConversationInspector, { attachTo: document.body, props: {
+    open: true, tasks: [task], hasWork: true, children: [child], activeConversationTabId: 'main', ...overrides,
+  }, slots: { preview: '<div data-testid="preview-body">Preview</div>' } });
 }
 
 describe('ConversationInspector', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 900 });
   });
   afterEach(() => document.body.replaceChildren());
 
-  it('renders no rail at all while closed', () => {
-    const wrapper = mountInspector({ open: false });
-    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
-  });
+  it('renders no rail while closed', () => expect(mountInspector({ open: false }).find('[data-testid="conversation-inspector"]').exists()).toBe(false));
 
-  it('uses an icon-only close control with a clear accessible name and tooltip', () => {
+  it('keeps Work and Agents independently open with live counts', async () => {
     const wrapper = mountInspector();
-    const close = wrapper.get('.inspector-close');
-
-    expect(close.attributes('aria-label')).toBe('Close Work and agents');
-    expect(close.attributes('title')).toBe('Close Work and agents');
-    expect(close.text()).toBe('');
-    expect(close.find('svg[aria-hidden="true"]').exists()).toBe(true);
-  });
-
-  it('shows exactly one embedded renderer and preserves artifact events', async () => {
-    const wrapper = mountInspector();
+    expect(wrapper.get('#inspector-tab-work').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('#inspector-tab-agents').text()).toContain('1');
     expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="todo-panel-toggle"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="subagent-panel"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="subagent-panel"]').exists()).toBe(true);
+    await wrapper.get('#inspector-tab-work').trigger('click');
+    expect(wrapper.get('#inspector-tab-work').attributes('aria-expanded')).toBe('false');
+    expect(wrapper.get('#inspector-tab-agents').attributes('aria-expanded')).toBe('true');
+  });
+
+  it('preserves artifact and agent events', async () => {
+    const wrapper = mountInspector();
     await wrapper.get('[data-testid="todo-artifact-chip"]').trigger('click');
-    expect(wrapper.emitted('openArtifact')).toEqual([['report.md']]);
-  });
-
-  it('supports roving tab focus with arrows, Home and End', async () => {
-    const wrapper = mountInspector();
-    const tabs = wrapper.findAll('[role="tab"]');
-    expect(tabs[0].attributes('aria-selected')).toBe('true');
-    await tabs[0].trigger('keydown', { key: 'ArrowRight' });
-    expect(wrapper.emitted('selectSection')?.at(-1)).toEqual(['agents']);
-    await wrapper.setProps({ activeSection: 'agents' });
-    expect(document.activeElement).toBe(wrapper.findAll('[role="tab"]')[1].element);
-    await wrapper.findAll('[role="tab"]')[1].trigger('keydown', { key: 'Home' });
-    expect(wrapper.emitted('selectSection')?.at(-1)).toEqual(['work']);
-    await wrapper.findAll('[role="tab"]')[1].trigger('keydown', { key: 'End' });
-    expect(wrapper.emitted('selectSection')?.at(-1)).toEqual(['agents']);
-  });
-
-  it('uses a non-modal dock on wide screens and a modal drawer at 1100px', async () => {
-    const wrapper = mountInspector();
-    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('role')).toBeUndefined();
-    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1100 });
-    window.dispatchEvent(new Event('resize'));
-    await wrapper.vm.$nextTick();
-    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('role')).toBe('dialog');
-    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('aria-modal')).toBe('true');
-    expect(document.activeElement).toBe(wrapper.findAll('[role="tab"]')[0].element);
-    expect(wrapper.get('[data-testid="conversation-inspector-backdrop"]').attributes('tabindex')).toBe('-1');
-    await wrapper.get('[data-testid="conversation-inspector-backdrop"]').trigger('click');
-    expect(wrapper.emitted('close')).toHaveLength(1);
-  });
-
-  it('contains forward and reverse focus in the empty overlay pane', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
-    const wrapper = mountInspector({ tasks: [], hasWork: false });
-    await wrapper.vm.$nextTick();
-    const activeTab = wrapper.findAll('[role="tab"]')[0];
-    const close = wrapper.get('.inspector-close');
-    expect(document.activeElement).toBe(activeTab.element);
-    await activeTab.trigger('keydown', { key: 'Tab' });
-    expect(document.activeElement).toBe(close.element);
-    await close.trigger('keydown', { key: 'Tab', shiftKey: true });
-    expect(document.activeElement).toBe(activeTab.element);
-  });
-
-  it('uses an external header close as the overlay focus boundary when provided', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
-    const externalClose = document.createElement('button');
-    externalClose.id = 'external-inspector-close';
-    document.body.appendChild(externalClose);
-    const wrapper = mountInspector({
-      tasks: [],
-      hasWork: false,
-      externalCloseControlId: externalClose.id,
-    });
-    await wrapper.vm.$nextTick();
-    const activeTab = wrapper.findAll('[role="tab"]')[0];
-
-    expect(wrapper.find('.inspector-close').exists()).toBe(false);
-    await activeTab.trigger('keydown', { key: 'Tab', shiftKey: true });
-    expect(document.activeElement).toBe(externalClose);
-    externalClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-    expect(document.activeElement).toBe(activeTab.element);
-    externalClose.focus();
-    externalClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
-    expect(document.activeElement).toBe(activeTab.element);
-    await activeTab.trigger('keydown', { key: 'Tab' });
-    expect(document.activeElement).toBe(externalClose);
-    await activeTab.trigger('keydown', { key: 'Escape' });
-    expect(wrapper.emitted('close')).toHaveLength(1);
-  });
-
-  it('closes a hosted desktop dock once on Escape', async () => {
-    const externalClose = document.createElement('button');
-    externalClose.id = 'external-inspector-close';
-    document.body.appendChild(externalClose);
-    const wrapper = mountInspector({ externalCloseControlId: externalClose.id });
-
-    await wrapper.get('[data-testid="conversation-inspector"]').trigger('keydown', { key: 'Escape' });
-
-    expect(wrapper.emitted('close')).toHaveLength(1);
-  });
-
-  it('closes on Escape and emits selected agents through the existing row', async () => {
-    const wrapper = mountInspector({ activeSection: 'agents' });
-    await wrapper.get('[data-testid="conversation-inspector"]').trigger('keydown', { key: 'Escape' });
-    expect(wrapper.emitted('close')).toHaveLength(1);
     await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
+    expect(wrapper.emitted('openArtifact')).toEqual([['report.md']]);
     expect(wrapper.emitted('selectAgent')).toEqual([['agent-1', false]]);
   });
 
-  it('marks an agent selection for drawer close only in the narrow overlay', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
-    const wrapper = mountInspector({ activeSection: 'agents' });
-    await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
-    expect(wrapper.emitted('selectAgent')).toEqual([['agent-1', true]]);
+  it('renders file tabs, closes them, and provides a bounded vertical splitter', async () => {
+    const tabs = [{ id: 'path:a.md', label: 'a.md', path: 'docs/a.md' }, { id: 'path:b.md', label: 'b.md', path: 'docs/b.md' }];
+    const wrapper = mountInspector({ previewTabs: tabs, activePreviewId: tabs[0].id, previewHeight: 360, previewMaxHeight: 600 });
+    const fileTabs = wrapper.findAll('[role="tab"]');
+    expect(fileTabs).toHaveLength(2);
+    expect(fileTabs[0].attributes('tabindex')).toBe('0');
+    expect(wrapper.get('[data-testid="workspace-vertical-splitter"]').attributes('aria-valuenow')).toBe('360');
+    expect(wrapper.get('[data-testid="workspace-vertical-splitter"]').attributes('aria-controls')).toBe('workspace-preview-panel');
+    await fileTabs[0].trigger('keydown', { key: 'ArrowRight' });
+    await wrapper.get('[aria-label="Close a.md"]').trigger('click');
+    expect(wrapper.emitted('selectPreview')).toEqual([[tabs[1].id]]);
+    expect(wrapper.emitted('closePreview')).toEqual([[tabs[0].id]]);
   });
 
-  it('renders clean empty states and live counts', async () => {
-    const wrapper = mountInspector({ tasks: [], hasWork: false, children: [] });
-    expect(wrapper.text()).toContain('No work yet.');
-    expect(wrapper.findAll('[role="tab"]')[1].text()).toContain('0');
-    await wrapper.setProps({ activeSection: 'agents' });
-    expect(wrapper.text()).toContain('No sub-agents yet.');
+  it('labels the shared preview panel with the active tab and updates when it changes (F-002, #784)', async () => {
+    const tabs = [{ id: 'path:a.md', label: 'a.md', path: 'docs/a.md' }, { id: 'path:b.md', label: 'b.md', path: 'docs/b.md' }];
+    const wrapper = mountInspector({ previewTabs: tabs, activePreviewId: tabs[0].id });
+    expect(wrapper.get('#workspace-preview-panel').attributes('aria-labelledby')).toBe('preview-tab-0');
+
+    await wrapper.setProps({ activePreviewId: tabs[1].id });
+    expect(wrapper.get('#workspace-preview-panel').attributes('aria-labelledby')).toBe('preview-tab-1');
+  });
+
+  it('uses a drawer at 1100px and no vertical splitter there', async () => {
+    const wrapper = mountInspector({ previewTabs: [{ id: 'a', label: 'a', path: 'a' }], activePreviewId: 'a' });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1100 });
+    window.dispatchEvent(new Event('resize')); await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('role')).toBe('dialog');
+    expect(wrapper.find('[data-testid="workspace-vertical-splitter"]').exists()).toBe(false);
+  });
+
+  it('fills the available medium workspace when expanded but keeps phone drawer sizing', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
+    const wrapper = mountInspector({
+      expanded: true,
+      desktopWidth: 620,
+      previewTabs: [{ id: 'a', label: 'a', path: 'a' }],
+      activePreviewId: 'a',
+    });
+    await wrapper.vm.$nextTick();
+    const inspector = wrapper.get<HTMLElement>('[data-testid="conversation-inspector"]');
+    expect(inspector.element.style.width).toBe('620px');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 });
+    window.dispatchEvent(new Event('resize'));
+    await wrapper.vm.$nextTick();
+    expect(inspector.element.style.width).toBe('');
+    expect(inspector.classes()).toContain('overlay');
+  });
+
+  it('uses one scroll flow without a vertical splitter on short wide screens', async () => {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 600 });
+    const wrapper = mountInspector({
+      previewTabs: [{ id: 'a', label: 'a', path: 'a' }],
+      activePreviewId: 'a',
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="conversation-inspector"]').classes()).not.toContain('overlay');
+    expect(wrapper.find('[data-testid="workspace-vertical-splitter"]').exists()).toBe(false);
+  });
+
+  it('does not close the inspector for Escape inside a nested dialog', async () => {
+    const wrapper = mountInspector();
+    const nested = document.createElement('div'); nested.setAttribute('role', 'dialog');
+    const button = document.createElement('button'); nested.appendChild(button);
+    wrapper.get('[data-testid="conversation-inspector"]').element.appendChild(nested);
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(wrapper.emitted('close')).toBeUndefined();
+    await wrapper.get('#inspector-tab-work').trigger('keydown', { key: 'Escape' });
+    expect(wrapper.emitted('close')).toHaveLength(1);
+  });
+
+  it('hides monitoring without unmounting it in expanded reading', () => {
+    const wrapper = mountInspector({ expanded: true, previewTabs: [{ id: 'a', label: 'a', path: 'a' }], activePreviewId: 'a' });
+    expect(wrapper.get('[data-testid="workspace-monitoring-region"]').attributes('style')).toContain('display: none');
+    expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);
   });
 });
