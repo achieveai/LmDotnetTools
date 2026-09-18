@@ -108,7 +108,9 @@ public class CompactionCheckpointMessageSerializationTests
         TestContextLogger.LogDebug("Serialized checkpoint JSON: {Json}", json);
 
         var root = JsonDocument.Parse(json).RootElement;
-        Assert.Equal(CompactionCheckpointMessage.TypeDiscriminator, root.GetProperty("$type").GetString());
+        // The SAMPLE is schema 2, so it carries the schema 2 discriminator. A row's $type names the
+        // manifest shape, not just the type, which is what lets an older binary skip it (§8.3).
+        Assert.Equal(CompactionCheckpointMessage.TypeDiscriminatorV2, root.GetProperty("$type").GetString());
         Assert.Equal("user", root.GetProperty("role").GetString());
         Assert.Equal("cp-abc-1", root.GetProperty("checkpoint_id").GetString());
         Assert.Equal("Reactive", root.GetProperty("trigger").GetString());
@@ -199,5 +201,74 @@ public class CompactionCheckpointMessageSerializationTests
         Assert.Empty(typed.Manifest.Index);
         Assert.True(typed.Manifest.Recovery.IsClean);
         Assert.Equal(new CheckpointStats(), typed.Stats);
+    }
+
+    [Fact]
+    public void EachSchemaVersion_IsWrittenWithItsOwnDiscriminator()
+    {
+        // The pair that makes the contract work: version 1 keeps the $type it has always had, so rows
+        // already on disk stay readable, while version 2 takes a new one, so a binary that predates
+        // version 2 does not recognise it.
+        var v1 = JsonSerializer.Serialize<IMessage>(Sample() with { SchemaVersion = 1 }, Options());
+        var v2 = JsonSerializer.Serialize<IMessage>(Sample() with { SchemaVersion = 2 }, Options());
+
+        Assert.Equal(
+            CompactionCheckpointMessage.TypeDiscriminator,
+            JsonDocument.Parse(v1).RootElement.GetProperty("$type").GetString()
+        );
+        Assert.Equal(
+            CompactionCheckpointMessage.TypeDiscriminatorV2,
+            JsonDocument.Parse(v2).RootElement.GetProperty("$type").GetString()
+        );
+        Assert.NotEqual(CompactionCheckpointMessage.TypeDiscriminator, CompactionCheckpointMessage.TypeDiscriminatorV2);
+    }
+
+    [Fact]
+    public void ThisBuildReadsEveryCheckpointDiscriminatorItHasEverWritten()
+    {
+        // The other half of the closure. Refusing to read version 1 would orphan every row written
+        // before the bump, which is a worse failure than the one the bump prevents.
+        foreach (var version in new[] { 1, 2 })
+        {
+            var json = JsonSerializer.Serialize<IMessage>(Sample() with { SchemaVersion = version }, Options());
+
+            var typed = Assert.IsType<CompactionCheckpointMessage>(
+                JsonSerializer.Deserialize<IMessage>(json, Options())
+            );
+
+            Assert.Equal(version, typed.SchemaVersion);
+            Assert.Equal("cp-abc-1", typed.CheckpointId);
+        }
+    }
+
+    [Fact]
+    public void ADiscriminatorThisBuildDoesNotKnow_RaisesTheUnknownTypeError_RatherThanBeingInferred()
+    {
+        // This is the exact path an older binary takes on a row from a newer one. It matters that the
+        // error is the UNKNOWN-TYPE error and not a generic parse failure: a resilient loader skips
+        // the record on it, which is what leaves that binary on whole canonical history. It also must
+        // not fall through to structural inference -- "checkpoint_id is present, so it is a
+        // checkpoint" would adopt the row and drop the sections, defeating the discriminator.
+        var json = JsonSerializer
+            .Serialize<IMessage>(Sample(), Options())
+            .Replace(
+                $"\"$type\":\"{CompactionCheckpointMessage.TypeDiscriminatorV2}\"",
+                "\"$type\":\"compaction_checkpoint@99\"",
+                StringComparison.Ordinal
+            );
+        Assert.Contains("compaction_checkpoint@99", json);
+        Assert.Contains("checkpoint_id", json);
+
+        _ = Assert.Throws<UnknownMessageTypeDiscriminatorException>(() =>
+            JsonSerializer.Deserialize<IMessage>(json, Options())
+        );
+    }
+
+    [Fact]
+    public void BumpingTheSchemaWithoutADiscriminator_Fails_RatherThanReusingAnOlderOne()
+    {
+        // The forcing function. Silently reusing version 2's $type for a version 3 row is the bug this
+        // whole change replaces, so the writer refuses instead of falling back.
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CompactionCheckpointMessage.DiscriminatorFor(3));
     }
 }

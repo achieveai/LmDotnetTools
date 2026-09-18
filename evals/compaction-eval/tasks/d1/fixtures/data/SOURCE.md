@@ -17,6 +17,12 @@ file here is traced to the dataset's own upstream, one row per file:
 | `tips.csv` | [reshape2](https://github.com/cran/reshape2), the `tips` dataset; originally Bryant & Smith, *Practical Data Analysis* (1995) | MIT (`DESCRIPTION`: `MIT + file LICENSE`) | 2026-09-17 |
 | `flights.csv` | The Box & Jenkins series G (`AirPassengers`), shipped in R's base `datasets` package | GPL-2 \| GPL-3, R's own (https://www.r-project.org/Licenses/) | 2026-09-17 |
 
+The notice each upstream actually ships is vendored beside the data at a pinned revision, in
+`../../licenses/`, so the terms can be audited from the checkout alone. That directory sits OUTSIDE
+`fixtures/` on purpose: only `fixtures/` is copied into a run workspace, and adding files there would
+change what the d1 task sees. `licenses/README.md` maps each file to the dataset it covers and
+records the revision it was fetched at.
+
 Two things this table states and one it does not:
 
 * Each licence is the one the containing R package declares. A package licence covers the files in

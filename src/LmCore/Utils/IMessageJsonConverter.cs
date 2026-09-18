@@ -160,7 +160,14 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
         // Write type discriminator - always include it for IMessage types
         string discriminator;
-        if (_typeToDiscriminator.TryGetValue(valueType, out var registeredDiscriminator))
+        // A checkpoint's discriminator depends on the INSTANCE, not just its type: each schema version
+        // gets its own so a binary that predates the version skips the row rather than adopting the
+        // part of it that it understands. See CompactionCheckpointMessage.DiscriminatorFor.
+        if (value is CompactionCheckpointMessage checkpoint)
+        {
+            discriminator = CompactionCheckpointMessage.DiscriminatorFor(checkpoint.SchemaVersion);
+        }
+        else if (_typeToDiscriminator.TryGetValue(valueType, out var registeredDiscriminator))
         {
             discriminator = registeredDiscriminator;
         }
@@ -468,7 +475,10 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "conversation_todo" => typeof(ConversationTodoMessage),
             ContextPressureMessage.TypeDiscriminator => typeof(ContextPressureMessage),
             CompactionStatusMessage.TypeDiscriminator => typeof(CompactionStatusMessage),
+            // Every checkpoint discriminator this build can read in full. Adding a version here is
+            // what makes THIS build read it; omitting an older one would orphan rows already on disk.
             CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
+            CompactionCheckpointMessage.TypeDiscriminatorV2 => typeof(CompactionCheckpointMessage),
             _ => null,
         };
     }

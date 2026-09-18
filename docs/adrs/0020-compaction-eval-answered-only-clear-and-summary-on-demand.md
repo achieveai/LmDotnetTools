@@ -89,10 +89,13 @@ compaction outright: round 5 shows a summary carrying pages nothing else can.
   measured.
 * No accuracy claim is made for compaction on the tasks measured. The claim is narrower: the
   mechanism that lost summaries is fixed, at no measured cost.
-* Cost figures in this repository's eval output carry their coverage beside them: a run's cost carries
-  `Records` and `RecordsWithCost`, and a cell's mean cost carries `RunsWithCost` against `ValidRuns`
-  and renders `(n priced)` when they differ. A figure whose counts differ is a lower bound and is
-  printed as one.
+* Cost figures in this repository's eval output carry their coverage beside them, and the two kinds of
+  incompleteness are kept apart because they license different readings. A cell's mean covers
+  `RunsWithCost` of its `ValidRuns` and prints `(n priced)` when those differ: the rest are
+  unmeasured, not zero, so the figure bounds the cell in neither direction. Separately, a run whose
+  own `RecordsWithCost` is under its `Records` was priced only in part, so its figure is genuinely
+  under the truth; a mean containing one is printed `>=`. Treating an excluded run as a floor would
+  have produced a bound pointing the wrong way.
 * Follow-ups, tracked outside this record: flip the two library defaults after a host-side review;
   run the summariser fidelity comparison on the round 10 archives; H10 (force the compaction count at
   a fixed clamp) is the one untested branch that can still test a dose effect.

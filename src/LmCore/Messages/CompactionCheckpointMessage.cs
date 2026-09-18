@@ -298,16 +298,20 @@ public sealed record ContextManifest
 /// </summary>
 /// <remarks>
 ///     <para>
-///         The rollback contract (§8.3) has two halves, and only one of them is the <c>$type</c>. A binary
-///         with no compaction support at all skips the row, because <c>compaction_checkpoint</c> is a
-///         discriminator it does not map. A binary that HAS compaction but predates a schema bump does
-///         map it: the discriminator does not change with <see cref="CurrentSchemaVersion" />, and the
-///         manifest sections it does not know are dropped in the ordinary way an unknown JSON property
-///         is. That half is carried by <see cref="SchemaVersion" /> instead — a reader compares it with
-///         <see cref="CurrentSchemaVersion" /> and declines to adopt a row it can only read in part
-///         (<c>CompactionRuntime.AdoptActiveAsync</c>), which leaves the model on whole canonical
-///         history rather than a view quietly missing a section. The row itself is append-only, so the
-///         section is still there for the build that can read it.
+///         The rollback contract (§8.3) is carried by the <c>$type</c>, and that needs the
+///         discriminator to change when the manifest does. It does: a schema 2 row is written
+///         <c>compaction_checkpoint@2</c>, which no earlier binary maps, so an earlier binary raises
+///         <c>UnknownMessageTypeDiscriminatorException</c> and its resilient loader SKIPS the row. It
+///         then finds no row for the active checkpoint and falls back to whole canonical history —
+///         which is the contract, and it holds on binaries already in the field, because that skip
+///         path predates this change. A single <c>$type</c> across versions would instead have had
+///         those binaries adopt the row with every section they lack silently dropped.
+///     </para>
+///     <para>
+///         <see cref="SchemaVersion" /> carries the same decision in the other direction, for a row
+///         this build cannot read in full: <c>CompactionRuntime.AdoptActiveAsync</c> declines anything
+///         above <see cref="CurrentSchemaVersion" />. Both refusals leave the row on disk, which is
+///         append-only, so the section is still there for the build that can read it.
 ///     </para>
 /// </remarks>
 /// <remarks>
@@ -326,8 +330,34 @@ public sealed record ContextManifest
 /// </remarks>
 public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
 {
-    /// <summary>The <c>$type</c> discriminator the JSON converter writes for this row.</summary>
+    /// <summary>The <c>$type</c> a schema 1 row carries. Still read; no longer written.</summary>
     public const string TypeDiscriminator = "compaction_checkpoint";
+
+    /// <summary>The <c>$type</c> a schema 2 row carries — the manifest with <c>open_exchanges</c>.</summary>
+    public const string TypeDiscriminatorV2 = "compaction_checkpoint@2";
+
+    /// <summary>
+    ///     The <c>$type</c> a row of <paramref name="schemaVersion" /> is written with. Every version
+    ///     whose manifest gained a section gets its own, which is what makes an older reader SKIP the
+    ///     row instead of adopting a part of it (§8.3).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     <paramref name="schemaVersion" /> has no discriminator of its own. Deliberately not a
+    ///     fallback: a new version silently reusing an older version's <c>$type</c> is precisely the
+    ///     bug this replaces, so bumping <see cref="CurrentSchemaVersion" /> must fail here until its
+    ///     discriminator is added and taught to readers.
+    /// </exception>
+    public static string DiscriminatorFor(int schemaVersion) =>
+        schemaVersion switch
+        {
+            <= 1 => TypeDiscriminator,
+            2 => TypeDiscriminatorV2,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(schemaVersion),
+                schemaVersion,
+                "A checkpoint schema version needs its own $type before it can be written; see TypeDiscriminatorV2."
+            ),
+        };
 
     /// <summary>
     ///     The persisted schema version this build writes. 2 adds <c>open_exchanges</c> to the manifest; a
@@ -336,8 +366,9 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     /// <remarks>
     ///     Reading is asymmetric on purpose. A row at or below this number is readable in full, so it is
     ///     adopted. A row above it carries sections this build has no field for, and JSON drops those
-    ///     silently, so it is NOT adopted — see the type remarks for why the <c>$type</c> cannot carry
-    ///     that decision.
+    ///     silently, so it is NOT adopted. In practice such a row is skipped before this is ever read,
+    ///     because its <c>$type</c> is one this build does not map; this is the second line of defence
+    ///     for a row that reaches here anyway.
     /// </remarks>
     public const int CurrentSchemaVersion = 2;
 

@@ -143,13 +143,13 @@ public class TaskCheckerTests : IDisposable
         result.Should().BeNull();
     }
 
-    [Fact]
-    public async Task CancellingTheSweep_KillsTheCheckerAndEverythingItStarted()
+    /// <summary>
+    /// Writes a <c>check.ps1</c> that starts a second pwsh, records both pids, and then blocks for
+    /// long enough that only a kill ends it. The child is the point: killing the checker alone leaves
+    /// it running, so a test that watched one pid could not tell a process kill from a tree kill.
+    /// </summary>
+    private void WriteBlockingChecker(string pidFile)
     {
-        // The outer token used to reach the wait only through the linked source, so a sweep abort
-        // threw straight out of JudgeAsync with the checker still running. The checker holds the run's
-        // workspace, which the sweep deletes next, so the orphan outlives the sweep that started it.
-        var pidFile = Path.Combine(_dir, "pids.txt").Replace("\\", "/");
         File.WriteAllText(
             Path.Combine(_dir, "check.ps1"),
             $$"""
@@ -159,8 +159,10 @@ public class TaskCheckerTests : IDisposable
             Start-Sleep -Seconds 45
             """
         );
+    }
 
-        var task = new EvalTaskAsset
+    private EvalTaskAsset BlockingTask() =>
+        new()
         {
             Id = "slow-checker",
             Dir = _dir,
@@ -168,8 +170,17 @@ public class TaskCheckerTests : IDisposable
             ExpectedBoard = null,
         };
 
+    [Fact]
+    public async Task CancellingTheSweep_KillsTheCheckerAndEverythingItStarted()
+    {
+        // The outer token used to reach the wait only through the linked source, so a sweep abort
+        // threw straight out of JudgeAsync with the checker still running. The checker holds the run's
+        // workspace, which the sweep deletes next, so the orphan outlives the sweep that started it.
+        var pidFile = Path.Combine(_dir, "pids.txt").Replace("\\", "/");
+        WriteBlockingChecker(pidFile);
+
         using var cts = new CancellationTokenSource();
-        var judging = new PwshTaskChecker(TextWriter.Null).JudgeAsync(task, _dir, _dir, cts.Token);
+        var judging = new PwshTaskChecker(TextWriter.Null).JudgeAsync(BlockingTask(), _dir, _dir, cts.Token);
 
         var pids = await WaitForPids(pidFile, judging);
         await cts.CancelAsync();
@@ -177,6 +188,36 @@ public class TaskCheckerTests : IDisposable
         var act = async () => await judging;
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
 
+        await AssertReaped(pids);
+    }
+
+    [Fact]
+    public async Task TheTimeout_AlsoKillsTheCheckerAndEverythingItStarted_AndStillReportsUnjudged()
+    {
+        // The other branch into the same kill. It is reachable here only because the timeout is a
+        // TimeSpan rather than a count of minutes; asserting the tree contract on one branch and not
+        // the other would leave half of it untested. A hung checker must never FAIL a run either --
+        // the run itself may have been perfect -- so the verdict is still "could not judge".
+        var pidFile = Path.Combine(_dir, "timeout-pids.txt").Replace("\\", "/");
+        WriteBlockingChecker(pidFile);
+
+        var judging = new PwshTaskChecker(TextWriter.Null, TimeSpan.FromSeconds(3)).JudgeAsync(
+            BlockingTask(),
+            _dir,
+            _dir,
+            CancellationToken.None
+        );
+
+        var pids = await WaitForPids(pidFile, judging);
+        var result = await judging;
+
+        result!.Outcome.Should().Be(J1Result.Unjudged);
+        result.Error.Should().Contain("did not finish within");
+        await AssertReaped(pids);
+    }
+
+    private static async Task AssertReaped(IReadOnlyList<int> pids)
+    {
         foreach (var pid in pids)
         {
             (await WaitForExit(pid)).Should().BeTrue($"process {pid} in the checker's tree must be reaped");

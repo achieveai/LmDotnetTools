@@ -126,13 +126,21 @@ internal interface ITaskChecker
 /// Runs a task's <c>check.ps1</c> through PowerShell, per tasks/README.md:
 /// <c>pwsh check.ps1 -Workspace &lt;dir&gt; -Out &lt;score.json&gt;</c>.
 /// </summary>
-internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) : ITaskChecker
+internal sealed class PwshTaskChecker(TextWriter log, TimeSpan? timeout = null) : ITaskChecker
 {
     /// <summary>The score file every checker writes, inside the run's own output directory.</summary>
     public const string ScoreFileName = "score.json";
 
     /// <summary>How long a killed checker tree is given to actually die before the wait gives up.</summary>
     private static readonly TimeSpan TerminationGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long a checker may run before it is killed as hung.</summary>
+    /// <remarks>
+    /// A <see cref="TimeSpan"/> rather than a count of minutes so a test can exercise the timeout
+    /// branch in seconds. Both branches kill the same tree the same way, and a contract asserted only
+    /// on the branch that happens to be reachable is a contract asserted on half the code.
+    /// </remarks>
+    private readonly TimeSpan _timeout = timeout ?? TimeSpan.FromMinutes(10);
 
     public async Task<J1Result?> JudgeAsync(
         EvalTaskAsset task,
@@ -174,7 +182,7 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
             var stdout = process.StandardOutput.ReadToEndAsync(ct);
             var stderr = process.StandardError.ReadToEndAsync(ct);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromMinutes(timeoutMinutes));
+            timeout.CancelAfter(_timeout);
             try
             {
                 await process.WaitForExitAsync(timeout.Token);
@@ -190,7 +198,7 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
                     throw;
                 }
 
-                return J1Result.CouldNotJudge($"the checker did not finish within {timeoutMinutes} minute(s).");
+                return J1Result.CouldNotJudge($"the checker did not finish within {_timeout}.");
             }
 
             var diagnostics = (await stderr).Trim();

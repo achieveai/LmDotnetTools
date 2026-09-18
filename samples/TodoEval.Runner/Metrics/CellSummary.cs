@@ -42,10 +42,16 @@ internal sealed record CellSummary
 
     /// <summary>Mean cost over the valid runs that carried one. Null when NONE did: unpriced, not free.</summary>
     /// <remarks>
-    /// A LOWER BOUND whenever <see cref="MeanCostIsLowerBound"/> is set. A run's own
-    /// <see cref="RunCost.CostMicros"/> covers only its <see cref="RunCost.RecordsWithCost"/>, so a run
-    /// the resolver priced in part is a lower bound before this mean is taken, and averaging it with
-    /// complete runs produces a figure that is under the truth by an unknown amount.
+    /// <para>
+    /// The mean over <see cref="RunsWithCost"/> runs, which is NOT the mean over the cell when those
+    /// are fewer than <see cref="ValidRuns"/>: the unpriced runs are unmeasured, not zero, so nothing
+    /// here bounds them in either direction. Read it with its denominator or not at all.
+    /// </para>
+    /// <para>
+    /// A LOWER BOUND of even that subset's mean whenever <see cref="MeanCostIsLowerBound"/> is set. A
+    /// run's own <see cref="RunCost.CostMicros"/> covers only its <see cref="RunCost.RecordsWithCost"/>,
+    /// so a run the resolver priced in part is under the truth before this mean is taken.
+    /// </para>
     /// </remarks>
     public required double? MeanCostMicros { get; init; }
 
@@ -59,12 +65,19 @@ internal sealed record CellSummary
     public required int PartlyPricedRuns { get; init; }
 
     /// <summary>
-    /// True when <see cref="MeanCostMicros"/> understates the cell: some priced run was priced in
-    /// part, or some valid run carried no price at all. False on a null mean, which is not a bound on
-    /// anything — it is the absence of a measurement, and says so as <c>n/a</c>.
+    /// True when <see cref="MeanCostMicros"/> understates the mean of the runs it covers: at least one
+    /// of them was priced in part, so its own figure is already under the truth. False on a null mean,
+    /// which is not a bound on anything — it is the absence of a measurement, and says so as <c>n/a</c>.
     /// </summary>
-    public bool MeanCostIsLowerBound =>
-        MeanCostMicros is not null && (PartlyPricedRuns > 0 || RunsWithCost < ValidRuns);
+    /// <remarks>
+    /// Deliberately NOT set by <see cref="RunsWithCost"/> being under <see cref="ValidRuns"/>. Excluded
+    /// runs make the figure cover less of the cell; they do not make it a bound on the cell. A mean of
+    /// 100 over 100 priced runs, beside 100 unpriced runs that in truth cost nothing, would be printed
+    /// as <c>&gt;=100</c> while the cell's true mean is 50 — a bound pointing the wrong way. That
+    /// incompleteness is reported as coverage (<c>n priced</c>), which claims nothing about the
+    /// unmeasured runs, and is the one honest thing to say about them.
+    /// </remarks>
+    public bool MeanCostIsLowerBound => MeanCostMicros is not null && PartlyPricedRuns > 0;
 
     public required double? MeanCompactions { get; init; }
 
@@ -142,7 +155,9 @@ internal static class CellSummaryWriter
                     schema = Schema,
                     generatedUtc = DateTimeOffset.UtcNow,
                     note = "Every average is over the J0-valid runs only; the denominators are in the row. "
-                        + "A row with meanCostIsLowerBound set understates its cost: see runsWithCost and partlyPricedRuns.",
+                        + "meanCostMicros covers runsWithCost runs, not the cell: where that is under validRuns the "
+                        + "rest are unmeasured, not zero. meanCostIsLowerBound means something further -- a run in "
+                        + "that subset was itself priced only in part (partlyPricedRuns).",
                     cells,
                 },
                 JsonOptions
@@ -181,9 +196,10 @@ internal static class CellSummaryWriter
         value is { } number ? number.ToString(format, CultureInfo.InvariantCulture) : "n/a";
 
     /// <summary>
-    /// The cost cell with its coverage attached: <c>&gt;=</c> when the figure is a lower bound, then the
-    /// counts that say why. ASCII on purpose — this table is printed to a console whose code page is
-    /// not guaranteed, and a mangled inequality is worse than none.
+    /// The cost cell with its coverage attached: <c>&gt;=</c> only when the figure is genuinely a lower
+    /// bound of what it covers, and the counts that say how much of the cell it covers. ASCII on
+    /// purpose — this table is printed to a console whose code page is not guaranteed, and a mangled
+    /// inequality is worse than none.
     /// </summary>
     private static string Cost(CellSummary cell)
     {
