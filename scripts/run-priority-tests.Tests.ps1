@@ -263,7 +263,7 @@ try {
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
     $manifestRows = @([System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot "test-priorities.ndjson")) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
-    Assert-True (@($manifestRows | Where-Object kind -ne "test-declaration").Count -eq 40) "Manifest integration must preserve all 40 container/default rows."
+    Assert-True (@($manifestRows | Where-Object kind -ne "test-declaration").Count -eq 41) "Manifest integration must preserve all 41 container/default rows."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.p1FloorExemption -eq "vacuous" }).Count -eq 5) "Manifest integration must preserve the five reviewed vacuity exemptions."
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.

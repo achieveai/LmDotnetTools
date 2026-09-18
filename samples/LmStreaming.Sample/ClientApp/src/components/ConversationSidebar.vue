@@ -14,9 +14,11 @@ const props = withDefaults(defineProps<{
   hasMore?: boolean;
   sortMode: ConversationSortMode;
   isCollapsed: boolean;
+  desktopWidth?: number;
 }>(), {
   workspaces: () => [],
   hasMore: false,
+  desktopWidth: 280,
 });
 
 const emit = defineEmits<{
@@ -325,7 +327,7 @@ function handleDelete(event: Event, threadId: string): void {
 </script>
 
 <template>
-  <aside :class="['conversation-sidebar', { collapsed: isCollapsed }]">
+  <aside :class="['conversation-sidebar', { collapsed: isCollapsed }]" :style="{ '--sidebar-width': `${desktopWidth}px` }">
     <div class="sidebar-header">
       <button
         class="toggle-btn"
@@ -560,8 +562,8 @@ function handleDelete(event: Event, threadId: string): void {
 
 <style scoped>
 .conversation-sidebar {
-  width: 280px;
-  min-width: 280px;
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
   border-right: 1px solid #e0e0e0;
   display: flex;
   flex-direction: column;

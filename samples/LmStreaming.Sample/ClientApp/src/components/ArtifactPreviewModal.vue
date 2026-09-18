@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import BaseModal from './BaseModal.vue';
+import TextMessage from './TextMessage.vue';
 import {
   FileBrowserError,
   NoSessionError,
@@ -11,13 +12,14 @@ import {
   resolveWorkspaceLink,
 } from '@/api/fileBrowserApi';
 import { isNoSession, type PreviewResult } from '@/types/fileBrowser';
-import { parseMarkdown } from '@/utils/markdown';
+import { MessageType, type TextMessage as TextMessageModel } from '@/types';
 import { isMarkdownArtifact } from '@/utils/todoBoard';
 import { delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
 import { logger } from '@/utils';
 
 /**
- * Read-only preview popup for a workspace file. Two openers:
+ * Read-only preview surface for a workspace file. It can be embedded in the inspector or retain its
+ * legacy modal presentation. Two openers:
  *
  *   - a task's artifact chip on the work board (#583, PR 5) passes a workspace-relative `path`;
  *   - a file link in an assistant message passes the raw link `target` (a host path, `file://` URI or
@@ -26,9 +28,10 @@ import { logger } from '@/utils';
  * Content comes from the EXISTING file-browser endpoints, which own the policy: `preview` (256 KiB /
  * 5000-line cap, UTF-8-only, dot-directory exclusions) for text, `download` (64 MiB) for image bytes.
  *
- * Viewers, by extension: `.md`/`.markdown` through the app's `parseMarkdown` pipeline; `.csv`/`.tsv` as a
- * table; common images as `<img>` over a re-typed blob; any other previewable text as `<pre>`. A
- * non-previewable file shows the server's `reason`. Every resolved file also gets a Download button.
+ * Viewers, by extension: `.md`/`.markdown` through the app's completed `TextMessage` pipeline (including
+ * diagrams); `.csv`/`.tsv` as a table; common images as `<img>` over a re-typed blob; any other
+ * previewable text as `<pre>`. A non-previewable file shows the server's `reason`. Every resolved file
+ * also gets a Download action.
  */
 const log = logger.forComponent('ArtifactPreviewModal');
 
@@ -45,9 +48,21 @@ const props = defineProps<{
    * See `.artifact-preview-beside-sidebar` below for why this is geometry, not z-index.
    */
   besideSidebar?: boolean;
+  /** Render as a persistent preview region instead of a focus-trapping modal. */
+  embedded?: boolean;
+  /** Whether the surrounding workspace currently presents this preview expanded. */
+  expanded?: boolean;
 }>();
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  toggleExpand: [];
+  /** Fired once a `target` opener resolves to its canonical workspace path (F-001, #784): lets the
+   * parent reconcile this tab's identity onto the server-resolved path so it dedupes against a tab
+   * opened the other way (by `path`) for the same file. Never fired when `path` was given directly —
+   * that identity is already canonical. */
+  resolved: [path: string];
+}>();
 
 /** Images above this are not pulled into the page; the Download button still works. */
 const MAX_INLINE_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -72,6 +87,21 @@ const unavailableText = ref<string | null>(null);
 const errorText = ref<string | null>(null);
 
 const displayPath = computed(() => resolvedPath.value ?? props.target ?? '');
+const fileName = computed(() => {
+  const segments = displayPath.value.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] ?? displayPath.value;
+});
+const surfaceAttributes = computed(() => props.embedded
+  ? {
+      'data-testid': 'artifact-preview-surface',
+      role: 'region',
+      'aria-label': `File preview: ${fileName.value}`,
+    }
+  : {
+      title: displayPath.value,
+      dataTestId: 'artifact-preview-modal',
+    }
+);
 
 const imageType = computed(() => {
   const ext = /\.([a-z0-9]+)$/i.exec(resolvedPath.value ?? '')?.[1]?.toLowerCase();
@@ -85,10 +115,11 @@ const previewText = computed(() =>
   result.value?.previewable && result.value.text !== undefined ? result.value.text : null
 );
 
-/** Sanitized by `parseMarkdown` itself (DOMPurify allowlist), so binding via v-html is safe. */
-const renderedMarkdown = computed(() =>
-  previewText.value !== null && isMarkdown.value ? parseMarkdown(previewText.value) : ''
-);
+const markdownMessage = computed<TextMessageModel>(() => ({
+  $type: MessageType.Text,
+  role: 'assistant',
+  text: previewText.value ?? '',
+}));
 
 const table = computed(() =>
   previewText.value !== null && delimiter.value
@@ -149,6 +180,7 @@ async function load(): Promise<void> {
   if (resolvedPath.value === null && props.target !== undefined) {
     const resolved = await resolveWorkspaceLink(props.threadId, props.target, abort.signal);
     resolvedPath.value = resolved.path;
+    emit('resolved', resolved.path);
     size = resolved.size;
     if (resolved.type === 'directory') {
       isFolder.value = true;
@@ -221,12 +253,68 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <BaseModal
-    :title="displayPath"
-    :class="{ 'artifact-preview-beside-sidebar': props.besideSidebar }"
-    data-test-id="artifact-preview-modal"
+  <component
+    :is="props.embedded ? 'section' : BaseModal"
+    v-bind="surfaceAttributes"
+    :class="{
+      'artifact-preview-surface': props.embedded,
+      'artifact-preview-surface-expanded': props.embedded && props.expanded,
+      'artifact-preview-beside-sidebar': !props.embedded && props.besideSidebar,
+    }"
     @close="emit('close')"
   >
+    <header v-if="props.embedded" class="artifact-preview-header">
+      <div class="artifact-preview-heading">
+        <strong class="artifact-preview-filename" data-testid="artifact-preview-filename">
+          {{ fileName }}
+        </strong>
+        <span class="artifact-preview-path" data-testid="artifact-preview-path" :title="displayPath">
+          {{ displayPath }}
+        </span>
+      </div>
+      <div class="artifact-preview-actions">
+        <button
+          type="button"
+          class="artifact-preview-action"
+          :aria-label="props.expanded ? 'Restore file preview' : 'Expand file preview'"
+          :title="props.expanded ? 'Restore preview' : 'Expand preview'"
+          data-testid="artifact-preview-expand"
+          @click="emit('toggleExpand')"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path v-if="props.expanded" d="M3.5 8h4.5V3.5M16.5 12H12v4.5M8 8 3.5 3.5M12 12l4.5 4.5" />
+            <path v-else d="M8 3.5H3.5V8M12 16.5h4.5V12M3.5 3.5 8 8M16.5 16.5 12 12" />
+          </svg>
+        </button>
+        <button
+          v-if="canDownload"
+          type="button"
+          class="artifact-preview-action"
+          :disabled="isDownloading"
+          :aria-label="isDownloading ? 'Downloading file' : 'Download file'"
+          :title="isDownloading ? 'Downloading…' : 'Download'"
+          data-testid="artifact-preview-download"
+          @click="download"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M10 3v9M6.5 8.5 10 12l3.5-3.5M4 16h12" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="artifact-preview-action"
+          aria-label="Close file preview"
+          title="Close preview"
+          data-testid="artifact-preview-close"
+          @click="emit('close')"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5 5 10 10M15 5 5 15" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
     <div class="artifact-preview">
       <div v-if="isLoading" class="artifact-preview-message" data-testid="artifact-preview-loading">
         Loading preview…
@@ -256,13 +344,13 @@ onBeforeUnmount(() => {
         data-testid="artifact-preview-image"
       />
 
-      <!-- eslint-disable-next-line vue/no-v-html -- parseMarkdown sanitizes via DOMPurify -->
       <div
         v-else-if="previewText !== null && isMarkdown"
         class="markdown-content artifact-preview-markdown"
         data-testid="artifact-preview-markdown"
-        v-html="renderedMarkdown"
-      ></div>
+      >
+        <TextMessage :message="markdownMessage" :is-complete="true" :workspace-links="false" />
+      </div>
 
       <div v-else-if="table" class="artifact-preview-table-wrap">
         <table class="artifact-preview-table" data-testid="artifact-preview-table">
@@ -294,7 +382,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="canDownload" class="artifact-preview-footer">
+    <div v-if="canDownload && !props.embedded" class="artifact-preview-footer">
       <button
         type="button"
         class="artifact-preview-download"
@@ -305,7 +393,7 @@ onBeforeUnmount(() => {
         {{ isDownloading ? 'Downloading…' : 'Download' }}
       </button>
     </div>
-  </BaseModal>
+  </component>
 </template>
 
 <style scoped>
@@ -342,6 +430,109 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.artifact-preview-surface {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+  color: #334155;
+}
+
+.artifact-preview-surface .artifact-preview {
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  flex: 1;
+}
+
+.artifact-preview-header {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 16px;
+  border-bottom: 1px solid #e2e6eb;
+  background: #f7f8fa;
+}
+
+.artifact-preview-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.artifact-preview-filename,
+.artifact-preview-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-preview-filename {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.artifact-preview-path {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.artifact-preview-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.artifact-preview-action {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #64748b;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.artifact-preview-action svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.artifact-preview-action:hover,
+.artifact-preview-action:focus-visible {
+  border-color: #e2e6eb;
+  background: #fff;
+  color: #334155;
+}
+
+.artifact-preview-action:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.artifact-preview-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .artifact-preview-message {
   padding: 24px 16px;
   text-align: center;
@@ -350,8 +541,17 @@ onBeforeUnmount(() => {
 }
 
 .artifact-preview-markdown {
-  padding: 4px 8px;
-  font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 20px 24px 40px;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.artifact-preview-markdown :deep(.markdown-content > :is(p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre)) {
+  max-width: 48rem;
+  margin-right: auto;
+  margin-left: auto;
 }
 
 .artifact-preview-text {

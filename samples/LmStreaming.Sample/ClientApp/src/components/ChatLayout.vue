@@ -20,6 +20,7 @@ import PendingQuestionDock from './PendingQuestionDock.vue';
 import QuestionInbox from './QuestionInbox.vue';
 import { useQuestionInbox, type QuestionInboxEntry } from '@/composables/useQuestionInbox';
 import ConversationInspector from './ConversationInspector.vue';
+import PanelSplitter from './PanelSplitter.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
@@ -289,11 +290,59 @@ const { view: compactionControl, request: requestManualCompaction } = useManualC
 // server. This object is the whole modal state — null means closed. Keyed to the BOARD's thread
 // (subAgentParentThreadId): the conversation whose task carries the chip and whose workspace the
 // message's links point into (sub-agent transcripts share it).
-type FilePreviewRequest = { path: string; target?: undefined } | { path?: undefined; target: string };
-const artifactPreview = ref<FilePreviewRequest | null>(null);
+type FilePreviewRequest = { id: string; path: string; target?: undefined; label: string }
+  | { id: string; path?: undefined; target: string; label: string };
+const previewTabs = ref<FilePreviewRequest[]>([]);
+const activePreviewId = ref<string | null>(null);
+const artifactPreview = computed(() => previewTabs.value.find((tab) => tab.id === activePreviewId.value) ?? null);
+// F-003 (#784): a computed instead of an inline template `.map()` — ConversationInspector's own props
+// (like `previewHeight`, updated on every splitter `pointermove`) re-render this component constantly
+// while dragging, and an inline map would rebuild a brand-new tab array and tab objects on every one
+// of those renders even though the tabs themselves did not change. This only recomputes when
+// `previewTabs` itself does.
+const previewTabSummaries = computed(() =>
+  previewTabs.value.map((tab) => ({ id: tab.id, label: tab.label, path: tab.path ?? tab.target }))
+);
+
+function previewLabel(value: string): string {
+  const parts = value.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || value;
+}
+
+function addPreview(request: { path: string } | { target: string }): void {
+  const value = 'path' in request ? request.path : request.target;
+  const id = `${'path' in request ? 'path' : 'target'}:${value}`;
+  if (!previewTabs.value.some((tab) => tab.id === id)) {
+    previewTabs.value.push({ ...request, id, label: previewLabel(value) } as FilePreviewRequest);
+  }
+  activePreviewId.value = id;
+  if (!hasWorkspaceWidthPreference.value && previewTabs.value.length === 1) inspectorWidth.value = 640;
+  inspectorOpen.value = true;
+}
 
 function openArtifactPreview(path: string): void {
-  artifactPreview.value = { path };
+  addPreview({ path });
+}
+
+// F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) never agree on
+// the same raw id even when they resolve to the identical workspace file — `target` is only resolved
+// to a canonical path by the server, inside ArtifactPreviewModal, once it mounts for the active tab.
+// Rather than resolving `target` here (that stays server-owned) or blocking the tab open on the
+// resolve round trip, the modal reports its resolved path back once known and this reconciles the
+// tab's id onto it: dedupe into an existing canonical tab if one is already open, otherwise rename
+// this tab in place (as a resolved `path` tab) so a later opener for the same file matches it.
+function reconcilePreviewResolution(tabId: string, resolvedPath: string): void {
+  const canonicalId = `path:${resolvedPath}`;
+  if (canonicalId === tabId) return;
+  const tabIndex = previewTabs.value.findIndex((tab) => tab.id === tabId);
+  if (tabIndex === -1) return;
+  const existingIndex = previewTabs.value.findIndex((tab) => tab.id === canonicalId);
+  if (existingIndex !== -1) {
+    previewTabs.value.splice(tabIndex, 1);
+  } else {
+    previewTabs.value[tabIndex] = { id: canonicalId, path: resolvedPath, label: previewLabel(resolvedPath) };
+  }
+  if (activePreviewId.value === tabId) activePreviewId.value = canonicalId;
 }
 
 // Provided to every TextMessage below (main chat and sub-agent transcripts). A link rendered for an
@@ -303,7 +352,7 @@ provide<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS, {
   threadId: subAgentParentThreadId,
   open: (link) => {
     if (link.threadId !== subAgentParentThreadId.value) return;
-    artifactPreview.value = { target: link.target };
+    addPreview({ target: link.target });
   },
 });
 
@@ -313,7 +362,9 @@ provide<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS, {
 // ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
 // watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
-  artifactPreview.value = null;
+  previewTabs.value = [];
+  activePreviewId.value = null;
+  previewExpanded.value = false;
 });
 
 const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = useConversationTabs({
@@ -437,6 +488,92 @@ const getCheckpointState: CheckpointStateLookup = (checkpointId) =>
 provide(GET_CHECKPOINT_STATE, getCheckpointState);
 
 const sidebarCollapsed = ref(false);
+const LEFT_WIDTH_KEY = 'lmstreaming.projectsWidth';
+const RIGHT_WIDTH_KEY = 'lmstreaming.workspaceWidth';
+const PREVIEW_HEIGHT_KEY = 'lmstreaming.previewHeight';
+const LEFT_DEFAULT = 280;
+const RIGHT_DEFAULT = 320;
+const MIN_CHAT_WIDTH = 360;
+const hasWorkspaceWidthPreference = ref(false);
+function storedNumber(key: string, fallback: number): number {
+  try {
+    const stored = localStorage.getItem(key);
+    if (key === RIGHT_WIDTH_KEY) {
+      hasWorkspaceWidthPreference.value = stored !== null;
+    }
+    if (stored === null) return fallback;
+    const value = Number(stored);
+    return Number.isFinite(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+const sidebarWidth = ref(storedNumber(LEFT_WIDTH_KEY, LEFT_DEFAULT));
+const inspectorWidth = ref(storedNumber(RIGHT_WIDTH_KEY, RIGHT_DEFAULT));
+const previewHeight = ref(storedNumber(PREVIEW_HEIGHT_KEY, Math.round((window.innerHeight - 54) * 0.65)));
+const previewExpanded = ref(false);
+const shellDragging = ref(false);
+const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
+const viewportHeight = ref(typeof window === 'undefined' ? 900 : window.innerHeight);
+const preferredRightWidth = computed(() => clamp(inspectorWidth.value, 300, 960));
+const effectiveRightWidth = computed(() =>
+  viewportWidth.value > 1100 && inspectorOpen.value ? preferredRightWidth.value : 0
+);
+const desktopLeftMax = computed(() =>
+  Math.min(420, Math.max(220, viewportWidth.value - effectiveRightWidth.value - MIN_CHAT_WIDTH - 14))
+);
+const clampedSidebarWidth = computed(() => clamp(sidebarWidth.value, 220, desktopLeftMax.value));
+const effectiveLeftWidth = computed(() =>
+  viewportWidth.value <= 768 || sidebarCollapsed.value ? 0 : clampedSidebarWidth.value
+);
+const desktopRightMax = computed(() =>
+  Math.min(960, Math.max(300, viewportWidth.value - effectiveLeftWidth.value - MIN_CHAT_WIDTH - 14))
+);
+const clampedInspectorWidth = computed(() => clamp(inspectorWidth.value, 300, desktopRightMax.value));
+const renderedInspectorWidth = computed(() =>
+  previewExpanded.value
+    ? Math.max(300, viewportWidth.value - effectiveLeftWidth.value - 7)
+    : clampedInspectorWidth.value
+);
+const previewMaxHeight = computed(() => Math.max(180, viewportHeight.value - 220));
+const previewDefaultHeight = computed(() =>
+  clamp(Math.round((viewportHeight.value - 54) * 0.65), 180, previewMaxHeight.value)
+);
+const clampedPreviewHeight = computed(() => clamp(previewHeight.value, 180, previewMaxHeight.value));
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+// F-003 (#784): these only update the live in-memory value now. Persisting to `localStorage` moved
+// onto the driving PanelSplitter itself (`persist-key`), which flushes once per gesture instead of on
+// every `pointermove` tick these setters used to receive.
+function setSidebarWidth(value: number): void {
+  sidebarWidth.value = clamp(value, 220, desktopLeftMax.value);
+}
+
+function setInspectorWidth(value: number): void {
+  inspectorWidth.value = clamp(value, 300, desktopRightMax.value);
+  hasWorkspaceWidthPreference.value = true;
+}
+
+function setPreviewHeight(value: number): void {
+  previewHeight.value = clamp(value, 180, previewMaxHeight.value);
+}
+function closePreview(id: string): void {
+  const index = previewTabs.value.findIndex((tab) => tab.id === id);
+  if (index < 0) return;
+  previewTabs.value.splice(index, 1);
+  if (activePreviewId.value === id) activePreviewId.value = previewTabs.value[Math.min(index, previewTabs.value.length - 1)]?.id ?? null;
+  if (!previewTabs.value.length) {
+    previewExpanded.value = false;
+    if (!hasWorkspaceWidthPreference.value) inspectorWidth.value = RIGHT_DEFAULT;
+  }
+  void nextTick(() => {
+    const active = Array.from(document.querySelectorAll<HTMLElement>('[data-preview-id]'))
+      .find((element) => element.dataset.previewId === activePreviewId.value);
+    (active ?? inspectorLauncherRef.value)?.focus();
+  });
+}
 const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
@@ -461,6 +598,7 @@ function toggleInspector(): void {
 
 function closeInspector(restoreFocus = true): void {
   inspectorOpen.value = false;
+  previewExpanded.value = false;
   if (restoreFocus) void nextTick(() => inspectorLauncherRef.value?.focus());
 }
 
@@ -1004,6 +1142,8 @@ function handleToggleCollapse(): void {
 
 // Watch for mobile screen and auto-collapse
 function checkMobile(): void {
+  viewportWidth.value = window.innerWidth;
+  viewportHeight.value = window.innerHeight;
   if (window.innerWidth <= 768) {
     sidebarCollapsed.value = true;
   }
@@ -1112,9 +1252,10 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="shell-body" data-testid="shell-body">
+    <div :class="['shell-body', { resizing: shellDragging }]" data-testid="shell-body">
     <ConversationSidebar
       v-if="!focusMode"
+      id="projects-sidebar"
       class="hosted-sidebar"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
@@ -1124,6 +1265,7 @@ onBeforeUnmount(() => {
       :has-more="hasMoreConversations"
       :sort-mode="conversationSortMode"
       :is-collapsed="sidebarCollapsed"
+      :desktop-width="clampedSidebarWidth"
       @new-chat="handleNewChat"
       @new-chat-in-workspace="handleNewChatInWorkspace"
       @new-project="handleNewProject"
@@ -1133,6 +1275,13 @@ onBeforeUnmount(() => {
       @toggle-collapse="handleToggleCollapse"
       @load-more="loadMoreConversations"
       @change-sort-mode="setConversationSortMode"
+    />
+    <PanelSplitter
+      v-if="!focusMode && !sidebarCollapsed && viewportWidth > 768"
+      data-testid="projects-splitter" label="Resize projects" orientation="vertical"
+      controls="projects-sidebar" :persist-key="LEFT_WIDTH_KEY"
+      :value="clampedSidebarWidth" :min="220" :max="desktopLeftMax" :default-value="LEFT_DEFAULT"
+      @update:value="setSidebarWidth" @dragging="shellDragging = $event"
     />
 
     <WorkspaceSelector
@@ -1148,7 +1297,7 @@ onBeforeUnmount(() => {
       @update-workspace="(workspaceId, data) => handleUpdateWorkspace(workspaceId, data, workspaceManagementRef)"
     />
 
-    <main class="chat-main">
+    <main id="chat-main" v-show="!previewExpanded" class="chat-main">
       <p v-if="questionNavigationError" class="question-navigation-error" role="status">{{ questionNavigationError }}</p>
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
         <div class="not-found-content">
@@ -1329,10 +1478,24 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
+    <PanelSplitter
+      v-if="!focusMode && inspectorOpen && !previewExpanded && viewportWidth > 1100"
+      data-testid="workspace-splitter" label="Resize workspace" orientation="vertical" :direction="-1"
+      controls="conversation-inspector" :persist-key="RIGHT_WIDTH_KEY"
+      :value="clampedInspectorWidth" :min="300" :max="desktopRightMax" :default-value="RIGHT_DEFAULT"
+      @update:value="setInspectorWidth" @dragging="shellDragging = $event"
+    />
     <ConversationInspector
       v-if="!focusMode"
       :open="inspectorOpen"
       :active-section="inspectorSection"
+      :desktop-width="renderedInspectorWidth"
+      :preview-tabs="previewTabSummaries"
+      :active-preview-id="activePreviewId"
+      :preview-height="clampedPreviewHeight"
+      :preview-max-height="previewMaxHeight"
+      :preview-default-height="previewDefaultHeight"
+      :expanded="previewExpanded"
       :tasks="todoTasks"
       :has-work="hasTodoBoard"
       :children="subAgentChildren"
@@ -1342,26 +1505,21 @@ onBeforeUnmount(() => {
       @select-section="inspectorSection = $event"
       @open-artifact="openArtifactPreview"
       @select-agent="handleInspectorAgentSelect"
-    />
-
-    <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
-         board's thread id: with no started conversation there is no workspace to preview against.
-         `beside-sidebar` (#594 D6, reworked for #603 F-001): while the EXPANDED sidebar column is
-         on screen, the modal pulls its own backdrop off it so switching conversations stays a
-         single pointer click — nothing is z-lifted, so no element can paint over the dialog and no
-         other modal's backdrop is pierced. `:key` forces a REMOUNT when a different chip is clicked
-         while the modal is open — chips sit under the backdrop today so that path is unreachable,
-         but a reused instance would keep the first file's body under the second file's title
-         (`onMounted` fetches once), so the guard is kept for whatever opens a preview next. -->
-    <ArtifactPreviewModal
-      v-if="artifactPreview && subAgentParentThreadId"
-      :key="artifactPreview.path ?? `link:${artifactPreview.target}`"
-      :thread-id="subAgentParentThreadId"
-      :path="artifactPreview.path"
-      :target="artifactPreview.target"
-      :beside-sidebar="!sidebarCollapsed && !focusMode"
-      @close="artifactPreview = null"
-    />
+      @select-preview="activePreviewId = $event"
+      @close-preview="closePreview"
+      @update:preview-height="setPreviewHeight"
+    >
+      <template #preview>
+        <ArtifactPreviewModal
+          v-if="artifactPreview && subAgentParentThreadId"
+          :key="`${subAgentParentThreadId}:${artifactPreview.id}`"
+          :thread-id="subAgentParentThreadId" :path="artifactPreview.path" :target="artifactPreview.target"
+          embedded :expanded="previewExpanded" @toggle-expand="previewExpanded = !previewExpanded"
+          @close="closePreview(artifactPreview.id)"
+          @resolved="reconcilePreviewResolution(artifactPreview.id, $event)"
+        />
+      </template>
+    </ConversationInspector>
     </div>
   </div>
 </template>
@@ -1430,6 +1588,10 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.shell-body.resizing :deep(.conversation-sidebar) {
+  transition: none;
 }
 
 .hosted-sidebar :deep(.toggle-btn) {

@@ -154,7 +154,7 @@ public sealed class SubAgentHierarchyRenderTests
 
         // --- The tree the human sees ------------------------------------------------------------
         await page.ConversationInspectorLauncher().ClickAsync();
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Agents" }).ClickAsync();
+        await Assertions.Expect(page.Locator("#inspector-tab-agents")).ToHaveAttributeAsync("aria-expanded", "true");
         // Two rows is the whole point: the panel polls a HIERARCHY-wide listing, so it must show the
         // helper even though this conversation's own manager never spawned it and cannot see it.
         await page.GetByTestId("subagent-item").WaitForCountAtLeastAsync(2, timeoutMs: 30_000);
