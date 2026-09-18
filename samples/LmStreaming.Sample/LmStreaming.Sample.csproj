@@ -29,6 +29,9 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <!-- Compaction:TextTokenizer=o200k sizes the policy's view with the real tokenizer instead of length / 4. -->
+    <PackageReference Include="Tiktoken.Core" Version="2.2.0" />
+    <PackageReference Include="Tiktoken.Encodings.o200k" Version="2.2.0" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Prompts.yaml" CopyToOutputDirectory="PreserveNewest" />

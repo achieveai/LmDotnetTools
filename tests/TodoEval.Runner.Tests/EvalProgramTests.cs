@@ -160,4 +160,89 @@ public class EvalProgramTests
             .CompareBaselineDir.Should()
             .Be("evals/todo-eval/results/team-baseline");
     }
+
+    // --- per-variant host diagnostics ----------------------------------------------------------
+
+    /// <summary>
+    /// Every variant launches its own host, so the host's stdout/stderr/publish logs must live in a
+    /// per-variant directory: written straight into the sweep dir, each variant overwrote the last.
+    /// </summary>
+    [Fact]
+    public void HostLogDir_IsPerVariant_UnderTheSweepsHostsFolder()
+    {
+        var sweepDir = Path.Combine("results", "20260916-000000-abcd1234");
+
+        var off = EvalProgram.HostLogDir(sweepDir, "off");
+        var compact = EvalProgram.HostLogDir(sweepDir, "compact-v0");
+
+        off.Should().Be(Path.Combine(sweepDir, "hosts", "off"));
+        compact.Should().Be(Path.Combine(sweepDir, "hosts", "compact-v0"));
+        off.Should().NotBe(compact, "two variants must never share a host log file");
+    }
+
+    [Fact]
+    public void HelpText_DocumentsThePerVariantHostLogs()
+    {
+        TodoEval.Runner.CliOptions.HelpText.Should().Contain("hosts/<variant>/");
+    }
+
+    /// <summary>
+    /// The host writes its own Serilog files under <c>{instanceDir}/logs</c>; the instance dir is
+    /// deleted after the sweep, so those logs must be copied out FIRST or an errored run's only
+    /// server-side trace is gone with it.
+    /// </summary>
+    [Fact]
+    public void RetireInstance_CopiesTheHostsOwnLogsOut_BeforeDeletingTheInstanceDir()
+    {
+        var scratch = Path.Combine(Path.GetTempPath(), $"todo-eval-retire-{Guid.NewGuid():N}");
+        var instanceDir = Path.Combine(scratch, "instance");
+        var hostLogDir = Path.Combine(scratch, "sweep", "hosts", "off");
+        Directory.CreateDirectory(Path.Combine(instanceDir, "logs", "nested"));
+        File.WriteAllText(Path.Combine(instanceDir, "logs", "lmstreaming-20260916.jsonl"), "{\"@l\":\"Warning\"}");
+        File.WriteAllText(Path.Combine(instanceDir, "logs", "nested", "codex-rpc.jsonl"), "{}");
+        File.WriteAllText(Path.Combine(instanceDir, "LmStreaming.Sample.dll"), "binary, not a log");
+
+        try
+        {
+            EvalProgram.RetireInstance(instanceDir, hostLogDir, TextWriter.Null);
+
+            Directory.Exists(instanceDir).Should().BeFalse("the temp host instance is still cleaned up");
+            var archived = Path.Combine(hostLogDir, "instance-logs");
+            File.ReadAllText(Path.Combine(archived, "lmstreaming-20260916.jsonl")).Should().Be("{\"@l\":\"Warning\"}");
+            File.Exists(Path.Combine(archived, "nested", "codex-rpc.jsonl")).Should().BeTrue();
+            File.Exists(Path.Combine(archived, "LmStreaming.Sample.dll")).Should().BeFalse("only logs/ is archived");
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>A host that never wrote a logs/ folder is retired the same way, with nothing archived.</summary>
+    [Fact]
+    public void RetireInstance_NoLogsFolder_StillDeletesTheInstanceDir()
+    {
+        var scratch = Path.Combine(Path.GetTempPath(), $"todo-eval-retire-{Guid.NewGuid():N}");
+        var instanceDir = Path.Combine(scratch, "instance");
+        var hostLogDir = Path.Combine(scratch, "sweep", "hosts", "off");
+        Directory.CreateDirectory(instanceDir);
+
+        try
+        {
+            EvalProgram.RetireInstance(instanceDir, hostLogDir, TextWriter.Null);
+
+            Directory.Exists(instanceDir).Should().BeFalse();
+            Directory.Exists(Path.Combine(hostLogDir, "instance-logs")).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
 }

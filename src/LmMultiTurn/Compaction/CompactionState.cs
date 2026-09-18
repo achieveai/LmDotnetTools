@@ -43,6 +43,13 @@ public static class CheckpointReasons
 
     /// <summary>A newer prepare superseded an in-flight checkpoint that never reached a terminal state.</summary>
     public const string Abandoned = "abandoned";
+
+    /// <summary>
+    ///     The active row carries a schema version this build does not know, so its manifest holds
+    ///     sections this build cannot read. Adopting it would show the model a view silently missing
+    ///     whatever the newer writer put there.
+    /// </summary>
+    public const string SchemaTooNew = "schema_too_new";
 }
 
 /// <summary>A queued manual compaction request (<see cref="CompactionState.PendingManual" />).</summary>

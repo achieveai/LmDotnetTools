@@ -22,19 +22,34 @@ internal static class CompactionTokenEstimate
     public static long EstimateText(string? text) => text is null ? 0 : (text.Length + 3) / 4;
 
     /// <summary>Estimated tokens of one message, including its framing.</summary>
-    public static long Estimate(IMessage message)
+    public static long Estimate(IMessage message) => Estimate(message, EstimateText);
+
+    /// <summary>
+    ///     A message estimator that sizes every run of text with <paramref name="text"/> instead of the
+    ///     length / 4 heuristic: a host with a real tokenizer plugs it in here, and the per-message framing
+    ///     stays the same. The heuristic overcounts line-numbered prose by ~40% (measured: an 85k estimate
+    ///     for a 60k request), which is enough to push a fitting request over the usable window and into
+    ///     the fit escalation that trims the tool results the model has not read yet.
+    /// </summary>
+    public static Func<IMessage, long> Create(Func<string?, long> text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return message => Estimate(message, text);
+    }
+
+    private static long Estimate(IMessage message, Func<string?, long> text)
     {
         ArgumentNullException.ThrowIfNull(message);
 
         var body = message switch
         {
-            ToolCallMessage call => EstimateText(call.FunctionName) + EstimateText(call.FunctionArgs),
+            ToolCallMessage call => text(call.FunctionName) + text(call.FunctionArgs),
             ICanGetToolCalls calls => (calls.GetToolCalls() ?? []).Sum(c =>
-                EstimateText(c.FunctionName) + EstimateText(c.FunctionArgs)
+                text(c.FunctionName) + text(c.FunctionArgs)
             ),
-            ToolCallResultMessage result => EstimateText(result.Result),
-            ToolsCallResultMessage results => results.ToolCallResults.Sum(r => EstimateText(r.Result)),
-            ICanGetText text => EstimateText(text.GetText()),
+            ToolCallResultMessage result => text(result.Result),
+            ToolsCallResultMessage results => results.ToolCallResults.Sum(r => text(r.Result)),
+            ICanGetText t => text(t.GetText()),
             _ => 0,
         };
 

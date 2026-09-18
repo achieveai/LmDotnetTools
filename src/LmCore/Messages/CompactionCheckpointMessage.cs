@@ -69,6 +69,43 @@ public sealed record ArtifactRef
     public long? OriginSeq { get; init; }
 }
 
+/// <summary>
+///     An agent exchange still open at the cut (eval spec §4 RC3): a question or delegation nobody has
+///     answered yet, pinned so the checkpoint cannot hide work this agent still owes or awaits.
+/// </summary>
+public sealed record OpenExchangeRef
+{
+    /// <summary>The id of the message that opened the exchange.</summary>
+    [JsonPropertyName("message_id")]
+    public required string MessageId { get; init; }
+
+    /// <summary><c>inbound</c> (owed by this agent) or <c>outbound</c> (awaited by this agent).</summary>
+    [JsonPropertyName("direction")]
+    public required string Direction { get; init; }
+
+    /// <summary>Who asked.</summary>
+    [JsonPropertyName("from")]
+    public required string From { get; init; }
+
+    /// <summary>Who was asked, for an outbound exchange.</summary>
+    [JsonPropertyName("to")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? To { get; init; }
+
+    /// <summary>The row that opened it.</summary>
+    [JsonPropertyName("seq")]
+    public required long Seq { get; init; }
+
+    /// <summary>The run the exchange opened in.</summary>
+    [JsonPropertyName("asked_at_run")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AskedAtRun { get; init; }
+
+    /// <summary>At most 200 characters of the body.</summary>
+    [JsonPropertyName("summary")]
+    public required string Summary { get; init; }
+}
+
 /// <summary>One sub-agent of the compacted conversation, by ordinal id (§3.3, §10).</summary>
 public sealed record AgentRef
 {
@@ -242,6 +279,10 @@ public sealed record ContextManifest
     [JsonPropertyName("agents")]
     public IReadOnlyList<AgentRef> Agents { get; init; } = [];
 
+    /// <summary>Exchanges still unanswered at the cut (RC3). Empty unless the check is on.</summary>
+    [JsonPropertyName("open_exchanges")]
+    public IReadOnlyList<OpenExchangeRef> OpenExchanges { get; init; } = [];
+
     /// <summary>Index of compacted history: seq ranges to headlines, for the recall tool.</summary>
     [JsonPropertyName("index")]
     public IReadOnlyList<IndexEntry> Index { get; init; } = [];
@@ -253,9 +294,26 @@ public sealed record ContextManifest
 
 /// <summary>
 ///     The durable row a compaction commit appends (spec 679 §3.1). It gives the UI its divider position,
-///     the workspace mirror a line, the recall tool its index, and an older binary a row it skips as an
-///     unknown <c>$type</c> — which is the rollback contract (§8.3).
+///     the workspace mirror a line, and the recall tool its index.
 /// </summary>
+/// <remarks>
+///     <para>
+///         The rollback contract (§8.3) is carried by the <c>$type</c>, and that needs the
+///         discriminator to change when the manifest does. It does: a schema 2 row is written
+///         <c>compaction_checkpoint@2</c>, which no earlier binary maps, so an earlier binary raises
+///         <c>UnknownMessageTypeDiscriminatorException</c> and its resilient loader SKIPS the row. It
+///         then finds no row for the active checkpoint and falls back to whole canonical history —
+///         which is the contract, and it holds on binaries already in the field, because that skip
+///         path predates this change. A single <c>$type</c> across versions would instead have had
+///         those binaries adopt the row with every section they lack silently dropped.
+///     </para>
+///     <para>
+///         <see cref="SchemaVersion" /> carries the same decision in the other direction, for a row
+///         this build cannot read in full: <c>CompactionRuntime.AdoptActiveAsync</c> declines anything
+///         above <see cref="CurrentSchemaVersion" />. Both refusals leave the row on disk, which is
+///         append-only, so the section is still there for the build that can read it.
+///     </para>
+/// </remarks>
 /// <remarks>
 ///     <para>
 ///         Never dispatched to a provider as-is: the agent projection renders it into a synthetic user
@@ -272,11 +330,47 @@ public sealed record ContextManifest
 /// </remarks>
 public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
 {
-    /// <summary>The <c>$type</c> discriminator the JSON converter writes for this row.</summary>
+    /// <summary>The <c>$type</c> a schema 1 row carries. Still read; no longer written.</summary>
     public const string TypeDiscriminator = "compaction_checkpoint";
 
-    /// <summary>The persisted schema version this build writes.</summary>
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>The <c>$type</c> a schema 2 row carries — the manifest with <c>open_exchanges</c>.</summary>
+    public const string TypeDiscriminatorV2 = "compaction_checkpoint@2";
+
+    /// <summary>
+    ///     The <c>$type</c> a row of <paramref name="schemaVersion" /> is written with. Every version
+    ///     whose manifest gained a section gets its own, which is what makes an older reader SKIP the
+    ///     row instead of adopting a part of it (§8.3).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     <paramref name="schemaVersion" /> has no discriminator of its own. Deliberately not a
+    ///     fallback: a new version silently reusing an older version's <c>$type</c> is precisely the
+    ///     bug this replaces, so bumping <see cref="CurrentSchemaVersion" /> must fail here until its
+    ///     discriminator is added and taught to readers.
+    /// </exception>
+    public static string DiscriminatorFor(int schemaVersion) =>
+        schemaVersion switch
+        {
+            <= 1 => TypeDiscriminator,
+            2 => TypeDiscriminatorV2,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(schemaVersion),
+                schemaVersion,
+                "A checkpoint schema version needs its own $type before it can be written; see TypeDiscriminatorV2."
+            ),
+        };
+
+    /// <summary>
+    ///     The persisted schema version this build writes. 2 adds <c>open_exchanges</c> to the manifest; a
+    ///     version 1 row still deserializes, with that section empty.
+    /// </summary>
+    /// <remarks>
+    ///     Reading is asymmetric on purpose. A row at or below this number is readable in full, so it is
+    ///     adopted. A row above it carries sections this build has no field for, and JSON drops those
+    ///     silently, so it is NOT adopted. In practice such a row is skipped before this is ever read,
+    ///     because its <c>$type</c> is one this build does not map; this is the second line of defence
+    ///     for a row that reaches here anyway.
+    /// </remarks>
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>Checkpoint id, <c>cp-{thread-short}-{n}</c>. The key of the state machine entry.</summary>
     [JsonPropertyName("checkpoint_id")]
@@ -422,6 +516,17 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
             Manifest.Agents.Select(a =>
                 $"{a.AgentId}: {a.Template ?? "-"}; {a.Task ?? "-"}; {a.Status}"
                 + (a.Outcome is null ? string.Empty : $"; {a.Outcome}")
+            )
+        );
+
+        AppendLines(
+            sb,
+            "Open exchanges (still unanswered at this checkpoint; answer or resolve them)",
+            Manifest.OpenExchanges.Select(x =>
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{x.Direction} {x.MessageId} {(x.Direction == "outbound" ? "to " + (x.To ?? "-") : "from " + x.From)} [seq {x.Seq}]: {x.Summary}"
+                )
             )
         );
 

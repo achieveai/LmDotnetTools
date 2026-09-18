@@ -75,7 +75,8 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
     private static CheckpointPipeline Pipeline(
         ICheckpointSummarizer summarizer,
         ILogger? logger = null,
-        CheckpointValidationOptions? validation = null
+        CheckpointValidationOptions? validation = null,
+        ManifestAssemblerOptions? assembler = null
     ) =>
         new(
             summarizer,
@@ -84,6 +85,7 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
                 Estimator = ThreadFixture.RowTokens,
                 Logger = logger ?? NullLogger.Instance,
                 Validation = validation ?? new CheckpointValidationOptions(),
+                Assembler = assembler ?? new ManifestAssemblerOptions(),
             },
             new FixedClock(T0)
         );
@@ -254,7 +256,7 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
             .Should()
             .BeOfType<TextMessage>()
             .Which.Text.Should()
-            .StartWith("<context-checkpoint version=\"1\" id=\"cp-1\" covers_seq=\"1-7\"");
+            .StartWith("<context-checkpoint version=\"2\" id=\"cp-1\" covers_seq=\"1-7\"");
     }
 
     [Theory]
@@ -1505,5 +1507,30 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
                 }
             );
         build.Checkpoint.Manifest.Agents.Should().ContainSingle().Which.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public async Task Build_WithTheRc3CheckOn_PinsTheOpenExchange_AndStillValidates()
+    {
+        var store = _harness.Open("memory");
+        var thread = new ThreadFixture()
+            .Human("fix the flaky test")
+            .Agent(AgentMessageType.Question, "which db?")
+            .ToolTurns(4);
+        await store.AppendMessagesAsync(
+            Thread,
+            MessagePersistenceConverter.ToPersistedMessages(thread.Messages, Thread, "run-1")
+        );
+        var rows = await RowsAsync(store);
+
+        var build = await Pipeline(
+                Summarizer(_ => GoodSummary()),
+                validation: new CheckpointValidationOptions { OpenExchanges = true },
+                assembler: new ManifestAssemblerOptions { OpenExchanges = true }
+            )
+            .BuildAsync(Request(rows, CutAt(rows, 6)));
+
+        build.IsValid.Should().BeTrue();
+        build.Checkpoint!.Manifest.OpenExchanges.Should().ContainSingle().Which.MessageId.Should().Be("msg-2");
     }
 }

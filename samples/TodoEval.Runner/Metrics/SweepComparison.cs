@@ -19,6 +19,9 @@ internal enum ComparisonRefusal
     /// <summary>The models were asked to do different things — different task.md / mode.json / expected-board.json.</summary>
     CorpusHashDiffers = 2,
 
+    /// <summary>The two sweeps swept different host option-sets or a different set of tasks.</summary>
+    SweepAxesDiffer = 7,
+
     /// <summary>The two sets of numbers were extracted under different metrics-spec revisions.</summary>
     SpecVersionDiffers = 3,
 
@@ -196,6 +199,7 @@ internal static class SweepComparison
     [
         ComparisonRefusal.ManifestMissing,
         ComparisonRefusal.CorpusHashDiffers,
+        ComparisonRefusal.SweepAxesDiffer,
         ComparisonRefusal.SpecVersionDiffers,
         ComparisonRefusal.EvaluatorHashDiffers,
         ComparisonRefusal.CoverageBelowMinimum,
@@ -258,6 +262,14 @@ internal static class SweepComparison
                 baseline.Manifest!.RanUnder.TaskCorpusHash,
                 candidate.Manifest!.RanUnder.TaskCorpusHash,
                 "the two sweeps were asked to do different things (task.md, mode.json or expected-board.json moved)"
+            ),
+            ComparisonRefusal.SweepAxesDiffer => Differs(
+                "axes",
+                "variants/tasks",
+                baseline.Manifest!.AxisSignature(),
+                candidate.Manifest!.AxisSignature(),
+                "the two sweeps ran different host option-sets or different tasks, so their rows are "
+                    + "cells of two different experiments"
             ),
             ComparisonRefusal.SpecVersionDiffers => Differs(
                 "specVersion",

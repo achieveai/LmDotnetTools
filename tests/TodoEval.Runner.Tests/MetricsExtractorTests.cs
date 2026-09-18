@@ -25,8 +25,12 @@ public class MetricsExtractorTests
             DurationMs = 1234,
         };
 
-    private static BoardShapeExpectation ExpectedBoard() =>
-        BoardShapeExpectation.Load(Path.Combine(FixtureRoot, "expected-board.json"));
+    /// <summary>The single-task layout's resolver: every run is judged against the one fixture.</summary>
+    private static Func<RunManifestEntry, BoardShapeExpectation?> ExpectedBoard()
+    {
+        var board = BoardShapeExpectation.Load(Path.Combine(FixtureRoot, "expected-board.json"));
+        return _ => board;
+    }
 
     [Fact]
     public void Extract_StormRun_MatchesOracleScore()

@@ -245,7 +245,17 @@ public sealed class MessageSequenceTests : IAsyncLifetime
         row.Seq.Should().Be(3);
         row.MessageType.Should().Be(nameof(CompactionCheckpointMessage));
         row.Role.Should().Be("User");
-        row.MessageJson.Should().Contain("\"$type\":\"compaction_checkpoint\"");
+        // Derived, not pinned: the discriminator tracks the row's SCHEMA VERSION, so a future bump
+        // changes what a store should hold and a literal here would just have to be retyped. What the
+        // test does pin is that the store keeps whatever the writer chose, byte for byte -- that is
+        // the property a rollback depends on.
+        row.MessageJson.Should()
+            .Contain($"\"$type\":\"{CompactionCheckpointMessage.DiscriminatorFor(checkpoint.SchemaVersion)}\"");
+        row.MessageJson.Should()
+            .Contain(
+                $"\"$type\":\"{CompactionCheckpointMessage.TypeDiscriminatorV2}\"",
+                "this build writes schema 2, whose $type an older binary does not map"
+            );
 
         var restored = MessagePersistenceConverter.FromPersistedMessagesResilient(rows);
         restored.Should().HaveCount(3, "a checkpoint row is neither a tool call nor a tool result");

@@ -246,6 +246,33 @@ public sealed class AgentContextProjectionTests : IAsyncLifetime
         ToolResultView.ClearedThroughSeq(thread.Rows, keepTurns: 5).Should().Be(0, "nothing older to clear");
     }
 
+    [Fact]
+    public void ClearedThroughSeq_AnsweredOnly_StopsBeforeTheLatestHumanInput()
+    {
+        // 1 human, tool turns at 2-7, 8 assistant, 9 human, tool turns at 10-15: the first exchange was answered,
+        // the second is in progress.
+        var thread = new ThreadFixture().Human("first").ToolTurns(3).Assistant("done").Human("second").ToolTurns(3);
+
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 1)
+            .Should()
+            .Be(13, "unscoped, only the latest turn stays");
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 1, answeredOnly: true)
+            .Should()
+            .Be(8, "the exchange in progress is never cleared");
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 5, answeredOnly: true)
+            .Should()
+            .Be(3, "keep-turns still applies below the cap");
+
+        var single = new ThreadFixture().Human("go").ToolTurns(5);
+        ToolResultView
+            .ClearedThroughSeq(single.Rows, keepTurns: 1, answeredOnly: true)
+            .Should()
+            .Be(0, "one exchange in progress clears nothing");
+    }
+
     [Theory]
     [MemberData(nameof(AllKinds))]
     public async Task ReplayingTheStore_WithTrimmedAndClearedResults_YieldsByteIdenticalViews(string kind)

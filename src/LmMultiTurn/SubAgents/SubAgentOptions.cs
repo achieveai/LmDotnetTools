@@ -64,6 +64,13 @@ public record SubAgentOptions
     public int OutputChannelCapacity { get; init; } = 1000;
 
     /// <summary>
+    /// Whether spawned sub-agents get the browser-hosted <c>AskUserQuestion</c> tool. Defaults to true,
+    /// the behaviour every host had. An unattended host (an eval runner) turns it off so a child can
+    /// never park the whole tree on a question nobody will answer.
+    /// </summary>
+    public bool IncludeAskUserQuestionTool { get; init; } = true;
+
+    /// <summary>
     /// Opt-in sink for the coordination work a run does around the model calls themselves: per-spawn
     /// tool-registry construction and context fan-out, finished-agent reconstruction, per-turn
     /// template-catalog serialization, and full-directory <c>GetAgents</c> responses (#670).
