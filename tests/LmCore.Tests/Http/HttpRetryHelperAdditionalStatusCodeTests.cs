@@ -183,4 +183,15 @@ public class HttpRetryHelperAdditionalStatusCodeTests
             .AdditionalRetryableStatusCodes.Should()
             .BeEquivalentTo([HttpStatusCode.Conflict, HttpStatusCode.NotFound]);
     }
+
+    [Fact]
+    public void WithAdditionalRetryableStatusCodes_NullArray_ThrowsArgumentNullException()
+    {
+        // A null array is the one input that cannot merge. Without the guard it would reach the LINQ
+        // filter and surface as a NullReferenceException from inside RetryOptions instead of naming the
+        // caller's bad argument at the boundary.
+        var act = () => RetryOptions.Default.WithAdditionalRetryableStatusCodes(null!);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("statusCodes");
+    }
 }

@@ -3,7 +3,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using FluentAssertions;
 using Moq;
@@ -52,7 +54,7 @@ public class ProviderTimeoutRunErrorTests
         var first = await WithinBudgetAsync(DrainAsync(loop, "Go", cts.Token), "the timed-out run must terminalize");
 
         var completed = first
-            .OfType<RunCompletedMessage>()
+            .Messages.OfType<RunCompletedMessage>()
             .Should()
             .ContainSingle("a run that failed must still tell the caller it ended")
             .Subject;
@@ -64,19 +66,19 @@ public class ProviderTimeoutRunErrorTests
 
         var second = await WithinBudgetAsync(DrainAsync(loop, "Again", cts.Token), "the loop must accept more work");
         second
-            .OfType<TextMessage>()
+            .Messages.OfType<TextMessage>()
             .Where(m => m.Role == Role.Assistant)
             .Should()
             .ContainSingle()
             .Which.Text.Should()
             .Be("Recovered.");
-        second.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
+        second.Messages.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
 
         await cts.CancelAsync();
     }
 
     [Fact]
-    public async Task ProviderCancellationWhileRunIsCancelled_IsNotReportedAsARunError()
+    public async Task ProviderCancellationWhileRunIsCancelled_AbandonsTheRunWithoutCompletingIt()
     {
         using var cts = new CancellationTokenSource();
 
@@ -87,15 +89,89 @@ public class ProviderTimeoutRunErrorTests
         await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, new FunctionRegistry(), "run-cancelled");
         _ = loop.RunAsync(cts.Token);
 
-        var messages = await WithinBudgetAsync(
+        var drained = await WithinBudgetAsync(
             DrainAsync(loop, "Go", cts.Token),
             "a cancelled run must not hang the caller"
         );
 
-        messages
-            .OfType<RunCompletedMessage>()
+        _attempts
             .Should()
-            .NotContain(m => m.IsError, "a user-requested stop is not a run failure");
+            .Be(1, "nothing below says anything about cancellation unless the run actually reached the provider");
+
+        // What the stop path REALLY does, asserted positively so the test cannot pass on an empty list: the
+        // run announces itself, and then ends by throwing out of the enumeration. The caller learns the run
+        // stopped from that OperationCanceledException — there is no terminal RunCompletedMessage at all, so
+        // "not reported as an error" is the weaker, accidentally-vacuous way to say "not completed".
+        drained.Cancellation.Should().NotBeNull("a stopped run surfaces the stop to whoever was enumerating it");
+        drained
+            .Messages.Should()
+            .ContainSingle(m => m is RunAssignmentMessage, "the run announced itself before it was stopped");
+        drained
+            .Messages.OfType<RunCompletedMessage>()
+            .Should()
+            .BeEmpty("a user-requested stop abandons the run; it neither fails it nor completes it");
+    }
+
+    [Fact]
+    public async Task ContextObservationCancellationWhileNothingIsCancelled_IsSwallowedAndTheRunSucceeds()
+    {
+        // A SECOND site guarded by IsRunCancellation: the per-generation context observation. Its handler
+        // exists so observing a turn never breaks the turn - but "never" has to include an
+        // OperationCanceledException nobody asked for (a capacity lookup on its own internal deadline),
+        // which the old `ex is not OperationCanceledException` shape let escape. Escaping here is not
+        // silent: it reaches the per-run handler and completes the run as an ERROR, so an observation
+        // failure would be reported to the caller as the model turn having failed.
+        var capacity = new CancellingCapacityResolver();
+        ScriptProvider((_, ct) => Emit([new TextMessage { Text = "Observed anyway.", Role = Role.Assistant }], ct));
+
+        using var cts = new CancellationTokenSource();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            "context-observation-cancel",
+            defaultOptions: new GenerateReplyOptions { ModelId = "model-x" },
+            lifecycleServices: new MultiTurnLifecycleServices { CapacityResolver = capacity }
+        );
+        _ = loop.RunAsync(cts.Token);
+
+        var drained = await WithinBudgetAsync(
+            DrainAsync(loop, "Go", cts.Token),
+            "an observation failure must not leave the run without a terminal message"
+        );
+
+        capacity
+            .Calls.Should()
+            .BeGreaterThan(0, "the test proves nothing unless the observation actually reached the resolver");
+        cts.IsCancellationRequested.Should().BeFalse("nobody asked this run to stop");
+
+        var completed = drained.Messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
+        completed.IsError.Should().BeFalse("observing a turn must never fail the turn it observes");
+        drained
+            .Messages.OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .ContainSingle()
+            .Which.Text.Should()
+            .Be("Observed anyway.", "the turn proceeds unobserved rather than not at all");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// A capacity lookup that gives up on its own internal deadline: it raises the same
+    /// <see cref="TaskCanceledException"/> shape as an HTTP timeout, while the run's token is untouched.
+    /// </summary>
+    private sealed class CancellingCapacityResolver : IModelCapacityResolver
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public ModelCapacity? Resolve(string modelId)
+        {
+            _ = Interlocked.Increment(ref _calls);
+            throw HttpClientTimeout();
+        }
     }
 
     /// <summary>The exception <see cref="HttpClient"/> raises when its own <c>Timeout</c> elapses.</summary>
@@ -105,9 +181,17 @@ public class ProviderTimeoutRunErrorTests
             new TimeoutException("A task was canceled.")
         );
 
-    private static async Task<List<IMessage>> DrainAsync(MultiTurnAgentLoop loop, string text, CancellationToken ct)
+    /// <summary>
+    /// What draining a run produced: every message it published, and the cancellation that ended the
+    /// enumeration when one did. The exception is RETURNED rather than swallowed because "the run
+    /// published no terminal message" and "the run never ran" look identical in the message list alone.
+    /// </summary>
+    private sealed record Drained(List<IMessage> Messages, OperationCanceledException? Cancellation);
+
+    private static async Task<Drained> DrainAsync(MultiTurnAgentLoop loop, string text, CancellationToken ct)
     {
         var messages = new List<IMessage>();
+        OperationCanceledException? cancellation = null;
         try
         {
             await foreach (
@@ -117,12 +201,13 @@ public class ProviderTimeoutRunErrorTests
                 messages.Add(msg);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            // Expected only in the cancellation case; its assertion is on what was published, not on the throw.
+            // Expected only in the cancellation case, where it is part of the asserted outcome.
+            cancellation = ex;
         }
 
-        return messages;
+        return new Drained(messages, cancellation);
     }
 
     /// <summary>
@@ -130,7 +215,7 @@ public class ProviderTimeoutRunErrorTests
     /// precisely "no terminal message ever arrives", which an unbounded await would report as a timeout of
     /// the whole test run instead of as this assertion.
     /// </summary>
-    private static async Task<List<IMessage>> WithinBudgetAsync(Task<List<IMessage>> drain, string because)
+    private static async Task<Drained> WithinBudgetAsync(Task<Drained> drain, string because)
     {
         var finished = await Task.WhenAny(drain, Task.Delay(Budget));
         finished.Should().BeSameAs(drain, because);

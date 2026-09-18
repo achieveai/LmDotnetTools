@@ -117,13 +117,18 @@ public static class CopilotResponsesAgentFactory
         );
     }
 
-    private static IOpenAiResponsesClient CreateWebSocketClient(
+    // internal (not private) so a test can drive the REAL WebSocket construction path through an
+    // injected socket factory and prove the Copilot transient statuses are merged into the connect-retry
+    // configuration. Same spirit as CreateSseClient's innerHandler above: the public Create overload
+    // never supplies socketFactory (production uses a real ClientWebSocket).
+    internal static IOpenAiResponsesClient CreateWebSocketClient(
         string host,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext context,
         CopilotOptions options,
         ILogger? logger,
-        RetryOptions? retryOptions
+        RetryOptions? retryOptions,
+        Func<ICopilotResponsesSocket>? socketFactory = null
     )
     {
         var wsEndpoint = new Uri($"{ToWebSocketScheme(host)}{ResponsesPath}");
@@ -133,6 +138,7 @@ public static class CopilotResponsesAgentFactory
             context,
             options,
             logger,
+            socketFactory: socketFactory,
             retryOptions: WithCopilotTransientStatuses(retryOptions)
         );
     }
