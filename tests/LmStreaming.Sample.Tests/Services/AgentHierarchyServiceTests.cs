@@ -1276,6 +1276,143 @@ public sealed class AgentHierarchyServiceTests
         rows.Select(r => r.AgentId).Should().Contain("mine");
     }
 
+    /// <summary>
+    /// A sub-agent whose terminal status write was lost — the host was killed, or the push failed — is
+    /// left on disk saying <c>running</c> with no terminal instant, and stays that way forever: lifecycle
+    /// status is in-memory state, so nothing in a new process ever revisits it. (Observed in production:
+    /// four children reading <c>running</c> for 7–47 hours across restarts.) The roster must therefore
+    /// report what is actually true of such a row — it was in flight when its host stopped — rather than
+    /// republishing a liveness claim no live state backs.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_ProjectsAnOrphanedPersistedRunningChild_AsInterrupted()
+    {
+        const string childId = "orphan-child";
+        var store = new InMemoryConversationStore();
+        await SeedRunningProvenanceChildAsync(store, childId);
+
+        // No live loop for RootThread at all — the restart case, where nothing in memory can vouch for
+        // this child.
+        await using var pool = CreateFakeAgentPool();
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            store,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache()
+        );
+
+        var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        rows.Should()
+            .ContainSingle(r => r.AgentId == childId)
+            .Which.Status.Should()
+            .Be(
+                SubAgentSummary.InterruptedStatus,
+                "a persisted in-flight child with no live in-memory state behind it cannot still be "
+                    + "running — the process that was running it is gone"
+            );
+    }
+
+    /// <summary>
+    /// The other half of the same rule, and the one that keeps it honest. Liveness is decided per CHILD
+    /// by whether the live <c>SubAgentManager</c> still holds it — never by how stale its last write
+    /// looks, because a live agent can be quiet for a long time while a model thinks. So two children
+    /// stamped identically on disk must come back differently when only one of them is still live, and
+    /// an orphaned sibling must never drag a live one down with it.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_KeepsALiveChildRunning_WhileItsOrphanedSiblingReadsInterrupted()
+    {
+        var store = new InMemoryConversationStore();
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    // Never yields, so the spawned child stays deterministically Running.
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        // Collaboration OFF with a SubAgentManager: the one live shape that still consults the persisted
+        // roster, so the live row and the persisted row for the same child actually meet here.
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            new FunctionRegistry(),
+            threadId: RootThread,
+            subAgentOptions: subAgentOptions
+        );
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+            "worker",
+            "live task",
+            name: "live",
+            runInBackground: true
+        );
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var liveChildId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Both siblings look identical on disk: in flight, no terminal instant.
+        await SeedRunningProvenanceChildAsync(store, liveChildId);
+        await SeedRunningProvenanceChildAsync(store, "orphaned-sibling");
+
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            store,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache()
+        );
+
+        var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        rows.Should()
+            .ContainSingle(r => r.AgentId == liveChildId)
+            .Which.Status.Should()
+            .Be("running", "the live SubAgentManager still holds this child — it is genuinely running");
+        rows.Should()
+            .ContainSingle(r => r.AgentId == "orphaned-sibling")
+            .Which.Status.Should()
+            .Be(
+                SubAgentSummary.InterruptedStatus,
+                "an orphan under the same parent is settled on its own, not because the whole roster is stale"
+            );
+    }
+
+    /// <summary>
+    /// Seeds a persisted child exactly as an interrupted one looks on disk: <c>running</c>, and with no
+    /// <c>sample.subAgentTerminalAt</c> at all — the shape the four production rows actually had.
+    /// </summary>
+    private static Task SeedRunningProvenanceChildAsync(IConversationStore store, string childId)
+    {
+        var threadId = SubAgentThreadIds.For(RootThread, childId);
+        return store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Properties = ImmutableDictionary<string, object>.Empty.AddRange([
+                    new KeyValuePair<string, object>(SubAgentProvenance.ParentThreadIdKey, RootThread),
+                    new KeyValuePair<string, object>(SubAgentProvenance.AgentIdKey, childId),
+                    new KeyValuePair<string, object>(SubAgentProvenance.NameKey, childId),
+                    new KeyValuePair<string, object>(SubAgentProvenance.TemplateKey, "worker"),
+                    new KeyValuePair<string, object>(SubAgentProvenance.TaskKey, $"{childId}'s task"),
+                    new KeyValuePair<string, object>(SubAgentProvenance.StatusKey, "running"),
+                ]),
+            }
+        );
+    }
+
     /// <summary>Seeds one persisted sub-agent row stamped as <see cref="RootThread"/>'s child.</summary>
     private static Task SeedProvenanceChildAsync(IConversationStore store, string childId, string? tenantId) =>
         store.SaveMetadataAsync(
