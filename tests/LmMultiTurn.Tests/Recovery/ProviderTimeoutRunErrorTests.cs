@@ -4,10 +4,13 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using FluentAssertions;
+using LmMultiTurn.Tests.Lifecycle;
 using Moq;
 using Xunit;
 
@@ -86,30 +89,51 @@ public class ProviderTimeoutRunErrorTests
         // was actually asked to stop first, which must keep it on the cancellation path.
         ScriptProvider((_, ct) => CancelThenThrow(cts, ct));
 
-        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, new FunctionRegistry(), "run-cancelled");
-        _ = loop.RunAsync(cts.Token);
-
-        var drained = await WithinBudgetAsync(
-            DrainAsync(loop, "Go", cts.Token),
-            "a cancelled run must not hang the caller"
+        // Observed through the lifecycle publisher, NOT through a subscriber: a subscriber draining the run
+        // on the run's own token races that token's cancellation and can legitimately see nothing, which
+        // made the old assertions both flaky and blind to an error completion. The publisher records every
+        // event synchronously whatever the token says, so the error-vs-cancel decision is always captured.
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            "run-cancelled",
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher }
         );
+        var loopTask = loop.RunAsync(cts.Token);
+
+        _ = await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }], ct: CancellationToken.None);
+
+        // The per-run handler runs inline in the loop, so once the loop has ended the run's error-vs-cancel
+        // decision has already been made and published. Ordering, not timing, carries the assertions below.
+        var loopEnded = await Task.WhenAny(loopTask, Task.Delay(Budget));
+        loopEnded.Should().BeSameAs(loopTask, "the run cancelled its own token, which must end the loop");
+        loopTask.IsFaulted.Should().BeFalse("a user-requested stop ends the loop as a cancellation, not a fault");
 
         _attempts
             .Should()
             .Be(1, "nothing below says anything about cancellation unless the run actually reached the provider");
-
-        // What the stop path REALLY does, asserted positively so the test cannot pass on an empty list: the
-        // run announces itself, and then ends by throwing out of the enumeration. The caller learns the run
-        // stopped from that OperationCanceledException — there is no terminal RunCompletedMessage at all, so
-        // "not reported as an error" is the weaker, accidentally-vacuous way to say "not completed".
-        drained.Cancellation.Should().NotBeNull("a stopped run surfaces the stop to whoever was enumerating it");
-        drained
-            .Messages.Should()
-            .ContainSingle(m => m is RunAssignmentMessage, "the run announced itself before it was stopped");
-        drained
-            .Messages.OfType<RunCompletedMessage>()
+        publisher
+            .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
             .Should()
-            .BeEmpty("a user-requested stop abandons the run; it neither fails it nor completes it");
+            .BeEmpty("a user-requested stop abandons the run: the per-run handler must neither fail nor complete it");
+
+        // The stop path is what ends an abandoned run, and it says so: the one terminal event is Cancelled.
+        await loop.StopAsync();
+
+        var started = publisher
+            .Payloads<RunStartedPayload>(LifecycleEventTypes.RunStarted)
+            .Should()
+            .ContainSingle()
+            .Subject;
+        var completed = publisher
+            .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
+            .Should()
+            .ContainSingle("the run ends exactly once")
+            .Subject;
+        completed.RunId.Should().Be(started.RunId);
+        completed.Outcome.Should().Be(LifecycleRunOutcomes.Cancelled, "the run was stopped, not failed");
+        completed.Error.Should().BeNull();
     }
 
     [Fact]
@@ -181,33 +205,20 @@ public class ProviderTimeoutRunErrorTests
             new TimeoutException("A task was canceled.")
         );
 
-    /// <summary>
-    /// What draining a run produced: every message it published, and the cancellation that ended the
-    /// enumeration when one did. The exception is RETURNED rather than swallowed because "the run
-    /// published no terminal message" and "the run never ran" look identical in the message list alone.
-    /// </summary>
-    private sealed record Drained(List<IMessage> Messages, OperationCanceledException? Cancellation);
+    /// <summary>What draining a run produced: every message it published, in order.</summary>
+    private sealed record Drained(List<IMessage> Messages);
 
     private static async Task<Drained> DrainAsync(MultiTurnAgentLoop loop, string text, CancellationToken ct)
     {
         var messages = new List<IMessage>();
-        OperationCanceledException? cancellation = null;
-        try
+        await foreach (
+            var msg in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = text, Role = Role.User }]), ct)
+        )
         {
-            await foreach (
-                var msg in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = text, Role = Role.User }]), ct)
-            )
-            {
-                messages.Add(msg);
-            }
-        }
-        catch (OperationCanceledException ex)
-        {
-            // Expected only in the cancellation case, where it is part of the asserted outcome.
-            cancellation = ex;
+            messages.Add(msg);
         }
 
-        return new Drained(messages, cancellation);
+        return new Drained(messages);
     }
 
     /// <summary>

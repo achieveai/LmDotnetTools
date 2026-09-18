@@ -377,7 +377,29 @@ public sealed class ClientWebSocketResponsesSocket : ICopilotResponsesSocket
             _socket.Options.SetRequestHeader(header.Key, header.Value);
         }
 
-        await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        // A bare ClientWebSocket rejects a non-101 upgrade with WebSocketException(NotAWebSocket) and NO
+        // inner exception, so the upgrade status is invisible to the connect-retry classifier. Collect the
+        // response details and translate that failure into the contract the classifier consumes: a
+        // WebSocketException wrapping HttpRequestException(StatusCode). Consequence: besides an opted-in
+        // 404, a 429/5xx upgrade is now retryable under default options too — the same global set the
+        // SSE transport already retries. Cancellation (OperationCanceledException) is not touched.
+        _socket.Options.CollectHttpResponseDetails = true;
+        try
+        {
+            await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        }
+        catch (WebSocketException ex)
+            when (ex.WebSocketErrorCode == WebSocketError.NotAWebSocket
+                && ex.InnerException is null
+                && _socket.HttpStatusCode != 0
+            )
+        {
+            throw new WebSocketException(
+                ex.WebSocketErrorCode,
+                ex.Message,
+                new HttpRequestException(ex.Message, ex, _socket.HttpStatusCode)
+            );
+        }
     }
 
     /// <inheritdoc />
