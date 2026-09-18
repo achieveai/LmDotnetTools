@@ -1,3 +1,5 @@
+using System.IO.Enumeration;
+
 namespace TodoEval.Runner.Sweep;
 
 /// <summary>
@@ -44,8 +46,23 @@ internal static class RunWorkspace
     /// absolute path. Only <c>fixtures/</c> is copied, which is what keeps the task's <c>hidden/</c>
     /// answer keys and checker tests out of the tree the agent can read.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The directory already holds a previous run's files.</exception>
-    public static string Prepare(string workspacesRoot, string runKey, string fixturesDir)
+    /// <param name="workspacesRoot">The sweep's workspaces root; the run's directory is created under it.</param>
+    /// <param name="runKey">Identifies the run and names its directory leaf (<see cref="LeafFor" />).</param>
+    /// <param name="fixturesDir">The task's <c>fixtures/</c> tree, copied whole.</param>
+    /// <param name="requiredFixtures">
+    ///     What the task declares it cannot run without (<c>meta.json</c>). Verified AFTER the copy, so
+    ///     the same check catches a fixture missing from the checkout and a copy that dropped it.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    ///     The directory already holds a previous run's files, or the prepared workspace does not satisfy
+    ///     <paramref name="requiredFixtures" />.
+    /// </exception>
+    public static string Prepare(
+        string workspacesRoot,
+        string runKey,
+        string fixturesDir,
+        IReadOnlyList<RequiredFixture>? requiredFixtures = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacesRoot);
 
@@ -62,7 +79,58 @@ internal static class RunWorkspace
         }
 
         CopyTree(fixturesDir, path);
+        VerifyInventory(path, runKey, requiredFixtures);
         return path;
+    }
+
+    /// <summary>
+    ///     Throws unless the prepared workspace holds exactly what the task declared. An absent input is
+    ///     not a run the sweep can judge: the agent is asked to read files that are not there and the
+    ///     checker scores the result as a bad ANSWER, which reads as a model failure in the table.
+    /// </summary>
+    private static void VerifyInventory(string path, string runKey, IReadOnlyList<RequiredFixture>? required)
+    {
+        if (required is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var present = Directory
+            .EnumerateFiles(path, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(path, f).Replace(Path.DirectorySeparatorChar, '/'))
+            .ToList();
+
+        var shortfalls = required
+            .Select(r => (Rule: r, Found: present.Count(p => MatchesGlob(p, r.Glob))))
+            .Where(x => x.Found != x.Rule.Count)
+            .Select(x => $"'{x.Rule.Glob}' matched {x.Found} file(s), expected {x.Rule.Count}")
+            .ToList();
+
+        if (shortfalls.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Workspace '{path}' for run '{runKey}' does not hold the fixtures the task declares: "
+                    + string.Join("; ", shortfalls)
+                    + ". The fixtures are inputs, so a run against them is not measuring the task. Check that "
+                    + "they are committed rather than merely present on the author's disk — a .gitignore rule "
+                    + "matching them is the way this happens."
+            );
+        }
+    }
+
+    /// <summary>
+    ///     Segment-for-segment glob match on a '/'-separated relative path. Deliberately not path-blind:
+    ///     a '*' never crosses a directory boundary, so <c>*.log</c> does not quietly accept
+    ///     <c>logs/a.log</c> and a glob's depth asserts the layout as well as the names.
+    /// </summary>
+    internal static bool MatchesGlob(string relativePath, string glob)
+    {
+        var pathSegments = relativePath.Split('/');
+        var globSegments = glob.Replace('\\', '/').Split('/');
+        return pathSegments.Length == globSegments.Length
+            && pathSegments
+                .Zip(globSegments)
+                .All(pair => FileSystemName.MatchesSimpleExpression(pair.Second, pair.First));
     }
 
     private static void CopyTree(string sourceDir, string destinationDir)

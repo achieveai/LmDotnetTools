@@ -99,7 +99,12 @@ internal sealed class SweepRunner(
             var runWorkspaceId = workspaceId;
             if (task.FixturesDir is { } fixtures)
             {
-                workspacePath = RunWorkspace.Prepare(config.WorkspacesRoot, runKey, fixtures);
+                workspacePath = RunWorkspace.Prepare(
+                    config.WorkspacesRoot,
+                    runKey,
+                    fixtures,
+                    task.Meta?.RequiredFixtures
+                );
                 runWorkspaceId = await client.EnsureWorkspaceAsync(
                     runKey,
                     ct,

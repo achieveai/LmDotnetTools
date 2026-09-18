@@ -133,4 +133,93 @@ public class RunWorkspaceTests : IDisposable
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*already exists*");
     }
+
+    // ── the declared inventory ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void Prepare_AFixtureTheTaskDeclaredIsMissing_FailsTheRun()
+    {
+        // The c2 failure, reduced. Its twelve logs were never committed, so a clean checkout prepared an
+        // EMPTY log directory and nothing complained: the agent was asked to read files that did not
+        // exist and the checker scored the result as a bad answer. An absent input has to stop the run,
+        // because a run against it is not measuring the task.
+        var taskDir = TaskDirWithFixtures();
+
+        var act = () =>
+            RunWorkspace.Prepare(
+                Path.Combine(_root, "workspaces"),
+                "off/c1/m1/seed0",
+                Path.Combine(taskDir, "fixtures"),
+                [new RequiredFixture { Glob = "logs/*.log", Count = 12 }]
+            );
+
+        act.Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*'logs/*.log' matched 0 file(s), expected 12*")
+            .WithMessage("*.gitignore*", "the message has to name the way this actually happens");
+    }
+
+    [Fact]
+    public void Prepare_TheWrongNUMBEROfFilesAlsoFailsTheRun()
+    {
+        // A partial corpus is the harder case: the task still runs and still produces an answer, which
+        // is then judged against a key built from all twelve days.
+        var taskDir = TaskDirWithFixtures();
+        var logs = Path.Combine(taskDir, "fixtures", "logs");
+        _ = Directory.CreateDirectory(logs);
+        File.WriteAllText(Path.Combine(logs, "2026-03-02.log"), "# note\n");
+        File.WriteAllText(Path.Combine(logs, "2026-03-03.log"), "# note\n");
+
+        var act = () =>
+            RunWorkspace.Prepare(
+                Path.Combine(_root, "workspaces"),
+                "off/c1/m1/seed0",
+                Path.Combine(taskDir, "fixtures"),
+                [new RequiredFixture { Glob = "logs/*.log", Count = 12 }]
+            );
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*matched 2 file(s), expected 12*");
+    }
+
+    [Fact]
+    public void Prepare_ASatisfiedInventoryIsNotAnError()
+    {
+        // The non-vacuity check on the guard: it has to be able to pass, or every run fails and the
+        // declaration says nothing.
+        var taskDir = TaskDirWithFixtures();
+        var logs = Path.Combine(taskDir, "fixtures", "logs");
+        _ = Directory.CreateDirectory(logs);
+        File.WriteAllText(Path.Combine(logs, "a.log"), "x");
+        File.WriteAllText(Path.Combine(logs, "b.log"), "y");
+
+        var path = RunWorkspace.Prepare(
+            Path.Combine(_root, "workspaces"),
+            "off/c1/m1/seed0",
+            Path.Combine(taskDir, "fixtures"),
+            [new RequiredFixture { Glob = "logs/*.log", Count = 2 }]
+        );
+
+        Directory.EnumerateFiles(Path.Combine(path, "logs")).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void Prepare_AGlobsStarDoesNotCrossADirectoryBoundary()
+    {
+        // "*.log" asserts a log at the ROOT of the workspace. If its star crossed a separator it would
+        // be satisfied by logs/a.log, and a glob could no longer assert a layout at all.
+        var taskDir = TaskDirWithFixtures();
+        var logs = Path.Combine(taskDir, "fixtures", "logs");
+        _ = Directory.CreateDirectory(logs);
+        File.WriteAllText(Path.Combine(logs, "a.log"), "x");
+
+        var act = () =>
+            RunWorkspace.Prepare(
+                Path.Combine(_root, "workspaces"),
+                "off/c1/m1/seed0",
+                Path.Combine(taskDir, "fixtures"),
+                [new RequiredFixture { Glob = "*.log", Count = 1 }]
+            );
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*matched 0 file(s)*");
+    }
 }

@@ -303,10 +303,10 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "agent";
         }
 
-        if (type == typeof(CompactionCheckpointMessage))
-        {
-            return CompactionCheckpointMessage.TypeDiscriminator;
-        }
+        // CompactionCheckpointMessage is deliberately absent: its discriminator depends on the row's
+        // schema version, which a Type does not carry. Write() decides it from the INSTANCE before it
+        // ever reaches here, and leaving a by-type answer in place would be a second source of truth
+        // that silently returns the schema 1 name for a schema 2 row.
 
         // If not a known type, fallback to name conversion
         var typeName = type.Name;

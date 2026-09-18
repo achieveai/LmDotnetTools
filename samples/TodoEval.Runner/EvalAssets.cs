@@ -33,6 +33,13 @@ internal sealed record TaskMeta
     public int? TimeoutMinutes { get; init; }
 
     /// <summary>
+    /// The fixture files the task cannot run without, declared so a checkout that is missing them fails
+    /// the run instead of judging an empty workspace. Empty means the task makes no claim and nothing
+    /// is checked.
+    /// </summary>
+    public IReadOnlyList<RequiredFixture> RequiredFixtures { get; init; } = [];
+
+    /// <summary>
     /// Delay before the <c>## steer</c> correction is sent, measured from the first message. Null with
     /// a steer section present means "send it as soon as the run is under way" (zero delay). Used only
     /// when <see cref="SteerAfter"/> is absent: a clock says WHEN the correction is sent, not where in
@@ -49,6 +56,28 @@ internal sealed record TaskMeta
 
     /// <summary>Seed word for a zero-based repeat index, or null when the task declares no seeds.</summary>
     public string? SeedForIndex(int seedIndex) => Seeds.Count == 0 ? null : Seeds[seedIndex % Seeds.Count];
+}
+
+/// <summary>
+///     A group of files a task's <c>fixtures/</c> tree must contain before a run of it means anything.
+/// </summary>
+/// <remarks>
+///     c2 is the case this exists for. Its twelve access logs sat under <c>fixtures/logs/</c>, which the
+///     repository's <c>**/logs/</c> rule excluded, so they were never committed: a clean checkout ran the
+///     task against an EMPTY log directory. Nothing failed — the agent was simply asked to read files
+///     that were not there, and the checker scored the result as a bad answer. That is the failure this
+///     declaration converts into a loud one.
+/// </remarks>
+internal sealed record RequiredFixture
+{
+    /// <summary>
+    ///     A path relative to <c>fixtures/</c>, with <c>*</c> and <c>?</c> inside a segment (<c>logs/*.log</c>).
+    ///     Segments are matched one for one, so the glob's depth is part of what it asserts.
+    /// </summary>
+    public required string Glob { get; init; }
+
+    /// <summary>How many files must match. The run fails on anything but exactly this many.</summary>
+    public required int Count { get; init; }
 }
 
 /// <summary>The trigger kinds <see cref="SteerTrigger.Kind"/> accepts.</summary>
