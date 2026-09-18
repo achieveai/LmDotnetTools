@@ -229,8 +229,10 @@ public sealed record CompactionOptions
     ///     When true, the pre-emptive clear (<see cref="ClearToolResultsKeepTurns"/>) only clears tool results
     ///     the model has already answered on: rows before the latest human input. The results of the exchange
     ///     in progress stay whole until the fit check forces the question. Clearing a result the model has not
-    ///     finished with makes it re-read the page; with clearing scoped this way the re-reads halved on the
-    ///     scaled tasks at the same cost (eval round 4).
+    ///     finished with makes it re-read the page. What the eval established: this was the cheapest of four
+    ///     clearing arms at n=12 (round 6), and at 13 seeds it let the summary run where the default suppressed
+    ///     it, 9 of 13 runs against 0 of 13 (round 9, Fisher p = 0.000458). No accuracy difference was
+    ///     demonstrated for it at either clamp tested; the claim is the mechanism, not a score.
     /// </summary>
     public bool ClearAnsweredToolResultsOnly { get; init; }
 
@@ -238,7 +240,9 @@ public sealed record CompactionOptions
     ///     When true, <see cref="MinCompactionGainRatio"/> is measured on the stored rows a cut would summarise
     ///     rather than on the view after clearing. Once the view shows placeholders, a cut over the same rows
     ///     frees almost nothing and the summary never runs (eval round 3: nine of ten arms produced no summary),
-    ///     so what the placeholders point at is lost the moment it cannot be re-read.
+    ///     so what the placeholders point at is lost the moment it cannot be re-read. Measured as a fix for that
+    ///     it did not pay: it was the dearest of the four arms in round 6 and no more accurate, so ADR 0020 does
+    ///     not recommend it. <see cref="ClearAnsweredToolResultsOnly"/> is the arm that shipped.
     /// </summary>
     public bool MeasureCompactionGainOnStoredRows { get; init; }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using TodoEval.Runner.Sweep;
 
 namespace TodoEval.Runner.Tests;
@@ -140,5 +141,98 @@ public class TaskCheckerTests : IDisposable
         var result = await new PwshTaskChecker(TextWriter.Null).JudgeAsync(task, _dir, _dir, CancellationToken.None);
 
         result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CancellingTheSweep_KillsTheCheckerAndEverythingItStarted()
+    {
+        // The outer token used to reach the wait only through the linked source, so a sweep abort
+        // threw straight out of JudgeAsync with the checker still running. The checker holds the run's
+        // workspace, which the sweep deletes next, so the orphan outlives the sweep that started it.
+        var pidFile = Path.Combine(_dir, "pids.txt").Replace("\\", "/");
+        File.WriteAllText(
+            Path.Combine(_dir, "check.ps1"),
+            $$"""
+            param($Workspace, $Out)
+            $child = Start-Process pwsh -PassThru -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 45'
+            Set-Content -Path '{{pidFile}}' -Value @($PID, $child.Id)
+            Start-Sleep -Seconds 45
+            """
+        );
+
+        var task = new EvalTaskAsset
+        {
+            Id = "slow-checker",
+            Dir = _dir,
+            Template = "Do {TOPIC}.",
+            ExpectedBoard = null,
+        };
+
+        using var cts = new CancellationTokenSource();
+        var judging = new PwshTaskChecker(TextWriter.Null).JudgeAsync(task, _dir, _dir, cts.Token);
+
+        var pids = await WaitForPids(pidFile, judging);
+        await cts.CancelAsync();
+
+        var act = async () => await judging;
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+
+        foreach (var pid in pids)
+        {
+            (await WaitForExit(pid)).Should().BeTrue($"process {pid} in the checker's tree must be reaped");
+        }
+    }
+
+    /// <summary>The checker's own pid and its child's, once the script has written both.</summary>
+    private static async Task<int[]> WaitForPids(string pidFile, Task<J1Result?> judging)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (judging.IsCompleted)
+            {
+                // Surfaces a launch failure ("could not launch the checker") as itself rather than as
+                // a timeout, and rethrows anything the judge faulted with.
+                var early = await judging;
+                throw new InvalidOperationException($"the checker finished before it wrote its pids: {early?.Error}");
+            }
+
+            if (File.Exists(pidFile))
+            {
+                var lines = File.ReadAllLines(pidFile).Where(l => l.Trim().Length > 0).ToArray();
+                if (lines.Length == 2 && lines.All(l => int.TryParse(l.Trim(), out _)))
+                {
+                    return [.. lines.Select(l => int.Parse(l.Trim()))];
+                }
+            }
+
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException($"the checker never wrote both pids to '{pidFile}'.");
+    }
+
+    private static async Task<bool> WaitForExit(int pid)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited)
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return true; // Gone entirely.
+            }
+
+            await Task.Delay(100);
+        }
+
+        return false;
     }
 }

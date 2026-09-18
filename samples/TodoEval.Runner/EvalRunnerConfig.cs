@@ -118,8 +118,81 @@ internal sealed record EvalRunnerConfig
                 ?? throw new InvalidOperationException($"Eval runner config parsed to null: {configPath}");
         }
 
+        // Anchor relative paths to the checkout the config file lives in, not to the current directory.
+        // Path.GetFullPath(string) resolves against the process working directory, so without this the
+        // same config expands differently depending on where the runner was invoked from.
+        config = config.ResolvePathTokens(
+            string.IsNullOrWhiteSpace(configPath) ? null : Path.GetDirectoryName(Path.GetFullPath(configPath))
+        );
         config.Validate();
         return config;
+    }
+
+    /// <summary>
+    ///     Expands <c>{evalDir}</c> and <c>{repoRoot}</c> in the forwarded host arguments and environment to
+    ///     absolute paths, once, at load.
+    /// </summary>
+    /// <remarks>
+    ///     The host runs with its working directory set to a scratch instance directory, not the checkout, so a
+    ///     relative path in <see cref="HostConfig.ExtraArgs"/> resolves against somewhere the repository is not
+    ///     and the host's own <c>File.ReadAllText</c> fails. Writing the absolute path into the committed config
+    ///     instead makes it work only in the worktree it was written in. Expanding a token here keeps the config
+    ///     portable and still hands the child an absolute path.
+    /// </remarks>
+    /// <param name="anchor">
+    ///     Directory a relative <see cref="EvalDir"/> resolves against; null uses the working directory. The
+    ///     loader passes the config file's own directory so a checked-in config expands to the checkout it
+    ///     belongs to however the runner was invoked.
+    /// </param>
+    public EvalRunnerConfig ResolvePathTokens(string? anchor = null)
+    {
+        var root = FindRepoRoot(anchor ?? Path.GetFullPath(".")) ?? anchor ?? Path.GetFullPath(".");
+        var evalDir = Path.GetFullPath(EvalDir, root);
+        var repoRoot = FindRepoRoot(evalDir) ?? root;
+        var workspacesRoot = Path.GetFullPath(
+            WorkspacesRoot.Replace("{repoRoot}", repoRoot, StringComparison.OrdinalIgnoreCase),
+            root
+        );
+
+        string Expand(string value) =>
+            value
+                .Replace("{evalDir}", evalDir, StringComparison.OrdinalIgnoreCase)
+                .Replace("{repoRoot}", repoRoot, StringComparison.OrdinalIgnoreCase);
+
+        IReadOnlyList<string> ExpandArgs(IReadOnlyList<string> args) => [.. args.Select(Expand)];
+
+        IReadOnlyDictionary<string, string> ExpandEnv(IReadOnlyDictionary<string, string> env) =>
+            env.ToDictionary(kvp => kvp.Key, kvp => Expand(kvp.Value), StringComparer.OrdinalIgnoreCase);
+
+        return this with
+        {
+            WorkspacesRoot = workspacesRoot,
+            Host = Host with { ExtraArgs = ExpandArgs(Host.ExtraArgs), ExtraEnv = ExpandEnv(Host.ExtraEnv) },
+            Variants =
+            [
+                .. Variants.Select(v =>
+                    v with
+                    {
+                        ExtraArgs = ExpandArgs(v.ExtraArgs),
+                        ExtraEnv = ExpandEnv(v.ExtraEnv),
+                    }
+                ),
+            ],
+        };
+    }
+
+    /// <summary>The nearest ancestor of <paramref name="start"/> holding a <c>.git</c> entry, or null.</summary>
+    private static string? FindRepoRoot(string start)
+    {
+        for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, ".git")) || File.Exists(Path.Combine(dir.FullName, ".git")))
+            {
+                return dir.FullName;
+            }
+        }
+
+        return null;
     }
 
     public void Validate()

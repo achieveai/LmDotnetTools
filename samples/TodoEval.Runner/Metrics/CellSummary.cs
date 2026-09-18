@@ -41,10 +41,30 @@ internal sealed record CellSummary
     public required double? MeanOutputTokens { get; init; }
 
     /// <summary>Mean cost over the valid runs that carried one. Null when NONE did: unpriced, not free.</summary>
+    /// <remarks>
+    /// A LOWER BOUND whenever <see cref="MeanCostIsLowerBound"/> is set. A run's own
+    /// <see cref="RunCost.CostMicros"/> covers only its <see cref="RunCost.RecordsWithCost"/>, so a run
+    /// the resolver priced in part is a lower bound before this mean is taken, and averaging it with
+    /// complete runs produces a figure that is under the truth by an unknown amount.
+    /// </remarks>
     public required double? MeanCostMicros { get; init; }
 
     /// <summary>Valid runs whose usage carried a cost — the denominator of <see cref="MeanCostMicros"/>.</summary>
     public required int RunsWithCost { get; init; }
+
+    /// <summary>
+    /// Priced runs whose price covered only some of their usage records. Each such run's cost is a
+    /// lower bound, so this is the count that decides whether the cell's mean is a measurement.
+    /// </summary>
+    public required int PartlyPricedRuns { get; init; }
+
+    /// <summary>
+    /// True when <see cref="MeanCostMicros"/> understates the cell: some priced run was priced in
+    /// part, or some valid run carried no price at all. False on a null mean, which is not a bound on
+    /// anything — it is the absence of a measurement, and says so as <c>n/a</c>.
+    /// </summary>
+    public bool MeanCostIsLowerBound =>
+        MeanCostMicros is not null && (PartlyPricedRuns > 0 || RunsWithCost < ValidRuns);
 
     public required double? MeanCompactions { get; init; }
 
@@ -85,6 +105,7 @@ internal sealed record CellSummary
             MeanOutputTokens = Mean(valid.Select(r => (double)r.Cost.OutputTokens)),
             MeanCostMicros = Mean(priced.Select(r => (double)r.Cost.CostMicros!.Value)),
             RunsWithCost = priced.Count,
+            PartlyPricedRuns = priced.Count(r => r.Cost.RecordsWithCost < r.Cost.Records),
             MeanCompactions = Mean(valid.Select(r => (double)r.Compactions)),
         };
     }
@@ -120,7 +141,8 @@ internal static class CellSummaryWriter
                 {
                     schema = Schema,
                     generatedUtc = DateTimeOffset.UtcNow,
-                    note = "Every average is over the J0-valid runs only; the denominators are in the row.",
+                    note = "Every average is over the J0-valid runs only; the denominators are in the row. "
+                        + "A row with meanCostIsLowerBound set understates its cost: see runsWithCost and partlyPricedRuns.",
                     cells,
                 },
                 JsonOptions
@@ -147,7 +169,7 @@ internal static class CellSummaryWriter
                     + $"| {Num(cell.MeanScore, "0.###")} | {Num(cell.PassRate, "0.##")} "
                     + $"| {Num(cell.MeanInputTokensUncached, "0")} | {Num(cell.MeanCacheReadTokens, "0")} "
                     + $"| {Num(cell.MeanOutputTokens, "0")} "
-                    + $"| {Num(cell.MeanCostMicros, "0")}{(cell.RunsWithCost < cell.ValidRuns ? $" ({cell.RunsWithCost} priced)" : "")} "
+                    + $"| {Cost(cell)} "
                     + $"| {Num(cell.MeanCompactions, "0.##")} |"
             );
         }
@@ -157,4 +179,32 @@ internal static class CellSummaryWriter
 
     private static string Num(double? value, string format) =>
         value is { } number ? number.ToString(format, CultureInfo.InvariantCulture) : "n/a";
+
+    /// <summary>
+    /// The cost cell with its coverage attached: <c>&gt;=</c> when the figure is a lower bound, then the
+    /// counts that say why. ASCII on purpose — this table is printed to a console whose code page is
+    /// not guaranteed, and a mangled inequality is worse than none.
+    /// </summary>
+    private static string Cost(CellSummary cell)
+    {
+        if (cell.MeanCostMicros is null)
+        {
+            return "n/a";
+        }
+
+        var coverage = new List<string>(2);
+        if (cell.RunsWithCost < cell.ValidRuns)
+        {
+            coverage.Add($"{cell.RunsWithCost} priced");
+        }
+
+        if (cell.PartlyPricedRuns > 0)
+        {
+            coverage.Add($"{cell.PartlyPricedRuns} partly priced");
+        }
+
+        var prefix = cell.MeanCostIsLowerBound ? ">=" : "";
+        var suffix = coverage.Count == 0 ? "" : $" ({string.Join(", ", coverage)})";
+        return prefix + Num(cell.MeanCostMicros, "0") + suffix;
+    }
 }

@@ -32,6 +32,20 @@ public sealed class ProviderCheckpointSummarizer(
 {
     private readonly string _systemPrompt = string.IsNullOrWhiteSpace(systemPrompt) ? SystemPrompt : systemPrompt;
 
+    /// <summary>
+    ///     The signature this type had before the <c>systemPrompt</c> parameter was added. Optional parameters are
+    ///     a source-level convenience: adding one changes the emitted constructor, so an assembly compiled
+    ///     against the two-parameter form would throw <see cref="MissingMethodException"/> against this build
+    ///     even though the version did not move. This overload keeps <c>.ctor(IAgent, string)</c> emitted.
+    ///     It deliberately has no default on <paramref name="defaultModelId"/>: that is what keeps a one-argument
+    ///     call unambiguous between the two, while a two-argument call binds here in preference to omitting an
+    ///     optional parameter.
+    /// </summary>
+    /// <param name="providerAgent">The loop's provider agent, called directly.</param>
+    /// <param name="defaultModelId">The model a request without its own <c>ModelId</c> runs on.</param>
+    public ProviderCheckpointSummarizer(IAgent providerAgent, string? defaultModelId)
+        : this(providerAgent, defaultModelId, null) { }
+
     /// <summary>The fixed instruction every summary pass runs under.</summary>
     public const string SystemPrompt = """
         You compact an agent conversation into a checkpoint. You are given the rows being compacted, each

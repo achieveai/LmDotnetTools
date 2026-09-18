@@ -17,7 +17,9 @@ public class CellSummaryTests
         double? j1Score = null,
         long? costMicros = null,
         int compactions = 0,
-        long outputTokens = 0
+        long outputTokens = 0,
+        int records = 1,
+        int? recordsWithCost = null
     ) =>
         new()
         {
@@ -31,7 +33,15 @@ public class CellSummaryTests
             Valid = valid,
             Compactions = compactions,
             J1 = j1Outcome is null ? null : new J1Result { Outcome = j1Outcome, Score = j1Score },
-            Cost = RunCost.Absent with { CostMicros = costMicros, OutputTokens = outputTokens, Records = 1 },
+            Cost = RunCost.Absent with
+            {
+                CostMicros = costMicros,
+                OutputTokens = outputTokens,
+                Records = records,
+                // Default to a fully priced run, so a test that says nothing about coverage gets the
+                // ordinary case rather than a silently partial one.
+                RecordsWithCost = recordsWithCost ?? (costMicros is null ? 0 : records),
+            },
         };
 
     [Fact]
@@ -111,5 +121,71 @@ public class CellSummaryTests
 
         table.Should().Contain("n/a");
         table.Should().Contain("0/1", "the reader still sees that the cell had a run");
+    }
+
+    [Fact]
+    public void ARunPricedInPartMakesTheCellsCostALowerBound()
+    {
+        // RunCost.CostMicros covers only RecordsWithCost. A run whose resolver priced 3 of its 10
+        // records is already under the truth, and averaging it with a complete run used to produce a
+        // figure that read as a measurement.
+        var cell = CellSummary
+            .Of([
+                Run("off", "c1", costMicros: 1000, records: 10, recordsWithCost: 10),
+                Run("off", "c1", costMicros: 500, records: 10, recordsWithCost: 3),
+            ])
+            .Single();
+
+        cell.RunsWithCost.Should().Be(2);
+        cell.PartlyPricedRuns.Should().Be(1);
+        cell.MeanCostIsLowerBound.Should().BeTrue();
+        cell.MeanCostMicros.Should().Be(750, "the mean is still reported — it is the bound that changes");
+    }
+
+    [Fact]
+    public void ACellWhereEveryRunWasFullyPricedIsNotALowerBound()
+    {
+        // The non-vacuity check on the flag: it must be able to be false, or it says nothing.
+        var cell = CellSummary
+            .Of([
+                Run("off", "c1", costMicros: 1000, records: 4, recordsWithCost: 4),
+                Run("off", "c1", costMicros: 2000, records: 7, recordsWithCost: 7),
+            ])
+            .Single();
+
+        cell.PartlyPricedRuns.Should().Be(0);
+        cell.MeanCostIsLowerBound.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AnUnpricedCellIsNotALowerBound_BecauseItIsNotAMeasurement()
+    {
+        var cell = CellSummary.Of([Run("off", "c1", costMicros: null)]).Single();
+
+        cell.MeanCostMicros.Should().BeNull();
+        cell.MeanCostIsLowerBound.Should().BeFalse("n/a is an absence, not a bound on anything");
+    }
+
+    [Fact]
+    public void TheTableMarksALowerBoundCostAndSaysWhatIsMissing()
+    {
+        var table = CellSummaryWriter.BuildTable(
+            CellSummary.Of([
+                Run("off", "c1", costMicros: 1000, records: 10, recordsWithCost: 3),
+                Run("off", "c1", costMicros: null),
+            ])
+        );
+
+        table.Should().Contain(">=1000 (1 priced, 1 partly priced)");
+    }
+
+    [Fact]
+    public void TheTablePrintsACompleteCostWithNoQualifier()
+    {
+        var table = CellSummaryWriter.BuildTable(
+            CellSummary.Of([Run("off", "c1", costMicros: 1000, records: 2, recordsWithCost: 2)])
+        );
+
+        table.Should().Contain("| 1000 |").And.NotContain(">=");
     }
 }

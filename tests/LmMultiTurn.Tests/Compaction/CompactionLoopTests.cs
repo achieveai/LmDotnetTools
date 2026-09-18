@@ -1829,6 +1829,77 @@ public class CompactionLoopTests
         ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARowWrittenByANewerSchema_IsNotAdopted_WhileTheSameRowAtThisSchemaStillIs(bool fromTheFuture)
+    {
+        // The half of the rollback contract (§8.3) the $type cannot carry. "compaction_checkpoint" does
+        // not change when the schema does, so a row a newer build wrote deserializes here without
+        // complaint and every manifest section this build has no field for is dropped the way any
+        // unknown JSON property is. Adopting it would put a view in front of the model that looks whole
+        // and is not. The false case is the control: the same row, untouched, is still adopted.
+        var options = Options(CompactionMode.Compact);
+        IConversationStore store;
+        string checkpointId;
+        var first = new Harness(EchoThenDone(7), options, _ => Window);
+        try
+        {
+            (await first.RunAsync("start")).IsError.Should().BeFalse();
+            checkpointId = (await first.StateAsync())!.ActiveCheckpointId.Should().NotBeNull().And.Subject!.ToString()!;
+            store = first.Store;
+        }
+        finally
+        {
+            await first.DisposeAsync();
+        }
+
+        if (fromTheFuture)
+        {
+            await RewriteCheckpointSchemaAsync(store, CompactionCheckpointMessage.CurrentSchemaVersion + 1);
+        }
+
+        await using var second = new Harness(EchoThenDone(0), options, _ => Window, store: store);
+        (await second.RunAsync("continue")).IsError.Should().BeFalse();
+
+        var history = (await second.StateAsync())!.History.Where(e => e.CheckpointId == checkpointId).ToList();
+        if (fromTheFuture)
+        {
+            history
+                .Should()
+                .Contain(e => e.Status == CheckpointStatus.RolledBack && e.Reason == CheckpointReasons.SchemaTooNew);
+        }
+        else
+        {
+            history
+                .Should()
+                .NotContain(
+                    e => e.Reason == CheckpointReasons.SchemaTooNew,
+                    "a row this build can read in full is adopted, or the guard says nothing"
+                );
+        }
+    }
+
+    /// <summary>
+    /// Rewrites the thread's checkpoint row in place so it claims <paramref name="schemaVersion"/>. The
+    /// edit is textual on purpose: it is exactly what a newer writer's bytes look like to this build.
+    /// </summary>
+    private static async Task RewriteCheckpointSchemaAsync(IConversationStore store, int schemaVersion)
+    {
+        var rows = await store.LoadMessagesAsync(Thread);
+        var row = rows.Last(r =>
+            string.Equals(r.MessageType, nameof(CompactionCheckpointMessage), StringComparison.Ordinal)
+        );
+        var rewritten = row.MessageJson.Replace(
+            $"\"schema_version\":{CompactionCheckpointMessage.CurrentSchemaVersion}",
+            $"\"schema_version\":{schemaVersion}",
+            StringComparison.Ordinal
+        );
+        rewritten.Should().NotBe(row.MessageJson, "the row must actually carry the version this rewrites");
+
+        await store.ReplaceMessageAsync(Thread, row with { MessageJson = rewritten });
+    }
+
     [Fact]
     public async Task KillSwitch_SkipsDisabled_AndRollsTheActiveCheckpointBackOnTheNextRequest()
     {

@@ -409,4 +409,48 @@ public sealed class ProviderCheckpointSummarizerTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
+
+    [Fact]
+    public void TheTwoParameterConstructor_IsStillEmitted_SoOldBinariesKeepBinding()
+    {
+        // Adding the optional systemPrompt parameter rewrote the emitted constructor. Source keeps
+        // compiling, so nothing here fails; an assembly compiled against .ctor(IAgent, string) throws
+        // MissingMethodException at run time instead. Asserting on the source-level call cannot catch
+        // that, so this reads the emitted signatures the way the old binary's callsite does.
+        var emitted = typeof(ProviderCheckpointSummarizer)
+            .GetConstructors()
+            .Select(c => c.GetParameters().Select(p => p.ParameterType).ToArray())
+            .ToList();
+
+        emitted
+            .Should()
+            .ContainEquivalentOf(
+                new[] { typeof(IAgent), typeof(string) },
+                "an assembly built against the previous signature binds to .ctor(IAgent, string)"
+            );
+        emitted.Should().ContainEquivalentOf(new[] { typeof(IAgent), typeof(string), typeof(string) });
+    }
+
+    [Fact]
+    public async Task TheTwoParameterConstructor_LeavesTheBuiltInPrompt_LikeTheSignatureItRestores()
+    {
+        // The overload only preserves compatibility if it also preserves behaviour: an old caller that
+        // never passed a prompt must still get the built-in one, not a null that blanks the instruction.
+        // Invoked through reflection so this binds the emitted .ctor(IAgent, string) the old assembly
+        // binds, which a source-level `new` would not.
+        var agent = new FakeAgent((_, _) => [new TextMessage { Text = Json, Role = Role.Assistant }]);
+        var viaRestoredSignature = (ICheckpointSummarizer)
+            typeof(ProviderCheckpointSummarizer)
+                .GetConstructor([typeof(IAgent), typeof(string)])!
+                .Invoke([agent, "default-model"]);
+
+        _ = await viaRestoredSignature.SummarizeAsync(Request(new ThreadFixture().Human("go")));
+
+        agent
+            .Sent[0]
+            .Should()
+            .BeOfType<TextMessage>()
+            .Which.Text.Should()
+            .Be(ProviderCheckpointSummarizer.SystemPrompt);
+    }
 }

@@ -294,9 +294,22 @@ public sealed record ContextManifest
 
 /// <summary>
 ///     The durable row a compaction commit appends (spec 679 §3.1). It gives the UI its divider position,
-///     the workspace mirror a line, the recall tool its index, and an older binary a row it skips as an
-///     unknown <c>$type</c> — which is the rollback contract (§8.3).
+///     the workspace mirror a line, and the recall tool its index.
 /// </summary>
+/// <remarks>
+///     <para>
+///         The rollback contract (§8.3) has two halves, and only one of them is the <c>$type</c>. A binary
+///         with no compaction support at all skips the row, because <c>compaction_checkpoint</c> is a
+///         discriminator it does not map. A binary that HAS compaction but predates a schema bump does
+///         map it: the discriminator does not change with <see cref="CurrentSchemaVersion" />, and the
+///         manifest sections it does not know are dropped in the ordinary way an unknown JSON property
+///         is. That half is carried by <see cref="SchemaVersion" /> instead — a reader compares it with
+///         <see cref="CurrentSchemaVersion" /> and declines to adopt a row it can only read in part
+///         (<c>CompactionRuntime.AdoptActiveAsync</c>), which leaves the model on whole canonical
+///         history rather than a view quietly missing a section. The row itself is append-only, so the
+///         section is still there for the build that can read it.
+///     </para>
+/// </remarks>
 /// <remarks>
 ///     <para>
 ///         Never dispatched to a provider as-is: the agent projection renders it into a synthetic user
@@ -320,6 +333,12 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     ///     The persisted schema version this build writes. 2 adds <c>open_exchanges</c> to the manifest; a
     ///     version 1 row still deserializes, with that section empty.
     /// </summary>
+    /// <remarks>
+    ///     Reading is asymmetric on purpose. A row at or below this number is readable in full, so it is
+    ///     adopted. A row above it carries sections this build has no field for, and JSON drops those
+    ///     silently, so it is NOT adopted — see the type remarks for why the <c>$type</c> cannot carry
+    ///     that decision.
+    /// </remarks>
     public const int CurrentSchemaVersion = 2;
 
     /// <summary>Checkpoint id, <c>cp-{thread-short}-{n}</c>. The key of the state machine entry.</summary>

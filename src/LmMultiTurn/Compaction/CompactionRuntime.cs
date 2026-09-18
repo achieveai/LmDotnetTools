@@ -2739,15 +2739,31 @@ internal sealed class CompactionRuntime
         }
 
         var row = history.OfType<CompactionCheckpointMessage>().LastOrDefault(c => c.CheckpointId == activeId);
-        if (row is not null)
+        if (row is { SchemaVersion: <= CompactionCheckpointMessage.CurrentSchemaVersion })
         {
             Active = row;
             return;
         }
 
-        // The state names a checkpoint whose row this process never restored: not a view to trust.
+        // A row from a newer writer deserializes here without complaint -- the $type is unchanged
+        // across schema versions, and an unknown manifest section is simply dropped -- so adopting it
+        // would put a quietly incomplete view in front of the model. Roll back instead: canonical
+        // history is whole, and the row stays on disk for the build that can read it.
+        var reason = row is null ? CheckpointReasons.RowMissing : CheckpointReasons.SchemaTooNew;
+        if (row is not null)
+        {
+            _host.Logger.LogWarning(
+                "Checkpoint {CheckpointId} is schema version {SchemaVersion}; this build reads {Known}. "
+                    + "Rolling back to canonical history for thread {ThreadId}.",
+                row.CheckpointId,
+                row.SchemaVersion,
+                CompactionCheckpointMessage.CurrentSchemaVersion,
+                _host.ThreadId
+            );
+        }
+
         _ = await CompactionStateProjection
-            .RollBackAsync(store, _host.ThreadId, CheckpointReasons.RowMissing, _clock.GetUtcNow(), ct)
+            .RollBackAsync(store, _host.ThreadId, reason, _clock.GetUtcNow(), ct)
             .ConfigureAwait(false);
         Active = null;
     }

@@ -61,13 +61,21 @@ compaction outright: round 5 shows a summary carrying pages nothing else can.
 2. **The summariser stays `gpt-5.6-sol` until a fidelity comparison with a guaranteed trigger exists.**
    Round 10's 64k `r3` archives are that data; the comparison has not been run.
 
-3. **The eval reports outcome, then cost, and never ranks arms by cost at n ≤ 12.** `phase3-aggregate`
-   refuses to order arms; any table that shows cost shows the `n` and the set beside it.
+3. **The eval reports outcome, then cost, and never ranks arms by cost.** What enforces this in the
+   repository is `CellSummary.Of`, which groups runs into one row per (variant, task) and orders them
+   by variant name then task name ordinally — never by a measured value — so the table cannot become a
+   ranking by being sorted. `CellSummary.BuildTable` prints `valid/runs` and `judged` beside every
+   mean, appends `(n priced)` to a cost whose denominator is smaller than the cell, and prints `n/a`
+   rather than `0` for a cell where nothing was measured. `--extract-only <sweepDir>` regenerates that
+   table from an archived sweep, which is the entry point a fresh checkout can run to see it.
 
-4. **Every analysis script prints `STANDING-RULES.md` before it prints a number**, and pre-registered
-   read-outs are run on data already in hand before the round starts, so a metric that cannot vary in
-   the control arm, or a reading rule that cannot express an outcome, is caught before it decides
-   anything.
+4. **The rules preamble was programme practice, not a shipped control.** Each round's read-out was
+   written before its data arrived and run against data already in hand, and the analysis scripts
+   printed `STANDING-RULES.md` before any number. Those scripts were scratchpad tooling for this
+   programme; they are not in this repository and nothing here enforces the preamble. What ships is
+   the rules themselves, committed as `evals/compaction-eval/STANDING-RULES.md`, and the findings that
+   cite them. A future eval that wants the discipline enforced rather than remembered has to build
+   that; this ADR does not claim it exists.
 
 5. **`UsageReader.Rollup` keeps the most-resolved copy of a relayed attempt, not the first read.** A
    sub-agent's bag holds the copy written before the pricing resolver ran; the root bag holds the
@@ -81,8 +89,10 @@ compaction outright: round 5 shows a summary carrying pages nothing else can.
   measured.
 * No accuracy claim is made for compaction on the tasks measured. The claim is narrower: the
   mechanism that lost summaries is fixed, at no measured cost.
-* Cost figures in this repository's eval output carry `records` and `recordsWithCost` beside them. A
-  figure whose counts differ is a lower bound and is printed as one.
+* Cost figures in this repository's eval output carry their coverage beside them: a run's cost carries
+  `Records` and `RecordsWithCost`, and a cell's mean cost carries `RunsWithCost` against `ValidRuns`
+  and renders `(n priced)` when they differ. A figure whose counts differ is a lower bound and is
+  printed as one.
 * Follow-ups, tracked outside this record: flip the two library defaults after a host-side review;
   run the summariser fidelity comparison on the round 10 archives; H10 (force the compaction count at
   a fixed clamp) is the one untested branch that can still test a dose effect.

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using TodoEval.Runner.Sweep;
 
 namespace TodoEval.Runner.Tests;
@@ -236,6 +237,81 @@ public class VariantAxisTests
         config.Tasks.Should().NotBeNullOrEmpty();
         config.Host.Sandbox.Should().BeTrue("a coding eval needs the sandbox gateway the todo-eval pins off");
         config.Models.Should().Equal("gpt-5.6-terra");
+    }
+
+    /// <summary>
+    ///     A forwarded host argument whose value is an absolute path pointing into a source checkout.
+    /// </summary>
+    private const string CheckoutPathInForwardedArg =
+        @"--[^""]*=[A-Za-z]:[\\/][^""]*(?:LmDotnetTools|worktrees|[\\/]evals[\\/])";
+
+    [Fact]
+    public void PathTokens_ExpandToAbsolutePathsUnderTheCurrentCheckout()
+    {
+        // The host launches with its working directory set to a scratch instance dir, so a relative
+        // path in extraArgs resolves somewhere the repository is not. The token has to come out
+        // absolute, or the host's File.ReadAllText fails on a path that looks fine in the config.
+        var config = new EvalRunnerConfig
+        {
+            EvalDir = Path.Combine("evals", "compaction-eval"),
+            Host = new HostConfig { ExtraArgs = ["--Compaction:SummaryPromptPath={evalDir}/prompts/v1.md"] },
+            Variants =
+            [
+                new VariantConfig
+                {
+                    Name = "v",
+                    ExtraArgs = ["--Some:Path={repoRoot}/scripts/ci-test.ps1"],
+                    ExtraEnv = new Dictionary<string, string> { ["SOME_PATH"] = "{evalDir}/mode.json" },
+                },
+            ],
+        }.ResolvePathTokens();
+
+        var expanded = config.Host.ExtraArgs[0];
+        expanded.Should().NotContain("{evalDir}");
+        Path.IsPathRooted(expanded.Split('=', 2)[1]).Should().BeTrue("the child resolves it from a scratch directory");
+        expanded.Should().Contain("compaction-eval").And.EndWith("prompts/v1.md");
+        config.Variants[0].ExtraArgs[0].Should().NotContain("{repoRoot}");
+        config.Variants[0].ExtraEnv["SOME_PATH"].Should().NotContain("{evalDir}");
+    }
+
+    [Fact]
+    public void TheCommittedConfigs_CarryNoPathFromTheAuthorsMachine()
+    {
+        // The eight summary-prompt arguments were absolute paths into one worktree, so every variant
+        // failed anywhere else. Asserting on the raw text rather than on a loaded config, because the
+        // loader is what expands the token and would hide a re-introduced literal.
+        //
+        // Scoped to paths that point inside a source checkout. SandboxGateway:WorkspaceBasePath is
+        // deliberately NOT covered: it names a sandbox mount outside the repository, which every
+        // operator sets for their own machine and runner.example.jsonc documents. The rule is narrowed
+        // rather than that one line exempted, so a newly added checkout path still fails here.
+        foreach (var name in new[] { "runner.jsonc", "runner.example.jsonc" })
+        {
+            var text = File.ReadAllText(Path.Combine(RepoPaths.RepoRoot, "evals", "compaction-eval", name));
+
+            Regex
+                .Matches(text, CheckoutPathInForwardedArg)
+                .Should()
+                .BeEmpty($"{name} must not forward a path from the author's checkout; use the evalDir token");
+        }
+    }
+
+    [Fact]
+    public void TheCommittedSweepConfig_ResolvesEverySummaryPromptItNames()
+    {
+        // The token is only worth anything if what it expands to is really there.
+        var config = EvalRunnerConfig.Load(
+            Path.Combine(RepoPaths.RepoRoot, "evals", "compaction-eval", "runner.jsonc")
+        );
+
+        var prompts = config
+            .Variants.SelectMany(v => v.ExtraArgs)
+            .Where(a => a.StartsWith("--Compaction:SummaryPromptPath=", StringComparison.Ordinal))
+            .Select(a => a.Split('=', 2)[1])
+            .ToList();
+
+        prompts.Should().NotBeEmpty("the sweep config is the one that varies the prompt");
+        prompts.Should().OnlyContain(p => File.Exists(p));
     }
 
     [Fact]

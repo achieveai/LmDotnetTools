@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
@@ -73,9 +74,16 @@ public sealed class ToolKnowledgeRegistry
         toolName is { Length: > 0 } name && _entries.TryGetValue(name, out var entry) ? entry : Unknown;
 
     /// <summary>
-    ///     <c>{tool}|{arg}={value}|…</c> for a resource call, from the top-level string arguments its entry names;
-    ///     null for any other kind, and when the arguments never parsed. Two calls with the same key read the same thing.
+    ///     <c>{tool}|{arg}={kind}:{value}|…</c> for a resource call, from the top-level scalar arguments its entry
+    ///     names; null for any other kind, when the arguments never parsed, and when any named argument is absent,
+    ///     null, or not a scalar. Two calls with the same key read the same thing.
     /// </summary>
+    /// <remarks>
+    ///     Every identity argument must be present and scalar, and its value is encoded with its JSON kind. A key
+    ///     that folded a missing argument, a null, and a non-string value all to the empty string made unrelated
+    ///     calls compare equal, which lets one result supersede another that never read the same thing. Absence is
+    ///     therefore not an identity: it yields null, and a row with no identity is never deduplicated.
+    /// </remarks>
     public string? IdentityKey(string? toolName, string? argsJson)
     {
         var entry = Resolve(toolName);
@@ -89,7 +97,7 @@ public sealed class ToolKnowledgeRegistry
             return toolName;
         }
 
-        Dictionary<string, string> strings;
+        Dictionary<string, JsonElement> arguments;
         try
         {
             using var document = JsonDocument.Parse(argsJson ?? string.Empty);
@@ -98,18 +106,51 @@ public sealed class ToolKnowledgeRegistry
                 return null;
             }
 
-            strings = document
+            arguments = document
                 .RootElement.EnumerateObject()
-                .Where(p => p.Value.ValueKind == JsonValueKind.String)
-                .ToDictionary(p => p.Name, p => p.Value.GetString()!, StringComparer.Ordinal);
+                .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal);
         }
         catch (JsonException)
         {
             return null;
         }
 
-        return toolName + string.Concat(entry.Identity.Select(arg => $"|{arg}={strings.GetValueOrDefault(arg, "")}"));
+        var key = new StringBuilder(toolName);
+        foreach (var arg in entry.Identity)
+        {
+            if (!arguments.TryGetValue(arg, out var value) || CanonicalScalar(value) is not { } canonical)
+            {
+                return null;
+            }
+
+            _ = key.Append('|').Append(arg).Append('=').Append(canonical);
+        }
+
+        return key.ToString();
     }
+
+    /// <summary>
+    ///     <paramref name="value" /> as <c>{kind}:{text}</c>, or null when it is absent, null, or not a scalar.
+    /// </summary>
+    /// <remarks>
+    ///     The kind prefix keeps <c>"5"</c> and <c>5</c> apart, and the separators inside a string value are escaped
+    ///     so that <c>{a:"x|b=y"}</c> cannot render the same key as <c>{a:"x", b:"y"}</c>.
+    /// </remarks>
+    private static string? CanonicalScalar(JsonElement value) =>
+        value.ValueKind switch
+        {
+            JsonValueKind.String => "s:" + Escape(value.GetString()!),
+            JsonValueKind.Number => "n:" + value.GetRawText(),
+            JsonValueKind.True => "b:true",
+            JsonValueKind.False => "b:false",
+            _ => null,
+        };
+
+    private static string Escape(string value) =>
+        value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("|", "\\|", StringComparison.Ordinal)
+            .Replace("=", "\\=", StringComparison.Ordinal);
 
     private static Dictionary<string, ToolKnowledgeEntry> BuiltIn() =>
         new(StringComparer.OrdinalIgnoreCase)

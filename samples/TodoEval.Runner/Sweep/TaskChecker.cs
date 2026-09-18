@@ -131,6 +131,9 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
     /// <summary>The score file every checker writes, inside the run's own output directory.</summary>
     public const string ScoreFileName = "score.json";
 
+    /// <summary>How long a killed checker tree is given to actually die before the wait gives up.</summary>
+    private static readonly TimeSpan TerminationGrace = TimeSpan.FromSeconds(30);
+
     public async Task<J1Result?> JudgeAsync(
         EvalTaskAsset task,
         string workspacePath,
@@ -176,9 +179,17 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
             {
                 await process.WaitForExitAsync(timeout.Token);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            // Both cancellations land here, and both must kill the tree before this method returns.
+            // A checker holds the run's workspace open, and the sweep deletes that workspace as soon
+            // as the run is over; an orphaned pwsh outlives the sweep that started it.
+            catch (OperationCanceledException)
             {
-                TryKill(process);
+                await TerminateAsync(process, stdout, stderr);
+                if (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 return J1Result.CouldNotJudge($"the checker did not finish within {timeoutMinutes} minute(s).");
             }
 
@@ -195,7 +206,13 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
         }
     }
 
-    private static void TryKill(Process process)
+    /// <summary>
+    /// Kills <paramref name="process"/> and everything it started, then waits for the kill to land so
+    /// the caller returns to a reaped tree rather than a signalled one. The two redirected reads are
+    /// awaited to completion for the same reason: an abandoned read holds the pipe, and its fault
+    /// would otherwise surface later on the finalizer thread.
+    /// </summary>
+    private static async Task TerminateAsync(Process process, Task<string> stdout, Task<string> stderr)
     {
         try
         {
@@ -203,7 +220,35 @@ internal sealed class PwshTaskChecker(TextWriter log, int timeoutMinutes = 10) :
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            // Already gone; nothing to kill.
+            // Already gone; nothing to kill. Still reap below, so the wait sees the exit either way.
+        }
+
+        // Rooted at None on purpose: this runs because a token already fired, so a token-bound wait
+        // here would return before the tree is gone. The grace bounds a kill the OS never completes.
+        using var grace = new CancellationTokenSource(TerminationGrace);
+        try
+        {
+            await process.WaitForExitAsync(grace.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Unkillable tree. Nothing further this process can do; the caller still unwinds.
+        }
+
+        await Observe(stdout);
+        await Observe(stderr);
+    }
+
+    /// <summary>Awaits <paramref name="read"/> for its completion only, discarding value and fault.</summary>
+    private static async Task Observe(Task<string> read)
+    {
+        try
+        {
+            _ = await read;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // The pipe died with the process it belonged to. Expected on this path.
         }
     }
 }
