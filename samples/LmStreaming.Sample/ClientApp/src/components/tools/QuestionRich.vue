@@ -1,11 +1,32 @@
+<script lang="ts">
+interface StoredDraftAnswer {
+  selectedValues: string[];
+  otherText: string;
+  otherActive: boolean;
+  skipped: boolean;
+}
+
+interface StoredQuestionDraft {
+  argsSignature: string;
+  currentIndex: number;
+  drafts: Record<string, StoredDraftAnswer>;
+}
+
+/** Shared by component instances for this page session only; never persisted to browser storage. */
+const questionDraftMemory = new Map<string, StoredQuestionDraft>();
+let questionInstanceSequence = 0;
+</script>
+
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, reactive, ref, useId, watch } from 'vue';
 import type { ToolPillView } from '@/utils/toolTypes';
 import type { ToolCall } from '@/types';
 import { stripMarkdownPreview } from '@/utils/stripMarkdownPreview';
 import { useClientToolSubmit, type ClientToolSubmitOutcome } from '@/composables/useClientToolSubmit';
 
-const props = defineProps<{ view: ToolPillView; toolCall: ToolCall }>();
+const props = defineProps<{ view: ToolPillView; toolCall: ToolCall; draftKey?: string }>();
+const emit = defineEmits<{ 'busy-change': [busy: boolean] }>();
+const inputGroupId = `${useId()}-${questionInstanceSequence++}`;
 
 // ---------------------------------------------------------------------------
 // Wire schema (#246, AskUserQuestion — confirmed with server-track):
@@ -69,6 +90,62 @@ interface DraftAnswer {
   skipped: boolean;
 }
 const drafts = reactive<Record<string, DraftAnswer>>({});
+const memoryKey = computed(() => props.draftKey ?? props.toolCall.tool_call_id ?? 'question');
+const argsSignature = computed(() => props.toolCall.function_args ?? '');
+
+function replaceDrafts(next: Record<string, DraftAnswer>): void {
+  for (const key of Object.keys(drafts)) delete drafts[key];
+  for (const [key, value] of Object.entries(next)) {
+    drafts[key] = {
+      selectedValues: [...value.selectedValues],
+      otherText: value.otherText,
+      otherActive: value.otherActive,
+      skipped: value.skipped,
+    };
+  }
+}
+
+watch(
+  [memoryKey, argsSignature],
+  ([key, signature]) => {
+    const stored = questionDraftMemory.get(key);
+    if (stored?.argsSignature === signature) {
+      currentIndex.value = Math.min(stored.currentIndex, Math.max(questions.value.length - 1, 0));
+      replaceDrafts(stored.drafts);
+      return;
+    }
+    questionDraftMemory.delete(key);
+    currentIndex.value = 0;
+    replaceDrafts({});
+  },
+  { immediate: true }
+);
+
+watch(
+  [memoryKey, argsSignature, currentIndex, () => drafts],
+  ([key, signature]) => {
+    if (!props.view.isDeferred) return;
+    questionDraftMemory.set(key as string, {
+      argsSignature: signature as string,
+      currentIndex: currentIndex.value,
+      drafts: Object.fromEntries(
+        Object.entries(drafts).map(([id, value]) => [
+          id,
+          { ...value, selectedValues: [...value.selectedValues] },
+        ])
+      ),
+    });
+  },
+  { deep: true }
+);
+
+watch(
+  () => [props.view.isDeferred, props.view.hasResult] as const,
+  ([isDeferred, hasResult]) => {
+    if (!isDeferred && hasResult) questionDraftMemory.delete(memoryKey.value);
+  },
+  { immediate: true }
+);
 function draftFor(idx: number): DraftAnswer {
   const qId = questionIdAt(idx);
   if (!drafts[qId]) {
@@ -159,6 +236,7 @@ const cancelErrorTerminal = ref(false);
 const isLocked = computed<boolean>(
   () => submitting.value || submitted.value || cancelling.value || cancelled.value
 );
+watch(isLocked, (busy) => emit('busy-change', busy), { immediate: true });
 
 async function doSubmit(): Promise<void> {
   if (isLocked.value) return;
@@ -241,7 +319,6 @@ async function doCancel(): Promise<void> {
 watch(
   () => props.toolCall.tool_call_id,
   () => {
-    currentIndex.value = 0;
     submitting.value = false;
     submitted.value = false;
     submitError.value = null;
@@ -319,53 +396,66 @@ function answerFor(idx: number): Answer | undefined {
       <div class="question__stepper">Question {{ currentIndex + 1 }} of {{ questions.length }}</div>
 
       <template v-for="(q, idx) in questions" :key="questionIdAt(idx)">
-        <div v-if="idx === currentIndex" class="question__body">
-          <p class="question__prompt">{{ q.prompt }}</p>
+        <fieldset v-if="idx === currentIndex" class="question__body">
+          <legend class="question__prompt">{{ q.prompt }}</legend>
           <p v-if="q.description" class="question__description">{{ q.description }}</p>
+          <p class="question__selection-hint">
+            {{ q.allowMultiple ? 'Choose any that apply' : 'Choose one' }}
+          </p>
 
           <div class="question__options">
             <label
               v-for="opt in q.options"
               :key="optionValue(opt)"
               class="question__option"
+              :class="{ 'question__option--selected': isOptionSelected(idx, optionValue(opt)) }"
               :data-testid="`question-option-${optionValue(opt)}`"
             >
               <input
                 :type="q.allowMultiple ? 'checkbox' : 'radio'"
-                :name="`question-${questionIdAt(idx)}`"
+                :name="`question-${inputGroupId}-${questionIdAt(idx)}`"
                 :checked="isOptionSelected(idx, optionValue(opt))"
                 :disabled="isLocked"
                 @change="toggleOption(idx, optionValue(opt))"
               />
-              <span>{{ opt.label }}</span>
-              <span v-if="opt.description" class="question__option-desc">{{ opt.description }}</span>
+              <span class="question__option-copy">
+                <span class="question__option-label">{{ opt.label }}</span>
+                <span v-if="opt.description" class="question__option-desc">{{ opt.description }}</span>
+              </span>
             </label>
 
-            <label v-if="q.allowOther" class="question__option question__option--other" data-testid="question-other-toggle">
+            <label
+              v-if="q.allowOther"
+              class="question__option question__option--other"
+              :class="{ 'question__option--selected': draftFor(idx).otherActive }"
+              data-testid="question-other-toggle"
+            >
               <input
                 :type="q.allowMultiple ? 'checkbox' : 'radio'"
-                :name="`question-${questionIdAt(idx)}`"
+                :name="`question-${inputGroupId}-${questionIdAt(idx)}`"
                 :checked="draftFor(idx).otherActive"
                 :disabled="isLocked"
                 @change="toggleOther(idx)"
               />
-              <span>Other</span>
+              <span class="question__option-label">Other</span>
             </label>
-            <input
-              v-if="q.allowOther && draftFor(idx).otherActive"
-              class="question__other-text"
-              data-testid="question-other-text"
-              type="text"
-              placeholder="Type your answer…"
-              :disabled="isLocked"
-              v-model="draftFor(idx).otherText"
-            />
+            <label v-if="q.allowOther && draftFor(idx).otherActive" class="question__other-field">
+              <span>Your answer</span>
+              <textarea
+                class="question__other-text"
+                data-testid="question-other-text"
+                rows="3"
+                placeholder="Type your answer…"
+                :disabled="isLocked"
+                v-model="draftFor(idx).otherText"
+              />
+            </label>
           </div>
 
           <p v-if="currentPreview" class="question__preview" data-testid="question-preview">
             {{ currentPreview }}
           </p>
-        </div>
+        </fieldset>
       </template>
 
       <p v-if="cancelError" class="question__error" data-testid="question-cancel-error">
@@ -384,6 +474,7 @@ function answerFor(idx: number): Answer | undefined {
       <div class="question__nav">
         <button
           type="button"
+          class="question__action question__action--quiet"
           data-testid="question-back"
           :disabled="currentIndex === 0 || isLocked"
           @click="goBack"
@@ -392,6 +483,7 @@ function answerFor(idx: number): Answer | undefined {
         </button>
         <button
           type="button"
+          class="question__action question__action--quiet"
           data-testid="question-skip"
           :disabled="isLocked"
           @click="skipCurrent"
@@ -400,15 +492,17 @@ function answerFor(idx: number): Answer | undefined {
         </button>
         <button
           type="button"
+          class="question__action question__action--cancel"
           data-testid="question-cancel"
           :disabled="isLocked"
           @click="doCancel"
         >
-          {{ cancelling ? 'Cancelling…' : 'Cancel' }}
+          {{ cancelling ? 'Cancelling…' : 'Cancel request' }}
         </button>
         <button
           v-if="!isLast"
           type="button"
+          class="question__action question__action--primary"
           data-testid="question-next"
           :disabled="!canProceed || isLocked"
           @click="goNext"
@@ -418,11 +512,12 @@ function answerFor(idx: number): Answer | undefined {
         <button
           v-else
           type="button"
+          class="question__action question__action--primary"
           data-testid="question-submit"
           :disabled="!canProceed || isLocked"
           @click="goNext"
         >
-          {{ submitting ? 'Submitting…' : 'Submit' }}
+          {{ submitting ? 'Sending…' : 'Send answer' }}
         </button>
       </div>
     </div>
@@ -431,89 +526,202 @@ function answerFor(idx: number): Answer | undefined {
 
 <style scoped>
 .question {
-  font-size: 13px;
-  color: #333;
+  color: #343a40;
+  font-size: 14px;
 }
 .question__context {
-  margin: 0 0 8px;
-  color: #555;
-  font-style: italic;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-left: 2px solid #cbd1d8;
+  border-radius: 0 6px 6px 0;
+  background: #f6f7f8;
+  color: #5f6874;
+  line-height: 1.45;
 }
 .question__stepper {
-  font-size: 11px;
-  color: #888;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  color: #78818d;
+  font-size: 12px;
 }
 .question__prompt {
+  width: 100%;
+  padding: 0;
+  color: #252a31;
+  font-size: 17px;
   font-weight: 600;
-  margin: 0 0 4px;
+  line-height: 1.35;
 }
 .question__description {
-  color: #666;
-  margin: 0 0 8px;
+  margin: 6px 0 0;
+  color: #5f6874;
+  line-height: 1.45;
+}
+.question__body {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.question__selection-hint {
+  margin: 6px 0 12px;
+  color: #78818d;
   font-size: 12px;
 }
 .question__options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 .question__option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d8dde3;
+  border-radius: 7px;
+  background: #fff;
   cursor: pointer;
 }
+.question__option:hover {
+  border-color: #aeb7c2;
+  background: #fafbfc;
+}
+.question__option:focus-within {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+.question__option--selected {
+  border-color: #9aabc0;
+  background: #f1f5f9;
+}
+.question__option input {
+  margin: 3px 0 0;
+  accent-color: #52677f;
+}
+.question__option-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.question__option-label {
+  color: #343a40;
+  font-weight: 500;
+  line-height: 1.35;
+}
 .question__option-desc {
-  color: #888;
-  font-size: 11px;
+  color: #69727d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.question__other-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 0 0 28px;
+  color: #5f6874;
+  font-size: 12px;
 }
 .question__other-text {
-  margin-left: 22px;
-  padding: 4px 6px;
-  border: 1px solid #d0d0d0;
-  border-radius: 4px;
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  color: #343a40;
   font: inherit;
 }
+.question__other-text:focus {
+  border-color: #2d6cdf;
+  outline: 2px solid rgb(45 108 223 / 18%);
+}
 .question__preview {
-  margin: 4px 0 8px;
-  padding: 6px 8px;
-  background: #f8f9fa;
-  border-radius: 4px;
-  color: #555;
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f6f7f8;
+  color: #5f6874;
   font-size: 12px;
 }
 .question__error {
-  color: #d32f2f;
+  margin: 10px 0 0;
+  color: #b4232e;
   font-size: 12px;
 }
 .question__submitted {
-  color: #2e7d32;
+  margin: 10px 0 0;
+  color: #386641;
   font-size: 12px;
 }
 .question__nav {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7eb;
 }
-.question__nav button {
-  padding: 4px 12px;
-  border: 1px solid #d0d0d0;
+.question__action {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #cbd1d8;
   border-radius: 6px;
   background: #fff;
+  color: #4f5965;
   cursor: pointer;
   font: inherit;
 }
-.question__nav button:disabled {
+.question__action:hover:not(:disabled) {
+  border-color: #9ea8b4;
+  background: #f5f6f7;
+}
+.question__action:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+.question__action--cancel {
+  margin-right: auto;
+  color: #7a3e45;
+}
+.question__action--primary {
+  border-color: #52677f;
+  background: #52677f;
+  color: #fff;
+  font-weight: 500;
+}
+.question__action--primary:hover:not(:disabled) {
+  border-color: #44576d;
+  background: #44576d;
+}
+.question__action:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .question__resolved-row {
   margin-bottom: 8px;
 }
+.question__answer {
+  color: #5f6874;
+}
 .question__answer--skipped {
-  color: #888;
+  color: #78818d;
   font-style: italic;
+}
+
+@media (max-width: 480px) {
+  .question__nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .question__action,
+  .question__action--cancel {
+    width: 100%;
+    margin-right: 0;
+  }
 }
 </style>

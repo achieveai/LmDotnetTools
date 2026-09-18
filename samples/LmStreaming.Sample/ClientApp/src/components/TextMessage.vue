@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue';
+import { computed, inject, shallowRef, watch } from 'vue';
+import DiagramViewer from './DiagramViewer.vue';
 import type { TextMessage } from '@/types';
 import { parseMarkdown } from '@/utils/markdown';
 import {
@@ -42,6 +43,32 @@ const parsedText = computed(() =>
   })
 );
 
+const markdownElement = shallowRef<HTMLElement | null>(null);
+const diagrams = shallowRef<Array<{
+  target: HTMLElement;
+  source: string;
+  language: 'mermaid' | 'plantuml';
+}>>([]);
+const diagramsReady = computed(() => props.isComplete !== false);
+// Replacing the HTML surface also retires its diagram hosts. Vue owns the viewers through
+// Teleport; generated SVG never passes through or broadens the Markdown HTML allowlist.
+const contentKey = computed(() => `${diagramsReady.value}:${parsedText.value}`);
+watch(markdownElement, (element) => {
+  diagrams.value = [];
+  if (!element || !diagramsReady.value) return;
+  const next: typeof diagrams.value = [];
+  for (const code of element.querySelectorAll('pre > code')) {
+    const fence = [...code.classList].find((name) => name.startsWith('language-'))?.slice(9).toLowerCase();
+    if (!fence || !['mermaid', 'plantuml', 'puml', 'uml'].includes(fence)) continue;
+    const target = document.createElement('div');
+    target.className = 'diagram-host';
+    const source = code.textContent ?? '';
+    code.parentElement?.replaceWith(target);
+    next.push({ target, source, language: fence === 'mermaid' ? 'mermaid' : 'plantuml' });
+  }
+  diagrams.value = next;
+}, { flush: 'post' });
+
 /** One delegated listener for every link in the v-html body, including clicks on nested elements. */
 function onContentClick(event: MouseEvent): void {
   if (!fileLinks || !(event.target instanceof Element)) return;
@@ -55,7 +82,10 @@ function onContentClick(event: MouseEvent): void {
 
 <template>
   <div class="text-message" :class="{ thinking: message.isThinking }">
-    <div class="markdown-content" v-html="parsedText" @click="onContentClick"></div>
+    <div :key="contentKey" ref="markdownElement" class="markdown-content" v-html="parsedText" @click="onContentClick"></div>
+    <Teleport v-for="(diagram, index) in diagrams" :key="contentKey + index" :to="diagram.target">
+      <DiagramViewer :source="diagram.source" :language="diagram.language" />
+    </Teleport>
     <span v-if="isStreaming" class="cursor">|</span>
   </div>
 </template>

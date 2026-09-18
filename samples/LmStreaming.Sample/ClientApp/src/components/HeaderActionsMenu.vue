@@ -113,14 +113,19 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
       type="button"
       class="header-actions-trigger"
       data-testid="header-actions-menu-button"
+      aria-label="More"
+      title="More"
       aria-haspopup="menu"
       :aria-expanded="open"
       aria-controls="header-actions-menu"
       @click="toggleMenu"
       @keydown="onTriggerKeydown"
     >
-      More
-      <span aria-hidden="true">▾</span>
+      <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <circle cx="4" cy="10" r="1.25" />
+        <circle cx="10" cy="10" r="1.25" />
+        <circle cx="16" cy="10" r="1.25" />
+      </svg>
     </button>
 
     <div
@@ -150,18 +155,24 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
 
 .header-actions-trigger {
   display: inline-flex;
+  width: 34px;
   height: 34px;
+  flex: 0 0 34px;
   box-sizing: border-box;
   align-items: center;
-  gap: 7px;
-  padding: 7px 12px;
+  justify-content: center;
+  padding: 0;
   border: 1px solid #cbd1d8;
   border-radius: 6px;
   background: #fff;
   color: #394553;
-  font-size: 14px;
-  line-height: 18px;
   cursor: pointer;
+}
+
+.header-actions-trigger svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
 }
 
 .header-actions-trigger:hover,
