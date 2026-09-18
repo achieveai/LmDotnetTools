@@ -466,19 +466,26 @@ export interface TokenLine {
 
 /**
  * One labelled line per token category. The usage contract (ConversationUsageAggregate) counts cache
- * reads inside input and thinking (reasoning) inside output; cache writes are separate. Uncached input
- * is derived as input minus cache read, floored at zero.
+ * reads inside input and thinking (reasoning) inside output; cache writes are separate. Anthropic
+ * reports cache reads outside input instead, which shows as cache read > input: then uncached input is
+ * the whole input and cache read is not marked as part of it (same rule as useChat's uncachedInput).
  */
 export function tokenBreakdown(tokens: TokensView): TokenLine[] {
   if (tokens.kind === 'none') return [];
+  const cacheReadInInput = tokens.cacheRead <= tokens.input;
   return [
     { key: 'input', label: 'Input', value: formatTokens(tokens.input), note: null },
-    { key: 'cache-read', label: 'Cache read', value: formatTokens(tokens.cacheRead), note: 'part of input' },
+    {
+      key: 'cache-read',
+      label: 'Cache read',
+      value: formatTokens(tokens.cacheRead),
+      note: cacheReadInInput ? 'part of input' : 'reported separately',
+    },
     {
       key: 'uncached-input',
       label: 'Uncached input',
-      value: formatTokens(Math.max(0, tokens.input - tokens.cacheRead)),
-      note: 'part of input',
+      value: formatTokens(cacheReadInInput ? tokens.input - tokens.cacheRead : tokens.input),
+      note: cacheReadInInput ? 'part of input' : null,
     },
     { key: 'cache-write', label: 'Cache write', value: formatTokens(tokens.cacheWrite), note: null },
     { key: 'output', label: 'Output', value: formatTokens(tokens.output), note: null },

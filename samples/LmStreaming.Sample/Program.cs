@@ -779,9 +779,9 @@ try
         var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         // Conversation-wide usage cost (#196): resolves an estimated public cost per model when a rate is
-        // configured under "Pricing:Models". The shipped section prices only the per-token API default ids,
-        // so flat-rate Copilot ids resolve to null cost ("unavailable") — the correct state — while any
-        // model with a configured rate gets a category-complete estimate (#682).
+        // configured under "Pricing:Models". The shipped section prices the API default ids and, at retail
+        // list price, the Copilot ids the sample runs; an unlisted id resolves to null cost ("unavailable"),
+        // while any model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddConfiguredPricing registers this
         // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 156K, which is also the window

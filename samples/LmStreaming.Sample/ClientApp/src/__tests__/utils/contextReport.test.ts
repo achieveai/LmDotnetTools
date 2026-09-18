@@ -46,18 +46,20 @@ describe('tokenBreakdown', () => {
     ]);
   });
 
-  it('never reports negative uncached input when a provider reports cache reads above input', () => {
+  it('treats cache reads above input as reported separately, the Anthropic shape', () => {
+    // Anthropic's input_tokens excludes cache reads, so a cached row has cacheRead far above input.
     const lines = tokenBreakdown({
       kind: 'value',
-      input: 10,
+      input: 12,
       output: 1,
-      cacheRead: 50,
+      cacheRead: 48_000,
       cacheWrite: 0,
       reasoning: 0,
-      total: 11,
+      total: 13,
     });
 
-    expect(lines.find((l) => l.key === 'uncached-input')?.value).toBe('0');
+    expect(lines.find((l) => l.key === 'cache-read')?.note).toBe('reported separately');
+    expect(lines.find((l) => l.key === 'uncached-input')).toMatchObject({ value: '12', note: null });
   });
 
   it('has no lines when no usage is recorded', () => {

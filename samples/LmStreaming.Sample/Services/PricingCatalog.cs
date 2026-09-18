@@ -54,7 +54,8 @@ namespace LmStreaming.Sample.Services;
 ///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
 ///         <c>MaxContextTokens</c> / <c>MaxOutputTokens</c> (#681) are the model's window and output
 ///         ceiling; they feed <see cref="IModelCapacityResolver" /> so a per-generation context observation
-///         can carry a utilization. Optional: an entry without them still prices and simply shows no gauge.
+///         can carry a utilization. Optional: an entry without them still prices, and gets the
+///         <c>ContextWindow:MaxTokens</c> window (no gauge only when that cap is 0).
 ///     </para>
 ///     <para>
 ///         <b>What is shipped in this repository's appsettings, and why only that.</b> Rates are an
@@ -161,7 +162,7 @@ public static class PricingCatalog
 
     /// <summary>
     ///     The ceiling used when <see cref="MaxContextTokensKey" /> is absent. Every resolved window is clamped to
-    ///     it, and a model the catalog has no window for (every Copilot, Claude CLI and Codex id) gets it, so the
+    ///     it, and a model the catalog has no window for (Claude CLI, Codex, any unlisted Copilot id) gets it, so the
     ///     Context panel shows a gauge and compaction has a window to measure against instead of skipping with
     ///     <c>capacity_unknown</c>.
     /// </summary>

@@ -69,7 +69,7 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
 - `EffectiveDate`: `yyyy-MM-dd`.
 - `_source`: vendor URL, ignored by the binder.
 - `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Present-but-not-positive rejects the whole entry.
-- `ContextWindow:MaxTokens` (top-level, not per model; default `156000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (every Copilot, Claude CLI and Codex id) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
+- `ContextWindow:MaxTokens` (top-level, not per model; default `156000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (Claude CLI, Codex, any Copilot id not listed below) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
 
 LmConfig JSON catalogs (`PricingConfig`) carry the same fields as `cache_read_per_million`, `cache_write_5m_per_million`, `cache_write_1h_per_million`, `reasoning_per_million`, `cache_accounting`, `effective_date`. Two routes sharing a model name must agree on every field or the name is dropped as conflicting.
 
@@ -96,10 +96,10 @@ Copilot-served ids, priced at the vendor's retail API list price as a public-equ
 | `deepseek-v4-pro` | — | 1.32 | 0.044 | — | — | 3.96 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
-- OpenAI bills prompts over 272K input at 2x input and 1.5x output. The sample's 156K context cap keeps requests below that.
+- OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 156K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - `deepseek-v4-pro` is the peak-hour rate. Off-peak is half price, so off-peak runs read high.
 - Copilot reports no cache reads for Claude ids (recorded `CacheReadTokens` is 0). Their estimates therefore price all input at the uncached rate, which is an upper bound.
-- The vendor windows (1M+) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 156K.
+- The vendor windows (200K to 1.05M) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 156K.
 
 Notes:
 
@@ -113,7 +113,7 @@ Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09
 | `gpt-4o` | 128,000 | 16,384 | https://developers.openai.com/api/docs/models/gpt-4o |
 | `claude-sonnet-4-5-20250929` | 200,000 | 64,000 | https://platform.claude.com/docs/en/models/sonnet-4-5/overview |
 
-`claude-sonnet-4-20250514` carries no window: its model page no longer resolves, so there is nothing to cite. It still prices; its context observations simply report no utilization.
+`claude-sonnet-4-20250514` carries no window: its model page no longer resolves, so there is nothing to cite. It still prices, and its window resolves to the `ContextWindow:MaxTokens` cap (no utilization only when the cap is 0).
 
 ## Deliberately unpriced
 

@@ -427,7 +427,11 @@ describe('ChatLayout view preference', () => {
           },
           PendingMessageQueue: true,
           PendingQuestionDock: true,
-          ContextCostPanel: { template: '<div data-testid="context-cost-panel">Context</div>' },
+          ContextCostPanel: {
+            props: ['agentNames'],
+            template:
+              '<div data-testid="context-cost-panel" :data-agent-names="JSON.stringify(agentNames)">Context</div>',
+          },
         },
       },
     });
@@ -467,6 +471,31 @@ describe('ChatLayout view preference', () => {
     expect(launcher.find('svg[aria-hidden="true"]').exists()).toBe(true);
     expect(launcher.element.closest('.app-header-right')).not.toBeNull();
     expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+  });
+
+  it('gives the context panel each sub-agent roster name, falling back to its template', async () => {
+    const summary = (agentId: string, name: string | null, template: string): SubAgentSummary => ({
+      agentId,
+      name,
+      template,
+      task: 'Task',
+      status: 'running',
+      threadId: `subagent-${agentId}`,
+      lastActivityUtc: null,
+    });
+    sharedMocks.subAgentChildren = [
+      summary('agent-1', 'Security reviewer', 'review'),
+      summary('agent-2', null, 'explore'),
+    ];
+    try {
+      const wrapper = mountLayout();
+      await flushPromises();
+
+      const names = wrapper.get('[data-testid="context-cost-panel"]').attributes('data-agent-names');
+      expect(JSON.parse(names ?? 'null')).toEqual({ 'agent-1': 'Security reviewer', 'agent-2': 'explore' });
+    } finally {
+      sharedMocks.subAgentChildren = [];
+    }
   });
 
   it('uses one full-width app header above the hosted sidebar and chat body', async () => {

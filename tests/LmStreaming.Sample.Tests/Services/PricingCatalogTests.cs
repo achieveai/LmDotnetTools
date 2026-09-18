@@ -559,7 +559,7 @@ public class PricingCatalogTests
     }
 
     // --- ContextWindow:MaxTokens: the host's ceiling on every window, and the window of a model the catalog
-    // does not know (Copilot / Claude CLI / Codex ids), so the gauge and compaction work for them too. ---
+    // does not know (Claude CLI / Codex / unlisted Copilot ids), so the gauge and compaction work for them. ---
 
     [Fact]
     public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault156KWindow()
