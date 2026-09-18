@@ -1,0 +1,542 @@
+// Compaction strategy eval — live config (adopts the local docker gateway; no exe paths).
+//
+//   dotnet run -c Release --project samples/TodoEval.Runner -- \
+//     --config evals/compaction-eval/runner.jsonc --env-file samples/LmStreaming.Sample/.env \
+//     [--tasks c1,d1] [--variants off,compact-v0] [--seeds 1]
+//
+// The env file (gateway app key, provider tokens) is passed on the CLI and never lives here.
+// One host per variant; every knob under test is a --Compaction:* or --Pricing:* host argument.
+{
+  "evalDir": "evals/compaction-eval",
+  "modeName": "compaction-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "compaction-eval",
+  // The gateway roots every workspace under a per-app folder, <slug>-<sha256 shorthash of app.id>
+  // (gateway issue #106). Fixtures and the checker must live where the agent actually works, so
+  // the root is that folder, not the bare WorkspaceBasePath (smoke1 finding: every checker read 0).
+  "workspacesRoot": "B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56",
+
+  "models": ["gpt-5.6-terra"],
+
+  // Round 2 (2026-09-16) showed the length / 4 estimate, not the summariser, drove every compact arm's cost
+  // (H6, commit 45fdead9). From round 3 every summariser arm below carries the real tokenizer; compact-v0,
+  // compact-v0-cached and compact-v0-64k stay as they were so the H6 delta stays measurable.
+  "variants": [
+    {
+      // Control arm: no compaction, the real 272k window. Crossing it is the "Off did not fit" signal.
+      "name": "off",
+      "extraArgs": ["--Compaction:Mode=Off"]
+    },
+    {
+      // H0: the shipped summarizer (prompt v0 is byte-identical to the built-in), window clamped to
+      // 96k. Phase 1 finding: only r1 (Off peak ~61-63k) crosses the ~55k trigger; c2/m1/s1 peak at
+      // 23-38k and never compact, so their Compact cells are invalid at this clamp.
+      "name": "compact-v0",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H3: same strategy, summary request replays the agent's own cached prefix.
+      "name": "compact-v0-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H6: same strategy, but the policy sizes text with the real o200k tokenizer instead of
+      // length / 4. Phase 1b finding: the heuristic put r1's ten-page read at 85k for a request the
+      // provider measured at 60k, which forced the fit escalation to trim results the model had not
+      // read yet; every compact arm then re-read the pages (11-88 re-reads per run).
+      "name": "compact-v0-tok",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H3 + H6 together: accurate estimate and the cached-prefix summary request.
+      "name": "compact-v0-tok-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H7: the pre-emptive clear only touches results the model has already answered on (rows before the
+      // latest human input); the exchange in progress stays whole until the fit check forces it.
+      "name": "compact-v0-tok-answered",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearAnsweredToolResultsOnly=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H7 + H8: as above, and the minimum-gain gate measures the stored rows a cut would summarise, so a
+      // head already cleared to placeholders still earns its summary.
+      "name": "compact-v0-tok-answered-gain",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearAnsweredToolResultsOnly=true",
+        "--Compaction:MeasureCompactionGainOnStoredRows=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+
+    {
+      // H6 at a 128k clamp (~101k usable, trigger ~81k): the scaled tasks' one-turn bursts (55-57k real
+      // tokens plus the 14k prefix) sit at the 69k usable line at 96k, so part of their fit escalation is
+      // genuine overflow. This arm separates that from the clearing leak H7 targets.
+      "name": "compact-v0-tok-128k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
+      ]
+    },
+    {
+      // H7 upper bound, no code change: the proactive clear at the trigger keeps 99 tool turns, so it never
+      // fires inside a run; only the forced clear on a real overflow (keepTurns 1) remains. c2 writes one
+      // note per tool turn, so the default of 3 drops its twelve-log burst after three notes and the rest
+      // are re-read (round 2: 14-30 re-reads per run even with the tokenizer).
+      "name": "compact-v0-tok-keep99",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c96",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c80",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=80000"
+      ]
+    },
+    {
+      // Round 7, the compaction-dose arms. Clearing policy is held fixed (no proactive clear); only the
+      // context clamp moves, which changes how OFTEN the trigger fires. Tests whether compaction COUNT,
+      // not the clearing knob, is what moved the round-6 scores: r3 should improve and s1 degrade as the
+      // clamp tightens. Distinct names so no earlier sweep's workspace collides.
+      "name": "dose-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Round 8, the duplicate-arm test. `rep-a` and `rep-b` are identical in every respect; only the name
+      // differs, so each gets its own workspace. Round 7's dose-c96 was configured exactly like round 6's
+      // compact-v0-tok-keep99 yet scored 0.222 lower on s1, wider than round 6's whole four-arm spread.
+      // Two readings, both committed before the run: if these two arms differ by something near 0.2 the
+      // variance is WITHIN an arm, which kills round 6's internal s1 ranking; if they agree closely the
+      // variance is BETWEEN sweeps, which kills only cross-sweep comparison.
+      "name": "rep-a",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // The twin of rep-a. Any difference between them is noise by construction.
+      "name": "rep-b",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Round 9 (H11). The round-6 headline re-run at a sample size that can carry it. These two arms are
+      // byte-identical to compact-v0-tok-keep99 and compact-v0-tok; only the names are new, because the
+      // runner names a workspace without a sweep id and the old names already own seeds 0-2 on s1 and r3.
+      // Round 8 measured s1's run-to-run sd at 0.1235, which makes 13 seeds the number for a 0.141 effect.
+      // On r3 the quantity of interest is not a mean but a FAILURE RATE: the default lost r3's deleted
+      // pages on one seed of three (41 clears, no compaction, the gain gate blocking every summary), and
+      // one failure in three bounds that rate only to 0.8%-90.6%.
+      // Outcome, for whoever reads this next: the pair settled the MECHANISM and not the harm. On r3
+      // h11-keep99 compacted on 9 of 13 seeds and h11-default on 0 of 13 (Fisher p = 0.000458), but the
+      // scores are 0.9720 vs 0.9301 (0.88 SE) and s1 is a tie at 0.44 SE. Suppressing the trigger is
+      // proven; that the suppression costs accuracy often enough to matter is not.
+      "name": "h11-keep99",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Round 10 (H12). Round 9 proved proactive clearing suppresses the compaction trigger on r3 but
+      // could not show a cost, because at 96k r3 rarely loses anything. At 64k the head MUST be cut, so
+      // this pair asks whether the suppression survives real pressure and what it costs. Only runnable
+      // now: moving the clamp moves run duration, which used to move the steer with it (173c2b68).
+      "name": "h12-keep99-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Today's shipping default at the same clamp. The control for h12-keep99-c64.
+      "name": "h12-default-c64",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+    {
+      // Harness probe, not a research arm: one r3 run to prove the new event-based steer release works
+      // against the real host, before a round is spent on it. Byte-identical to h11-keep99.
+      // NOTE: r3 uses the 'firstAnswer' trigger, which adds no new HTTP call. The 'toolCalls' trigger
+      // s1 uses DOES poll a new endpoint mid-run, so it needs its own probe (probe-steer-s1) before any
+      // s1 sweep. Proving one trigger says nothing about the other.
+      "name": "probe-steer",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // The other half of the harness probe: one s1 run, because s1's steer releases on fourteen Read
+      // calls and that path polls the conversation's messages mid-run. Byte-identical to h11-keep99.
+      "name": "probe-steer-s1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Today's shipping default: the pre-emptive clear keeps 3 tool turns. The control for h11-keep99.
+      "name": "h11-default",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H7 bound and the 128k clamp together: no proactive clear and no genuine overflow on the scaled tasks.
+      "name": "compact-v0-tok-keep99-128k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=128000"
+      ]
+    },
+    // The `sum-*` family (round 3b): the proactive tool-result clear is inert (keep 99 turns; an empty value would
+    // keep the default of 3, not bind null), so the summariser is the only way to make room short of a real overflow. Round 3 showed the proactive clear runs before the cut and removes
+    // exactly the results the cut would free, so on r2 the cut fell under the 10% minimum gain and no summary ran
+    // on any arm. Every arm here carries the real tokenizer; they differ only in the summary prompt / model / checks.
+    {
+      // Built-in prompt, terra summariser.
+      "name": "sum-v0",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Built-in prompt, summary request replays the cached agent prefix (H3).
+      "name": "sum-v0-cached",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryPrefixMode=CachedPrefix",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v1 (H1/H2), see prompts/v1.md.
+      "name": "sum-v1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v1.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v2 (H1/H2), see prompts/v2.md.
+      "name": "sum-v2",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v2.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v3 (H1/H2), see prompts/v3.md.
+      "name": "sum-v3",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v3.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Prompt v4 (H1/H2), see prompts/v4.md.
+      "name": "sum-v4",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v4.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // All post-summary checks on (H4).
+      "name": "sum-checks",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:Checks:Rc1ResourceDedupe=true",
+        "--Compaction:Checks:Rc2ShellRetention=true",
+        "--Compaction:Checks:Rc3OpenExchanges=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Cheaper summariser (H5).
+      "name": "sum-luna",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryModelId=gpt-5.6-luna",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // Stronger summariser (H5).
+      "name": "sum-sol",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:ClearToolResultsKeepTurns=99",
+        "--Compaction:SummaryModelId=gpt-5.6-sol",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H0 at a tighter clamp: 64k leaves ~37.4k usable (trigger ~29.9k), which m1 (Off peak 25-38k)
+      // crosses on some seeds. r1 may overflow after MaxCompactionsPerRun=2; an Errored run is a finding.
+      // (smoke0's view_exceeds_window at 64k was under the 30k superpowers prefix, since dropped.)
+      "name": "compact-v0-64k",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=64000"
+      ]
+    },
+
+    // ── Phase 2 (HTR round 1) — select with --variants; every arm is compact-v0 plus ONE change.
+    // The prompt path must be absolute: the host's cwd is a temp instance dir. This branch's checkout
+    // is the only place these prompts live, so the path names it; results record the prompt fingerprint.
+    {
+      // H1: prompt v1 (essence-first).
+      "name": "prompt-v1",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v1.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v2 (tool-call essence).
+      "name": "prompt-v2",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v2.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v3 (open-exchange focus).
+      "name": "prompt-v3",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v3.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H1: prompt v4 (hand-off brief).
+      "name": "prompt-v4",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryPromptPath={evalDir}/prompts/v4.md",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H2: all three deterministic checks on (RC1 resource dedupe, RC2 shell retention, RC3 open exchanges).
+      "name": "checks-all",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:Checks:Rc1ResourceDedupe=true",
+        "--Compaction:Checks:Rc2ShellRetention=true",
+        "--Compaction:Checks:Rc3OpenExchanges=true",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H4: cheaper summary model (luna) writing the checkpoint for a terra agent.
+      "name": "summary-luna",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryModelId=gpt-5.6-luna",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    },
+    {
+      // H4: stronger summary model (sol) writing the checkpoint for a terra agent.
+      "name": "summary-sol",
+      "compacts": true,
+      "extraArgs": [
+        "--Compaction:Mode=Compact",
+        "--Compaction:TextTokenizer=o200k",
+        "--Compaction:SummaryModelId=gpt-5.6-sol",
+        "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=96000"
+      ]
+    }
+  ],
+
+  "tasks": ["c1", "d1", "c2", "r1", "r2", "r3", "s1", "m1"],
+  "seeds": 3,
+  "maxParallelRuns": 2,
+  "perRunTimeoutMinutes": 30,
+
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      // Adopt the already-running local gateway (docker); AutoSpawn=true only spawns when unhealthy.
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:\\sandbox-workspaces\\workspaces",
+      // Only the tiny demo marketplace: superpowers + gb-plugins inflate the first prompt to ~30k
+      // tokens and their brainstorming skill parks the run on a question (smoke0 finding).
+      "--SandboxGateway:Marketplaces=demo",
+      // Unattended: no AskUserQuestion tool on the root or any sub-agent.
+      "--ClientTools:AskUserQuestion=false",
+      // Shadow prices (pricing.shadow.md): tokens are the primary signal, dollars are relative.
+      "--Pricing:Version=shadow-2026-09-16",
+      "--Pricing:Models:gpt-5.6-terra:PromptPerMillion=5",
+      "--Pricing:Models:gpt-5.6-terra:CacheReadPerMillion=1",
+      "--Pricing:Models:gpt-5.6-terra:CompletionPerMillion=30",
+      "--Pricing:Models:gpt-5.6-terra:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-terra:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-terra:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-terra:MaxOutputTokens=128000",
+      "--Pricing:Models:gpt-5.6-sol:PromptPerMillion=10",
+      "--Pricing:Models:gpt-5.6-sol:CacheReadPerMillion=2",
+      "--Pricing:Models:gpt-5.6-sol:CompletionPerMillion=60",
+      "--Pricing:Models:gpt-5.6-sol:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-sol:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-sol:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-sol:MaxOutputTokens=128000",
+      "--Pricing:Models:gpt-5.6-luna:PromptPerMillion=2",
+      "--Pricing:Models:gpt-5.6-luna:CacheReadPerMillion=0.4",
+      "--Pricing:Models:gpt-5.6-luna:CompletionPerMillion=12",
+      "--Pricing:Models:gpt-5.6-luna:CacheAccounting=SubsetOfInput",
+      "--Pricing:Models:gpt-5.6-luna:EffectiveDate=2026-09-16",
+      "--Pricing:Models:gpt-5.6-luna:MaxContextTokens=272000",
+      "--Pricing:Models:gpt-5.6-luna:MaxOutputTokens=128000"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

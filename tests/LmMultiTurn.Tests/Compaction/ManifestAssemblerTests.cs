@@ -582,4 +582,17 @@ public sealed class ManifestAssemblerTests
         manifest.Instructions.Select(q => (q.Seq, q.Quote)).Should().Equal((1L, "never push"), (4L, "delete the flag"));
         manifest.Decisions.Select(q => (q.Seq, q.Quote)).Should().Equal((1L, "never"), (4L, "approved"));
     }
+
+    [Fact]
+    public void OpenExchanges_ArePinnedFromTheRows_WhenTheCheckIsOn()
+    {
+        var thread = new ThreadFixture().Human("go").Agent(AgentMessageType.Question, "which db?").ToolTurns(2);
+        var cut = CutAt(thread, thread.LastSeq);
+
+        var on = Assemble(thread, cut, options: new ManifestAssemblerOptions { OpenExchanges = true });
+        var off = Assemble(thread, cut);
+
+        on.OpenExchanges.Should().ContainSingle().Which.MessageId.Should().Be("msg-2");
+        off.OpenExchanges.Should().BeEmpty();
+    }
 }

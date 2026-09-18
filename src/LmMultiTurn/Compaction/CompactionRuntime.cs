@@ -105,6 +105,9 @@ internal sealed class CompactionRuntime
     private readonly ICheckpointSummarizer _summarizer;
     private readonly CheckpointPipeline _pipeline;
     private readonly TimeProvider _clock;
+    private readonly ToolKnowledgeRegistry _registry;
+    private readonly Func<string?, long> _text;
+    private readonly Func<IMessage, long> _estimator;
     private readonly ConditionalWeakTable<IMessage, RowIdentity> _identities = [];
     private readonly List<Task> _inFlightPersists = [];
     private readonly object _gate = new();
@@ -684,14 +687,44 @@ internal sealed class CompactionRuntime
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(providerAgent);
         _setup = setup;
+        _text = setup.TextTokens ?? CompactionTokenEstimate.EstimateText;
+        _estimator = CompactionTokenEstimate.Create(_text);
         _host = host;
         _clock = setup.Clock ?? TimeProvider.System;
         var options = setup.Options;
         options.Validate();
+        _registry = ToolKnowledgeRegistry.Merge(options.ToolKnowledge);
         _policy = new CompactionPolicy(options);
+        if (
+            options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
+            && options.SummaryModelId is { } summaryModel
+            && !string.Equals(summaryModel, host.DefaultOptions.ModelId, StringComparison.Ordinal)
+        )
+        {
+            throw new ArgumentException(
+                "SummaryPrefixMode CachedPrefix needs the same model as the loop: a different summary model shares no prompt cache.",
+                nameof(setup)
+            );
+        }
+
+        // The delegate is only called during a summary pass, long after the ctor has filled the fields it reads.
         _summarizer =
             setup.Summarizer
-            ?? new ProviderCheckpointSummarizer(providerAgent, options.SummaryModelId ?? host.DefaultOptions.ModelId);
+            ?? (
+                options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
+                    ? new CachedPrefixCheckpointSummarizer(
+                        providerAgent,
+                        PrefixThroughSeq,
+                        () => host.DefaultOptions.Functions,
+                        host.DefaultOptions.ModelId,
+                        setup.SummarySystemPrompt
+                    )
+                    : new ProviderCheckpointSummarizer(
+                        providerAgent,
+                        options.SummaryModelId ?? host.DefaultOptions.ModelId,
+                        setup.SummarySystemPrompt
+                    )
+            );
         _pipeline = new CheckpointPipeline(
             _summarizer,
             new CheckpointPipelineOptions
@@ -701,7 +734,10 @@ internal sealed class CompactionRuntime
                     NarrativeTokenCap = options.NarrativeTokenCap,
                     // V9 scales with the window so a small window can still hold envelope + tail + prefix.
                     CheckpointTokenCap = options.EffectiveCheckpointTokenCap(UsableTokens),
+                    OpenExchanges = options.Checks.Rc3OpenExchanges,
+                    TextEstimator = _text,
                 },
+                Assembler = new ManifestAssemblerOptions { OpenExchanges = options.Checks.Rc3OpenExchanges },
                 Render = RenderOptions,
                 SummaryTimeout = options.SummaryTimeout,
                 SummaryAttempts = options.SummaryAttempts,
@@ -720,7 +756,7 @@ internal sealed class CompactionRuntime
         "Context compaction is automatic or user-triggered. You cannot compact the conversation; never claim you did.";
 
     /// <summary>
-    ///     <paramref name="systemPrompt"/> with <see cref="SystemNote"/> appended when <paramref name="setup"/> resolves
+    ///     <paramref name="systemPrompt"/> with <see cref="SystemNote"/> prepended when <paramref name="setup"/> resolves
     ///     to a mode other than Off for <paramref name="modelId"/>; unchanged otherwise.
     /// </summary>
     internal static string? WithSystemNote(string? systemPrompt, CompactionSetup? setup, string? modelId)
@@ -730,7 +766,7 @@ internal sealed class CompactionRuntime
             return systemPrompt;
         }
 
-        return string.IsNullOrEmpty(systemPrompt) ? SystemNote : systemPrompt + "\n\n" + SystemNote;
+        return string.IsNullOrEmpty(systemPrompt) ? SystemNote : SystemNote + "\n\n" + systemPrompt;
     }
 
     /// <summary>The mode for this loop's route.</summary>
@@ -858,24 +894,36 @@ internal sealed class CompactionRuntime
             return null;
         }
 
-        var shaping = ToolResultShaping();
-        if (Active is null && shaping is null)
+        // ShapesView is exactly the condition under which ToolResultShaping returns non-null.
+        if (Active is null && !ShapesView)
         {
             return null;
         }
 
         var history = _host.HistorySnapshot();
+        var rows = Sequence(history);
+        var shaping = ToolResultShaping(_tightened, rows);
         if (shaping is not null)
         {
             LogNewlyTrimmed(history, shaping.CapChars);
         }
 
+        return AgentContextProjection.Default.Build(_host.SystemPrompt, rows, Active, RenderOptions, shaping);
+    }
+
+    /// <summary>
+    ///     The view as the agent sends it, cut after <paramref name="seq" />: what a cached-prefix summary call
+    ///     replays so the provider can serve the covered rows from its prompt cache.
+    /// </summary>
+    private IReadOnlyList<IMessage> PrefixThroughSeq(long seq)
+    {
+        var rows = Sequence(_host.HistorySnapshot());
         return AgentContextProjection.Default.Build(
             _host.SystemPrompt,
-            Sequence(history),
+            [.. rows.Where(r => r.Seq <= seq)],
             Active,
             RenderOptions,
-            shaping
+            ToolResultShaping(_tightened, rows)
         );
     }
 
@@ -1072,7 +1120,9 @@ internal sealed class CompactionRuntime
             // Clear older tool results first: no summary call, and often enough on its own (phase 1).
             if (
                 Options.ClearToolResultsKeepTurns is { } keepTurns
-                && await AdvanceClearingAsync(keepTurns, ct).ConfigureAwait(false) is { } cleared
+                && await AdvanceClearingAsync(keepTurns, ct, answeredOnly: Options.ClearAnsweredToolResultsOnly)
+                    .ConfigureAwait(false)
+                    is { } cleared
             )
             {
                 acted = true;
@@ -1702,7 +1752,7 @@ internal sealed class CompactionRuntime
                 history,
                 Active,
                 RenderOptions,
-                ToolResultShaping(tightening)
+                ToolResultShaping(tightening, history)
             );
             return (view, EstimateRequestTokens(view, ephemeral, tightening));
         }
@@ -1740,7 +1790,7 @@ internal sealed class CompactionRuntime
             return null; // A newer build owns the state; it decides what the view shows.
         }
 
-        var tightenedShaping = ToolResultShaping(chosen)!;
+        var tightenedShaping = ToolResultShaping(chosen, history)!;
         var trimmed = results.Where(r => r.Length > tightenedShaping.CapFor(r.Seq, r.Length)).ToList();
         _tightened = written.ToolResultsTightened ?? chosen;
         var tightenedView = BuildView() ?? Measure(chosen).View;
@@ -1781,9 +1831,15 @@ internal sealed class CompactionRuntime
     /// <summary>
     ///     Advances the persisted clear watermark so all but the <paramref name="keepTurns"/> most recent tool
     ///     turns show placeholders, and returns the new view; null when nothing new would be cleared, the view
-    ///     is not shaped, or the rows cannot be placed.
+    ///     is not shaped, or the rows cannot be placed. <paramref name="answeredOnly"/> keeps the exchange in
+    ///     progress whole (<see cref="CompactionOptions.ClearAnsweredToolResultsOnly"/>); the forced clears of
+    ///     the fit check never pass it.
     /// </summary>
-    private async Task<IReadOnlyList<IMessage>?> AdvanceClearingAsync(int keepTurns, CancellationToken ct)
+    private async Task<IReadOnlyList<IMessage>?> AdvanceClearingAsync(
+        int keepTurns,
+        CancellationToken ct,
+        bool answeredOnly = false
+    )
     {
         if (!ShapesView || _host.Store is not { } store)
         {
@@ -1796,7 +1852,7 @@ internal sealed class CompactionRuntime
             return null;
         }
 
-        var through = ToolResultView.ClearedThroughSeq(rows, keepTurns);
+        var through = ToolResultView.ClearedThroughSeq(rows, keepTurns, answeredOnly);
         if (through <= _clearedThroughSeq)
         {
             return null;
@@ -1894,20 +1950,77 @@ internal sealed class CompactionRuntime
         );
     }
 
-    private ToolResultViewOptions? ToolResultShaping() => ToolResultShaping(_tightened);
+    private ToolResultViewOptions? ToolResultShaping() => ToolResultShaping(_tightened, rows: null);
 
-    private ToolResultViewOptions? ToolResultShaping(ToolResultTightening? tightened) =>
-        ShapesView
-            ? new ToolResultViewOptions
+    /// <summary>
+    ///     How the view shows tool results, or null when nothing is shaped. The eval's row-level checks (RC1, RC2)
+    ///     need the rows; <paramref name="rows" /> lets a caller that already sequenced them avoid doing it again.
+    ///     With <see cref="CompactionOptions.Checks" /> off, both maps stay null and the view is byte-identical to
+    ///     what production builds.
+    /// </summary>
+    private ToolResultViewOptions? ToolResultShaping(
+        ToolResultTightening? tightened,
+        IReadOnlyList<SequencedMessage>? rows
+    )
+    {
+        if (!ShapesView)
+        {
+            return null;
+        }
+
+        var checks = Options.Checks;
+        if (checks.Rc1ResourceDedupe || checks.Rc2ShellRetention)
+        {
+            rows ??= Sequence(_host.HistorySnapshot());
+        }
+
+        return new ToolResultViewOptions
+        {
+            CapChars = Options.ToolResultViewCapChars(UsableTokens),
+            ClearedThroughSeq = _clearedThroughSeq,
+            RecallToolName = RecallConversationToolProvider.ToolName,
+            TightenedThroughSeq = tightened?.ThroughSeq ?? 0,
+            TightenedPartsPerMillion = tightened?.PartsPerMillion ?? ToolResultViewOptions.PartsPerMillion,
+            TightenedFloorChars = Options.ToolResultViewCapMinChars,
+            SupersededBy = checks.Rc1ResourceDedupe ? ResourceDedupe.Superseded(rows!, _registry) : null,
+            ShellSeqs = checks.Rc2ShellRetention ? ShellResultSeqs(rows!) : null,
+            ShellTrimChars = Options.ShellTrimChars,
+        };
+    }
+
+    /// <summary>RC2: the seqs of every non-deferred result whose call was a shell tool.</summary>
+    private HashSet<long> ShellResultSeqs(IReadOnlyList<SequencedMessage> rows)
+    {
+        var shellCalls = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            foreach (var call in ToolRows.CallsOf(row.Message))
             {
-                CapChars = Options.ToolResultViewCapChars(UsableTokens),
-                ClearedThroughSeq = _clearedThroughSeq,
-                RecallToolName = RecallConversationToolProvider.ToolName,
-                TightenedThroughSeq = tightened?.ThroughSeq ?? 0,
-                TightenedPartsPerMillion = tightened?.PartsPerMillion ?? ToolResultViewOptions.PartsPerMillion,
-                TightenedFloorChars = Options.ToolResultViewCapMinChars,
+                if (
+                    call.ToolCallId is { Length: > 0 } id
+                    && _registry.Resolve(call.FunctionName).Kind == ToolKind.Shell
+                )
+                {
+                    _ = shellCalls.Add(id);
+                }
             }
-            : null;
+        }
+
+        var seqs = new HashSet<long>();
+        foreach (var row in rows)
+        {
+            if (
+                ToolRows
+                    .ResultsOf(row.Message)
+                    .Any(r => !r.IsDeferred && r.ToolCallId is { Length: > 0 } id && shellCalls.Contains(id))
+            )
+            {
+                _ = seqs.Add(row.Seq);
+            }
+        }
+
+        return seqs;
+    }
 
     /// <summary>
     ///     The estimator the cut rules measure the tail with: in a shaped view a tool result costs what the model
@@ -1915,9 +2028,9 @@ internal sealed class CompactionRuntime
     /// </summary>
     private Func<IMessage, long> ViewEstimator(IReadOnlyList<SequencedMessage> rows)
     {
-        if (ToolResultShaping() is not { } shaping)
+        if (ToolResultShaping(_tightened, rows) is not { } shaping)
         {
-            return CompactionTokenEstimate.Default;
+            return _estimator;
         }
 
         var seqs = new Dictionary<IMessage, long>(ReferenceEqualityComparer.Instance);
@@ -1927,9 +2040,7 @@ internal sealed class CompactionRuntime
         }
 
         return message =>
-            CompactionTokenEstimate.Default(
-                ToolResultView.Apply(message, seqs.GetValueOrDefault(message, long.MaxValue), shaping)
-            );
+            _estimator(ToolResultView.Apply(message, seqs.GetValueOrDefault(message, long.MaxValue), shaping));
     }
 
     private void LogNewlyTrimmed(IReadOnlyList<IMessage> history, int capChars)
@@ -2144,11 +2255,7 @@ internal sealed class CompactionRuntime
         // the cut, so only the rest is the tail's to spend.
         var fixedTokens =
             _host.ToolSchemaTokens()
-            + (
-                _host.SystemPrompt is { } system
-                    ? CompactionTokenEstimate.PerMessageOverhead + CompactionTokenEstimate.EstimateText(system)
-                    : 0
-            );
+            + (_host.SystemPrompt is { } system ? CompactionTokenEstimate.PerMessageOverhead + _text(system) : 0);
         var cut = await SelectCutAsync(
                 rows,
                 Math.Max(0, targetTokens - fixedTokens),
@@ -2167,9 +2274,12 @@ internal sealed class CompactionRuntime
         if (requireGain && usable is { } room && Options.MinCompactionGainRatio > 0)
         {
             // A cut that newly covers a sliver buys a summary call, a cache rewrite and a cooldown for nothing.
+            // Measured on the view by default; on the stored rows when the option says the placeholders' referents
+            // are what the summary is for.
+            var gainEstimator = Options.MeasureCompactionGainOnStoredRows ? _estimator : estimator;
             var previousBoundary = ActiveBoundarySeq ?? 0;
             var freed = rows.Where(r => !r.IsCheckpointRow && r.Seq > previousBoundary && r.Seq <= legal.Seq)
-                .Sum(r => estimator(r.Message));
+                .Sum(r => gainEstimator(r.Message));
             var needed = (long)(Options.MinCompactionGainRatio * room);
             if (freed < needed)
             {
@@ -2539,15 +2649,17 @@ internal sealed class CompactionRuntime
     private IReadOnlyList<IMessage> RawRequest() =>
         AgentContextProjection.Default.Build(_host.SystemPrompt, _host.HistorySnapshot(), null, RenderOptions);
 
-    /// <summary>The request-size estimate the policy uses (<see cref="CompactionTokenEstimate.Default"/> summed).</summary>
-    public static long EstimateTokens(IReadOnlyList<IMessage> messages) => Estimate(messages);
+    /// <summary>The request-size estimate with the default heuristic (<see cref="CompactionTokenEstimate.Default"/> summed).</summary>
+    public static long EstimateTokens(IReadOnlyList<IMessage> messages) =>
+        CompactionTokenEstimate.Estimate(messages, CompactionTokenEstimate.Default);
 
-    private static long Estimate(IReadOnlyList<IMessage> messages)
+    /// <summary>The request-size estimate the policy uses: this runtime's estimator summed.</summary>
+    private long Estimate(IReadOnlyList<IMessage> messages)
     {
         long total = 0;
         foreach (var message in messages)
         {
-            total += CompactionTokenEstimate.Default(message);
+            total += _estimator(message);
         }
 
         return total;
@@ -2627,15 +2739,31 @@ internal sealed class CompactionRuntime
         }
 
         var row = history.OfType<CompactionCheckpointMessage>().LastOrDefault(c => c.CheckpointId == activeId);
-        if (row is not null)
+        if (row is { SchemaVersion: <= CompactionCheckpointMessage.CurrentSchemaVersion })
         {
             Active = row;
             return;
         }
 
-        // The state names a checkpoint whose row this process never restored: not a view to trust.
+        // A row from a newer writer deserializes here without complaint -- the $type is unchanged
+        // across schema versions, and an unknown manifest section is simply dropped -- so adopting it
+        // would put a quietly incomplete view in front of the model. Roll back instead: canonical
+        // history is whole, and the row stays on disk for the build that can read it.
+        var reason = row is null ? CheckpointReasons.RowMissing : CheckpointReasons.SchemaTooNew;
+        if (row is not null)
+        {
+            _host.Logger.LogWarning(
+                "Checkpoint {CheckpointId} is schema version {SchemaVersion}; this build reads {Known}. "
+                    + "Rolling back to canonical history for thread {ThreadId}.",
+                row.CheckpointId,
+                row.SchemaVersion,
+                CompactionCheckpointMessage.CurrentSchemaVersion,
+                _host.ThreadId
+            );
+        }
+
         _ = await CompactionStateProjection
-            .RollBackAsync(store, _host.ThreadId, CheckpointReasons.RowMissing, _clock.GetUtcNow(), ct)
+            .RollBackAsync(store, _host.ThreadId, reason, _clock.GetUtcNow(), ct)
             .ConfigureAwait(false);
         Active = null;
     }

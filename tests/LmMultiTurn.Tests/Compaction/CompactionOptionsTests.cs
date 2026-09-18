@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Compaction;
@@ -76,6 +77,59 @@ public class CompactionOptionsTests
         o.FailureBackoffGenerations.Should().Be(2);
         (o.SummaryTimeout, o.SummaryAttempts).Should().Be((TimeSpan.FromMinutes(2), 2));
         (o.SummaryMaxOutputTokens, o.SummaryRowCharCap, o.SummaryPromptMaxChars).Should().Be((8_000, 4_000, 400_000));
+    }
+
+    [Fact]
+    public void Defaults_LeaveEveryEvalCheckOff()
+    {
+        var o = new CompactionOptions();
+
+        o.Checks.Should().Be(CompactionChecks.None);
+        o.Checks.Any.Should().BeFalse();
+        o.ToolKnowledge.Should().BeNull();
+        o.SummaryPromptPath.Should().BeNull();
+        o.SummaryPrefixMode.Should().Be(SummaryPrefixMode.Cold);
+        o.TextTokenizer.Should().BeNull();
+        o.ShellTrimChars.Should().Be(1_500);
+    }
+
+    [Fact]
+    public void Validate_RejectsANonPositiveShellTrim()
+    {
+        var act = () => new CompactionOptions { ShellTrimChars = 0 }.Validate();
+
+        act.Should()
+            .Throw<ArgumentOutOfRangeException>()
+            .Which.ParamName.Should()
+            .Be(nameof(CompactionOptions.ShellTrimChars));
+    }
+
+    [Fact]
+    public void Checks_BindFromConfiguration()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["Compaction:Checks:Rc1ResourceDedupe"] = "true",
+                    ["Compaction:Checks:Rc3OpenExchanges"] = "true",
+                    ["Compaction:ToolKnowledge:MyTool:Kind"] = "Resource",
+                    ["Compaction:ToolKnowledge:MyTool:Identity:0"] = "id",
+                    ["Compaction:SummaryPromptPath"] = "prompts/v1.md",
+                    ["Compaction:SummaryPrefixMode"] = "CachedPrefix",
+                }
+            )
+            .Build();
+
+        var o = configuration.GetSection("Compaction").Get<CompactionOptions>()!;
+
+        o.Checks.Rc1ResourceDedupe.Should().BeTrue();
+        o.Checks.Rc2ShellRetention.Should().BeFalse();
+        o.Checks.Rc3OpenExchanges.Should().BeTrue();
+        o.ToolKnowledge!["MyTool"].Kind.Should().Be(ToolKind.Resource);
+        o.ToolKnowledge["MyTool"].Identity.Should().Equal("id");
+        o.SummaryPromptPath.Should().Be("prompts/v1.md");
+        o.SummaryPrefixMode.Should().Be(SummaryPrefixMode.CachedPrefix);
     }
 
     [Fact]

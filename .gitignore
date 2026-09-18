@@ -96,3 +96,11 @@ samples/LmStreaming.Sample/.run/
 
 # Ad-hoc debug screenshots dropped at the repo root (doc screenshots under docs/ stay tracked)
 /*.png
+
+# An eval task's fixture logs are its INPUT, not a build output. c2's task is to read twelve days of
+# access logs, and the hidden answer keys were generated from these exact bytes, so a clean checkout
+# must carry them or the task runs against an empty workspace. Two rules above would swallow them --
+# '**/logs/' and '*.log' -- and the last matching pattern wins, so these negations come last. Git
+# cannot re-include a file whose parent DIRECTORY is excluded, hence both lines rather than one.
+!evals/compaction-eval/tasks/*/fixtures/logs/
+!evals/compaction-eval/tasks/*/fixtures/logs/*.log

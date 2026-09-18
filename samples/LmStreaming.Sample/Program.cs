@@ -308,6 +308,10 @@ try
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
         ?? new SandboxGatewayOptions();
 
+    // An unattended host (the compaction eval runner) turns the browser-hosted question tool off so a
+    // run can never park on a question nobody will answer. Default true keeps the interactive UI as is.
+    var askUserQuestionToolEnabled = builder.Configuration.GetValue("ClientTools:AskUserQuestion", true);
+
     // Fail closed on a bad egress policy. Every configured rule widens a default-deny boundary and
     // every configured provider is a credential-injection point, so a malformed entry must stop the
     // host at startup rather than surface as a confusing gateway rejection on the first sandbox
@@ -1693,7 +1697,8 @@ try
                                     // `mode` and `effectiveMode` hold identical fragment fields (the
                                     // `with` clauses above only rewrite SystemPrompt), so pass the
                                     // unaugmented profile.
-                                    mode
+                                    mode,
+                                    includeAskUserQuestionTool: askUserQuestionToolEnabled
                                 )
                                 .GetAwaiter()
                                 .GetResult();
@@ -2112,8 +2117,9 @@ try
                         filteredRegistry,
                         threadId,
                         // The designated constructor (the only one taking `compaction:`); both client tools
-                        // stay registered, exactly as the compatibility overload used here before did.
-                        includeAskUserQuestionTool: true,
+                        // stay registered exactly as before unless ClientTools:AskUserQuestion turns the
+                        // question tool off for an unattended host.
+                        includeAskUserQuestionTool: askUserQuestionToolEnabled,
                         includeNotifyClientTool: true,
                         // The caller's own instructions (the code-review daemon's methodology, output
                         // contract and sub-agent-dispatch protocol), recorded at provision and appended
@@ -3748,7 +3754,8 @@ public partial class Program
         MarketplaceSubAgentLoader marketplaceLoader,
         IWorkspaceStore workspaceStore,
         Microsoft.Extensions.Logging.ILogger logger,
-        AgentProfile mode
+        AgentProfile mode,
+        bool includeAskUserQuestionTool = true
     )
     {
         // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
@@ -3767,6 +3774,13 @@ public partial class Program
         {
             return null;
         }
+
+        // The host's ClientTools:AskUserQuestion switch applies to the whole tree, test seam included:
+        // an unattended host must not have a child park the run on a question either.
+        baseOptions = baseOptions with
+        {
+            IncludeAskUserQuestionTool = includeAskUserQuestionTool,
+        };
 
         // #670: a FRESH sink per conversation, so a run's measurements are that run's. The library
         // stamps the snapshot into the conversation's own metadata, which is what makes the eval able

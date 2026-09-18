@@ -17,6 +17,9 @@ internal sealed record CheckpointValidationOptions
 
     /// <summary>How the envelope is rendered for V9; must match what the projection dispatches.</summary>
     public CheckpointRenderOptions Render { get; init; } = CheckpointRenderOptions.Default;
+
+    /// <summary>V10: every exchange open at the cut must be pinned in the manifest.</summary>
+    public bool OpenExchanges { get; init; }
 }
 
 /// <summary>What a checkpoint is validated against: the rows it stands in for and the state it mirrors.</summary>
@@ -38,7 +41,7 @@ internal sealed record CheckpointValidationResult
 
     public bool IsValid => Rule is null;
 
-    /// <summary>The rule that failed, <c>V1</c>…<c>V9</c>, or null.</summary>
+    /// <summary>The rule that failed, <c>V1</c>…<c>V10</c>, or null.</summary>
     public string? Rule { get; init; }
 
     /// <summary>What was found, for the log; never shown to the model.</summary>
@@ -51,7 +54,8 @@ internal sealed record CheckpointValidationResult
 }
 
 /// <summary>
-///     The gate before commit (spec 679 §3.4): nine rules, checked in order, first failure wins. A
+///     The gate before commit (spec 679 §3.4): ten rules, checked in order, first failure wins; V10 only
+///     when the host enables it. A
 ///     checkpoint that fails is rejected with <c>validation_failed:Vn</c>, no row is appended, and the
 ///     view the model sees does not change.
 /// </summary>
@@ -210,6 +214,23 @@ internal static class CheckpointValidator
                 "V9",
                 $"envelope is {envelopeTokens} tokens; cap is {options.CheckpointTokenCap}"
             );
+        }
+
+        // V10 (RC3): the manifest pins every exchange the rows show open at the cut. Recomputed, never trusted.
+        if (options.OpenExchanges)
+        {
+            var expectedOpen = Compaction
+                .OpenExchanges.Find(context.Rows, boundary)
+                .Select(x => x.MessageId)
+                .ToHashSet(StringComparer.Ordinal);
+            expectedOpen.ExceptWith(manifest.OpenExchanges.Select(x => x.MessageId));
+            if (expectedOpen.Count > 0)
+            {
+                return CheckpointValidationResult.Fail(
+                    "V10",
+                    $"open exchanges not pinned: {string.Join(", ", expectedOpen.Order(StringComparer.Ordinal))}"
+                );
+            }
         }
 
         return CheckpointValidationResult.Valid;

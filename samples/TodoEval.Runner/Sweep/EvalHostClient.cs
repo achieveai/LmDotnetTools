@@ -5,8 +5,12 @@ using System.Text.Json.Nodes;
 
 namespace TodoEval.Runner.Sweep;
 
-/// <summary>Terminal-status snapshot returned by the host's status-by-input endpoint.</summary>
-internal sealed record RunStatus(string Status, string? RunId);
+/// <summary>
+/// Terminal-status snapshot returned by the host's status-by-input endpoint. <paramref name="Error"/>
+/// is the host's own description of WHY a run ended <c>Errored</c>, when the payload carries one
+/// (an <c>error</c> string, or an object with a <c>message</c>); null when the host says nothing.
+/// </summary>
+internal sealed record RunStatus(string Status, string? RunId, string? Error = null);
 
 /// <summary>
 /// Thin REST client over the ISOLATED LmStreaming.Sample instance, following
@@ -122,8 +126,18 @@ internal sealed class EvalHostClient
 
     // ── Workspaces ───────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Returns the id of the workspace with the given name, creating it when absent.</summary>
-    public async Task<string> EnsureWorkspaceAsync(string workspaceName, CancellationToken ct)
+    /// <summary>
+    /// Returns the id of the workspace with the given name, creating it when absent.
+    /// <paramref name="directoryRelPath"/> names the directory leaf the session mounts under the
+    /// host's workspace base path; null lets the host derive it from the name. A run that needs its
+    /// OWN directory passes the leaf explicitly, because that is the only way the runner and the host
+    /// can agree on which tree the agent is working in.
+    /// </summary>
+    public async Task<string> EnsureWorkspaceAsync(
+        string workspaceName,
+        CancellationToken ct,
+        string? directoryRelPath = null
+    )
     {
         var listBody = await SendReadAsync(HttpMethod.Get, "api/workspaces", body: null, ct);
         using var listDoc = JsonDocument.Parse(listBody);
@@ -145,7 +159,12 @@ internal sealed class EvalHostClient
             }
         }
 
-        var createBody = await SendReadAsync(HttpMethod.Post, "api/workspaces", new { Name = workspaceName }, ct);
+        var createBody = await SendReadAsync(
+            HttpMethod.Post,
+            "api/workspaces",
+            new { Name = workspaceName, DirectoryRelPath = directoryRelPath },
+            ct
+        );
         return ReadStringProperty(createBody, "id");
     }
 
@@ -188,6 +207,90 @@ internal sealed class EvalHostClient
         return ReadStringProperty(body, "inputId");
     }
 
+    /// <summary>
+    ///     How many calls to <paramref name="tool"/> the thread has recorded so far.
+    /// </summary>
+    /// <remarks>
+    ///     Read mid-run so a correction can be released by what the agent has DONE rather than by how
+    ///     long it has taken. Counts the root thread only: a sub-agent's calls are its own thread's, and
+    ///     the s1 read burst this exists for lands on the root thread (measured: 26 of 26 round-9 runs).
+    ///     A thread whose messages cannot be read yet counts as zero rather than failing the run — the
+    ///     correction still has the first answer as its backstop.
+    /// </remarks>
+    public async Task<int> CountToolCallsAsync(string threadId, string tool, CancellationToken ct)
+    {
+        string body;
+        try
+        {
+            body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
+                body: null,
+                ct
+            );
+        }
+        catch (HttpRequestException)
+        {
+            return 0;
+        }
+
+        using var doc = JsonDocument.Parse(body);
+        var messages = doc.RootElement.ValueKind switch
+        {
+            JsonValueKind.Array => doc.RootElement,
+            JsonValueKind.Object when doc.RootElement.TryGetProperty("messages", out var m) => m,
+            _ => default,
+        };
+        if (messages.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var message in messages.EnumerateArray())
+        {
+            if (NamesTheTool(message, tool))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    ///     True when a stored message is a tool call naming <paramref name="tool"/>. The name lives in
+    ///     the nested <c>messageJson</c> payload, which is a STRING on the wire, so it is parsed again.
+    /// </summary>
+    private static bool NamesTheTool(JsonElement message, string tool)
+    {
+        if (
+            !message.TryGetProperty("messageType", out var type)
+            || type.ValueKind != JsonValueKind.String
+            || !string.Equals(type.GetString(), "ToolCallMessage", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return false;
+        }
+
+        if (!message.TryGetProperty("messageJson", out var json) || json.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var inner = JsonDocument.Parse(json.GetString() ?? "{}");
+            return inner.RootElement.TryGetProperty("function_name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                && string.Equals(name.GetString(), tool, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     public async Task<RunStatus> GetStatusByInputIdAsync(string threadId, string inputId, CancellationToken ct)
     {
         var body = await SendReadAsync(
@@ -204,7 +307,30 @@ internal sealed class EvalHostClient
             doc.RootElement.TryGetProperty("runId", out var runIdProp) && runIdProp.ValueKind == JsonValueKind.String
                 ? runIdProp.GetString()
                 : null;
-        return new RunStatus(status, runId);
+        return new RunStatus(status, runId, ReadError(doc.RootElement));
+    }
+
+    /// <summary>
+    /// The error text a status payload carries, if any. Tolerant of both shapes a host may emit — a
+    /// plain <c>error</c> string, or an <c>error</c> object with a <c>message</c> (the lifecycle
+    /// error's shape) — so the manifest row is populated whichever one lands.
+    /// </summary>
+    private static string? ReadError(JsonElement root)
+    {
+        if (!root.TryGetProperty("error", out var error))
+        {
+            return null;
+        }
+
+        return error.ValueKind switch
+        {
+            JsonValueKind.String => error.GetString() is { Length: > 0 } text ? text : null,
+            JsonValueKind.Object
+                when error.TryGetProperty("message", out var message)
+                    && message.ValueKind == JsonValueKind.String
+                    && message.GetString() is { Length: > 0 } text => text,
+            _ => null,
+        };
     }
 
     // ── Polling ──────────────────────────────────────────────────────────────────────────────────

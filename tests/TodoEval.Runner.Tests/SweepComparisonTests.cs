@@ -26,17 +26,23 @@ public class SweepComparisonTests : IDisposable
         FingerprintSet? candidateExtractedUnder = null,
         IReadOnlyList<RunMetrics>? candidateRuns = null,
         bool candidateManifest = true,
-        bool candidateRunsFile = true
+        bool candidateRunsFile = true,
+        IReadOnlyList<VariantConfig>? baselineVariants = null,
+        IReadOnlyList<VariantConfig>? candidateVariants = null,
+        IReadOnlyList<string>? baselineTasks = null,
+        IReadOnlyList<string>? candidateTasks = null
     )
     {
-        var baseline = _fixture.Write("baseline", CleanRuns());
+        var baseline = _fixture.Write("baseline", CleanRuns(), variants: baselineVariants, tasks: baselineTasks);
         var candidate = _fixture.Write(
             "candidate",
             candidateRuns ?? CleanRuns(),
             candidateRanUnder,
             candidateExtractedUnder,
             candidateManifest,
-            candidateRunsFile
+            candidateRunsFile,
+            candidateVariants,
+            candidateTasks
         );
         return SweepComparison.Compare(SweepFixture.Load(baseline), SweepFixture.Load(candidate));
     }
@@ -64,6 +70,69 @@ public class SweepComparisonTests : IDisposable
         report.Refusal.Should().Be(ComparisonRefusal.CorpusHashDiffers);
         report.Reason.Should().Contain("taskCorpusHash");
     }
+
+    // ── the variant / task axes ──────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void DifferentVariantNames_RefuseAsDifferentExperiments()
+    {
+        var report = CompareWith(
+            baselineVariants: [Variant("off", "--Compaction:Mode=Off")],
+            candidateVariants: [Variant("compact-v0", "--Compaction:Mode=Compact")]
+        );
+
+        report.Refusal.Should().Be(ComparisonRefusal.SweepAxesDiffer);
+        report.Deltas.Should().BeNull("a refused comparison publishes no number the two are not entitled to share");
+    }
+
+    [Fact]
+    public void SameVariantNameWithDifferentArguments_StillRefuses()
+    {
+        // The failure this exists to stop: two sweeps both name an arm "compact-v0" and configure a
+        // different target ratio. Comparing them on the name alone would report a strategy delta that
+        // is really a configuration delta.
+        var report = CompareWith(
+            baselineVariants: [Variant("compact-v0", "--Compaction:Mode=Compact")],
+            candidateVariants: [Variant("compact-v0", "--Compaction:Mode=Compact", "--Compaction:TargetRatio=0.35")]
+        );
+
+        report.Refusal.Should().Be(ComparisonRefusal.SweepAxesDiffer);
+    }
+
+    [Fact]
+    public void DifferentTaskLists_Refuse()
+    {
+        var report = CompareWith(baselineTasks: ["c1", "d1"], candidateTasks: ["c1"]);
+
+        report.Refusal.Should().Be(ComparisonRefusal.SweepAxesDiffer);
+    }
+
+    [Fact]
+    public void SameAxesInADifferentOrder_CompareCleanly()
+    {
+        // Sweeping two cells in the other order measures the same thing, so order must not refuse.
+        var report = CompareWith(
+            baselineVariants: [Variant("off", "--Compaction:Mode=Off"), Variant("on", "--Compaction:Mode=Compact")],
+            candidateVariants: [Variant("on", "--Compaction:Mode=Compact"), Variant("off", "--Compaction:Mode=Off")],
+            baselineTasks: ["c1", "d1"],
+            candidateTasks: ["d1", "c1"]
+        );
+
+        report.Refusal.Should().Be(ComparisonRefusal.None);
+    }
+
+    [Fact]
+    public void ArchiveWithoutTheAxisFields_ComparesCleanlyAgainstADefaultVariantSweep()
+    {
+        // An archive written before the axes existed records no variants at all. It ran the single
+        // default variant and the single unnamed task, so it must stay comparable — otherwise adding
+        // the axes would retire every baseline in the repo.
+        var report = CompareWith(baselineVariants: null, candidateVariants: [VariantConfig.Default]);
+
+        report.Refusal.Should().Be(ComparisonRefusal.None);
+    }
+
+    private static VariantConfig Variant(string name, params string[] args) => new() { Name = name, ExtraArgs = args };
 
     [Fact]
     public void SpecVersionDiffers_RefusesOnTheExtractedUnderVersion()

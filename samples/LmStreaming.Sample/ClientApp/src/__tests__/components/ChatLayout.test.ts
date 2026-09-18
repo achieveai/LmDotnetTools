@@ -772,6 +772,7 @@ describe('ChatLayout question inbox automatic retry', () => {
 
 describe('ChatLayout mode switching', () => {
   beforeEach(() => {
+    localStorage.clear();
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
@@ -2910,10 +2911,15 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
       path: { type: String, default: undefined },
       target: { type: String, default: undefined },
     },
-    emits: ['close'],
+    emits: ['close', 'toggle-expand', 'resolved'],
     template:
       '<div data-test-id="artifact-preview-modal">'
       + '<button data-test="modal-close" @click="$emit(\'close\')">close</button>'
+      + '<button data-test="modal-expand" @click="$emit(\'toggle-expand\')">expand</button>'
+      // Stands in for the real modal reporting a `target` opener's server-resolved canonical path
+      // (F-001, #784) — always the same file the board chip below opens by `path`, so a test can
+      // drive either opener order and assert they land in one tab.
+      + '<button data-test="modal-resolved" @click="$emit(\'resolved\', \'docs/spec.md\')">resolved</button>'
       + '</div>',
   });
 
@@ -2925,6 +2931,7 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
           MessageList: true,
           PendingMessageQueue: true,
           ChatInput: true,
+          ShareConversationModal: true,
           TodoBoardPanel: TodoBoardPanelStub,
           // The SUBJECT here is ChatLayout's mount gate, not the modal's internals
           // (ArtifactPreviewModal.test.ts owns those).
@@ -2991,17 +2998,54 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
   });
 
-  it('tells the modal an expanded sidebar column is beside it, and stops when it collapses (#594 D6)', async () => {
-    // The prop is the testable seam of the reworked D6 fix (#603 F-001): jsdom computes no layout,
-    // so the backdrop geometry itself is pinned by the source-text guards below; THIS pins that
-    // ChatLayout only claims the column while the sidebar is actually expanded — collapsed, the
-    // 280px offset would expose an unclickable dead strip instead of a sidebar.
+  it('hosts the preview inside the inspector instead of opening a modal beside the sidebar', async () => {
     const wrapper = await mountWithOpenModal();
-    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(true);
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).attributes()).toHaveProperty('embedded');
+    expect(wrapper.find('[data-testid="workspace-preview-region"]').exists()).toBe(true);
+  });
 
-    wrapper.findComponent({ name: 'ConversationSidebar' }).vm.$emit('toggle-collapse');
+  it('restores the mounted conversation when the inspector closes from expanded reading', async () => {
+    const wrapper = await mountWithOpenModal();
+    await wrapper.get('[data-test="modal-expand"]').trigger('click');
+    expect(wrapper.get('main.chat-main').attributes('style')).toContain('display: none');
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.get('main.chat-main').attributes('style') ?? '').not.toContain('display: none');
+  });
+
+  it('clamps a saved workspace width for a narrow viewport and restores it after widening', async () => {
+    localStorage.setItem('lmstreaming.workspaceWidth', '900');
+    localStorage.setItem('lmstreaming.previewHeight', '5000');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 });
+    const wrapper = mountLayout();
     await flushPromises();
-    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(false);
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 900px');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    window.dispatchEvent(new Event('resize'));
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).not.toContain('--inspector-width: 900px');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 });
+    window.dispatchEvent(new Event('resize'));
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 900px');
+    expect(localStorage.getItem('lmstreaming.workspaceWidth')).toBe('900');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    window.dispatchEvent(new Event('resize'));
+    await wrapper.get('[data-testid="sidebar-toggle"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 826px');
+
+    sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+    await wrapper.get('[data-test="board-chip"]').trigger('click');
+    const verticalSplitter = wrapper.get('[data-testid="workspace-vertical-splitter"]');
+    expect(verticalSplitter.attributes('aria-valuenow')).toBe(verticalSplitter.attributes('aria-valuemax'));
+    expect(localStorage.getItem('lmstreaming.previewHeight')).toBe('5000');
+    await wrapper.get('[data-test="modal-expand"]').trigger('click');
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 1193px');
   });
 
   describe('chat file links', () => {
@@ -3016,6 +3060,7 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
         '<div>'
         + '<span data-test="links-thread">{{ links.threadId.value }}</span>'
         + '<button data-test="file-link" @click="links.open({ threadId: \'thread-1\', target: \'B:\\\\ws\\\\a.md\' })">a</button>'
+        + '<button data-test="file-link-two" @click="links.open({ threadId: \'thread-1\', target: \'B:\\\\ws\\\\b.md\' })">b</button>'
         + '<button data-test="stale-link" @click="links.open({ threadId: \'thread-old\', target: \'b.md\' })">b</button>'
         + '</div>',
     });
@@ -3067,6 +3112,66 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
       expect(modal.props('path')).toBe('docs/spec.md');
       expect(modal.props('target')).toBeUndefined();
     });
+
+    it('keeps multiple deduplicated tabs across agent switches and clears them on a root switch', async () => {
+      const wrapper = await mountWithLinks();
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      await wrapper.get('[data-test="file-link-two"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      sharedMocks.focusedAgentIdRef!.value = 'agent-1';
+      await flushPromises();
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      sharedMocks.chatThreadIdRef!.value = 'thread-2';
+      await flushPromises();
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(0);
+    });
+
+    // F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) build
+    // their tab id from the raw opener-specific string, so the same server-resolved file opened
+    // once each way used to land in two tabs. Both orders must converge on one.
+    it('dedupes a path opener into a tab already resolved from a target opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      // The modal reports the target's server-resolved canonical path — the same file the board
+      // chip below opens by `path` ('docs/spec.md').
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+    });
+
+    it('dedupes a target opener into a tab already open from a path opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      // The now-active target tab resolves to the same canonical path the chip's tab already carries.
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      const tabs = wrapper.findAll('.preview-tabs [role="tab"]');
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0].attributes('aria-selected')).toBe('true');
+    });
   });
 });
 
@@ -3098,15 +3203,9 @@ describe('ChatLayout artifact-preview / sidebar geometry (#594 D6 / #603 F-001, 
     }
   });
 
-  it('stops the preview backdrop exactly at the sidebar column it exposes — the pair that must move together', () => {
-    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
-    // Repeating `.modal-backdrop` in the compound selector is load-bearing: 0,3,0 out-specifies
-    // BaseModal's `inset: 0` at 0,2,0, so bundle source order never decides the cascade.
-    expect(modal).toMatch(
-      /\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*280px/
-    );
+  it('sizes the project sidebar through its desktop custom property', () => {
     const sidebar = readSrc('../../components/ConversationSidebar.vue');
-    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*280px/);
+    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*var\(--sidebar-width\)/);
   });
 
   it('returns the backdrop to full viewport at the sidebar\'s own mobile breakpoint', () => {

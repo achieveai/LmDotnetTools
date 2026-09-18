@@ -59,11 +59,20 @@ public class CompactionLoopTests
             return Task.FromResult(Stream(reply));
         }
 
+        /// <summary>The requests made off the streaming path: the summary pass calls the agent directly.</summary>
+        public List<IReadOnlyList<IMessage>> SummaryRequests { get; } = [];
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
             CancellationToken cancellationToken = default
-        ) => throw new NotSupportedException();
+        )
+        {
+            SummaryRequests.Add([.. messages]);
+            return Task.FromResult<IEnumerable<IMessage>>([
+                new TextMessage { Text = SummaryJson, Role = Role.Assistant },
+            ]);
+        }
 
         private static async IAsyncEnumerable<IMessage> Stream(
             IEnumerable<IMessage> messages,
@@ -78,6 +87,10 @@ public class CompactionLoopTests
             }
         }
     }
+
+    /// <summary>What a real summarizer's provider answers: the smallest summary the validator accepts.</summary>
+    private const string SummaryJson =
+        """{"instructions":[],"goals":[],"decisions":[],"tasks":[],"artifacts":[],"headlines":{},"agent_outcomes":{},"narrative":"Summarised."}""";
 
     /// <summary>Quotes the current instruction whole and headlines every run: always passes V1–V9.</summary>
     private sealed class EchoSummarizer : ICheckpointSummarizer
@@ -158,11 +171,17 @@ public class CompactionLoopTests
             Func<string, string>? echo = null,
             bool start = true,
             Func<Exception, bool>? overflowVerdict = null,
-            ILogger<MultiTurnAgentLoop>? logger = null
+            ILogger<MultiTurnAgentLoop>? logger = null,
+            string? extraTool = null,
+            bool realSummarizer = false,
+            Func<string?, long>? textTokens = null
         )
         {
             Agent = new ScriptedAgent(script);
             Store = store ?? new InMemoryConversationStore();
+            Task<ToolHandlerResult> Handle(string args, ToolCallContext _, CancellationToken __) =>
+                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding));
+
             var registry = new FunctionRegistry().AddFunction(
                 new FunctionContract
                 {
@@ -170,13 +189,26 @@ public class CompactionLoopTests
                     Description = "Returns padding",
                     Parameters = [],
                 },
-                (args, _, _) =>
-                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding))
+                Handle
             );
+            // A second tool under a name the compaction tool-knowledge registry recognises (e.g. "Read").
+            if (extraTool is not null)
+            {
+                registry = registry.AddFunction(
+                    new FunctionContract
+                    {
+                        Name = extraTool,
+                        Description = "Returns padding",
+                        Parameters = [],
+                    },
+                    Handle
+                );
+            }
             Setup = new CompactionSetup
             {
                 Options = options,
-                Summarizer = Summarizer,
+                // Null lets the runtime pick the summarizer its options name, which is what the prefix mode selects.
+                Summarizer = realSummarizer ? null : Summarizer,
                 // Each test's window is what the conversation may use: the tool definitions every request
                 // carries come on top, so the arithmetic above holds while the estimate counts them.
                 ResolveWindowTokens = window is null ? null : model => window(model) + (Loop?.ToolSchemaTokens ?? 0),
@@ -184,6 +216,7 @@ public class CompactionLoopTests
                 ReadEnvironment = _ => KillSwitch,
                 // Unset by default: the tests exercise the built-in verdict a host such as the sample gets.
                 IsContextOverflow = overflowVerdict,
+                TextTokens = textTokens,
             };
             KillSwitch = killSwitch;
             Loop = new MultiTurnAgentLoop(
@@ -411,6 +444,100 @@ public class CompactionLoopTests
         ToolResults(h.Agent.Requests[1]).Single().Result.Should().Be(grep, $"{mode} never changes the provider input");
     }
 
+    /// <summary>Reads the same file for the first <paramref name="calls"/> requests, then answers with text.</summary>
+    private static Func<int, IReadOnlyList<IMessage>> ReadThenDone(int calls) =>
+        call =>
+            call <= calls
+                ?
+                [
+                    new ToolCallMessage
+                    {
+                        ToolCallId = $"rd-{call}",
+                        FunctionName = "Read",
+                        FunctionArgs = """{"file_path":"a.md"}""",
+                        Role = Role.Assistant,
+                    },
+                ]
+                : [new TextMessage { Text = "done", Role = Role.Assistant }];
+
+    /// <summary>
+    /// Six reads of one file in an 8,000-token window, keeping one tool turn whole. Row seqs are only known
+    /// after the clear pass reconciles them with the store, which is when RC1 can name a newest copy at all.
+    /// </summary>
+    private static Harness RepeatedReads(CompactionChecks checks) =>
+        new(
+            ReadThenDone(6),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 1,
+                Checks = checks,
+            },
+            _ => 8_000,
+            echo: _ => "padding " + new string('e', 4_000),
+            extraTool: "Read"
+        );
+
+    [Fact]
+    public async Task Rc1_ReplacesOlderReadsOfTheSameFile_InTheProviderRequest()
+    {
+        await using var h = RepeatedReads(new CompactionChecks { Rc1ResourceDedupe = true });
+
+        var completed = await h.RunAsync("audit the file");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var reads = ToolResults(h.Agent.Requests[^1]).ToList();
+        reads
+            .Count(r => r.Result.Contains("padding", StringComparison.Ordinal))
+            .Should()
+            .Be(1, "only the newest read of a.md keeps its text");
+        reads
+            .Count(r => r.Result.StartsWith("[Tool result superseded", StringComparison.Ordinal))
+            .Should()
+            .BeGreaterThan(1, "every earlier read names the newest copy instead of the recall placeholder");
+    }
+
+    [Fact]
+    public async Task Rc1_Off_ShowsTheRecallPlaceholderForEveryClearedRead()
+    {
+        await using var h = RepeatedReads(CompactionChecks.None);
+
+        (await h.RunAsync("audit the file")).IsError.Should().BeFalse();
+
+        ToolResults(h.Agent.Requests[^1])
+            .Should()
+            .NotContain(r => r.Result.StartsWith("[Tool result superseded", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Rc2_TrimsAClearedShellResult_InsteadOfReplacingIt()
+    {
+        // Echo is not in the tool-knowledge registry, so RC2 treats it as a shell tool: not reproducible.
+        await using var h = new Harness(
+            EchoThenDone(8),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 2,
+                Checks = new CompactionChecks { Rc2ShellRetention = true },
+                ShellTrimChars = 500,
+            },
+            _ => 8_000,
+            echo: _ => new string('e', 4_000)
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var cleared = h.Agent.Requests.FindIndex(r => ToolResults(r).Any(x => x.Result.Length < 4_000));
+        cleared.Should().BePositive();
+        var shown = ToolResults(h.Agent.Requests[cleared]).ToList();
+        shown
+            .Take(shown.Count - 2)
+            .Should()
+            .OnlyContain(r =>
+                r.Result.Contains("elided from this tool result", StringComparison.Ordinal) && r.Result.Length <= 500
+            );
+        shown.TakeLast(2).Should().OnlyContain(r => r.Result.Length == 4_000, "the most recent turns stay whole");
+    }
+
     [Fact]
     public async Task CompactMode_ClearsOldToolResultsBeforeSummarizing_AndSkipsTheSummaryWhenThatFits()
     {
@@ -448,6 +575,35 @@ public class CompactionLoopTests
         // Prompt-cache stability: once cleared, the next request repeats this one byte for byte as its prefix.
         var before = ContentWire(h.Agent.Requests[cleared]);
         ContentWire(h.Agent.Requests[cleared + 1]).Take(before.Count).Should().Equal(before);
+    }
+
+    [Fact]
+    public async Task ClearAnsweredToolResultsOnly_LeavesTheExchangeInProgressWhole_AndSummarizesInstead()
+    {
+        // The same window and turns as the test above, where clearing all but the last two turns alone reached
+        // the target. Every one of those turns belongs to the single exchange the model is still working on, so
+        // with the guard on there is nothing it may clear and the summariser has to make the room.
+        await using var h = new Harness(
+            EchoThenDone(8),
+            Options(CompactionMode.Compact) with
+            {
+                ClearToolResultsKeepTurns = 2,
+                ClearAnsweredToolResultsOnly = true,
+            },
+            _ => 8_000,
+            echo: _ => new string('e', 4_000)
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var state = await h.StateAsync();
+        state!.ToolResultsClearedThroughSeq.Should().BeNull("the model has not answered on any of these results");
+        h.Decisions.Select(d => d.Reason).Should().NotContain(CompactionReasons.ToolResultsCleared);
+        h.Summarizer.Requests.Should().NotBeEmpty("the room has to come from a summary instead");
+        ToolResults(h.Agent.Requests[^1])
+            .Should()
+            .OnlyContain(r => r.Result.Length == 4_000, "no result the model is still using was replaced");
     }
 
     [Fact]
@@ -580,6 +736,33 @@ public class CompactionLoopTests
             );
     }
 
+    [Fact]
+    public async Task PolicyEstimate_SizesTextWithTheSetupsTokenizer_NotTheCharacterHeuristic()
+    {
+        // The heuristic overcounts prose by ~40% (r1: an 85k estimate for a 60k request), which is what pushed a
+        // fitting request into the fit escalation. A host with a real tokenizer hands it in through the setup and
+        // the policy's estimate follows it: here a counter that charges one token per run of text, so the 1,200
+        // character tool result the second request carries costs one token instead of 300.
+        await using var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Warn),
+            _ => 100_000,
+            textTokens: _ => 1
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var growth = h.Decisions[1].Tokens - h.Decisions[0].Tokens;
+        growth.Should().BePositive("the tool call and its result were appended");
+        growth.Should().BeLessThan(ResultTokens, "the result's text was sized by the tokenizer, not length / 4");
+        h.Decisions[0]
+            .Tokens.Should()
+            .BeGreaterThanOrEqualTo(
+                h.Agent.Requests[0].Count * CompactionTokenEstimate.PerMessageOverhead,
+                "the per-message framing is charged whatever sizes the text"
+            );
+    }
+
     private static bool HasEnvelope(IReadOnlyList<IMessage> request) =>
         request.Any(m =>
             m is TextMessage { Role: Role.User } t && t.Text.Contains("RecallConversation", StringComparison.Ordinal)
@@ -702,6 +885,46 @@ public class CompactionLoopTests
         var state = await h.StateAsync();
         state!.ActiveCheckpointId.Should().Be(applied.CheckpointId);
         state.ActiveBoundarySeq.Should().Be(applied.BoundarySeq);
+    }
+
+    [Fact]
+    public void CachedPrefix_WithADifferentSummaryModel_IsRefusedWhenTheRuntimeIsBuilt()
+    {
+        var options = Options(CompactionMode.Compact) with
+        {
+            SummaryPrefixMode = SummaryPrefixMode.CachedPrefix,
+            SummaryModelId = "other-model",
+        };
+
+        var act = () => new Harness(EchoThenDone(1), options, _ => Window, start: false);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*CachedPrefix needs the same model as the loop*");
+    }
+
+    [Fact]
+    public async Task CachedPrefix_RunsTheSummaryPass_OnTheAgentsOwnRequestPrefix()
+    {
+        await using var h = new Harness(
+            EchoThenDone(7),
+            Options(CompactionMode.Compact) with
+            {
+                SummaryPrefixMode = SummaryPrefixMode.CachedPrefix,
+            },
+            _ => Window,
+            realSummarizer: true
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        var summaryRequest = h.Agent.SummaryRequests.Should().ContainSingle().Subject;
+        summaryRequest[0].Role.Should().Be(Role.System, "the prefix opens with the loop's own system prompt");
+        summaryRequest[^1]
+            .Should()
+            .BeOfType<TextMessage>()
+            .Which.Text.Should()
+            .Contain("Rows being compacted (already in your context above; cite by seq):");
+        h.Agent.Requests.Should().Contain(r => HasEnvelope(r), "the pass produced a checkpoint the view uses");
     }
 
     [Fact]
@@ -1606,6 +1829,77 @@ public class CompactionLoopTests
         ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARowWrittenByANewerSchema_IsNotAdopted_WhileTheSameRowAtThisSchemaStillIs(bool fromTheFuture)
+    {
+        // The half of the rollback contract (§8.3) the $type cannot carry. "compaction_checkpoint" does
+        // not change when the schema does, so a row a newer build wrote deserializes here without
+        // complaint and every manifest section this build has no field for is dropped the way any
+        // unknown JSON property is. Adopting it would put a view in front of the model that looks whole
+        // and is not. The false case is the control: the same row, untouched, is still adopted.
+        var options = Options(CompactionMode.Compact);
+        IConversationStore store;
+        string checkpointId;
+        var first = new Harness(EchoThenDone(7), options, _ => Window);
+        try
+        {
+            (await first.RunAsync("start")).IsError.Should().BeFalse();
+            checkpointId = (await first.StateAsync())!.ActiveCheckpointId.Should().NotBeNull().And.Subject!.ToString()!;
+            store = first.Store;
+        }
+        finally
+        {
+            await first.DisposeAsync();
+        }
+
+        if (fromTheFuture)
+        {
+            await RewriteCheckpointSchemaAsync(store, CompactionCheckpointMessage.CurrentSchemaVersion + 1);
+        }
+
+        await using var second = new Harness(EchoThenDone(0), options, _ => Window, store: store);
+        (await second.RunAsync("continue")).IsError.Should().BeFalse();
+
+        var history = (await second.StateAsync())!.History.Where(e => e.CheckpointId == checkpointId).ToList();
+        if (fromTheFuture)
+        {
+            history
+                .Should()
+                .Contain(e => e.Status == CheckpointStatus.RolledBack && e.Reason == CheckpointReasons.SchemaTooNew);
+        }
+        else
+        {
+            history
+                .Should()
+                .NotContain(
+                    e => e.Reason == CheckpointReasons.SchemaTooNew,
+                    "a row this build can read in full is adopted, or the guard says nothing"
+                );
+        }
+    }
+
+    /// <summary>
+    /// Rewrites the thread's checkpoint row in place so it claims <paramref name="schemaVersion"/>. The
+    /// edit is textual on purpose: it is exactly what a newer writer's bytes look like to this build.
+    /// </summary>
+    private static async Task RewriteCheckpointSchemaAsync(IConversationStore store, int schemaVersion)
+    {
+        var rows = await store.LoadMessagesAsync(Thread);
+        var row = rows.Last(r =>
+            string.Equals(r.MessageType, nameof(CompactionCheckpointMessage), StringComparison.Ordinal)
+        );
+        var rewritten = row.MessageJson.Replace(
+            $"\"schema_version\":{CompactionCheckpointMessage.CurrentSchemaVersion}",
+            $"\"schema_version\":{schemaVersion}",
+            StringComparison.Ordinal
+        );
+        rewritten.Should().NotBe(row.MessageJson, "the row must actually carry the version this rewrites");
+
+        await store.ReplaceMessageAsync(Thread, row with { MessageJson = rewritten });
+    }
+
     [Fact]
     public async Task KillSwitch_SkipsDisabled_AndRollsTheActiveCheckpointBackOnTheNextRequest()
     {
@@ -2336,7 +2630,18 @@ public class CompactionLoopTests
         var system = h.Agent.Requests[0].OfType<TextMessage>().Where(m => m.Role == Role.System).Select(m => m.Text);
         if (told)
         {
-            system.Should().ContainSingle().Which.Should().Contain(CompactionRuntime.SystemNote);
+            system
+                .Should()
+                .ContainSingle()
+                .Which.Should()
+                .StartWith(
+                    CompactionRuntime.SystemNote,
+                    "host and caller instructions must retain their later, stronger prompt position"
+                );
+            CompactionRuntime
+                .WithSystemNote("CALLER PROMPT", h.Setup, Model)
+                .Should()
+                .EndWith("CALLER PROMPT", "enabling compaction must retain the supplied prompt after its disclosure");
         }
         else
         {

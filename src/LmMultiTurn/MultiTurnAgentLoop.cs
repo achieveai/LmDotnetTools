@@ -428,11 +428,10 @@ public sealed class MultiTurnAgentLoop
             // The identity block has to be composed HERE, in the base-call argument list: SystemPrompt
             // is assigned by the base constructor, which runs before `Collaboration` is set in this
             // constructor's body. Composing it in the body would leave the prompt already stored. The
-            // compaction note goes on the same way.
-            CompactionRuntime.WithSystemNote(
-                AgentIdentityPreamble.Prepend(systemPrompt, collaboration),
-                compaction,
-                defaultOptions?.ModelId
+            // compaction note goes on the same way, after identity but before host/caller instructions.
+            AgentIdentityPreamble.Prepend(
+                CompactionRuntime.WithSystemNote(systemPrompt, compaction, defaultOptions?.ModelId),
+                collaboration
             ),
             defaultOptions,
             maxTurnsPerRun,

@@ -9,10 +9,10 @@ namespace LmStreaming.Sample.Configuration;
 /// every knob the policy has is settable from appsettings or <c>Compaction__*</c> environment variables.
 /// </summary>
 /// <remarks>
-/// The library default is <see cref="CompactionMode.Off"/> and the shipped appsettings sets
-/// <c>"Compaction": { "Mode": "Off" }</c>, so a host that does not turn a route on builds no setup: every loop
-/// is constructed exactly as before, <c>manualCompaction</c> is not advertised and a manual request answers
-/// 409 <c>compaction_off</c>.
+/// The library default is <see cref="CompactionMode.Off"/>, while this sample deliberately ships the ADR 0020
+/// production profile in Compact mode. Operators can still set <c>Compaction__Mode=Off</c>; when no route is on,
+/// the host builds no setup, <c>manualCompaction</c> is not advertised and a manual request answers 409
+/// <c>compaction_off</c>.
 /// </remarks>
 public static class CompactionHostSetup
 {
@@ -52,13 +52,57 @@ public static class CompactionHostSetup
             return null;
         }
 
+        string? summaryPrompt = null;
+        if (!string.IsNullOrWhiteSpace(options.SummaryPromptPath))
+        {
+            // The eval's prompt files carry YAML front matter (id, parent, hypothesis); the model sees only the body.
+            summaryPrompt = StripFrontMatter(File.ReadAllText(options.SummaryPromptPath));
+        }
+
         return new CompactionSetup
         {
             Options = options,
             ProviderId = providerId,
+            SummarySystemPrompt = summaryPrompt,
+            TextTokens = ResolveTextTokens(options.TextTokenizer),
             ResolveWindowTokens = capacityResolver is null
                 ? null
                 : modelId => string.IsNullOrEmpty(modelId) ? null : capacityResolver.Resolve(modelId)?.WindowTokens,
         };
+    }
+
+    /// <summary>
+    ///     The tokenizer <see cref="CompactionOptions.TextTokenizer"/> names, or null for the library's length / 4
+    ///     heuristic. <c>o200k</c> is the encoding of the GPT-4o and GPT-5 families, which the eval's routes use; the
+    ///     encoder is built once per process and is safe to share.
+    /// </summary>
+    internal static Func<string?, long>? ResolveTextTokens(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (!string.Equals(name.Trim(), "o200k", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Compaction:TextTokenizer '{name}' is not supported; use 'o200k' or leave it unset for the length / 4 heuristic."
+            );
+        }
+
+        var encoder = new Tiktoken.Encoder(new Tiktoken.Encodings.O200KBase());
+        return text => string.IsNullOrEmpty(text) ? 0 : encoder.CountTokens(text);
+    }
+
+    /// <summary>The text after a leading <c>---</c>…<c>---</c> block, trimmed; the whole text when there is none.</summary>
+    internal static string StripFrontMatter(string text)
+    {
+        if (!text.StartsWith("---", StringComparison.Ordinal))
+        {
+            return text.Trim();
+        }
+
+        var end = text.IndexOf("\n---", 3, StringComparison.Ordinal);
+        return end < 0 ? text.Trim() : text[(end + 4)..].Trim();
     }
 }

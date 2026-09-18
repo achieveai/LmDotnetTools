@@ -1,0 +1,50 @@
+{
+  "2026-03-02": {
+    "ticket": "INC-4102",
+    "path": "/api/search"
+  },
+  "2026-03-03": {
+    "ticket": "INC-4107",
+    "path": "/api/orders"
+  },
+  "2026-03-04": {
+    "ticket": "INC-4111",
+    "path": "/api/reports/daily"
+  },
+  "2026-03-05": {
+    "ticket": "INC-4115",
+    "path": "/login"
+  },
+  "2026-03-06": {
+    "ticket": "INC-4119",
+    "path": "/api/items"
+  },
+  "2026-03-07": {
+    "ticket": "INC-4124",
+    "path": "/api/cart"
+  },
+  "2026-03-08": {
+    "ticket": "INC-4128",
+    "path": "/api/export"
+  },
+  "2026-03-09": {
+    "ticket": "INC-4133",
+    "path": "/api/orders/{id}/status"
+  },
+  "2026-03-10": {
+    "ticket": "INC-4137",
+    "path": "/static/app.js"
+  },
+  "2026-03-11": {
+    "ticket": "INC-4141",
+    "path": "/api/items/{id}"
+  },
+  "2026-03-12": {
+    "ticket": "INC-4146",
+    "path": "/api/search"
+  },
+  "2026-03-13": {
+    "ticket": "INC-4150",
+    "path": "/health"
+  }
+}

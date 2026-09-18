@@ -27,8 +27,49 @@ internal sealed record ToolResultViewOptions
     /// <summary>The least a tightened result keeps, in characters (never more than <see cref="CapChars" />).</summary>
     public int TightenedFloorChars { get; init; }
 
+    /// <summary>
+    ///     RC1: result seq → the newest result seq that read the same resource. Those seqs show a placeholder
+    ///     naming the newer copy, whatever the clear watermark says. Null or empty dedupes nothing.
+    /// </summary>
+    public IReadOnlyDictionary<long, long>? SupersededBy { get; init; }
+
+    /// <summary>
+    ///     RC2: the seqs of results whose call was a shell tool. A cleared one of these is trimmed to
+    ///     <see cref="ShellTrimChars" /> instead of replaced, because a command's output cannot be re-read.
+    /// </summary>
+    public IReadOnlySet<long>? ShellSeqs { get; init; }
+
+    /// <summary>
+    ///     RC2: characters a cleared shell result keeps (head + tail around the elision marker); an error result
+    ///     (<see cref="IsErrorResult" />) keeps twice as many, because a failure is what the next turn reasons about.
+    /// </summary>
+    public int ShellTrimChars { get; init; } = 1_500;
+
+    /// <summary>A result that starts with "Error" (any case) or reports a non-zero exit code.</summary>
+    internal static bool IsErrorResult(string text)
+    {
+        if (text.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        const string Marker = "exit code";
+        var at = text.LastIndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            return false;
+        }
+
+        var digits = new string([.. text[(at + Marker.Length)..].TrimStart(':', ' ').TakeWhile(char.IsDigit)]);
+        return digits.Length > 0 && digits.Trim('0').Length > 0;
+    }
+
     /// <summary>True when no transform can change a message.</summary>
-    public bool IsIdentity => CapChars == int.MaxValue && ClearedThroughSeq <= 0 && TightenedThroughSeq <= 0;
+    public bool IsIdentity =>
+        CapChars == int.MaxValue
+        && ClearedThroughSeq <= 0
+        && TightenedThroughSeq <= 0
+        && SupersededBy is null or { Count: 0 };
 
     /// <summary>One whole, in <see cref="TightenedPartsPerMillion" /> units.</summary>
     public const int PartsPerMillion = 1_000_000;
@@ -48,8 +89,10 @@ internal sealed record ToolResultViewOptions
 }
 
 /// <summary>
-///     The two view-only transforms of a tool result (compaction phase 1): <b>clear</b> — a result at or below
-///     the persisted clear watermark becomes a short placeholder naming its seq and size — and <b>trim</b> — a
+///     The view-only transforms of a tool result (compaction phase 1): <b>supersede</b> — a result the eval's RC1
+///     check found an identical newer read of becomes a placeholder naming that newer seq — <b>clear</b> — a
+///     result at or below the persisted clear watermark becomes a short placeholder naming its seq and size —
+///     and <b>trim</b> — a
 ///     result longer than the cap keeps its head and tail around a marker naming the elided size and the
 ///     recall call that reads it. A result the fit check had to shrink further is trimmed below the cap
 ///     (<see cref="ToolResultViewOptions.TightenedThroughSeq" />). All are pure functions of the row, its seq and the
@@ -111,13 +154,35 @@ internal static class ToolResultView
     /// <summary>
     ///     The clear watermark that keeps the <paramref name="keepTurns" /> most recent tool turns whole: the
     ///     seq just before the first row of the oldest kept turn, or 0 when there are no older turns. A tool
-    ///     turn is the call and result rows of one generation; an unstamped row is its own turn.
+    ///     turn is the call and result rows of one generation; an unstamped row is its own turn. With
+    ///     <paramref name="answeredOnly" /> the watermark also stops before the latest human input, so the
+    ///     exchange in progress keeps every result whole.
     /// </summary>
-    public static long ClearedThroughSeq(IReadOnlyList<SequencedMessage> rows, int keepTurns)
+    public static long ClearedThroughSeq(IReadOnlyList<SequencedMessage> rows, int keepTurns, bool answeredOnly = false)
     {
         ArgumentNullException.ThrowIfNull(rows);
         ArgumentOutOfRangeException.ThrowIfLessThan(keepTurns, 1);
 
+        var through = OldestKeptTurnWatermark(rows, keepTurns);
+        if (!answeredOnly)
+        {
+            return through;
+        }
+
+        long? latestHuman = null;
+        foreach (var row in rows)
+        {
+            if (row.IsHumanRow)
+            {
+                latestHuman = row.Seq;
+            }
+        }
+
+        return latestHuman is { } human ? Math.Min(through, human - 1) : through;
+    }
+
+    private static long OldestKeptTurnWatermark(IReadOnlyList<SequencedMessage> rows, int keepTurns)
+    {
         var turnStarts = new List<long>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in rows)
@@ -154,8 +219,21 @@ internal static class ToolResultView
             return null;
         }
 
+        if (options.SupersededBy is { } superseded && superseded.TryGetValue(seq, out var newest))
+        {
+            var replaced = SupersededPlaceholder(text.Length, toolCallId, seq, newest, options.RecallToolName);
+            return replaced.Length < text.Length ? replaced : null;
+        }
+
         if (seq <= options.ClearedThroughSeq)
         {
+            if (options.ShellSeqs?.Contains(seq) == true)
+            {
+                // RC2: a command's output is not reproducible, so clearing it trims instead of replacing.
+                var keep = options.ShellTrimChars * (ToolResultViewOptions.IsErrorResult(text) ? 2 : 1);
+                return text.Length > keep ? Trim(text, toolCallId, keep, options.RecallToolName) : null;
+            }
+
             var placeholder = Placeholder(text.Length, toolCallId, seq, options.RecallToolName);
             return placeholder.Length < text.Length ? placeholder : null;
         }
@@ -170,6 +248,15 @@ internal static class ToolResultView
         return string.Create(
             CultureInfo.InvariantCulture,
             $"[Tool result cleared from the context to save space: {chars} characters, seq {seq}{id}. Read it with {recall}(seq={seq}) if it is still needed.]"
+        );
+    }
+
+    private static string SupersededPlaceholder(int chars, string? toolCallId, long seq, long newest, string recall)
+    {
+        var id = toolCallId is null ? string.Empty : ", tool_call_id " + toolCallId;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"[Tool result superseded by a newer read of the same resource at seq {newest} ({chars} characters cleared, seq {seq}{id}). Read it with {recall}(seq={seq}) only if the older copy matters.]"
         );
     }
 

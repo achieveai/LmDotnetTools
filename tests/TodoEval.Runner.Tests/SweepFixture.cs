@@ -42,7 +42,9 @@ internal sealed class SweepFixture : IDisposable
         FingerprintSet? ranUnder = null,
         FingerprintSet? extractedUnder = null,
         bool withManifest = true,
-        bool withRuns = true
+        bool withRuns = true,
+        IReadOnlyList<VariantConfig>? variants = null,
+        IReadOnlyList<string>? tasks = null
     )
     {
         var dir = Path.Combine(Root, name);
@@ -56,6 +58,10 @@ internal sealed class SweepFixture : IDisposable
                 RanUnder = ranUnder ?? Prints(),
                 ExtractedUnder = extractedUnder ?? Prints(),
                 Models = ["model-a"],
+                // Left EMPTY by default on purpose: that is the shape an archive written before the
+                // axes existed has, and it must keep comparing cleanly against a default sweep.
+                Variants = variants ?? [],
+                Tasks = tasks ?? [],
                 Seeds = runs.Count,
             }.Write(dir);
         }

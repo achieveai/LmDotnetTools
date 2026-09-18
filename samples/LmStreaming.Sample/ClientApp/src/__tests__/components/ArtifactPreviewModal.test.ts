@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { ref } from 'vue';
 import ArtifactPreviewModal from '@/components/ArtifactPreviewModal.vue';
 import { jsonResponse, textPreview, binaryPreview } from '../fixtures/fileBrowser';
 import { ComponentLogger } from '@/utils/logger';
 import type { DirectoryListing, FileEntry } from '@/types/fileBrowser';
+import { WORKSPACE_FILE_LINKS } from '@/utils/workspaceLinks';
+
+vi.mock('@/components/DiagramViewer.vue', () => ({
+  default: {
+    props: ['source', 'language'],
+    template: '<figure class="diagram-proof" :data-language="language">{{ source }}</figure>',
+  },
+}));
 
 /**
  * The artifact preview popup (#583, PR 5). It rides the EXISTING file-browser preview endpoint, so
@@ -22,7 +31,11 @@ const listing = (path: string, entries: FileEntry[], moreCount = 0): DirectoryLi
   moreCount,
 });
 
-async function mountModal(response: Response | Error, path = 'docs/spec.md') {
+async function mountModal(
+  response: Response | Error,
+  path = 'docs/spec.md',
+  props: { embedded?: boolean; expanded?: boolean } = {}
+) {
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
   if (response instanceof Error) {
     fetchSpy.mockRejectedValueOnce(response);
@@ -30,7 +43,7 @@ async function mountModal(response: Response | Error, path = 'docs/spec.md') {
     fetchSpy.mockResolvedValueOnce(response);
   }
   const wrapper = mount(ArtifactPreviewModal, {
-    props: { threadId: 'thread-1', path },
+    props: { threadId: 'thread-1', path, ...props },
     attachTo: document.body,
   });
   await flushPromises();
@@ -108,7 +121,7 @@ describe('ArtifactPreviewModal — in-flight fetch cancellation (596/F-005)', ()
       .mockImplementationOnce(() => new Promise<Response>(() => {})); // never resolves
 
     const wrapper = mount(ArtifactPreviewModal, {
-      props: { threadId: 'thread-1', path: 'docs/spec.md' },
+      props: { threadId: 'thread-1', path: 'docs/spec.md', embedded: true },
       attachTo: document.body,
     });
     await flushPromises();
@@ -140,7 +153,7 @@ describe('ArtifactPreviewModal — in-flight fetch cancellation (596/F-005)', ()
     );
 
     const wrapper = mount(ArtifactPreviewModal, {
-      props: { threadId: 't1', path: 'docs/spec.md' },
+      props: { threadId: 't1', path: 'docs/spec.md', embedded: true },
       attachTo: document.body,
     });
     await flushPromises();
@@ -187,6 +200,99 @@ describe('ArtifactPreviewModal — chrome', () => {
     await wrapper.get('[data-testid="artifact-preview-modal-close"]').trigger('click');
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
+
+  it('renders an embedded labelled region without modal semantics or a focus-trapping backdrop', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse(textPreview),
+      'docs/todo-board/spec.md',
+      { embedded: true }
+    );
+
+    const surface = wrapper.get('[data-testid="artifact-preview-surface"]');
+    expect(surface.element.tagName).toBe('SECTION');
+    expect(surface.attributes('role')).toBe('region');
+    expect(surface.attributes('aria-label')).toBe('File preview: spec.md');
+    expect(wrapper.find('.modal-backdrop').exists()).toBe(false);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+  });
+
+  it('shows filename and path, then emits compact expand and close actions', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(textPreview));
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: {
+        threadId: 'thread-1',
+        path: 'docs/todo-board/spec.md',
+        embedded: true,
+        expanded: false,
+      },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="artifact-preview-filename"]').text()).toBe('spec.md');
+    expect(wrapper.get('[data-testid="artifact-preview-path"]').text()).toBe('docs/todo-board/spec.md');
+    const expand = wrapper.get('[data-testid="artifact-preview-expand"]');
+    expect(expand.attributes('aria-label')).toBe('Expand file preview');
+    await expand.trigger('click');
+    expect(wrapper.emitted('toggleExpand')).toHaveLength(1);
+
+    await wrapper.setProps({ expanded: true });
+    expect(wrapper.get('[data-testid="artifact-preview-expand"]').attributes('aria-label')).toBe(
+      'Restore file preview'
+    );
+    await wrapper.get('[data-testid="artifact-preview-close"]').trigger('click');
+    expect(wrapper.emitted('close')).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ArtifactPreviewModal — embedded Markdown', () => {
+  it('uses completed TextMessage rendering for diagrams while preserving ordinary code', async () => {
+    const body = [
+      '```mermaid\ngraph LR; A-->B\n```',
+      '```plantuml\n@startuml\nAlice -> Bob\n@enduml\n```',
+      '```typescript\nconst answer = 42;\n```',
+    ].join('\n\n');
+    const { wrapper } = await mountModal(
+      jsonResponse({ previewable: true, text: body, lineCount: 11 }),
+      'docs/diagrams.md',
+      { embedded: true }
+    );
+    await flushPromises();
+
+    expect(wrapper.findAll('.diagram-proof')).toHaveLength(2);
+    expect(wrapper.get('[data-language="mermaid"]').text()).toContain('A-->B');
+    expect(wrapper.get('[data-language="plantuml"]').text()).toContain('Alice -> Bob');
+    expect(wrapper.get('code.language-typescript').text()).toContain('const answer = 42;');
+  });
+
+  it('keeps workspace links disabled and removes unsafe raw SVG', async () => {
+    const open = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse({
+        previewable: true,
+        text: '[Other file](docs/other.md)\n\n<svg onload="alert(1)"><script>alert(2)</script></svg>',
+        lineCount: 3,
+      })
+    );
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'docs/spec.md', embedded: true },
+      global: {
+        provide: {
+          [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open },
+        },
+      },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.get('a').classes()).not.toContain('workspace-link');
+    await wrapper.get('a').trigger('click');
+    expect(open).not.toHaveBeenCalled();
+    const markdown = wrapper.get('[data-testid="artifact-preview-markdown"]');
+    expect(markdown.find('svg').exists()).toBe(false);
+    expect(markdown.find('script').exists()).toBe(false);
+  });
 });
 
 
@@ -216,6 +322,9 @@ describe('ArtifactPreviewModal — chat file links (target resolved on the serve
     );
     expect(wrapper.get('[data-testid="artifact-preview-markdown"]').find('h1').text()).toBe('Report');
     expect(wrapper.get('[data-testid="artifact-preview-modal"]').text()).toContain('docs/report.md');
+    // F-001 (#784): the parent needs the server-resolved path to reconcile this tab's identity
+    // against a tab already open for the same file via a `path` opener.
+    expect(wrapper.emitted('resolved')).toEqual([['docs/report.md']]);
   });
 
   it.each([
@@ -276,7 +385,7 @@ describe('ArtifactPreviewModal — viewers', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 }));
 
     const wrapper = mount(ArtifactPreviewModal, {
-      props: { threadId: 'thread-1', path: 'img/chart.png' },
+      props: { threadId: 'thread-1', path: 'img/chart.png', embedded: true },
       attachTo: document.body,
     });
     await flushPromises();
