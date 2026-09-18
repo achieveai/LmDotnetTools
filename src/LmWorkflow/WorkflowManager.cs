@@ -46,7 +46,12 @@ public static class WorkflowStatuses
     /// <summary>The run reached a terminal node; <see cref="WorkflowRunResult.Result"/> carries the outcome.</summary>
     public const string Completed = "completed";
 
-    /// <summary>The run ended without a terminal node (fault, cancellation, or turn-budget exhaustion).</summary>
+    /// <summary>
+    ///     The run failed: it faulted, was cancelled, exhausted its turn budget, or its controller run ended in
+    ///     an error. An errored run fails even after reaching a terminal node, so a failed result can carry
+    ///     <see cref="WorkflowRunResult.IsComplete"/> = <c>true</c>; <see cref="WorkflowRunResult.Result"/>
+    ///     is still <c>null</c>.
+    /// </summary>
     public const string Failed = "failed";
 
     /// <summary>A <c>WaitWorkflow</c> call returned before the run finished; the run is still going.</summary>
@@ -76,7 +81,10 @@ public sealed record WorkflowRunResult
     /// <summary>The node the controller is currently positioned on, when known.</summary>
     public string? CurrentNodeId { get; init; }
 
-    /// <summary>Whether the workflow reached a terminal node.</summary>
+    /// <summary>
+    ///     Whether the workflow reached a terminal node. Can be <c>true</c> on a <c>failed</c> result when the
+    ///     controller run errored after the terminal was reached.
+    /// </summary>
     public bool IsComplete { get; init; }
 
     /// <summary>The per-node task outputs channel snapshot (a deep copy), when populated.</summary>

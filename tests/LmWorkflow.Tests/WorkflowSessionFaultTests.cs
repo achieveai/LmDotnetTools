@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -118,6 +119,40 @@ public class WorkflowSessionFaultTests
         // pass against an implementation that simply never reached the terminal.
         handle.Runtime.IsComplete.Should().BeTrue("the workflow really did route to its terminal node");
         handle.CurrentNodeId.Should().Be("t");
+    }
+
+    [Fact]
+    public async Task ErroredRunAfterTheTerminalNode_SurfacesThroughTheManagerAsFailedAndComplete_WithNoResult()
+    {
+        // The public projection of the precedence case above. A failed run that did reach its terminal
+        // reports IsComplete = true, and Result stays null: Result is populated only for "completed", so a
+        // non-null Result keeps meaning success. The route carries an explicit result so one IS composed;
+        // without it Result would be null for want of a result, and the last assertion would prove nothing.
+        var controller = ScriptedControllerMulti(turn =>
+            turn == 1
+                ?
+                [
+                    ToolCall(
+                        "SetCurrentNode",
+                        new()
+                        {
+                            ["nextNodeId"] = "t",
+                            ["result"] = new JsonObject { ["summary"] = "composed" },
+                        },
+                        "tc_route"
+                    ),
+                ]
+                : throw ProviderTimeout()
+        );
+        await using var manager = new WorkflowManager(() => controller.Object, EmptyControllerOptions());
+
+        var result = await manager.StartAsync("wf-terminal-then-error", MinimalDefinition(), WorkflowStartMode.Sync);
+
+        result.Status.Should().Be(WorkflowStatuses.Failed);
+        result.Error.Should().Contain(ProviderTimeoutText);
+        result.IsComplete.Should().BeTrue("the workflow really did route to its terminal node");
+        result.CurrentNodeId.Should().Be("t");
+        result.Result.Should().BeNull("Result is reserved for a completed run");
     }
 
     [Fact]
