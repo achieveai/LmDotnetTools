@@ -45,6 +45,37 @@ public class UsageRecordMapperTests
         record.CacheWriteTokens.Should().Be(25);
     }
 
+    [Theory]
+    [InlineData("ephemeral_1h_input_tokens", 7, 7L)]
+    [InlineData("ephemeral_5m_input_tokens", 25, 0L)]
+    [InlineData(null, 0, null)]
+    public void FromUsageMessage_MapsTheCacheWriteTtlSplit_OnlyWhenTheProviderReportsOne(
+        string? splitKey,
+        int splitValue,
+        long? expectedOneHour
+    )
+    {
+        // A reported split (either half) makes the 1h share known, so pricing is complete; no split at all
+        // stays null so the estimate keeps saying it is a lower bound.
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "cache_creation_input_tokens",
+            25
+        );
+        if (splitKey is not null)
+        {
+            usage = usage.SetExtraProperty(splitKey, JsonSerializer.SerializeToElement(splitValue));
+        }
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            new UsageMessage { Usage = usage, GenerationId = "gen-1" },
+            "root",
+            UsageExecutionKind.Primary,
+            "model-A"
+        );
+
+        record.CacheWrite1hTokens.Should().Be(expectedOneHour);
+    }
+
     [Fact]
     public void FromUsageMessage_StampsProviderReportedProvenance_WhenProviderCostPresent()
     {

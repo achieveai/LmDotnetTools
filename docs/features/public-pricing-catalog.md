@@ -19,7 +19,7 @@ Rules:
 
 - Money is integer micro-units. The total is rounded once, half-to-even.
 - A category with tokens and **no rate is never priced at the base rate and never at zero**. It is left out and named in `CostEstimate.MissingCategories`; the estimate is `CostCompleteness.Partial` and its figure is a lower bound.
-- Cache writes with an unknown TTL split (`CacheWrite1hTokens == null`) are priced at the 5m rate and flagged `cache_write_ttl_unknown` (Partial). The Anthropic provider reports only the combined `cache_creation_input_tokens`, so every Anthropic estimate with cache writes is Partial today.
+- Cache writes with an unknown TTL split (`CacheWrite1hTokens == null`) are priced at the 5m rate and flagged `cache_write_ttl_unknown` (Partial). The Anthropic provider always reports the split as `ephemeral_1h_input_tokens`: the response's `cache_creation.ephemeral_1h_input_tokens`, or 0 when the response has no split, because it only sends default (5-minute) `cache_control`. `UsageRecordMapper` treats either `ephemeral_1h_input_tokens` or `ephemeral_5m_input_tokens` as a known split.
 - An unknown model is `CostCompleteness.Unavailable` with no figure.
 - When nothing with tokens could be priced the figure is `null`, not `0`.
 - Preferred display amount (`UsageRecord.PreferredCostMicros`) is the provider-reported figure when present, else the estimate, else null. Both remain queryable in their own fields.
@@ -132,4 +132,4 @@ These ids appear in the sample's configuration but have no entry. Their cost res
 ## Known limits
 
 - OpenAI's long-context tiers and service-tier (priority/flex/batch) variants are not derivable from a usage record; the shipped `gpt-4o` rate is the standard tier.
-- The Anthropic provider does not report the 5m/1h cache-write split, so Anthropic estimates with cache writes are always Partial (lower bound at the 5m rate).
+- The Anthropic provider assumes 0 one-hour writes when a response has no `cache_creation` split. That holds while it only sends default-TTL `cache_control`; adding a 1h TTL there must also stop that assumption.
