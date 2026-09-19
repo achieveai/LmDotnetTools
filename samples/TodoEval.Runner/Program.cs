@@ -404,7 +404,7 @@ internal static class EvalProgram
 
         var message =
             $"The host does not offer: {string.Join(", ", missing)}. Available ids: {string.Join(", ", available)}. "
-            + "deepseek-v4-flash needs the DEEPSEEK_* env vars in the host's env file; gpt-5.6-luna needs a "
+            + "deepseek-flash needs the DEEPSEEK_* env vars in the host's env file; gpt-5.6-luna needs a "
             + "resolvable Copilot/gh token in the host's environment.";
         if (!config.AllowMissingModels)
         {

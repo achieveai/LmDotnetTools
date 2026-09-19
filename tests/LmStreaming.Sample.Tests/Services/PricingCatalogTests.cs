@@ -629,20 +629,38 @@ public class PricingCatalogTests
     }
 
     [Theory]
+    [InlineData("gpt-6-astra")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-terra")]
     [InlineData("gpt-5.6-luna")]
+    [InlineData("claude-fable-5-1")]
+    [InlineData("claude-fable-5.1")]
     [InlineData("claude-opus-5")]
     [InlineData("claude-sonnet-5")]
+    // The `copilot` provider's default when COPILOT_MODEL is unset (Program.cs), so a default run prices.
+    [InlineData("claude-sonnet-4.5")]
     [InlineData("claude-haiku-4.5")]
     [InlineData("claude-haiku-4-5")]
     [InlineData("deepseek-v4-pro")]
+    [InlineData("deepseek-flash")]
+    [InlineData("deepseek-v4-flash")]
     public void TheShippedAppsettings_PricesTheCopilotModelsTheSampleRuns_AndCapsTheirWindow(string modelId)
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
         ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
         CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(156_000);
+    }
+
+    [Theory]
+    [InlineData("gpt-5.3-codex")]
+    [InlineData("claude-sonnet-4-6")]
+    public void TheShippedAppsettings_LeavesDeliberatelyUnpricedIds_Unavailable(string modelId)
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+
+        // Codex and the Claude CLI bill by subscription; a guessed rate would be summed and believed (#378).
+        ResolverFrom(configuration).Resolve(modelId).Should().BeNull($"'{modelId}' has no cited public price");
     }
 
     [Fact]

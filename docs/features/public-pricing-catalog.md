@@ -81,24 +81,30 @@ All USD per million tokens. Verified 2026-09-02 against the vendor page. Re-veri
 |---|---|---|---|---|---|---|---|---|
 | `gpt-4o` | — | 2.50 | 1.25 | — | — | 10.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `claude-sonnet-4-20250514` | `claude-sonnet-4` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
-| `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
+| `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5`, `claude-sonnet-4.5` (the `copilot` provider's default when `COPILOT_MODEL` is unset) | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 
 Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
 
 | Model id | Aliases | Input | Cache read | Cache write 5m | Cache write 1h | Output | Accounting | Source |
 |---|---|---|---|---|---|---|---|---|
+| `gpt-6-astra` | — | 10.00 | 1.00 | — | — | 50.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-sol` | — | 4.00 | 0.40 | — | — | 20.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-terra` | — | 2.00 | 0.20 | — | — | 12.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-luna` | — | 0.20 | 0.02 | — | — | 1.20 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `claude-fable-5-1` | `claude-fable-5.1` | 10.00 | 0.25 | 12.50 | 20.00 | 50.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-opus-5` | — | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-5` | — | 2.00 | 0.20 | 2.50 | 4.00 | 10.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-haiku-4.5` | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1.00 | 0.10 | 1.25 | 2.00 | 5.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
-| `deepseek-v4-pro` | — | 1.32 | 0.044 | — | — | 3.96 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-v4-pro` | — | 0.66 | 0.022 | — | — | 1.98 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
 - OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 156K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
-- `deepseek-v4-pro` is the peak-hour rate. Off-peak is half price, so off-peak runs read high.
-- Copilot reports no cache reads for Claude ids (recorded `CacheReadTokens` is 0). Their estimates therefore price all input at the uncached rate, which is an upper bound.
+- OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.
+- `claude-fable-5-1` cache hits are 0.025x input, not the usual 0.1x (Anthropic's footnote).
+- DeepSeek ids carry the off-peak rate. Peak hours (01:00-04:00 and 06:00-10:00 UTC, weekdays) bill double, so peak-hour runs read low.
+- `deepseek-flash` is DeepSeek-V4.1-Flash. `deepseek-v4-flash` is a retired name DeepSeek still accepts and bills at the Flash price, so it is an alias.
+- Claude cache reads through Copilot are recorded only when the request asks for caching. Before sub-agents inherited `PromptCaching`, every Claude sub-agent sent without it and recorded 0 cache reads; those older records price all input at the uncached rate.
 - The vendor windows (200K to 1.05M) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 156K.
 
 Notes:
@@ -119,7 +125,7 @@ Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09
 
 These ids appear in the sample's configuration but have no entry. Their cost resolves null ("unavailable"). Do not add a guessed rate (#378).
 
-- Copilot catalog ids not in the table above (for example the `copilot` provider default `claude-sonnet-4.5`). Add one from its vendor page when it is used.
+- Copilot catalog ids not in the table above (for example `gpt-5.5` or `claude-opus-4.8`). Add one from its vendor page when it is used.
 - Claude CLI default `claude-sonnet-4-6` (Anthropic lists the API rate for Sonnet 4.6, but the CLI transport here is subscription-billed; an operator on the API can add it from the same Anthropic page).
 - Codex default `gpt-5.3-codex`.
 

@@ -50,7 +50,7 @@ internal sealed record CliOptions
           --eval-dir <dir>           Eval asset dir with mode.json/task.md/expected-board.json
                                      (default: evals/todo-eval)
           --results-dir <dir>        Output root (default: <eval-dir>/results)
-          --models <a,b,...>         Comma-separated model ids (default: deepseek-v4-flash,gpt-5.6-luna)
+          --models <a,b,...>         Comma-separated model ids (default: deepseek-flash,gpt-5.6-luna)
           --variants <a,b,...>       Run only these of the config's variants (one isolated host each).
                                      Every name must be configured; a name that is not is an error,
                                      because a typo would silently sweep the wrong option-sets.
