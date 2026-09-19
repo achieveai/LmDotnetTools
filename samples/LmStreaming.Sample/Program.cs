@@ -1982,6 +1982,8 @@ try
                                 new GenerateReplyOptions
                                 {
                                     ModelId = controllerModelId,
+                                    // Same caching as the root loop; the controller's delegates inherit it.
+                                    PromptCaching = PromptCachingMode.Auto,
                                     // The controller loop inherits the parent's reasoning (Option A: fixed High
                                     // floor), shaped for its OWN model so the orchestrator thinks instead of
                                     // running un-nudged. A per-run preferred-model override reshapes this in
@@ -2028,7 +2030,13 @@ try
                                 // Provider switch must also replace the launching provider's default model.
                                 // For discovered Copilot providers the provider id is the raw model id; for
                                 // family providers this is the same id the host's agent factory accepts.
-                                outputTokenPolicy.ApplyDelegated(new GenerateReplyOptions { ModelId = providerId })
+                                outputTokenPolicy.ApplyDelegated(
+                                    new GenerateReplyOptions
+                                    {
+                                        ModelId = providerId,
+                                        PromptCaching = PromptCachingMode.Auto,
+                                    }
+                                )
                             ),
                             // Scope the controller's persistence thread to THIS conversation so a human-chosen
                             // (non-unique) workflowId can never map two different conversations onto the same

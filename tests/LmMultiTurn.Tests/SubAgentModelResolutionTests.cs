@@ -96,4 +96,47 @@ public class SubAgentModelResolutionTests
         result.Should().BeSameAs(templateDefaults);
         result!.ModelId.Should().BeEmpty();
     }
+
+    [Fact]
+    public void ParentPromptCaching_InheritedWhenTemplateLeavesItOff()
+    {
+        // Observed: every Claude sub-agent billed its whole history as uncached input (cache read 0)
+        // because only the root loop turned caching on and delegates never inherited it.
+        var result = SubAgentManager.ResolveSubAgentOptions(
+            templateDefaults: null,
+            modelOverride: null,
+            parentModelId: "parent-model",
+            parentPromptCaching: PromptCachingMode.Auto
+        );
+
+        result!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+    }
+
+    [Fact]
+    public void ParentPromptCaching_InheritedEvenWhenNothingElseIsSet()
+    {
+        var result = SubAgentManager.ResolveSubAgentOptions(
+            templateDefaults: null,
+            modelOverride: null,
+            parentModelId: null,
+            parentPromptCaching: PromptCachingMode.Auto
+        );
+
+        result.Should().NotBeNull();
+        result!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+        result.ModelId.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TemplatePromptCaching_WinsOverParent()
+    {
+        var result = SubAgentManager.ResolveSubAgentOptions(
+            templateDefaults: new GenerateReplyOptions { PromptCaching = PromptCachingMode.Auto },
+            modelOverride: null,
+            parentModelId: "parent-model",
+            parentPromptCaching: PromptCachingMode.Off
+        );
+
+        result!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+    }
 }
