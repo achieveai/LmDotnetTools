@@ -226,10 +226,13 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
     ///     Classifies a connect/upgrade failure as transient (retryable). Retries when a
     ///     <see cref="WebSocketException"/> wraps a transient <see cref="SocketException"/>
     ///     (connection refused / timed out / host unreachable / DNS hiccup) or an inner
-    ///     <see cref="HttpRequestException"/> whose status is a retryable 5xx/429. Auth/permanent
-    ///     failures (401/403/400/404, DNS name-resolution failure) are NOT retried.
+    ///     <see cref="HttpRequestException"/> whose status is retryable under
+    ///     <see cref="_retryOptions"/> (the global 5xx/429 set, plus any status this transport opted
+    ///     into via <see cref="RetryOptions.AdditionalRetryableStatusCodes"/> — the factory opts the
+    ///     Copilot transport into 404). Auth/permanent failures (401/403/400, DNS name-resolution
+    ///     failure) are NOT retried.
     /// </summary>
-    private static bool IsRetryableConnect(Exception exception)
+    private bool IsRetryableConnect(Exception exception)
     {
         if (exception is not WebSocketException wsEx)
         {
@@ -248,7 +251,7 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                     or SocketError.HostUnreachable
                     or SocketError.NetworkUnreachable
                     or SocketError.TryAgain,
-            HttpRequestException { StatusCode: { } status } => HttpRetryHelper.IsRetryableStatusCode(status),
+            HttpRequestException { StatusCode: { } status } => _retryOptions.IsRetryableStatusCode(status),
             _ => false,
         };
     }
@@ -374,7 +377,29 @@ public sealed class ClientWebSocketResponsesSocket : ICopilotResponsesSocket
             _socket.Options.SetRequestHeader(header.Key, header.Value);
         }
 
-        await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        // A bare ClientWebSocket rejects a non-101 upgrade with WebSocketException(NotAWebSocket) and NO
+        // inner exception, so the upgrade status is invisible to the connect-retry classifier. Collect the
+        // response details and translate that failure into the contract the classifier consumes: a
+        // WebSocketException wrapping HttpRequestException(StatusCode). Consequence: besides an opted-in
+        // 404, a 429/5xx upgrade is now retryable under default options too — the same global set the
+        // SSE transport already retries. Cancellation (OperationCanceledException) is not touched.
+        _socket.Options.CollectHttpResponseDetails = true;
+        try
+        {
+            await _socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        }
+        catch (WebSocketException ex)
+            when (ex.WebSocketErrorCode == WebSocketError.NotAWebSocket
+                && ex.InnerException is null
+                && _socket.HttpStatusCode != 0
+            )
+        {
+            throw new WebSocketException(
+                ex.WebSocketErrorCode,
+                ex.Message,
+                new HttpRequestException(ex.Message, ex, _socket.HttpStatusCode)
+            );
+        }
     }
 
     /// <inheritdoc />

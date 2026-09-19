@@ -124,7 +124,10 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
         // No response.completed — the socket then returns null (peer close).
     }
 
-    private static CopilotResponsesWebSocketClient NewClient(Func<ICopilotResponsesSocket> factory) =>
+    private static CopilotResponsesWebSocketClient NewClient(
+        Func<ICopilotResponsesSocket> factory,
+        RetryOptions? retryOptions = null
+    ) =>
         new(
             new Uri("wss://host/responses"),
             new StubTokenProvider(),
@@ -132,7 +135,7 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
             options: null,
             logger: null,
             socketFactory: factory,
-            retryOptions: RetryOptions.FastForTests
+            retryOptions: retryOptions ?? RetryOptions.FastForTests
         );
 
     private static ResponseCreateRequest Request() =>
@@ -219,6 +222,109 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
         created.Should().HaveCount(RetryOptions.FastForTests.MaxRetries + 1);
         created.Should().OnlyContain(s => s.Disposed);
         created.Should().OnlyContain(s => s.Sent.Count == 0, "no response.create is sent before a successful connect");
+    }
+
+    [Fact]
+    public async Task Connect_retries_404_upgrade_when_the_status_is_configured_as_retryable()
+    {
+        // The Copilot transport opts NotFound into the retryable set (transient /responses not_found).
+        // The connect-retry classifier must honour that configuration, not only the global 429/5xx set.
+        var created = new List<FakeSocket>();
+        await using var client = NewClient(
+            () =>
+            {
+                var socket = new FakeSocket();
+                if (created.Count == 0)
+                {
+                    socket.ConnectError = new WebSocketException(
+                        "upgrade rejected",
+                        new HttpRequestException("not_found", null, HttpStatusCode.NotFound)
+                    );
+                }
+                else
+                {
+                    socket.Respond = _ => ScriptedTurn(0);
+                }
+
+                created.Add(socket);
+                return socket;
+            },
+            RetryOptions.FastForTests with
+            {
+                AdditionalRetryableStatusCodes = [HttpStatusCode.NotFound],
+            }
+        );
+
+        var events = await CollectAsync(client.StreamResponseAsync(Request()));
+
+        events.Select(e => e.Type).Should().Contain(ResponseEventTypes.ResponseCompleted);
+        created.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Connect_does_not_retry_404_upgrade_by_default()
+    {
+        // Without the opt-in, a 404 upgrade stays non-retryable: the global classification is unchanged.
+        var created = new List<FakeSocket>();
+        await using var client = NewClient(() =>
+        {
+            var socket = new FakeSocket
+            {
+                ConnectError = new WebSocketException(
+                    "upgrade rejected",
+                    new HttpRequestException("not_found", null, HttpStatusCode.NotFound)
+                ),
+            };
+            created.Add(socket);
+            return socket;
+        });
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        await act.Should().ThrowAsync<WebSocketException>();
+        created.Should().ContainSingle("a 404 upgrade must not be retried without the opt-in");
+    }
+
+    [Fact]
+    public async Task CreateWebSocketClient_retries_transient_404_upgrade_even_though_the_caller_did_not_ask_for_it()
+    {
+        // The two tests above pin the CLIENT's honouring of AdditionalRetryableStatusCodes; this one pins
+        // the FACTORY putting NotFound there in the first place. It drives the real CreateWebSocketClient
+        // construction path with caller options that do NOT list NotFound, so handing retryOptions to the
+        // client raw — the shape before the 404 fix — leaves the first upgrade unretried and fails here.
+        var created = new List<FakeSocket>();
+        using var client = CopilotResponsesAgentFactory.CreateWebSocketClient(
+            "https://copilot.test",
+            new StubTokenProvider(),
+            new CopilotSessionContext("m", "s"),
+            new CopilotOptions(),
+            logger: null,
+            retryOptions: RetryOptions.FastForTests, // caller options WITHOUT NotFound
+            socketFactory: () =>
+            {
+                var socket = new FakeSocket();
+                if (created.Count == 0)
+                {
+                    socket.ConnectError = new WebSocketException(
+                        "upgrade rejected",
+                        new HttpRequestException("not_found", null, HttpStatusCode.NotFound)
+                    );
+                }
+                else
+                {
+                    socket.Respond = _ => ScriptedTurn(0);
+                }
+
+                created.Add(socket);
+                return socket;
+            }
+        );
+
+        var events = await CollectAsync(client.StreamResponseAsync(Request()));
+
+        events.Select(e => e.Type).Should().Contain(ResponseEventTypes.ResponseCompleted);
+        created.Should().HaveCount(2, "the factory-merged NotFound makes the first 404 upgrade retryable");
+        created[0].Disposed.Should().BeTrue("the rejected socket is disposed before the retry");
     }
 
     [Fact]
