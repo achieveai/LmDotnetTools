@@ -42,7 +42,7 @@ public static class HttpRetryHelper
             {
                 return await operation();
             }
-            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex))
+            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
                 var delay = options.CalculateDelay(attempt);
@@ -116,8 +116,9 @@ public static class HttpRetryHelper
                     return await responseProcessor(response);
                 }
 
-                // Check if this is a retryable status code
-                if (attempt < options.MaxRetries && IsRetryableStatusCode(response.StatusCode))
+                // Check if this is a retryable status code under THESE options (the global 429/5xx set,
+                // widened by any opt-in AdditionalRetryableStatusCodes this caller configured).
+                if (attempt < options.MaxRetries && options.IsRetryableStatusCode(response.StatusCode))
                 {
                     attempt++;
                     var delay = options.CalculateDelay(attempt);
@@ -167,7 +168,7 @@ public static class HttpRetryHelper
 
                 throw new HttpRequestException(errorMessage, null, statusCode);
             }
-            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex))
+            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
                 var delay = options.CalculateDelay(attempt);
@@ -208,7 +209,10 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
-    ///     Determines if an HTTP status code is retryable
+    ///     Determines if an HTTP status code is retryable under the GLOBAL classification (429 + 5xx).
+    ///     A single transport can widen this for itself via
+    ///     <see cref="RetryOptions.AdditionalRetryableStatusCodes" />; use
+    ///     <see cref="RetryOptions.IsRetryableStatusCode(HttpStatusCode)" /> when options are in hand.
     /// </summary>
     /// <param name="statusCode">The HTTP status code</param>
     /// <returns>True if the status code indicates a retryable error</returns>
@@ -224,7 +228,17 @@ public static class HttpRetryHelper
     /// </summary>
     /// <param name="exception">The HTTP exception</param>
     /// <returns>True if the error is retryable</returns>
-    public static bool IsRetryableError(HttpRequestException exception)
+    public static bool IsRetryableError(HttpRequestException exception) => IsRetryableError(exception, null);
+
+    /// <summary>
+    ///     Determines if an HTTP error is retryable under <paramref name="retryOptions" />, whose
+    ///     <see cref="RetryOptions.AdditionalRetryableStatusCodes" /> may widen the global 429/5xx set.
+    ///     Passing <see langword="null" /> uses <see cref="RetryOptions.Default" /> (global set only).
+    /// </summary>
+    /// <param name="exception">The HTTP exception</param>
+    /// <param name="retryOptions">Retry configuration whose retryable-status set applies</param>
+    /// <returns>True if the error is retryable</returns>
+    public static bool IsRetryableError(HttpRequestException exception, RetryOptions? retryOptions)
     {
         ArgumentNullException.ThrowIfNull(exception);
 
@@ -233,7 +247,7 @@ public static class HttpRetryHelper
         // helper embeds in the exception message, happens to mention "500"/"timeout"/etc.
         if (exception.StatusCode is { } statusCode)
         {
-            return IsRetryableStatusCode(statusCode);
+            return (retryOptions ?? RetryOptions.Default).IsRetryableStatusCode(statusCode);
         }
 
         // No status code is present (genuine network/transport failures from SendAsync). Fall back to

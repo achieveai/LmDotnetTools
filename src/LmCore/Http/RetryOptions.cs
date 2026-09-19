@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
 /// <summary>
@@ -46,6 +48,44 @@ public record RetryOptions
     ///     Default: 2.0 (delays: 1s, 2s, 4s, 8s, ...)
     /// </summary>
     public double BackoffMultiplier { get; init; } = 2.0;
+
+    /// <summary>
+    ///     Status codes this configuration treats as retryable IN ADDITION to the global set
+    ///     (429 and 5xx, see <see cref="HttpRetryHelper.IsRetryableStatusCode(HttpStatusCode)" />).
+    ///     Empty by default, so the global classification is unchanged for every caller that does not
+    ///     opt in. Exists for transports with a known transient status outside the global set — the
+    ///     GitHub Copilot <c>/responses</c> backend intermittently answers
+    ///     <c>404 {"error":{"message":"","code":"not_found"}}</c> for a request that succeeds on retry.
+    /// </summary>
+    public IReadOnlyCollection<HttpStatusCode> AdditionalRetryableStatusCodes { get; init; } = [];
+
+    /// <summary>
+    ///     Determines whether <paramref name="statusCode" /> is retryable under THIS configuration:
+    ///     the global 429/5xx set widened by <see cref="AdditionalRetryableStatusCodes" />.
+    /// </summary>
+    public bool IsRetryableStatusCode(HttpStatusCode statusCode) =>
+        HttpRetryHelper.IsRetryableStatusCode(statusCode) || AdditionalRetryableStatusCodes.Contains(statusCode);
+
+    /// <summary>
+    ///     Returns options whose <see cref="AdditionalRetryableStatusCodes" /> also contains
+    ///     <paramref name="statusCodes" />. Every other value (including status codes the caller already
+    ///     opted into) is preserved — this merges, it never overwrites. Returns the same instance when
+    ///     all codes are already present.
+    /// </summary>
+    public RetryOptions WithAdditionalRetryableStatusCodes(params HttpStatusCode[] statusCodes)
+    {
+        ArgumentNullException.ThrowIfNull(statusCodes);
+        var missing = statusCodes.Where(code => !AdditionalRetryableStatusCodes.Contains(code)).Distinct().ToArray();
+        if (missing.Length == 0)
+        {
+            return this;
+        }
+
+        return this with
+        {
+            AdditionalRetryableStatusCodes = [.. AdditionalRetryableStatusCodes, .. missing],
+        };
+    }
 
     /// <summary>
     ///     Calculates the delay for a given retry attempt.

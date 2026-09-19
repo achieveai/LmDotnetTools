@@ -2819,6 +2819,27 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         foreach (var (_, state) in _agents)
         {
+            // Settle a child that is still Running/Queued BEFORE anything below can fail or hang. Its run
+            // will never reach a terminal transition of its own — the host is going away — so without
+            // this nothing ever stamps a terminal status onto its persisted metadata, and every later
+            // reader (including one in a brand-new process) keeps seeing `running` for an agent that
+            // stopped existing when the process did.
+            //
+            // BOUNDED for the same reason every other await on this path is: a slow or wedged store must
+            // degrade host shutdown into a logged warning, never hang it. A push abandoned by that bound
+            // (or swallowed inside PersistTerminalStateAsync) leaves disk still saying `running`, which
+            // is acceptable ONLY because the read side is the backstop: a persisted in-flight child with
+            // no live in-memory state is projected as interrupted rather than running
+            // (SubAgentSummary.AsRetained, applied to the persisted roster in AgentHierarchyService).
+            if (state.TryMarkStoppedAtShutdown(SubAgentFailureCodes.HostShutdown, out var shutdownEpoch))
+            {
+                await AwaitBoundedTaskAsync(
+                    PersistTerminalStateAsync(state, shutdownEpoch),
+                    $"terminal status push for sub-agent {state.AgentId}",
+                    "disposal"
+                );
+            }
+
             // Each step is isolated to prevent cascading failures:
             // if StopAsync throws, we still await tasks, dispose the agent, etc.
             try

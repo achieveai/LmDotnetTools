@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Http;
 
 /// <summary>
-///     Classification tests for <see cref="HttpRetryHelper.IsRetryableError" />. They prove retryability
+///     Classification tests for <see cref="HttpRetryHelper.IsRetryableError(HttpRequestException)" />. They prove retryability
 ///     is decided by the exception's HTTP status code when one is present, so a non-retryable status
 ///     (e.g. 400/401) is never retried even when its response body happens to contain retryable-looking
 ///     tokens such as "500", "Internal Server Error" or "timeout". Status-less transport exceptions still

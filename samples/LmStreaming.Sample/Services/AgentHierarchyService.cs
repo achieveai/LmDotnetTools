@@ -224,9 +224,21 @@ public sealed class AgentHierarchyService(
             var owner = loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager }
                 ? liveSubAgentManager
                 : SubAgentScanCoverageCache.NoLiveManager;
+            // AsRetained() for the same reason the persisted WorkflowRunRegistry tabs below get it: a row
+            // read back from storage describes an agent that is not running HERE. A child still in flight
+            // when its host stopped — killed, or its terminal status push lost — is left on disk saying
+            // `running` with no terminal instant, and lifecycle status is in-memory state, so nothing in a
+            // new process ever revisits it: the roster would republish `running` forever.
+            //
+            // It is safe precisely because it is applied to the persisted roster only, BEFORE the live
+            // rows below overwrite it per (Kind, AgentId). A child the live SubAgentManager still holds
+            // therefore keeps its live `running` status; a persisted row that survives this merge is, by
+            // construction, one no live in-memory state accounts for. Liveness is decided per child by
+            // that presence and nothing else — never by how stale a row's last write looks, because a live
+            // agent can be quiet for a long time while a model thinks.
             foreach (var node in await GetOrScanPersistedSubAgentChildrenAsync(threadId, owner, ct))
             {
-                merged[(node.Kind, node.AgentId)] = node;
+                merged[(node.Kind, node.AgentId)] = node.AsRetained();
             }
         }
 
