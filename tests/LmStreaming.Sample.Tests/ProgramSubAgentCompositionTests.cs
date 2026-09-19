@@ -515,9 +515,11 @@ public sealed class ProgramSubAgentCompositionTests
             new Dictionary<string, ToolHandler>(),
             new SubAgentOptions { Templates = rebound.Source.Templates },
             rebound.Source,
-            parentModelId: "parent-model",
-            parentPromptCaching: PromptCachingMode.Auto
-        );
+            parentModelId: "parent-model"
+        )
+        {
+            ParentPromptCaching = PromptCachingMode.Auto,
+        };
 
         _ = await manager.SpawnAsync("inherited", "inherit");
         _ = await manager.SpawnAsync("tiered", "tier");

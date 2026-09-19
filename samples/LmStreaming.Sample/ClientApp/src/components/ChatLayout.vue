@@ -279,6 +279,16 @@ watch(
     }, CONTEXT_USAGE_REFRESH_MS);
   }
 );
+// Usage that moved while the panel was hidden was dropped by the gate above, so becoming visible is
+// itself a refresh signal — otherwise the Developer view renders whatever was last read (possibly from
+// before a whole run) until the next usage, roster or idle event happens to arrive. The store coalesces
+// this with any read already in flight.
+watch(
+  () => showDeveloperDiagnostics.value,
+  (visible, wasVisible) => {
+    if (visible && !wasVisible && subAgentParentThreadId.value) contextUsageTick.value++;
+  }
+);
 onBeforeUnmount(() => {
   if (contextUsageTimer !== null) clearTimeout(contextUsageTimer);
 });

@@ -531,6 +531,26 @@ describe('ChatLayout view preference', () => {
       expect(getConversationContext).toHaveBeenCalledWith('thread-1');
     });
 
+    it('re-reads once when the Developer view is revealed after usage moved while it was hidden', async () => {
+      // Hidden usage changes are dropped, so revealing the panel must itself be a refresh signal —
+      // otherwise the rows the Developer view exists to show stay stale until the next usage/idle event.
+      const wrapper = mountLayout();
+      await flushPromises();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      bumpUsage(700);
+      await flushPromises();
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+      vi.mocked(getConversationContext).mockClear();
+
+      await wrapper.get('[data-testid="view-preference-developer"]').setValue(true);
+      await flushPromises();
+
+      expect(getConversationContext).toHaveBeenCalledTimes(1);
+      expect(getConversationContext).toHaveBeenCalledWith('thread-1');
+    });
+
     it('does not re-read on usage in the Consumer view, where the panel is hidden', async () => {
       mountLayout();
       await flushPromises();

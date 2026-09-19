@@ -78,7 +78,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly IMultiTurnAgent _parentAgent;
     private readonly string? _parentModelId;
     private readonly int? _parentMaxToken;
-    private readonly PromptCachingMode _parentPromptCaching;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
 
@@ -243,6 +242,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// per-manager limits only, one ordinary nesting level, no directory — is unchanged.
     /// </summary>
     public AgentCollaborationSetup? Collaboration { get; }
+
+    /// <summary>
+    /// The parent's prompt-caching mode, inherited by sub-agents whose template leaves it
+    /// <see cref="PromptCachingMode.Off" /> (see <c>ResolveSubAgentOptions</c>) — without it a delegate
+    /// re-bills its whole history as uncached input on every model call.
+    /// </summary>
+    /// <remarks>
+    /// An init property rather than a constructor parameter on purpose: this type ships in a NuGet package,
+    /// and an optional parameter is still part of the CLR constructor signature, so appending one would
+    /// break already-compiled callers with a <see cref="MissingMethodException" />. A second constructor
+    /// overload would make legacy source calls that omit optional arguments ambiguous.
+    /// <c>SubAgentManagerPublicSurfaceTests</c> pins the published constructor shape.
+    /// </remarks>
+    public PromptCachingMode ParentPromptCaching { get; init; }
 
     /// <summary>
     /// Per-agent admission bookkeeping, keyed by agent id.
@@ -536,8 +549,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         Func<Task>? persistUsageAsync = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
-        PromptCachingMode parentPromptCaching = PromptCachingMode.Off
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
     )
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
@@ -604,9 +616,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         // none — so a delegate gets the same headroom as the conversation that spawned it instead of the
         // provider's 4096 default that truncates tool-call JSON. Null when the parent carried no budget.
         _parentMaxToken = parentMaxToken;
-        // The parent's prompt-caching mode, inherited by sub-agents whose template leaves it Off — without
-        // it a delegate re-bills its whole history as uncached input on every model call.
-        _parentPromptCaching = parentPromptCaching;
         // The parent's lifecycle wiring, from which each child's bundle is derived at spawn time.
         _lifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
         // The parent agent's handle on the collaboration, when the host enabled one. Null keeps every
@@ -3396,7 +3405,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         effectiveModel,
                         _parentModelId,
                         _parentMaxToken,
-                        _parentPromptCaching
+                        ParentPromptCaching
                     )?.ModelId,
                     requestedReasoningEffort,
                     modelSelectionSource: modelSelectionSource
@@ -3410,7 +3419,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             effectiveModel,
             _parentModelId,
             _parentMaxToken,
-            _parentPromptCaching
+            ParentPromptCaching
         );
         // Validate the tool-set request BEFORE anything with a side effect: the owned provider below is
         // allocated for disposal, and AgentThreadOwnership.InheritAsync is a durable write that creates
