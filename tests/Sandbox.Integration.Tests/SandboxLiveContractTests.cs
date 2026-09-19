@@ -104,6 +104,63 @@ public sealed class SandboxLiveContractTests
         }
     }
 
+    /// <summary>
+    /// Gateway v0.1.11 / #183 contract for per-sandbox env: create-time seeding, a live PATCH that both
+    /// sets and unsets keys, the result actually reaching a running Bash process, and the gateway's
+    /// <c>invalid_env</c> refusal for a protected name.
+    /// </summary>
+    [SkippableFact]
+    public async Task Env_CreateThenPatch_RoundTrips_AndReachesBash()
+    {
+        var workspace = "wi187-env-" + Guid.NewGuid().ToString("N");
+        var info = await Client.CreateAsync(
+            new SandboxCreateRequest(
+                workspace: workspace,
+                env: new Dictionary<string, string> { ["CONTRACT_ENV"] = "one" }
+            )
+        );
+        var sessionId = info.SessionId;
+        try
+        {
+            var afterCreate = await Client.GetEnvAsync(sessionId);
+            afterCreate.Should().Contain(new KeyValuePair<string, string>("CONTRACT_ENV", "one"));
+
+            var afterPatch = await Client.PatchEnvAsync(
+                sessionId,
+                new Dictionary<string, string?> { ["CONTRACT_ENV"] = "two", ["CONTRACT_NEW"] = "n" }
+            );
+            afterPatch.Should().Contain(new KeyValuePair<string, string>("CONTRACT_ENV", "two"));
+            afterPatch.Should().Contain(new KeyValuePair<string, string>("CONTRACT_NEW", "n"));
+
+            var result = await Client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["sh", "-c", "echo $CONTRACT_ENV-$CONTRACT_NEW"])
+            );
+            result.ExitCode.Should().Be(0);
+            result.StandardOutput.Trim().Should().Be("two-n");
+
+            var afterUnset = await Client.PatchEnvAsync(
+                sessionId,
+                new Dictionary<string, string?> { ["CONTRACT_NEW"] = null }
+            );
+            afterUnset.Should().NotContainKey("CONTRACT_NEW");
+
+            var afterUnsetGet = await Client.GetEnvAsync(sessionId);
+            afterUnsetGet.Should().NotContainKey("CONTRACT_NEW");
+
+            var invalid = await CaptureAsync(() =>
+                Client.PatchEnvAsync(sessionId, new Dictionary<string, string?> { ["HTTP_PROXY"] = "x" })
+            );
+            invalid.Should().NotBeNull();
+            invalid!.Kind.Should().Be(SandboxErrorKind.InvalidEnv);
+            invalid.InvalidKeys.Should().Contain("HTTP_PROXY");
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
     [SkippableFact]
     public async Task Execute_NonZeroExit_CapturesStderr()
     {

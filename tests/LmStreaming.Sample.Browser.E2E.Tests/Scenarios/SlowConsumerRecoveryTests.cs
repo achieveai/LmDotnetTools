@@ -113,6 +113,7 @@ public sealed class SlowConsumerRecoveryTests
             }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Park the primary stream's pump. Sub-agent streams (threadId `subagent-*`) are untouched so a
         // gate armed here can never interfere with anything but the conversation under test.
@@ -296,6 +297,7 @@ public sealed class SlowConsumerRecoveryTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // Park the focus view's pump only; the parent conversation streams normally throughout.
         var pump = new PumpGate(threadId => threadId.StartsWith("subagent-", StringComparison.Ordinal));
@@ -318,8 +320,9 @@ public sealed class SlowConsumerRecoveryTests
         // 1) Spawn the child and focus its tab while its run is live — its second turn is held open, so
         //    the tab cannot be opened onto an already-finished transcript.
         await page.SendMessageAsync("research AI papers for me");
-        await page.SubAgentTabs().WaitForCountAtLeastAsync(1, timeoutMs: 30_000);
-        await page.SubAgentTabs().First.ClickAsync();
+        await page.AgentPickerTrigger().WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
+        await page.OpenAgentPickerAsync();
+        await page.AgentPickerOptions().First.ClickAsync();
         await page.SubAgentView().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await pump.Parked.WaitForAsync("the sub-agent focus pump to park with a registered, non-draining subscriber");
 

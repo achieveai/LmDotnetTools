@@ -40,6 +40,13 @@ internal static class ConversationStoreReader
     public const string StartupWorkKey = "subagents.startupWork";
     public const string SubAgentDirPrefix = "subagent-";
 
+    /// <summary>
+    /// The envelope <c>messageType</c> of an applied compaction checkpoint. The persistence converter
+    /// stamps <c>message.GetType().Name</c>, and redaction rewrites a checkpoint's prose but keeps the
+    /// envelope, so counting these works on a redacted archive exactly as on the live store.
+    /// </summary>
+    public const string CompactionCheckpointType = "CompactionCheckpointMessage";
+
     /// <summary>The error code reported when a failing result names none (metrics-spec.md).</summary>
     public const string UnclassifiedErrorCode = "unclassified";
 
@@ -58,6 +65,9 @@ internal static class ConversationStoreReader
 
         /// <summary>Distinct non-null generation ids — the spec's turn count for this thread.</summary>
         public required int TurnCount { get; init; }
+
+        /// <summary>Compaction checkpoints APPLIED to this thread — zero in every mode below Compact.</summary>
+        public required int CompactionCheckpoints { get; init; }
 
         /// <summary>All tools, not only task tools.</summary>
         public required int TotalToolCalls { get; init; }
@@ -232,11 +242,16 @@ internal static class ConversationStoreReader
         var coordination = new CoordinationOutcomes();
         var ledger = new BoardIdLedger();
         var vanishes = new List<BoardIdVanish>();
+        var compactionCheckpoints = 0;
 
         foreach (var envelope in doc.RootElement.EnumerateArray())
         {
             var messageType = GetString(envelope, "messageType");
             var generationId = GetString(envelope, "generationId");
+            if (messageType == CompactionCheckpointType)
+            {
+                compactionCheckpoints++;
+            }
 
             JsonDocument? inner = null;
             try
@@ -419,6 +434,7 @@ internal static class ConversationStoreReader
             ParentThreadId = metadata.ParentThreadId,
             TodoBoardJson = metadata.TodoBoardJson,
             TurnCount = generationIds.Count,
+            CompactionCheckpoints = compactionCheckpoints,
             TotalToolCalls = totalToolCalls,
             UnpairedToolCalls = unpairedToolCalls,
             PerTool = perTool.ToDictionary(

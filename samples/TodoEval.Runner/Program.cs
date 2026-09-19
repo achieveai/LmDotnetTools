@@ -50,10 +50,13 @@ internal static class EvalProgram
     {
         var repoRoot = FindRepoRoot();
         var evalDir = ResolvePath(config.EvalDir, repoRoot);
-        var assets = EvalAssets.Load(evalDir, config.ModeName);
-        if (assets.ExpectedBoard is null)
+        var assets = EvalAssets.Load(evalDir, config.ModeName, config.Tasks, config.ModeFile);
+        foreach (var task in assets.Tasks.Where(t => t.ExpectedBoard is null))
         {
-            log.WriteLine("[warn] expected-board.json not found; completion will be reported as n/a for this sweep.");
+            log.WriteLine(
+                $"[warn] no expected-board.json for task '{task.Id ?? "(single)"}'; completion will be reported "
+                    + "as n/a for its runs — the criterion is unproven, never failed."
+            );
         }
 
         // F-007: a GUID suffix keeps same-second invocations from sharing one sweep/instance dir.
@@ -67,61 +70,87 @@ internal static class EvalProgram
         );
         var sweepDir = Path.Combine(resultsRoot, timestamp);
         Directory.CreateDirectory(sweepDir);
-        var instanceDir = Path.Combine(Path.GetTempPath(), $"todo-eval-host-{timestamp}");
         log.WriteLine($"[sweep] results: {sweepDir}");
 
         var manifestPath = Path.Combine(sweepDir, "runs-manifest.jsonl");
-        IReadOnlyList<RunManifestEntry> manifest;
+        var archivedConversations = Path.Combine(sweepDir, "conversations");
+        var manifest = new List<RunManifestEntry>();
 
         // Frozen BEFORE the first run: these name the corpus and the measurement contract the models
         // actually faced, and nothing later in this method may recompute them.
         var ranUnder = FingerprintSet.Compute(evalDir);
         var startedUtc = DateTimeOffset.UtcNow;
-        long publishMs;
-        long readyMs;
+        var startupWork = new HostStartupWork();
 
-        await using (var host = await EvalHostProcess.StartAsync(config.Host, repoRoot, instanceDir, sweepDir, log, ct))
+        // One ISOLATED host per variant. Every compaction knob binds onto a DI singleton resolved at
+        // the host's boot, so an option-set can only be varied by launching another host; the cells
+        // within one variant share theirs, which is what keeps maxParallelRuns meaningful.
+        foreach (var variant in config.Variants)
         {
-            publishMs = host.PublishMs;
-            readyMs = host.ReadyMs;
-            using var http = new HttpClient { BaseAddress = host.BaseAddress, Timeout = TimeSpan.FromMinutes(2) };
-            var client = new EvalHostClient(http);
+            var instanceDir = Path.Combine(Path.GetTempPath(), $"todo-eval-host-{timestamp}-{variant.Name}");
+            var hostLogDir = HostLogDir(sweepDir, variant.Name);
+            log.WriteLine($"[sweep] variant '{variant.Name}': {Describe(variant)} (host logs: {hostLogDir})");
 
-            var models = await CheckModelsAsync(client, config, log, ct);
-            var modeId = await client.EnsureModeAsync(assets.ModeName, assets.ModePayload, ct);
-            var workspaceId = await client.EnsureWorkspaceAsync(config.WorkspaceName, ct);
-            log.WriteLine($"[sweep] mode '{assets.ModeName}' => {modeId}; workspace => {workspaceId}");
-
-            var runner = new SweepRunner(
-                client,
-                config with
+            await using (
+                var host = await EvalHostProcess.StartAsync(
+                    config.Host.For(variant),
+                    repoRoot,
+                    instanceDir,
+                    hostLogDir,
+                    log,
+                    ct
+                )
+            )
+            {
+                startupWork = new HostStartupWork
                 {
-                    Models = models,
-                },
-                workspaceId,
-                modeId,
-                assets.TaskTemplate,
-                log
-            );
-            manifest = await runner.RunSweepAsync(manifestPath, ct);
-        } // DisposeAsync waits the shutdown grace, then kills the host — the store is quiescent below.
+                    HostPublishMs = startupWork.HostPublishMs + host.PublishMs,
+                    HostReadyMs = startupWork.HostReadyMs + host.ReadyMs,
+                };
+                using var http = new HttpClient { BaseAddress = host.BaseAddress, Timeout = TimeSpan.FromMinutes(2) };
+                var client = new EvalHostClient(http);
 
-        // Archive the whole conversation store next to the reports: the store IS this sweep's data
-        // (the host was fresh), and the archived copy is what makes a committed baseline
-        // re-extractable offline.
-        var archivedConversations = Path.Combine(sweepDir, "conversations");
-        var liveConversations = Path.Combine(instanceDir, "conversations");
-        if (config.ArchiveRaw)
-        {
-            log.WriteLine("[warn] --archive-raw: the archived transcripts carry model prose. Keep them off-repo.");
-            CopyTree(liveConversations, archivedConversations);
-        }
-        else
-        {
-            TranscriptRedactor.CopyRedacted(liveConversations, archivedConversations);
-        }
+                // Each host is fresh, so the mode and workspace are created per host, not per sweep.
+                var models = await CheckModelsAsync(client, config, log, ct);
+                var modeId = await client.EnsureModeAsync(assets.ModeName, assets.ModePayload, ct);
+                var workspaceId = await client.EnsureWorkspaceAsync(config.WorkspaceName, ct);
+                log.WriteLine($"[sweep] mode '{assets.ModeName}' => {modeId}; workspace => {workspaceId}");
 
-        TryDeleteTree(instanceDir, log);
+                var runner = new SweepRunner(
+                    client,
+                    config with
+                    {
+                        Models = models,
+                    },
+                    workspaceId,
+                    modeId,
+                    variant,
+                    assets.Tasks,
+                    log,
+                    new PwshTaskChecker(log),
+                    Path.Combine(sweepDir, "scores")
+                );
+                manifest.AddRange(await runner.RunSweepAsync(manifestPath, ct));
+            } // DisposeAsync waits the shutdown grace, then kills the host — this store is now quiescent.
+
+            // Archive this host's whole conversation store next to the reports: the store IS this
+            // variant's data (the host was fresh), and the archived copy is what makes a committed
+            // baseline re-extractable offline. Every variant's threads merge into ONE conversations/
+            // directory: thread ids are host-minted and the manifest's threadId is the only join key,
+            // so the extractor, --extract-only and the comparison all keep working unchanged.
+            var liveConversations = Path.Combine(instanceDir, "conversations");
+            if (config.ArchiveRaw)
+            {
+                log.WriteLine("[warn] --archive-raw: the archived transcripts carry model prose. Keep them off-repo.");
+                CopyTree(liveConversations, archivedConversations);
+            }
+            else
+            {
+                TranscriptRedactor.CopyRedacted(liveConversations, archivedConversations);
+            }
+
+            RetireInstance(instanceDir, hostLogDir, log);
+        }
 
         new SweepManifest
         {
@@ -130,9 +159,11 @@ internal static class EvalProgram
             RanUnder = ranUnder,
             ExtractedUnder = FingerprintSet.Compute(evalDir),
             Models = config.Models,
+            Variants = config.Variants,
+            Tasks = [.. assets.Tasks.Select(t => t.Id).OfType<string>()],
             Seeds = config.Seeds,
             PerRunTimeoutMinutes = config.PerRunTimeoutMinutes,
-            StartupWork = new HostStartupWork { HostPublishMs = publishMs, HostReadyMs = readyMs },
+            StartupWork = startupWork,
             StartedUtc = startedUtc,
             FinishedUtc = DateTimeOffset.UtcNow,
             ConversationsRedacted = !config.ArchiveRaw,
@@ -260,18 +291,24 @@ internal static class EvalProgram
     {
         var repoRoot = FindRepoRoot();
         var evalDir = ResolvePath(config.EvalDir, repoRoot);
-        var expectedBoardPath = Path.Combine(evalDir, "expected-board.json");
-        var expectedBoard = File.Exists(expectedBoardPath) ? BoardShapeExpectation.Load(expectedBoardPath) : null;
 
         var metrics = MetricsExtractor.Extract(
             conversationsDir,
             manifest,
-            expectedBoard,
+            ExpectedBoardResolver(evalDir),
             FingerprintSet.Compute(evalDir)
         );
         var runsPath = Path.Combine(sweepDir, ResultsWriter.RunsFileName);
         ResultsWriter.WriteRunsJsonl(runsPath, metrics.Runs);
         log.WriteLine($"[sweep] wrote {runsPath}");
+
+        // The per-cell roll-up is written HERE rather than beside the comparison, because it is the
+        // sweep's own answer ("what did each strategy cost on each task?") and --extract-only must
+        // regenerate it from an archive with no baseline in sight.
+        var cells = CellSummary.Of(metrics.Runs);
+        CellSummaryWriter.Write(sweepDir, cells);
+        log.WriteLine($"[sweep] wrote {Path.Combine(sweepDir, CellSummaryWriter.FileName)}");
+        log.WriteLine(CellSummaryWriter.BuildTable(cells));
         if (metrics.UnattributedThreads.Count > 0)
         {
             log.WriteLine(
@@ -284,6 +321,72 @@ internal static class EvalProgram
 
         return metrics;
     }
+
+    /// <summary>
+    /// Resolves each run's board expectation from the eval corpus on disk, by the task the manifest
+    /// row names: <c>{evalDir}/expected-board.json</c> for the single-task layout, and
+    /// <c>{evalDir}/tasks/{id}/expected-board.json</c> for a named task. A task with no such file has
+    /// NO board gate, which the completion criterion reports as not measurable rather than failed.
+    /// </summary>
+    /// <remarks>
+    /// Loaded lazily and cached per task, because a sweep has one row per (task x model x seed) and
+    /// re-reading one fixture for every one of them is pure work. Reading from disk at EXTRACTION time
+    /// (rather than reusing what the sweep loaded) is deliberate and unchanged: <c>--extract-only</c>
+    /// must resolve the same way with no sweep in sight, and <c>extractedUnder</c> is what records
+    /// which corpus a re-extraction actually read.
+    /// </remarks>
+    private static Func<RunManifestEntry, BoardShapeExpectation?> ExpectedBoardResolver(string evalDir)
+    {
+        var cache = new Dictionary<string, BoardShapeExpectation?>(StringComparer.Ordinal);
+        return entry =>
+        {
+            var key = entry.Task ?? "";
+            if (!cache.TryGetValue(key, out var board))
+            {
+                var dir = entry.Task is { } id ? Path.Combine(evalDir, EvalAssets.TasksDirName, id) : evalDir;
+                var path = Path.Combine(dir, "expected-board.json");
+                board = File.Exists(path) ? BoardShapeExpectation.Load(path) : null;
+                cache[key] = board;
+            }
+
+            return board;
+        };
+    }
+
+    /// <summary>
+    /// Where one variant's host diagnostics live: <c>{sweepDir}/hosts/{variant}/</c> holds the
+    /// launcher's <c>host-publish.log</c> / <c>host-stdout.log</c> / <c>host-stderr.log</c> and, once
+    /// the host is retired, its own <c>instance-logs/</c>. Per variant because each variant is its
+    /// own host process: written straight into the sweep dir, every variant overwrote the last one's
+    /// files and a failed sweep could only be diagnosed for whichever variant ran last.
+    /// </summary>
+    internal static string HostLogDir(string sweepDir, string variantName) =>
+        Path.Combine(sweepDir, "hosts", variantName);
+
+    /// <summary>
+    /// Retires a stopped host's temp instance dir: its own <c>logs/</c> (the Serilog files, which
+    /// hold the only server-side trace of WHY a run errored) are copied to
+    /// <c>{hostLogDir}/instance-logs/</c> FIRST, then the instance dir is deleted. Order matters —
+    /// the deletion is what used to take the logs with it.
+    /// </summary>
+    internal static void RetireInstance(string instanceDir, string hostLogDir, TextWriter log)
+    {
+        var instanceLogs = Path.Combine(instanceDir, "logs");
+        try
+        {
+            CopyTree(instanceLogs, Path.Combine(hostLogDir, "instance-logs"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log.WriteLine($"[warn] could not archive the host's own logs from '{instanceLogs}': {ex.Message}");
+        }
+
+        TryDeleteTree(instanceDir, log);
+    }
+
+    /// <summary>A variant's option-set for the sweep log, so a run's archive names what produced it.</summary>
+    private static string Describe(VariantConfig variant) =>
+        variant.IsDefault ? "the host's own configuration, unmodified" : variant.Signature();
 
     private static async Task<IReadOnlyList<string>> CheckModelsAsync(
         EvalHostClient client,

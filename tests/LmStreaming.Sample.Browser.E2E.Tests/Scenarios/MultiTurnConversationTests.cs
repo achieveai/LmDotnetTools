@@ -34,6 +34,7 @@ public sealed class MultiTurnConversationTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("what is the meaning of life?");
         await page.WaitForStreamIdleAsync();

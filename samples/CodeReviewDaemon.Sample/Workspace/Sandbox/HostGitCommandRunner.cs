@@ -6,7 +6,9 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// Runs deterministic git/fs commands as HOST processes (design §6): the daemon's retention push lives
 /// OUTSIDE the sandbox, so the untrusted review agent's tools — which run inside the sandbox — can never
 /// share the write credential. A git command that talks to a remote gets the credential injected via
-/// <see cref="HostGitCredentialEnv"/> (token off argv + off on-disk config).
+/// <see cref="HostGitCredentialEnv"/> (token off argv + off on-disk config). Inherited git-controlling
+/// environment is stripped first (see <see cref="IsInheritedGitControl"/>), so a parent process cannot
+/// redirect the repository, rewrite a remote, or run a helper through it.
 /// <para>
 /// Every command is BOUNDED, and one that talks to a remote is AUDIBLE. Neither used to be true: a
 /// 969,911-object fetch into a 2.3 GB store ran with no deadline of any kind and emitted not one line
@@ -17,6 +19,46 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// </summary>
 internal sealed class HostGitCommandRunner : ISandboxCommandRunner
 {
+    /// <summary>
+    /// Whether an inherited environment variable is one git reads as an instruction. Every such variable is
+    /// stripped from every command this class runs, BEFORE the runner's own values
+    /// (<see cref="HostGitCredentialEnv"/>) are applied — so the only git-controlling variables a child sees
+    /// are the ones this class set itself.
+    /// <para>
+    /// The rule is every name starting with <c>GIT_</c>, plus <c>SSH_ASKPASS</c> (git's last-resort prompt
+    /// helper, the one it reads without the prefix). A prefix rather than a list, because a list only covers
+    /// the variables someone thought of, and git keeps adding them. Two classes of exposure, both real:
+    /// </para>
+    /// <para>
+    /// REPOSITORY SELECTION (<c>GIT_DIR</c>, <c>GIT_WORK_TREE</c>, <c>GIT_INDEX_FILE</c>, ...). git exports these
+    /// into hook processes, and a hook's children inherit them: a <c>dotnet test</c> started by a pre-commit
+    /// hook hands every git it spawns a <c>GIT_DIR</c> pointing at the developer's repository, and the command
+    /// then ignores its own <see cref="ProcessStartInfo.WorkingDirectory"/>. Observed on 2026-09-15: a
+    /// fixture's <c>git init --bare</c> re-initialised the live checkout, and a fixture's <c>push</c> put five
+    /// fixture commits on the shared default branch.
+    /// </para>
+    /// <para>
+    /// CONFIGURATION, HELPERS AND TRANSPORT (<c>GIT_CONFIG_PARAMETERS</c>, <c>GIT_CONFIG_COUNT</c>/<c>KEY_n</c>/
+    /// <c>VALUE_n</c>, <c>GIT_CONFIG_GLOBAL</c>/<c>SYSTEM</c>, <c>GIT_SSH_COMMAND</c>, <c>GIT_ASKPASS</c>,
+    /// <c>GIT_PROXY_COMMAND</c>, <c>GIT_EXEC_PATH</c>, <c>GIT_SSL_NO_VERIFY</c>, ...). An inherited
+    /// <c>url.*.insteadOf</c> rewrite plus <c>GIT_SSH_COMMAND</c> turns an https fetch into execution of an
+    /// arbitrary program, inside a process that holds the daemon's provider credentials.
+    /// </para>
+    /// <para>
+    /// What this does NOT cover: git's on-disk configuration (system, <c>$HOME</c>/<c>XDG_CONFIG_HOME</c>
+    /// global, repository-local) is still read, and non-git variables such as proxies still apply. Those are
+    /// the host operator's configuration rather than something a parent process can slip in, and Git for
+    /// Windows relies on its system config (<c>http.sslBackend=schannel</c>, the LFS filters).
+    /// </para>
+    /// <para>
+    /// Unconditional, and applied to non-git commands too: this class always names its repository and
+    /// generates its own git config, and no caller has ever meant to inherit an ambient one.
+    /// </para>
+    /// </summary>
+    internal static bool IsInheritedGitControl(string name) =>
+        name.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "SSH_ASKPASS", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Git verbs that talk to a remote. Only these are announced and only these get <c>--progress</c>:
     /// they are the only commands that can take minutes, and they are a rounding error in the volume of
@@ -235,10 +277,20 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
             psi.ArgumentList.Add(argv[i]);
         }
 
+        // Drop every git-controlling variable this process inherited (see IsInheritedGitControl). This runs
+        // for every command, not only git: such a variable is meaningless to the fs commands and actively
+        // dangerous for git, and a conditional here would only be one more thing to get wrong later. It MUST
+        // precede the credential injection below, which is what leaves the runner's own values effective.
+        // Snapshot the keys first: removing while enumerating the environment dictionary throws.
+        foreach (var name in psi.Environment.Keys.Where(IsInheritedGitControl).ToList())
+        {
+            _ = psi.Environment.Remove(name);
+        }
+
         // Inject each signed-in provider's credential only when this is a git command (the sole
         // remote-talking case here) — GitHub and/or Azure DevOps, per which providers are signed in.
-        // HostGitCredentialEnv always sets GIT_TERMINAL_PROMPT=0, so even a credential-less git command
-        // fails fast rather than hanging on a prompt.
+        // HostGitCredentialEnv always sets GIT_CONFIG_COUNT and GIT_TERMINAL_PROMPT=0, so even a
+        // credential-less git command fails fast rather than hanging on a prompt.
         if (isGit)
         {
             var credentials = await _credentialsSource(cancellationToken).ConfigureAwait(false);

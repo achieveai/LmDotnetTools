@@ -103,6 +103,7 @@ public sealed class DeepLinkHandoffResumeTests
             subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(loggerFactory)
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         // 1) Provision the conversation headlessly (the daemon's REST path). The browser is currently on
         //    a fresh, unrelated new chat — it is NOT subscribed to this thread's stream.

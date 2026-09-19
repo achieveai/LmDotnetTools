@@ -159,6 +159,152 @@ public sealed class AgentContextProjectionTests : IAsyncLifetime
         raw.RowsInTail.Should().Be(9);
     }
 
+    // ---- Tool-result view shaping --------------------------------------------------------------
+
+    [Fact]
+    public void ToolResultCap_TrimsAnOversizedResultToHeadMarkerAndTail_AndLeavesTheRowWhole()
+    {
+        var big = string.Concat(Enumerable.Range(0, 12_400).Select(i => $"row {i:D5}\n")); // 124,000 chars
+        var thread = new ThreadFixture().Human("go").ToolTurn(result: big).ToolTurn(result: "small");
+        var shaping = new ToolResultViewOptions { CapChars = 10_000 };
+
+        var view = AgentContextProjection.Default.Build(null, thread.Rows, active: null, toolResults: shaping);
+
+        var trimmed = view[2].Should().BeOfType<ToolCallResultMessage>().Subject;
+        trimmed.Result.Length.Should().BeLessThanOrEqualTo(10_000);
+        trimmed.Result.Should().StartWith("row 00000\n").And.EndWith("row 12399\n");
+        trimmed.Result.Should().Contain("call-2").And.Contain("RecallConversation").And.Contain("offset=");
+        trimmed.Result.Should().Contain("124000", "the marker names the full size");
+        trimmed.ToolCallId.Should().Be("call-2");
+        ((ToolCallResultMessage)thread.Rows[2].Message)
+            .Result.Should()
+            .BeSameAs(big, "the canonical row is never edited");
+        view[4].Should().BeSameAs(thread.Rows[4].Message, "a result under the cap is dispatched as it is");
+    }
+
+    [Fact]
+    public void ClearWatermark_ReplacesOlderToolResultsWithAPlaceholder_AndKeepsDeferredAndNewerOnes()
+    {
+        var output = new string('o', 2_000);
+        var thread = new ThreadFixture()
+            .Human("go")
+            .ToolTurn(result: output) // 2,3
+            .ToolTurn(result: "pending", deferred: true) // 4,5
+            .ToolTurn(result: output); // 6,7
+        var shaping = new ToolResultViewOptions { ClearedThroughSeq = 5 };
+
+        var view = AgentContextProjection.Default.Build(null, thread.Rows, active: null, toolResults: shaping);
+
+        var cleared = view[2].Should().BeOfType<ToolCallResultMessage>().Subject;
+        cleared.Result.Should().Contain("seq 3").And.Contain("2000").And.Contain("RecallConversation");
+        cleared.Result.Length.Should().BeLessThan(300);
+        view[1].Should().BeSameAs(thread.Rows[1].Message, "tool calls keep their arguments");
+        view[4].Should().BeSameAs(thread.Rows[4].Message, "a deferred placeholder is never rewritten");
+        view[6].Should().BeSameAs(thread.Rows[6].Message, "rows after the watermark are untouched");
+    }
+
+    [Fact]
+    public void TightenedTrim_KeepsTheSameShareOfEachShownResult_AboveItsFloor_AndLeavesClearedAndNewerResultsAlone()
+    {
+        var thread = new ThreadFixture()
+            .Human("go")
+            .ToolTurn(result: new string('a', 30_000)) // 2,3: cleared
+            .ToolTurn(result: new string('b', 40_000)) // 4,5: shown at the 20,000-char cap, tightened to half
+            .ToolTurn(result: new string('c', 12_000)) // 6,7: tightened to half, 6,000
+            .ToolTurn(result: new string('d', 6_000)) //  8,9: half is under the 4,000 floor
+            .ToolTurn(result: new string('e', 30_000)); // 10,11: newer than the tightening, normal cap
+        var shaping = new ToolResultViewOptions
+        {
+            CapChars = 20_000,
+            ClearedThroughSeq = 3,
+            TightenedThroughSeq = 9,
+            TightenedPartsPerMillion = 500_000,
+            TightenedFloorChars = 4_000,
+        };
+
+        var view = AgentContextProjection.Default.Build(null, thread.Rows, active: null, toolResults: shaping);
+
+        string Result(int index) => view[index].Should().BeOfType<ToolCallResultMessage>().Subject.Result;
+        Result(2).Should().StartWith("[Tool result cleared", "clearing wins over tightening");
+        Result(4).Length.Should().BeLessThanOrEqualTo(10_000).And.BeGreaterThan(9_000);
+        Result(4).Should().Contain("call-4").And.Contain("offset=").And.StartWith("bbb").And.EndWith("bbb");
+        Result(6).Length.Should().BeLessThanOrEqualTo(6_000).And.BeGreaterThan(5_000);
+        Result(8).Length.Should().BeLessThanOrEqualTo(4_000).And.BeGreaterThan(3_000, "the floor holds");
+        Result(10).Length.Should().BeLessThanOrEqualTo(20_000).And.BeGreaterThan(19_000, "newer results keep the cap");
+        shaping.CapFor(seq: 5, length: 40_000).Should().Be(10_000);
+        shaping.CapFor(seq: 9, length: 6_000).Should().Be(4_000);
+        shaping.CapFor(seq: 11, length: 30_000).Should().Be(20_000);
+    }
+
+    [Fact]
+    public void ClearedThroughSeq_KeepsTheMostRecentToolTurnsWhole()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurns(5).Assistant("done"); // results at 3,5,7,9,11
+
+        ToolResultView.ClearedThroughSeq(thread.Rows, keepTurns: 3).Should().Be(5, "turns 3-5 start at seq 6");
+        ToolResultView.ClearedThroughSeq(thread.Rows, keepTurns: 1).Should().Be(9);
+        ToolResultView.ClearedThroughSeq(thread.Rows, keepTurns: 5).Should().Be(0, "nothing older to clear");
+    }
+
+    [Fact]
+    public void ClearedThroughSeq_AnsweredOnly_StopsBeforeTheLatestHumanInput()
+    {
+        // 1 human, tool turns at 2-7, 8 assistant, 9 human, tool turns at 10-15: the first exchange was answered,
+        // the second is in progress.
+        var thread = new ThreadFixture().Human("first").ToolTurns(3).Assistant("done").Human("second").ToolTurns(3);
+
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 1)
+            .Should()
+            .Be(13, "unscoped, only the latest turn stays");
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 1, answeredOnly: true)
+            .Should()
+            .Be(8, "the exchange in progress is never cleared");
+        ToolResultView
+            .ClearedThroughSeq(thread.Rows, keepTurns: 5, answeredOnly: true)
+            .Should()
+            .Be(3, "keep-turns still applies below the cap");
+
+        var single = new ThreadFixture().Human("go").ToolTurns(5);
+        ToolResultView
+            .ClearedThroughSeq(single.Rows, keepTurns: 1, answeredOnly: true)
+            .Should()
+            .Be(0, "one exchange in progress clears nothing");
+    }
+
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task ReplayingTheStore_WithTrimmedAndClearedResults_YieldsByteIdenticalViews(string kind)
+    {
+        var store = _harness.Open(kind);
+        var big = new string('b', 30_000);
+        var thread = new ThreadFixture().Human("go").ToolTurn(result: big).ToolTurn(result: big).ToolTurn(result: big);
+        await store.AppendMessagesAsync(
+            Thread,
+            MessagePersistenceConverter.ToPersistedMessages(thread.Messages, Thread, "run-1")
+        );
+        var shaping = new ToolResultViewOptions { CapChars = 8_000, ClearedThroughSeq = 3 };
+
+        var first = AgentContextProjection.Default.Build(
+            "sys",
+            SequencedHistory.FromPersisted(await store.LoadMessagesAsync(Thread)),
+            active: null,
+            toolResults: shaping
+        );
+        var second = AgentContextProjection.Default.Build(
+            "sys",
+            SequencedHistory.FromPersisted(await store.LoadMessagesAsync(Thread)),
+            active: null,
+            toolResults: shaping
+        );
+
+        Wire(second).Should().Equal(Wire(first));
+        Wire(first)[3].Should().Contain("seq 3", "seq 3 is cleared");
+        Wire(first)[5].Length.Should().BeLessThan(9_000, "seq 5 is trimmed");
+        (await store.LoadMessagesAsync(Thread)).Should().OnlyContain(r => !r.MessageJson.Contains("elided"));
+    }
+
     // ---- SequencedHistory ---------------------------------------------------------------------
 
     [Fact]

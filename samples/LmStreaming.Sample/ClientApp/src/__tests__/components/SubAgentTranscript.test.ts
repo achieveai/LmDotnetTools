@@ -17,7 +17,7 @@ import { MessageType, type ToolCallResultMessage } from '@/types';
 // child-scoped submit function to prove the subtree provide points at the FOCUSED CHILD connection
 // (#246 defect 1), not the root chat's SUBMIT_CLIENT_TOOL_RESULT.
 const MessageListStub = {
-  props: ['displayItems', 'isLoading'],
+  props: ['displayItems', 'isLoading', 'viewPreference'],
   setup() {
     const resolver = inject<(id: string | null | undefined) => ToolCallResultMessage | null>(
       GET_RESULT_FOR_TOOL_CALL,
@@ -30,7 +30,7 @@ const MessageListStub = {
     return { marker: resolved ? resolved.result : 'none', submit };
   },
   template:
-    '<div data-testid="stub-ml" :data-count="displayItems.length" :data-loading="String(isLoading)" :data-marker="marker"></div>',
+    '<div data-testid="stub-ml" :data-count="displayItems.length" :data-loading="String(isLoading)" :data-view="viewPreference" :data-marker="marker"></div>',
 };
 
 const ChatInputStub = {
@@ -51,6 +51,7 @@ function mountView(props: Partial<Record<string, unknown>> = {}) {
       error: null,
       getResultForToolCall: vi.fn(() => null),
       submitClientToolResult: vi.fn(() => Promise.resolve({ status: 'acked', duplicate: false })),
+      viewPreference: 'consumer',
       ...props,
     } as never,
     global: { stubs: { MessageList: MessageListStub, ChatInput: ChatInputStub } },
@@ -60,9 +61,14 @@ function mountView(props: Partial<Record<string, unknown>> = {}) {
 describe('SubAgentTranscript', () => {
   it('renders the transcript MessageList with the display items and streaming state', () => {
     const wrapper = mountView();
+    const view = wrapper.get('[data-testid="subagent-view"]');
+    expect(view.attributes('id')).toBe('conversation-agent-view-a1');
+    expect(view.attributes('role')).toBe('region');
+    expect(view.attributes('aria-labelledby')).toBe('conversation-agent-selector-a1');
     const ml = wrapper.get('[data-testid="subagent-transcript"] [data-testid="stub-ml"]');
     expect(ml.attributes('data-count')).toBe('2');
     expect(ml.attributes('data-loading')).toBe('true');
+    expect(ml.attributes('data-view')).toBe('consumer');
   });
 
   it('provides the CHILD tool-result resolver to its subtree (not the parent chat)', () => {

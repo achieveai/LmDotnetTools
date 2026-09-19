@@ -83,7 +83,8 @@ a configured workspace directory. Two delivery paths:
 
 All sandbox behavior is configured in the **`SandboxGateway`** section of
 `appsettings.Development.json` (bound to `Services/SandboxGatewayOptions.cs`). Full reference:
-**[SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md)**.
+**[SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md)** — including
+[per-sandbox environment variables](SandboxWorkspaceGuide.md#per-sandbox-environment-variables).
 
 ### 1. Point at your gateway installation
 
@@ -192,7 +193,7 @@ In development, open the app with `?record=1` (or `?record=true`) to enable serv
 - Codex App Server JSON-RPC traces (when provider mode is `codex`) are written to:
   - `samples/LmStreaming.Sample/recordings/<threadId>_<timestamp>.llm.codex.rpc.jsonl`
 
-This works for multi-turn runs and records provider calls for whichever provider mode is active (`openai`, `anthropic`, `test-anthropic`, `codex`).
+This works for multi-turn runs and records provider calls for whichever provider mode is active (`openai`, `anthropic`, `test-anthropic`, `codex`, and the Copilot Responses models). For the Responses API (`/responses`, SSE or WebSocket) the `.response.txt` holds one event payload per line exactly as it arrived on the wire — not a re-serialization — so a tool-call argument seen there is what the server sent.
 
 ## Mock-backed CLI providers (`*-mock`)
 

@@ -72,6 +72,7 @@ public sealed class WorkflowMockProviderTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("run a minimal workflow");
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
@@ -80,19 +81,21 @@ public sealed class WorkflowMockProviderTests
         await page.ToolCallPills().WaitForCountAtLeastAsync(1, timeoutMs: 20_000);
         (await page.ToolCallNamesAsync()).Should().Contain("StartWorkflowAgent");
 
-        // The run surfaces as a ⚙ workflow tab (its data-tab-id is the workflowId).
-        var workflowTab = page.ConversationTab("wf-e2e");
+        // The run surfaces as a workflow row in the shared agent picker.
+        await page.AgentPickerTrigger().WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
+        await page.OpenAgentPickerAsync();
+        var workflowTab = page.Locator("[data-testid='agent-picker-option'][data-agent-id='wf-e2e']");
         await workflowTab.WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = 20_000 }
         );
 
-        // Poll the workflow tab's own title (which carries "· <status>") until it reports completed — the
+        // Poll the workflow row's status text until it reports completed — the
         // browser-observable terminal proof, no sidebar/threadId lookup required.
         var completed = false;
         for (var attempt = 0; attempt < 40 && !completed; attempt++)
         {
-            var title = await workflowTab.GetAttributeAsync("title");
-            if (title is not null && title.Contains("completed", StringComparison.OrdinalIgnoreCase))
+            var text = await workflowTab.InnerTextAsync();
+            if (text.Contains("completed", StringComparison.OrdinalIgnoreCase))
             {
                 completed = true;
                 break;

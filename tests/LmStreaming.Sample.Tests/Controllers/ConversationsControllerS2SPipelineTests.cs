@@ -89,6 +89,32 @@ public sealed class ConversationsControllerS2SPipelineTests
         return host;
     }
 
+    /// <summary>
+    /// The compaction route binds a missing body and <c>{}</c> alike, through the real pipeline and with the S2S secret
+    /// honoured: both reach the action, which answers the unknown thread with its 404 rather than a 400/415.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("{}")]
+    [InlineData("{\"focus\":\"auth\"}")]
+    public async Task CompactionRoute_AcceptsAnEmptyOrMissingBody_OverS2S(string? body)
+    {
+        using var host = await StartHostAsync(Secret);
+        using var client = host.GetTestClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/conversations/no-such-thread/compaction");
+        request.Headers.TryAddWithoutValidation(InboundS2SAuthAttribute.HeaderName, Secret);
+        if (body is not null)
+        {
+            request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+        }
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("unknown_thread");
+    }
+
     [Fact]
     public async Task BrowserRequest_NoMarkers_IsReachable_WhenSecretConfigured()
     {

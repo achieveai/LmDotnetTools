@@ -77,6 +77,32 @@ public class RequestResponseDumpWriterTests
         }
     }
 
+    [Fact]
+    public void AppendRawResponseLine_WritesTheTextVerbatim_OnePerLine()
+    {
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"dump-raw-{Guid.NewGuid():N}");
+        var writer = AchieveAi.LmDotnetTools.LmCore.Utils.RequestResponseDumpWriter.Create(
+            baseFileName,
+            new JsonSerializerOptions(),
+            NullLogger.Instance
+        );
+
+        try
+        {
+            Assert.NotNull(writer);
+            // Not serialized: a raw wire payload must land as-is, quotes and spacing untouched.
+            writer.AppendRawResponseLine("""{"type":"a",  "delta":" fee"}""");
+            writer.AppendRawResponseLine("""{"type":"b"}""");
+
+            var lines = File.ReadAllLines(baseFileName + ".response.txt");
+            Assert.Equal(["""{"type":"a",  "delta":" fee"}""", """{"type":"b"}"""], lines);
+        }
+        finally
+        {
+            File.Delete(baseFileName + ".response.txt");
+        }
+    }
+
     private sealed class NonSerializablePayload
     {
         public Action Callback { get; } = static () => { };

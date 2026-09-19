@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, useId, watch } from 'vue';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 import ModeManagementModal from './ModeManagementModal.vue';
 
@@ -22,6 +22,8 @@ const emit = defineEmits<{
 const dropdownOpen = ref(false);
 const modalOpen = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
+const menuId = useId();
+const modeManagementModalRef = ref<InstanceType<typeof ModeManagementModal> | null>(null);
 
 const currentMode = computed(() =>
   props.modes.find((m) => m.id === props.currentModeId)
@@ -77,6 +79,23 @@ function handleCopyMode(modeId: string, newName: string): void {
   emit('copy-mode', modeId, newName);
 }
 
+/**
+ * Forwarding pair for the parent's create/update catch blocks (`ChatLayout.handleCreateMode`/
+ * `handleUpdateMode`). `ModeManagementModal` is `v-if`'d here, not in `ChatLayout`, so this is the
+ * only place that can hold a live ref to it — hence these thin pass-throughs instead of the parent
+ * reaching in directly. Both are safely no-ops if the modal was closed (X / backdrop / Escape)
+ * before the awaited API call settled.
+ */
+function closeManageForm(): void {
+  modeManagementModalRef.value?.closeForm();
+}
+
+function showManageFormError(message: string): void {
+  modeManagementModalRef.value?.showFormError(message);
+}
+
+defineExpose({ closeManageForm, showManageFormError });
+
 // Close dropdown when clicking outside
 function handleClickOutside(event: MouseEvent): void {
   if (dropdownRef.value && !dropdownRef.value.contains(event.target as Node)) {
@@ -106,7 +125,13 @@ watch(
   (isDisabled) => {
     if (isDisabled) {
       closeDropdown();
-      modalOpen.value = false;
+      // The MODAL is deliberately left open. `disabled` folds in socket-driven, self-reversing
+      // conditions — `modeSwitchDisabled` includes `hasPendingClientQuestion` — so an agent asking a
+      // question while the user is mid-save flipped this true and tore the form down, discarding
+      // every row they had typed AND the error that was about to be shown. Closing the dropdown is
+      // still right (picking a different mode while a switch is inflight is not), but the edit form
+      // is the user's own in-progress work and nothing here is entitled to throw it away. The
+      // workspace side reached the same conclusion — see `workspaceSelectorDisabled` in ChatLayout.
     }
   }
 );
@@ -118,15 +143,24 @@ watch(
       class="selector-btn"
       :class="{ open: dropdownOpen }"
       data-testid="mode-selector-button"
+      :aria-label="`Select mode, current: ${currentMode?.name ?? 'Loading'}`"
+      :title="`Select mode, current: ${currentMode?.name ?? 'Loading'}`"
+      :aria-expanded="dropdownOpen"
+      :aria-controls="menuId"
       @click="toggleDropdown"
       :disabled="isLoading || disabled"
     >
-      <span class="mode-label">Mode:</span>
+      <svg class="mode-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M3 4h10M5.5 8h5M3 12h10" />
+        <circle cx="6" cy="4" r="1" />
+        <circle cx="9" cy="8" r="1" />
+        <circle cx="7" cy="12" r="1" />
+      </svg>
       <span class="mode-name">{{ currentMode?.name ?? 'Loading...' }}</span>
       <span class="dropdown-arrow">{{ dropdownOpen ? '\u25B2' : '\u25BC' }}</span>
     </button>
 
-    <div v-if="dropdownOpen" class="dropdown-menu">
+    <div v-if="dropdownOpen" :id="menuId" class="dropdown-menu">
       <!-- System Modes -->
       <div v-if="systemModes.length > 0" class="menu-section">
         <div class="section-header">System</div>
@@ -172,6 +206,7 @@ watch(
     <!-- Management Modal -->
     <ModeManagementModal
       v-if="modalOpen"
+      ref="modeManagementModalRef"
       :modes="modes"
       :tools="tools"
       :is-loading="isLoading"
@@ -187,19 +222,35 @@ watch(
 <style scoped>
 .mode-selector {
   position: relative;
+  width: 100%;
+  min-width: 0;
 }
 
 .selector-btn {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   padding: 6px 12px;
   background: #f8f9fa;
   border: 1px solid #ddd;
   border-radius: 6px;
   font-size: 13px;
+  color: #5f6874;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
+}
+
+.mode-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: white;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.15;
 }
 
 .selector-btn:hover:not(:disabled) {
@@ -216,13 +267,9 @@ watch(
   cursor: not-allowed;
 }
 
-.mode-label {
-  color: #666;
-}
-
 .mode-name {
-  color: #333;
-  font-weight: 500;
+  color: #5f6874;
+  font-weight: 400;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -237,16 +284,19 @@ watch(
 
 .dropdown-menu {
   position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
+  bottom: 100%;
+  left: 0;
+  max-width: calc(100vw - 32px);
+  max-height: min(360px, calc(100vh - 120px));
+  margin-bottom: 4px;
   min-width: 200px;
   background: white;
   border: 1px solid #ddd;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 100;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .menu-section {

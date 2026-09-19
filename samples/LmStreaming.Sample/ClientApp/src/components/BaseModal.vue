@@ -1,3 +1,8 @@
+<script lang="ts">
+/** Mounted dialog order. Only the newest dialog may own global keyboard handling. */
+const modalStack: symbol[] = [];
+</script>
+
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, useId } from 'vue';
 
@@ -12,6 +17,7 @@ const emit = defineEmits<{ close: [] }>();
 // Unique id so aria-labelledby resolves to THIS modal's title even with multiple modals mounted.
 const titleId = useId();
 const containerRef = ref<HTMLElement | null>(null);
+const modalId = Symbol('base-modal');
 // The element focused before the modal opened, restored on unmount so focus returns where it was.
 let previouslyFocused: HTMLElement | null = null;
 
@@ -43,6 +49,9 @@ function focusableElements(): HTMLElement[] {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  if (modalStack[modalStack.length - 1] !== modalId) {
+    return;
+  }
   if (event.key === 'Escape') {
     handleClose();
     return;
@@ -75,14 +84,22 @@ function handleKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   previouslyFocused = document.activeElement as HTMLElement | null;
+  modalStack.push(modalId);
   document.addEventListener('keydown', handleKeydown);
   // Move focus into the dialog so keyboard users start inside it and the trap has an anchor.
   containerRef.value?.focus();
 });
 
 onBeforeUnmount(() => {
+  const wasTopmost = modalStack[modalStack.length - 1] === modalId;
+  const stackIndex = modalStack.lastIndexOf(modalId);
+  if (stackIndex >= 0) {
+    modalStack.splice(stackIndex, 1);
+  }
   document.removeEventListener('keydown', handleKeydown);
-  previouslyFocused?.focus?.();
+  if (wasTopmost) {
+    previouslyFocused?.focus?.();
+  }
 });
 </script>
 

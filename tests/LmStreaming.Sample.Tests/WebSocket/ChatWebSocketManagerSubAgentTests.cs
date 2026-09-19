@@ -916,6 +916,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
                 NullLogger<PendingAuthCoordinator>.Instance
             ),
             store ?? new InMemoryConversationStore(),
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
             logger ?? NullLogger<ChatWebSocketManager>.Instance
         );
 

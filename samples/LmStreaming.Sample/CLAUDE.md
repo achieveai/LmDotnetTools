@@ -183,3 +183,6 @@ already send a runId are untouched.
 - Reproduce the user's exact **modality + scale** (1 tool vs 10–15 tools; tool vs text are different paths).
 - Coverage: `ClientApp/src/__tests__/composables/useChatResume.test.ts` (1-tool and 12-tool switch-back,
   RED-without-fix / GREEN-with) and `LmMultiTurn.Tests/MultiTurnAgentReplayTests` (replay carries tool messages).
+
+## Sandbox environment variables
+- Sandbox env: validate through `SandboxEnvRules`; layers Workspace < Mode < Provision; never log values.

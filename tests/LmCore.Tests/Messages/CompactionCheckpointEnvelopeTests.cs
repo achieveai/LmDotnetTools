@@ -35,6 +35,17 @@ public class CompactionCheckpointEnvelopeTests
                 },
             ],
             Artifacts = [new ArtifactRef { Path = "src/a.cs", OriginSeq = 20 }],
+            OpenExchanges =
+            [
+                new OpenExchangeRef
+                {
+                    MessageId = "q1",
+                    Direction = "inbound",
+                    From = "agent-2",
+                    Seq = 4,
+                    Summary = "which db?",
+                },
+            ],
             Agents =
             [
                 new AgentRef
@@ -73,17 +84,45 @@ public class CompactionCheckpointEnvelopeTests
                 "## Open work",
                 "## Artifacts and evidence",
                 "## Agents",
+                "## Open exchanges (still unanswered at this checkpoint; answer or resolve them)",
                 "## What happened",
                 "## Index of compacted history",
             ],
             Headings(text)
         );
         Assert.StartsWith(
-            "<context-checkpoint version=\"1\" id=\"cp-t-1\" covers_seq=\"1-60\" created_at=\"2026-09-02T12:00:00.0000000+00:00\">\n",
+            "<context-checkpoint version=\"2\" id=\"cp-t-1\" covers_seq=\"1-60\" created_at=\"2026-09-02T12:00:00.0000000+00:00\">\n",
             text
         );
         Assert.EndsWith("</context-checkpoint>", text);
     }
+
+    [Fact]
+    public void OpenExchanges_ListEachUnansweredExchange_BetweenAgentsAndTheNarrative()
+    {
+        var text = Checkpoint(FullManifest()).RenderEnvelope(CheckpointRenderOptions.Default);
+
+        Assert.Contains(
+            "## Open exchanges (still unanswered at this checkpoint; answer or resolve them)\n- inbound q1 from agent-2 [seq 4]: which db?\n",
+            text
+        );
+        Assert.True(
+            text.IndexOf("## Open exchanges", StringComparison.Ordinal)
+                < text.IndexOf("## What happened", StringComparison.Ordinal)
+        );
+    }
+
+    [Fact]
+    public void OpenExchanges_OmitTheSection_WhenNoneAreOpen()
+    {
+        var text = Checkpoint(FullManifest() with { OpenExchanges = [] })
+            .RenderEnvelope(CheckpointRenderOptions.Default);
+
+        Assert.DoesNotContain("## Open exchanges", text);
+    }
+
+    [Fact]
+    public void CurrentSchemaVersion_IsTwo() => Assert.Equal(2, CompactionCheckpointMessage.CurrentSchemaVersion);
 
     [Fact]
     public void CurrentInstruction_QuotesTheWholeRowVerbatim_WithItsSeq()

@@ -490,6 +490,46 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             );
     }
 
+    [Fact]
+    public async Task ListAgents_FailureCode_IsTheErroredRunsCode_AndIsClearedAfterRestartToRunning()
+    {
+        // A child refused for size must say why in a machine-readable way, not only through "error" (#Q2-a).
+        // The code belongs to that run: a continuation that re-arms the child must not keep reporting it.
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate> { ["refused"] = DummyTemplate("refused") }
+        );
+        var fake = new FakeMultiTurnAgent
+        {
+            SubscribeImpl = (callIndex, ct) =>
+                callIndex == 1
+                    ? FailOnceThenWaitForeverStream("run-1", "view_exceeds_window", ct)
+                    : FakeMultiTurnAgent.WaitForeverStream(ct),
+        };
+        manager.TestAgentFactoryOverride = (_, _) => fake;
+
+        var agentId = ParseAgentId(await manager.SpawnAsync("refused", "task", runInBackground: true));
+
+        await Wait.UntilAsync(
+            () => manager.ListAgents().Single(s => s.AgentId == agentId).Status == SubAgentStatus.Error,
+            "the refused sub-agent reported error",
+            TimeSpan.FromSeconds(10)
+        );
+        manager.ListAgents().Single(s => s.AgentId == agentId).FailureCode.Should().Be("view_exceeds_window");
+
+        _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        await Wait.UntilAsync(
+            () => manager.ListAgents().Single(s => s.AgentId == agentId).Status == SubAgentStatus.Running,
+            "the restarted sub-agent reported running",
+            TimeSpan.FromSeconds(10)
+        );
+        manager
+            .ListAgents()
+            .Single(s => s.AgentId == agentId)
+            .FailureCode.Should()
+            .BeNull("a running child has no failure, and the previous run's code must not survive the restart");
+    }
+
     [Theory]
     [InlineData(SubAgentStatus.Completed, true)]
     [InlineData(SubAgentStatus.Error, true)]
@@ -584,6 +624,23 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             yield return msg;
             await Task.Yield();
         }
+    }
+
+    /// <summary>A child stream whose first run fails with <paramref name="errorCode"/>, then stays subscribed.</summary>
+    private static async IAsyncEnumerable<IMessage> FailOnceThenWaitForeverStream(
+        string completedRunId,
+        string errorCode,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        yield return new RunCompletedMessage
+        {
+            CompletedRunId = completedRunId,
+            IsError = true,
+            ErrorMessage = $"{errorCode}: the request does not fit",
+            ErrorCode = errorCode,
+        };
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
     }
 
     /// <summary>

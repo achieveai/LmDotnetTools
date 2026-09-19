@@ -155,12 +155,38 @@ internal sealed class ThreadFixture
             }
         );
 
-    public ThreadFixture Notify(string kind = "subagent-completion", string label = "agent-1 finished") =>
+    public ThreadFixture Notify(
+        string kind = "subagent-completion",
+        string label = "agent-1 finished",
+        string? detail = null,
+        string? sourceToolCallId = null
+    ) =>
         Add(
             new NotifyMessage
             {
                 NotifyKind = kind,
                 Label = label,
+                Detail = detail,
+                SourceToolCallId = sourceToolCallId,
+                RunId = _runId,
+            }
+        );
+
+    /// <summary>A parent's Steer: stored as a user-role row.</summary>
+    public ThreadFixture AgentSteer(string body) => Agent(AgentMessageType.Steer, body);
+
+    /// <summary>A message from another agent (a parent's Steer, a child's Question or Response): a user-role row.</summary>
+    public ThreadFixture Agent(AgentMessageType type, string body) =>
+        Add(
+            AgentMessage.Create(
+                $"msg-{_rows.Count + 1}",
+                type,
+                "agent-parent",
+                "parent",
+                body,
+                generationId: NextGeneration()
+            ) with
+            {
                 RunId = _runId,
             }
         );

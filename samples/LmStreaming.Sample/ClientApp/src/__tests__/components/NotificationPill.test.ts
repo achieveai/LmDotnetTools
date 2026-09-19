@@ -4,9 +4,10 @@ import NotificationPill from '@/components/NotificationPill.vue';
 import { type NotificationDisplayData } from '@/types';
 import { GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import { GET_AGENT_COLOR } from '@/utils/agentColors';
+import { COMPACTION_NOTIFY_KIND, GET_CHECKPOINT_STATE } from '@/composables/messageDisplay';
 
 describe('NotificationPill.vue', () => {
-  it('renders a sub-agent completion notification with kind, source tool and label', () => {
+  it('renders a sub-agent completion with its message first and source metadata in details', async () => {
     const notification: NotificationDisplayData = {
       notifyKind: 'subagent-completion',
       sourceToolName: 'Spawn',
@@ -19,8 +20,11 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.exists()).toBe(true);
     expect(pill.attributes('data-notify-kind')).toBe('subagent-completion');
-    expect(wrapper.find('[data-testid="notification-source"]').text()).toContain('Spawn');
     expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('build-fixer');
+    expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
+    await wrapper.get('button.notification-header').trigger('click');
+    expect(wrapper.get('[data-testid="notification-source"]').text()).toBe('Spawn');
+    expect(wrapper.get('.notification-detail').text()).toBe('all green');
     // It is NOT rendered as a user/assistant chat bubble.
     expect(wrapper.find('.markdown-content').exists()).toBe(false);
   });
@@ -112,7 +116,7 @@ describe('NotificationPill.vue', () => {
   // (agentId/tab-id for descendant-question vs. the NotifyClient tool call's own id for
   // client-notification) and must not be conflated. No second notification channel — same pill,
   // different kind.
-  it('renders a descendant-question (pending question) with its own icon and label', () => {
+  it('renders a descendant-question with an outline icon and label', () => {
     const notification: NotificationDisplayData = {
       notifyKind: 'descendant-question',
       sourceToolName: 'AskUserQuestion',
@@ -124,7 +128,7 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.attributes('data-notify-kind')).toBe('descendant-question');
     expect(wrapper.find('.notification-kind').text()).toBe('Question pending');
-    expect(wrapper.find('.notification-icon').text()).toBe('❓');
+    expect(wrapper.get('svg.notification-icon').attributes('aria-hidden')).toBe('true');
   });
 
   it('navigates to the reporting descendant\'s tab when a descendant-question pill is clicked', async () => {
@@ -139,7 +143,10 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('button.notification-header');
+    expect(header.attributes('aria-expanded')).toBeUndefined();
+    expect(header.attributes('aria-controls')).toBeUndefined();
+    await header.trigger('click');
 
     expect(goToAgentTab).toHaveBeenCalledWith('agent-42');
   });
@@ -155,7 +162,9 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('.notification-header');
+    expect(header.element.tagName).toBe('DIV');
+    await header.trigger('click');
 
     expect(goToAgentTab).not.toHaveBeenCalled();
   });
@@ -179,6 +188,8 @@ describe('NotificationPill.vue', () => {
     const pill = wrapper.find('[data-testid="notification-pill"]');
     expect(pill.attributes('data-notify-kind')).toBe('client-notification');
     expect(wrapper.find('.notification-kind').text()).toBe('Notification');
+    expect(wrapper.get('[data-testid="notification-label"]').text()).toBe('Heads up');
+    expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
   });
 
   it('does not navigate for a generic client-notification even when sourceToolCallId is present, and stays expandable', async () => {
@@ -194,11 +205,17 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
     });
 
-    await wrapper.find('.notification-header').trigger('click');
+    const header = wrapper.get('button.notification-header');
+    const detailId = header.attributes('aria-controls');
+    expect(header.attributes('aria-expanded')).toBe('false');
+    expect(detailId).toBeTruthy();
+    await header.trigger('click');
 
     expect(goToAgentTab).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-testid="notification-body"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="notification-body"]').text()).toBe('Cleanup finished');
+    expect(header.attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('[data-testid="notification-body"]').attributes('id')).toBe(detailId);
+    expect(wrapper.get('[data-testid="notification-source"]').text()).toBe('NotifyClient');
+    expect(wrapper.get('.notification-detail').text()).toBe('Cleanup finished');
   });
 
   it('leaves other notification kinds unaffected by navigation (still just expands/collapses)', async () => {
@@ -218,5 +235,39 @@ describe('NotificationPill.vue', () => {
 
     expect(goToAgentTab).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="notification-body"]').exists()).toBe(true);
+  });
+
+  // #721 / spec 679 §7.2-7.3: a compaction checkpoint renders as a full-width divider through this
+  // same pill, expands to the manifest, and carries a badge when the context report says it rolled back.
+  it('renders a compaction checkpoint as a full-width divider that expands to the manifest', async () => {
+    const notification: NotificationDisplayData = {
+      notifyKind: COMPACTION_NOTIFY_KIND,
+      checkpointId: 'cp-x-1',
+      label: '12 rows · ~16,000 tokens saved',
+      detail: '## What happened\nTurn one gathered the data.',
+    };
+    const wrapper = mount(NotificationPill, { props: { notification } });
+
+    const pill = wrapper.get('[data-testid="notification-pill"]');
+    expect(pill.attributes('data-notify-kind')).toBe('compaction');
+    expect(pill.attributes('data-checkpoint-id')).toBe('cp-x-1');
+    expect(pill.classes()).toContain('compaction-divider');
+    expect(wrapper.find('.notification-kind').text()).toBe('Context compacted');
+    expect(wrapper.find('[data-testid="notification-label"]').text()).toBe('12 rows · ~16,000 tokens saved');
+    expect(wrapper.find('[data-testid="compaction-badge"]').exists()).toBe(false);
+
+    await wrapper.find('.notification-header').trigger('click');
+    expect(wrapper.get('[data-testid="notification-body"]').text()).toContain('Turn one gathered the data.');
+  });
+
+  it('badges a compaction divider whose checkpoint the context report says rolled back', () => {
+    const wrapper = mount(NotificationPill, {
+      props: { notification: { notifyKind: COMPACTION_NOTIFY_KIND, checkpointId: 'cp-x-1' } },
+      global: {
+        provide: { [GET_CHECKPOINT_STATE]: (id: string) => (id === 'cp-x-1' ? 'RolledBack' : null) },
+      },
+    });
+
+    expect(wrapper.get('[data-testid="compaction-badge"]').text()).toBe('rolled back');
   });
 });

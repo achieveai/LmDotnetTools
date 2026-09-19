@@ -146,13 +146,15 @@ public sealed class SubAgentHierarchyRenderTests
             settings: CollaborationEnabled()
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("run the collaboration");
         await page.WaitForStreamIdleAsync(timeoutMs: 60_000);
         await page.AssistantText().WaitForTextContainsAsync(ParentAnswer, timeoutMs: 30_000);
 
         // --- The tree the human sees ------------------------------------------------------------
-        await page.GetByTestId("subagent-panel-toggle").ClickAsync();
+        await page.ConversationInspectorLauncher().ClickAsync();
+        await Assertions.Expect(page.Locator("#inspector-tab-agents")).ToHaveAttributeAsync("aria-expanded", "true");
         // Two rows is the whole point: the panel polls a HIERARCHY-wide listing, so it must show the
         // helper even though this conversation's own manager never spawned it and cannot see it.
         await page.GetByTestId("subagent-item").WaitForCountAtLeastAsync(2, timeoutMs: 30_000);

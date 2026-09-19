@@ -21,6 +21,15 @@ public abstract record ResponseEvent
 
     [JsonPropertyName("sequence_number")]
     public int? SequenceNumber { get; init; }
+
+    /// <summary>
+    ///     The wire payload this event was parsed from, verbatim, when it arrived as text
+    ///     (<see cref="ResponseEventParser.Parse(string)"/>). Null for events built in code or from a
+    ///     pre-parsed node. Diagnostic only: request/response dumps write it so they show what the
+    ///     server actually sent rather than what the parser kept of it.
+    /// </summary>
+    [JsonIgnore]
+    public string? RawJson { get; init; }
 }
 
 /// <summary>

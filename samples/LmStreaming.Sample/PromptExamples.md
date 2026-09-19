@@ -105,6 +105,26 @@ node playwright-scripts/gen-md-showcase-prompt.mjs
 `playwright-scripts/markdown-render-audit.mjs` sends this same prompt and asserts on the computed
 styles of every rendered construct.
 
+### Chat file links + copy
+
+Assistant text whose links point at workspace files, in every spelling a model produces: the host path
+it was told (bare and `<angle-bracketed>`), a relative path, a `file://` URI, a binary file, a folder,
+the Windows spelling of the same folder, a path outside the workspace, and a web link. Clicking a file
+link opens the preview modal; the hover Copy button copies this raw markdown.
+
+Send it in a **Workspace Agent** conversation on **Test (Mock)** after putting `docs/report.md`,
+`data/items.csv`, `img/dot.png` and `bin/blob.dat` in the workspace. `/workspace` is the HostPath the
+docker-compose gateway reports (the system prompt's "Your workspace directory is:" line); against a
+natively spawned gateway, substitute that line's Windows path. The `report-win` links name one
+machine's bind-mount folder — adjust them to yours.
+
+<|instruction_start|>{"instruction_chain":[{"id":"file-links","id_message":"file-links","messages":[{"text":"Here are the files I produced:\n\n- Report (host path as told): [report.md](/workspace/docs/report.md)\n- Report (angle brackets): [report-angle.md](</workspace/docs/report.md>)\n- Items (relative): [items.csv](data/items.csv)\n- Image (file URI): [dot.png](file:///workspace/img/dot.png)\n- Binary: [blob.dat](/workspace/bin/blob.dat)\n- Folder: [docs folder](/workspace/docs)\n- Report (raw Windows path): [report-win.md](B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56\\wt5-file-link-check\\docs\\report.md)\n- Report (Windows, angle brackets): [report-win-angle.md](<B:\\sandbox-workspaces\\workspaces\\lmstreaming-sample-7f7fa61a839e7f56\\wt5-file-link-check\\docs\\report.md>)\n- Outside: [win.ini](C:\\Windows\\win.ini)\n- Web: [example](https://example.com/)"}]}]}<|instruction_end|>
+
+`playwright-scripts/chat-file-link-preview.mjs` does all of it in one call: it provisions the
+conversation, reads the real HostPath from the system-prompt echo, uploads the fixtures, sends this
+prompt (rebuilt around that HostPath) and asserts every modal state, the download bytes and the
+clipboard.
+
 ### Weather Emoji Conditions
 
 The mock SampleTools.GetWeather returns random conditions from:
@@ -797,6 +817,135 @@ meter (never `0%`), and `No usage recorded` for usage and cost (never `$0.0000`)
 `test-anthropic`. Expected: three rows (`Main agent` first, then both sub-agent ids, `sub-agent`),
 `Total (all agents)` = 600 tokens / `$0.0042`, and a `?threadId=` reload renders the identical rows
 (the reload reads the endpoint; the live view merged the same values from `context_pressure` frames).
+
+## Compaction (#721) UI tests
+
+Drives just-in-time compaction end to end: the policy decision in the **Context** panel, the
+`Context compacted` divider in the transcript (`notification-pill` with
+`data-notify-kind="compaction"`), and `RecallConversation`. Used by
+[`playwright-scripts/compaction.mjs`](playwright-scripts/compaction.mjs).
+
+### Test profile (host flags, no appsettings edit)
+
+`appsettings.json` ships compaction enabled in `Compact` mode with ADR 0020's recommended answered-result
+clearing and `o200k` tokenizer. Set `Compaction__Mode=Off` to opt out. For this test, start the host with the
+command-line overrides below. They shrink the `test-anthropic` model's window to 18,000 tokens so a few turns
+cross the bands. Use flags, not env vars: the model id has hyphens, which Bash cannot put in a variable name.
+
+```bash
+dotnet run --project samples/LmStreaming.Sample -- \
+  --Compaction:Mode=Compact --Compaction:ReserveMarginTokens=0 --Compaction:MinTailTokens=500 \
+  --Compaction:CacheTtl=00:00:00 \
+  --AgentOutputTokens:Primary=1024 --AgentOutputTokens:Delegated=1024 \
+  --Pricing:Models:claude-sonnet-4-5-20250929:MaxContextTokens=18000
+```
+
+- Use `--Compaction:Mode=Shadow` for M1. Restart the host to switch modes.
+- `Delegated` must not exceed `Primary`, or startup fails.
+- Run in the **General Assistant** mode (`default`); the script selects it. The policy's size includes a
+  **fixed prefix**: the system prompt plus the **tool schemas**. In General Assistant on a thread bound to the
+  `LmDotnetTools` workspace, turn 1 measures ~10,100 tokens. A Workspace Agent copy measures ~21,100, over this
+  window, so every band below would be wrong. Check turn 1's `decision.tokens` before trusting a band.
+- `observation.estimated_input_tokens` is the history sent, without the fixed prefix (turn 1 ≈ 190). The bands use
+  `decision.tokens`.
+- To run beside another instance, add `--urls http://localhost:5055` and start Vite with
+  `VITE_BACKEND_ORIGIN=http://localhost:5055 VITE_DEV_PORT=5175`.
+
+Band math. Reserve = `Primary` 1,024 + margin 0. Usable = 18,000 − 1,024 = 16,976. An automatic cut must also
+free at least 10% of usable (1,698 tokens), or it is skipped.
+
+Decisions below are the `/context` wire values (`decision: reason`). The panel's row details show them as words:
+`no_action` → "No action", `warn` → "Warning: nearing the window", `compact` → "Compaction recommended",
+`shadow` → "Shadow compaction", `skipped: x` → "Skipped: x", `failed: x` → "Failed: x". Compaction state
+`Active` → "Compacted", `Rejected` → "Compaction rejected: reason", `RolledBack` → "Compaction rolled back".
+
+| Band | Fires at (estimated request tokens) | Decision |
+|---|---|---|
+| warn (0.70 × usable) | 11,883 | `warn` |
+| compact (0.80 × usable, economic) | 13,581 | `skipped: below_threshold` (measured at turn 4) |
+| hard (tokens + reserve ≥ 0.90 × window) | 15,176 | `compact: hard` (`shadow: hard` in Shadow) |
+| over the usable window after a failed compaction | 16,977 | the run gets no reply |
+
+Each 800-word mock turn adds about 1,348 tokens. Measured `decision.tokens` on 2026-09-15 (Seed first; Filler-only
+threads run ~53 lower):
+
+| Turn | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| Tokens | 10,138 | 11,532 | 12,880 | 14,228 | 15,576 | 16,825 (Filler-only) | over usable |
+| Decision | `no_action` | `no_action` | `warn` | `skipped: below_threshold` | `compact: hard` | `skipped: failure_backoff` after M4's failure | no reply |
+
+The scripts read the hard turn from `HARD_TURN` (5) in `compaction.mjs`. Change it there if the prefix moves.
+
+### Prompts
+
+The mock summarizer is the same scripted model. It runs **step 0 of the oldest instruction chain** in the
+rows being compacted. Step 0 must therefore start with a JSON summary. Otherwise the checkpoint fails with
+`summary_call_failed`. The **seed** prompt does that. Its JSON also shows as the first reply, which is
+expected.
+
+**Seed** (turn 1 of M1–M3; the `Compaction seed.` prefix is the plain text recall searches for):
+Compaction seed. <|instruction_start|>{"instruction_chain":[{"id":"compaction-seed","id_message":"Seed with summary","messages":[{"text":"{\"goals\":[\"Exercise conversation compaction from the sample UI\"],\"narrative\":\"The user sent filler turns to fill the context window; the assistant answered each with long filler text.\"}"},{"text_message":{"length":800}}]}]}<|instruction_end|>
+**Filler** (every later turn):
+Compaction filler. <|instruction_start|>{"instruction_chain":[{"id":"compaction-fill","id_message":"Filler","messages":[{"text_message":{"length":800}}]}]}<|instruction_end|>
+
+**Recall** (after a checkpoint is active):
+Compaction recall. <|instruction_start|>{"instruction_chain":[{"id":"compaction-recall","id_message":"Recall","messages":[{"tool_call":[{"name":"RecallConversation","args":{"query":"Compaction seed","limit":3}}]}]},{"id":"compaction-recall-done","id_message":"Recall done","messages":[{"text":"Recalled the seed turn from before the checkpoint."}]}]}<|instruction_end|>
+
+### Scenarios (all on `test-anthropic`)
+
+| Id | Mode | Send | Expected |
+|---|---|---|---|
+| M1 | Shadow | Seed, then Filler ×4 | Turns 1–2 `no_action`, turn 3 `warn`, turn 4 `skipped: below_threshold`, turn 5 `shadow: hard`. Compaction reads `Rejected` / `shadow`: a shadow build is recorded, never applied. No divider. Request sizes keep growing. Not re-run on the 18,000 profile yet. |
+| M2 | Compact | Seed, then Filler ×4 | Turns 1–4 do not compact. Turn 5 `compact: hard`, compaction `Active` with a `cp-…` id. **One** `Context compacted` divider appears **live**, before turn 5's reply finishes, reading `N rows · ~N tokens saved` (measured: `12 rows · ~5,276 tokens saved`). Expand it: goal, `## What happened` narrative, checkpoint id, `covers seq 1-N`. Reload via `?threadId=`: still exactly one divider, same place. |
+| M3 | Compact | M2, then Recall as turn 6 | Turn 6 is `skipped: cooldown`, its raw size (~11,900) is smaller than turn 5's, and there is still one divider. A `RecallConversation` tool-call pill. Its result has `matched ≥ 1` and a row with `seq` 1 (the seed prompt), from behind the divider. Then the text `Recalled the seed turn from before the checkpoint.` |
+| M4 | Compact | Filler ×7 (no seed) | Turn 3 `warn`. Turn 5 `failed: summary_call_failed`, compaction `Rejected` / `summary_call_failed`, no divider, and the raw request still goes out (turn 5 replies). Turn 6 is `skipped: failure_backoff` and still fits. Turn 7 exceeds the usable window and gets no reply. |
+| M5 | Compact | Filler (thread B). Then Seed, Filler (thread A), then **Compact now** with focus `keep the API design decisions`, then **Compact now** again with no focus | Needs `manualCompaction: true` on `GET /api/conversations/capabilities`. Thread A turns 1–2 are `no_action`, with no divider. The manual cut covers the seed turn (measured: `4 rows · ~1,276 tokens saved`); the tail keeps the filler turn. The button is visible and enabled. It opens a form with the focus input focused. Enter POSTs `{"focus":"keep the API design decisions"}` and gets `202 {requestId, status}`. The status line reads `Compacting…` and the button is disabled. The report reaches `Active` with a `cp-…` id. The status reads `Conversation compacted.`. **One** divider appears live, and its expanded body starts with `## Focus` then the focus text. `/context` carries `compaction.activeCheckpoint` for that checkpoint, with `lastDecision.generationOrdinal <= activeCheckpoint.generationOrdinal` (measured: before 12,824, after 11,548, both ordinal 2). The panel then reads `68% of 18,000 after compaction`. The divider and the focus survive a `?threadId=` reload. The second request sends `{}` and gets `409 {"reason":"nothing_to_compact"}`: the kept filler turn is still rows, but it is all the tail the cut rules keep and nothing blocks (`no_safe_boundary` is only for a blocker: an open or deferred tool call, a protected run, unsafe state). The status reads `Nothing to compact yet.`, the button is enabled again, and there is still one divider. Switching to thread B removes the status line (the panel stays). Switching back does not bring it back. |
+| M6 | Compact | M5's thread A at a 400×860 viewport, form open with the focus typed | `document.documentElement.scrollWidth <= innerWidth`. The Compact now button, focus input, Compact and Cancel all sit inside the viewport. |
+| M7 | — | Not scripted | Oversized tool result, then `RecallConversation` with `tool_call_id` + `offset`. The mock cannot produce it here. The instruction chain only emits tool **calls**. A result comes from running the tool on the server, and General Assistant's tools (`get_weather`, `calculate`) return a few dozen characters. It needs a sandbox mode where the mock calls `Read` on a large file, which needs a live gateway and workspace. |
+
+M5 relies on the host contract for manual compaction: a POST to `/api/conversations/{id}/compaction` with body `{}` or
+`{"focus": "…"}`; `202 {requestId, status: queued|running}`; `409 {reason}`; and a transient `compaction_status`
+WebSocket frame (`$type`, camelCase fields) that ends in `applied`. The checkpoint row stores `focus`. The mock
+summarizer ignores the focus. The steering itself is covered by the summarizer prompt tests, not by this script.
+
+Send Recall **directly** after M2's five turns. A second compaction would find only filler rows (no JSON summary),
+so it fails with `summary_call_failed`. That is correct policy behaviour, not a UI fault.
+
+Kill switch: set env `LMMULTITURN_COMPACTION_DISABLED=1` on an M2 host, restart, and send one more Filler.
+The next decision is `skipped: disabled`, compaction reads `RolledBack`, and the divider gains a
+`rolled back` badge. The divider stays, because history is truth.
+
+### R1 — real model (manual, costs tokens, not yet run)
+
+Use a Copilot model. The window comes from the Pricing catalog, and a catalog entry without **both** rates is
+ignored. So give the model a full entry. The rates only feed the cost estimate.
+
+```bash
+dotnet run --project samples/LmStreaming.Sample -- \
+  --Compaction:Mode=Compact --Compaction:ReserveMarginTokens=0 --Compaction:MinTailTokens=500 \
+  --Compaction:CacheTtl=00:00:00 \
+  --AgentOutputTokens:Primary=1024 --AgentOutputTokens:Delegated=1024 \
+  --Pricing:Models:claude-haiku-4.5:PromptPerMillion=1 \
+  --Pricing:Models:claude-haiku-4.5:CompletionPerMillion=5 \
+  --Pricing:Models:claude-haiku-4.5:MaxContextTokens=8000
+```
+
+Pick `claude-haiku-4.5` before the first send, then send:
+1. `Remember this codeword for later: BLUE-HERON-42. Then write about 700 words on the history of lighthouses.`
+2. Four to six times: `Continue with about 700 more words on a different aspect of lighthouses.`
+3. `What codeword did I give you in my first message? If it is not in your context, use RecallConversation to find it.`
+
+Expected: a turn reads `compact: hard` with compaction `Active`, and the divider shows a real narrative.
+The codeword turn either quotes `BLUE-HERON-42` from the checkpoint's standing instructions or calls
+`RecallConversation` and answers from its rows. A real model can phrase an invalid summary. That turn then
+reads `failed: validation_failed:Vn` (see `CheckpointValidator.cs`). Send another turn to retry.
+
+### Headless check (no browser)
+
+`POST /api/conversations {workspaceId:'default', providerId:'test-anthropic', modeId:'default'}`, then per turn
+`POST .../messages {text}` and poll `GET .../run-state` until `isInProgress` is false. After each turn,
+`GET .../context` → `agents[0].observation.decision` (`decision`/`reason`) and `agents[0].compaction`
+(`state`/`checkpointId`/`reason`). `GET .../messages` holds one `CompactionCheckpointMessage` row after M2.
 
 ## Agent naming (ADR 0019) headless checks
 

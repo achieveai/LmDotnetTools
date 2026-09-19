@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -54,6 +56,77 @@ public sealed record AgentCompactionStatus
 
     /// <summary>The typed reason for a rejected checkpoint, when there is one.</summary>
     public string? Reason { get; init; }
+
+    /// <summary>
+    ///     The newest generation the policy actually decided on, with when it was. The latest observation often has
+    ///     no decision (a wrap-up turn, or a live measurement ahead of the policy's stamp); this says what the
+    ///     state rests on instead of "no decision". Null when no recorded generation carries one.
+    /// </summary>
+    public LastCompactionDecision? LastDecision { get; init; }
+
+    /// <summary>
+    ///     A manual compaction accepted but not yet claimed by the loop (the persisted
+    ///     <see cref="CompactionState.PendingManual" />). A queued request is never <see cref="CompactionStates.InFlight" />,
+    ///     so this is what tells a client one is still coming. Null when nothing is queued.
+    /// </summary>
+    public PendingManualCompactionStatus? PendingManualCompaction { get; init; }
+
+    /// <summary>
+    ///     The active checkpoint's size figures, read from its row, so a panel can show the post-cut size before the
+    ///     next generation is observed. Null when no checkpoint is active or its row cannot be read.
+    /// </summary>
+    public ActiveCheckpointStatus? ActiveCheckpoint { get; init; }
+}
+
+/// <summary>The active checkpoint as the report shows it.</summary>
+public sealed record ActiveCheckpointStatus
+{
+    public required string CheckpointId { get; init; }
+
+    /// <summary>The request estimate the cut was made from: messages, tool definitions and system prompt, uncalibrated.</summary>
+    public long EstimatedTokensBefore { get; init; }
+
+    /// <summary>The same kind of estimate for the view the checkpoint builds.</summary>
+    public long EstimatedTokensAfter { get; init; }
+
+    /// <summary>
+    ///     The generation the cut was made in (<see cref="CompactionState.LastCheckpointGenerationOrdinal" />): the
+    ///     ordinal the cut's own decision is recorded at.
+    /// </summary>
+    public long GenerationOrdinal { get; init; }
+
+    /// <summary>
+    ///     The summary failure the checkpoint was built without a summary for (<see cref="CompactionReasons.SummaryFallback" />),
+    ///     e.g. <c>validation_failed:V3</c>; null when the checkpoint was summarised.
+    /// </summary>
+    public string? SummaryFallback { get; init; }
+}
+
+/// <summary>
+///     A queued manual compaction as the report shows it. Ids and a time only: the report is content-free, so the
+///     operator's focus text stays on the persisted request.
+/// </summary>
+public sealed record PendingManualCompactionStatus
+{
+    public required string RequestId { get; init; }
+
+    public DateTimeOffset RequestedAtUtc { get; init; }
+}
+
+/// <summary>The policy's most recent recorded decision for a loop, and how old it is.</summary>
+public sealed record LastCompactionDecision
+{
+    public required CompactionDecisionSummary Decision { get; init; }
+
+    /// <summary>The loop-local ordinal of the generation the decision was made for.</summary>
+    public long GenerationOrdinal { get; init; }
+
+    public required string GenerationId { get; init; }
+
+    public DateTimeOffset DecidedAtUtc { get; init; }
+
+    /// <summary>Whole seconds between the decision and the report; never negative.</summary>
+    public long AgeSeconds { get; init; }
 }
 
 /// <summary>One agent loop in the report.</summary>
@@ -142,6 +215,24 @@ public sealed record ConversationContextReportOptions
 
     /// <summary>The prompt-cache TTL.</summary>
     public TimeSpan CacheTtl { get; init; } = DefaultCacheTtl;
+
+    /// <summary><see cref="InFlightAbandonedAfter" /> for a host on the default <see cref="CompactionOptions" />.</summary>
+    public static readonly TimeSpan DefaultInFlightAbandonedAfter = InFlightAbandonedAfterFor(new CompactionOptions());
+
+    /// <summary>
+    ///     How long after it was prepared a Prepared or Validated checkpoint is still reported
+    ///     <see cref="CompactionStates.InFlight" />. Past it no attempt can still be running, so the entry was left by a
+    ///     process that died and is reported Rejected(<see cref="CheckpointReasons.Abandoned" />), the way a loop that
+    ///     restores the thread will record it. Display only: nothing is written.
+    /// </summary>
+    public TimeSpan InFlightAbandonedAfter { get; init; } = DefaultInFlightAbandonedAfter;
+
+    /// <summary>The longest one attempt can take under <paramref name="options" />: every summary call timing out, plus a minute.</summary>
+    public static TimeSpan InFlightAbandonedAfterFor(CompactionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return (options.SummaryTimeout * options.SummaryAttempts) + TimeSpan.FromMinutes(1);
+    }
 }
 
 /// <summary>
@@ -251,7 +342,19 @@ public sealed record ConversationContextReport
 
         var persisted = ContextObservationProjection.LatestFromMetadata(metadata);
         var live = options.LiveObservation?.Invoke(agent.ThreadId);
+        // The live copy is the measurement alone; the policy's decision and active checkpoint are stamped on
+        // the persisted record of the same generation, so fold them in rather than blank them. A fold that adds
+        // nothing hands back the live instance itself.
         var observation = live ?? persisted;
+        if (
+            live is not null
+            && persisted is not null
+            && string.Equals(live.GenerationId, persisted.GenerationId, StringComparison.Ordinal)
+        )
+        {
+            var folded = ContextObservationProjection.Supersede(persisted, live);
+            observation = folded == live ? live : folded;
+        }
         var freshness =
             live is not null ? ContextFreshness.Fresh
             : persisted is not null ? ContextFreshness.Stale
@@ -263,6 +366,8 @@ public sealed record ConversationContextReport
         var lastActivity = cachingEnabled
             ? await ConversationActivity.GetLastActivityAsync(store, agent.ThreadId, ct).ConfigureAwait(false)
             : null;
+        var state = CompactionStateProjection.FromMetadata(metadata);
+        var activeCheckpoint = await ActiveCheckpointAsync(store, agent.ThreadId, state, ct).ConfigureAwait(false);
 
         return new AgentContextRow
         {
@@ -278,12 +383,100 @@ public sealed record ConversationContextReport
                 options.CacheTtl,
                 cachingEnabled
             ),
-            Compaction = CompactionStatus(CompactionStateProjection.FromMetadata(metadata)),
+            Compaction = CompactionStatus(state, now, options.InFlightAbandonedAfter) with
+            {
+                LastDecision = LastDecision(observation, metadata, now),
+                PendingManualCompaction = state?.PendingManual is { } pending
+                    ? new PendingManualCompactionStatus
+                    {
+                        RequestId = pending.RequestId,
+                        RequestedAtUtc = pending.RequestedAt,
+                    }
+                    : null,
+                ActiveCheckpoint = activeCheckpoint,
+            },
             Usage = usage,
         };
     }
 
-    private static AgentCompactionStatus CompactionStatus(CompactionState? state)
+    /// <summary>The active checkpoint's stats from its row; null when none is active or the row is unreadable.</summary>
+    private static async Task<ActiveCheckpointStatus?> ActiveCheckpointAsync(
+        IConversationStore store,
+        string threadId,
+        CompactionState? state,
+        CancellationToken ct
+    )
+    {
+        if (state?.Active is not { Status: CheckpointStatus.Active, RowSeq: { } rowSeq } active)
+        {
+            return null;
+        }
+
+        var rows = await store.LoadMessageRangeAsync(threadId, rowSeq, rowSeq, 1, ct).ConfigureAwait(false);
+        if (rows is not [{ MessageType: nameof(CompactionCheckpointMessage) } row])
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(row.MessageJson);
+            var root = document.RootElement;
+            return
+                root.TryGetProperty("checkpoint_id", out var id)
+                && string.Equals(id.GetString(), active.CheckpointId, StringComparison.Ordinal)
+                && root.TryGetProperty("stats", out var stats)
+                && stats.ValueKind == JsonValueKind.Object
+                ? new ActiveCheckpointStatus
+                {
+                    CheckpointId = active.CheckpointId,
+                    EstimatedTokensBefore = Long(stats, "estimated_tokens_before"),
+                    EstimatedTokensAfter = Long(stats, "estimated_tokens_after"),
+                    GenerationOrdinal = state.LastCheckpointGenerationOrdinal,
+                    SummaryFallback =
+                        stats.TryGetProperty("summary_fallback", out var fallback)
+                        && fallback.ValueKind == JsonValueKind.String
+                            ? fallback.GetString()
+                            : null,
+                }
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        static long Long(JsonElement stats, string name) =>
+            stats.TryGetProperty(name, out var value) && value.TryGetInt64(out var number) ? number : 0;
+    }
+
+    /// <summary>The shown observation's decision, else the newest one in the persisted ring.</summary>
+    private static LastCompactionDecision? LastDecision(
+        ContextObservation? shown,
+        ThreadMetadata? metadata,
+        DateTimeOffset now
+    )
+    {
+        var decided = shown is { Decision: not null }
+            ? shown
+            : ContextObservationProjection.HistoryFromMetadata(metadata).LastOrDefault(o => o.Decision is not null);
+        return decided is null
+            ? null
+            : new LastCompactionDecision
+            {
+                Decision = decided.Decision!,
+                GenerationOrdinal = decided.GenerationOrdinal,
+                GenerationId = decided.GenerationId,
+                DecidedAtUtc = decided.ObservedAtUtc,
+                AgeSeconds = Math.Max(0, (long)(now - decided.ObservedAtUtc).TotalSeconds),
+            };
+    }
+
+    private static AgentCompactionStatus CompactionStatus(
+        CompactionState? state,
+        DateTimeOffset now,
+        TimeSpan abandonedAfter
+    )
     {
         if (state is null || state.History.Count == 0)
         {
@@ -297,6 +490,20 @@ public sealed record ConversationContextReport
 
         if (state.InFlight.LastOrDefault() is { } inFlight)
         {
+            // A summarizer that died with its process never moves the entry on; only a restoring loop reconciles it.
+            if (
+                inFlight.Status is CheckpointStatus.Prepared or CheckpointStatus.Validated
+                && now - (inFlight.PreparedAt ?? inFlight.At) > abandonedAfter
+            )
+            {
+                return new AgentCompactionStatus
+                {
+                    State = CompactionStates.Rejected,
+                    CheckpointId = inFlight.CheckpointId,
+                    Reason = CheckpointReasons.Abandoned,
+                };
+            }
+
             return new AgentCompactionStatus
             {
                 State = CompactionStates.InFlight,

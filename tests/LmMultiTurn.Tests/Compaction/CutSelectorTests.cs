@@ -150,6 +150,104 @@ public sealed class CutSelectorTests
         cut.TailTokens.Should().Be(100);
     }
 
+    [Fact]
+    public void R3_TheCheckpointRowInTheCurrentRun_CountsNothingTowardsTheFloor_BecauseItIsNeverSent()
+    {
+        // A checkpoint row sits past its boundary in the run it was made in. Counted at its envelope's size it satisfied
+        // the floor on its own, so a tail of one real row passed R3 and a manual request that had nothing to compact
+        // was accepted.
+        var thread = new ThreadFixture().Human("go").ToolTurns(3); // 1..7
+        _ = thread
+            .Checkpoint(
+                new CompactionCheckpointMessage
+                {
+                    CheckpointId = "cp-1",
+                    Boundary = new CheckpointBoundary { Seq = 3, MessageId = "m3" },
+                    Trigger = CompactionTrigger.Manual,
+                    Manifest = new ContextManifest(),
+                    Narrative = "n",
+                }
+            ) // 8
+            .ToolTurns(1); // 9..10
+        var options = ThreadFixture.Options(minTail: 30) with
+        {
+            Estimator = m => m is CompactionCheckpointMessage ? 1_000 : ThreadFixture.TokensPerRow,
+        };
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(thread.LastSeq, options, activeBoundarySeq: 3)));
+
+        cut.Seq.Should().Be(ThreadFixture.TurnEnd(2), "rows 6, 7, 9 and 10 are the real tail the floor keeps");
+    }
+
+    [Fact]
+    public void R3_WhenTheRealTailPastACheckpointRowIsBelowTheFloor_TheWholeRunStays_AsTailOnly()
+    {
+        // Rows 4-7, 9 and 10 are 60 real tokens against a 100-token floor, so R3 keeps them all. A large checkpoint envelope
+        // at seq 8 must not lift the run over the floor and let a cut through.
+        var thread = new ThreadFixture().Human("go").ToolTurns(3); // 1..7
+        _ = thread
+            .Checkpoint(
+                new CompactionCheckpointMessage
+                {
+                    CheckpointId = "cp-1",
+                    Boundary = new CheckpointBoundary { Seq = 3, MessageId = "m3" },
+                    Trigger = CompactionTrigger.Manual,
+                    Manifest = new ContextManifest(),
+                    Narrative = "n",
+                }
+            ) // 8
+            .ToolTurns(1); // 9..10
+        var options = ThreadFixture.Options(minTail: 100) with
+        {
+            Estimator = m => m is CompactionCheckpointMessage ? 1_000 : ThreadFixture.TokensPerRow,
+        };
+
+        var skipped = ExpectSkipped(
+            CutSelector.Select(thread.Request(thread.LastSeq, options, activeBoundarySeq: 3)),
+            CompactionReasons.NoSafeBoundary
+        );
+
+        skipped.TailOnly.Should().BeTrue("the real tail is under the floor and nothing else refused a cut");
+    }
+
+    /// <summary>Run-1: a human row and six tool turns (seq 1–13). Run-2: woken by a non-human input, six tool turns (seq 14–26).</summary>
+    private static ThreadFixture WokenRun(string wakeUp)
+    {
+        var thread = new ThreadFixture().Human("build the parser").ToolTurns(6).Run("run-2");
+        _ =
+            wakeUp == "notify"
+                ? thread.Notify(label: "agent-1 finished")
+                : thread.Agent(AgentMessageType.Response, "the parser is done");
+        return thread.ToolTurns(6);
+    }
+
+    [Theory]
+    [InlineData("response")]
+    [InlineData("notify")]
+    public void R3_ARunWokenByAnAgentResponseOrANotification_IsTheCurrentRun_SoTheCutReachesIntoIt(string wakeUp)
+    {
+        // A Workspace root is routinely woken only by its sub-agents. Anchoring R3 to the last human row kept the
+        // whole woken run in the tail and let the cut eat into the finished run before it.
+        var thread = WokenRun(wakeUp);
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(thread.LastSeq, ThreadFixture.Options(minTail: 30))));
+
+        cut.Seq.Should().Be(22, "run-2 keeps its last 30 tokens (seq 23–26); the cut lands on the result before them");
+    }
+
+    [Fact]
+    public void R3_ACutInsideARunWokenByANotification_StillQuotesTheEarlierHumanInstruction()
+    {
+        var thread = WokenRun("notify");
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(thread.LastSeq, ThreadFixture.Options(minTail: 30))));
+
+        cut.Seq.Should().BeGreaterThan(14, "the cut is inside run-2");
+        cut.CurrentRunId.Should().Be("run-1", "the instruction's run, not the woken one");
+        cut.CurrentInstruction.Should().ContainSingle().Which.Should().BeSameAs(thread.Rows[0]);
+        CutSelector.CurrentInstructionRows(thread.Rows, cut.Seq).Should().ContainSingle().Which.Seq.Should().Be(1);
+    }
+
     // ---- R4: corrections ----------------------------------------------------------------------
 
     [Fact]
@@ -169,6 +267,103 @@ public sealed class CutSelectorTests
         var cut = ExpectCut(CutSelector.Select(thread.Request(candidate, ThreadFixture.Options(minTail: 10))));
 
         cut.Seq.Should().Be(run1End, "a corrected run is not split while it is recent");
+    }
+
+    [Fact]
+    public void R4_AgentMessagesAfterAnAssistantRow_DoNotKeepTheRunWhole_AndAreStillQuotedAsInstruction()
+    {
+        // A sub-agent's Steer or Question lands mid-run as a user-role row. Treating it as a correction made a
+        // multi-agent run uncuttable; quoting it in the current instruction keeps what it said.
+        var thread = new ThreadFixture()
+            .Human("old task")
+            .ToolTurns(2)
+            .Run("run-2")
+            .Human("new task")
+            .ToolTurns(3)
+            .AgentSteer("focus on the parser")
+            .ToolTurns(3);
+        var run2Human = ThreadFixture.TurnEnd(2) + 1;
+        var steer = run2Human + (2 * 3) + 1;
+        var candidate = steer + (2 * 2); // the result closing the second turn after the steer
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(candidate, ThreadFixture.Options(minTail: 10))));
+
+        cut.Seq.Should().Be(candidate, "an agent message is not a human correction");
+        cut.CurrentInstruction.Select(r => r.Seq).Should().Equal(run2Human, steer);
+        CutSelector.CurrentInstructionRows(thread.Rows, cut.Seq).Select(r => r.Seq).Should().Equal(run2Human, steer);
+    }
+
+    [Theory]
+    [InlineData(AgentMessageType.Question, false)]
+    [InlineData(AgentMessageType.TaskUpdate, false)]
+    [InlineData(AgentMessageType.Response, false)]
+    [InlineData(AgentMessageType.DeliveryFailure, false)]
+    [InlineData(AgentMessageType.Steer, true)]
+    [InlineData(AgentMessageType.DelegateTask, true)]
+    public void CurrentInstruction_QuotesOnlyDirectiveAgentMessages_OtherAgentChatterIsTailContent(
+        AgentMessageType type,
+        bool quoted
+    )
+    {
+        // Only a Steer or a DelegateTask tells this agent what to do. A Response or TaskUpdate is content, like a
+        // notification: quoting it whole in every checkpoint is how 3.6k tokens of chatter reached the envelope.
+        var thread = new ThreadFixture()
+            .Human("old task")
+            .ToolTurns(2)
+            .Run("run-2")
+            .Human("new task")
+            .ToolTurns(2)
+            .Agent(type, "a message from another agent")
+            .ToolTurns(3);
+        var run2Human = ThreadFixture.TurnEnd(2) + 1;
+        var agent = run2Human + (2 * 2) + 1;
+        var candidate = agent + (2 * 2);
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(candidate, ThreadFixture.Options(minTail: 10))));
+
+        cut.Seq.Should().Be(candidate);
+        long[] expected = quoted ? [run2Human, agent] : [run2Human];
+        cut.CurrentInstruction.Select(r => r.Seq).Should().Equal(expected);
+        CutSelector.CurrentInstructionRows(thread.Rows, cut.Seq).Select(r => r.Seq).Should().Equal(expected);
+        thread.Rows.Single(r => r.Seq == agent).IsHumanRow.Should().Be(quoted);
+    }
+
+    [Fact]
+    public void CurrentInstruction_ADelegateTaskOpeningAChildThread_AnchorsTheChildsCurrentRun()
+    {
+        // A child thread has no human row: the parent's DelegateTask is its instruction, and a Response it later
+        // receives does not take that role.
+        var thread = new ThreadFixture()
+            .Run("child-run")
+            .Agent(AgentMessageType.DelegateTask, "implement the parser")
+            .ToolTurns(3)
+            .Agent(AgentMessageType.Response, "the answer to your question")
+            .ToolTurns(3);
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(thread.LastSeq - 2, ThreadFixture.Options(minTail: 10))));
+
+        cut.CurrentRunId.Should().Be("child-run");
+        cut.CurrentInstruction.Select(r => r.Seq).Should().Equal(1);
+    }
+
+    [Fact]
+    public void R4_AHumanInjectionAfterAgentMessages_StillKeepsTheRunWhole()
+    {
+        var thread = new ThreadFixture()
+            .Human("old task")
+            .ToolTurns(2)
+            .Run("run-2")
+            .Human("new task")
+            .ToolTurns(2)
+            .AgentSteer("focus on the parser")
+            .ToolTurns(2)
+            .Human("no, the other file")
+            .ToolTurns(3);
+        var run1End = ThreadFixture.TurnEnd(2);
+
+        var cut = ExpectCut(CutSelector.Select(thread.Request(thread.LastSeq - 2, ThreadFixture.Options(minTail: 10))));
+
+        cut.Seq.Should().Be(run1End, "a human correction still protects the run");
     }
 
     [Fact]
@@ -195,6 +390,42 @@ public sealed class CutSelectorTests
         );
 
         cut.Seq.Should().Be(run1End);
+    }
+
+    [Fact]
+    public void R4_RunAfterARunCompactionRefusedForSize_IsNotKeptWhole()
+    {
+        // The errored run failed only because no view fit; protecting its retry would make the retry uncuttable.
+        var thread = new ThreadFixture().Human("old task").ToolTurns(2).Run("run-2").Human("retry").ToolTurns(6);
+        var run1End = ThreadFixture.TurnEnd(2);
+        var candidate = run1End + 1 + (2 * 3);
+        var ledger = new[]
+        {
+            new RunLedgerEntry("t", "run-1", RunStatus.Errored, [], DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch),
+            new RunLedgerEntry(
+                "t",
+                "run-2",
+                RunStatus.InProgress,
+                [],
+                DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch
+            ),
+        };
+
+        var cut = ExpectCut(
+            CutSelector.Select(
+                thread.Request(
+                    candidate,
+                    ThreadFixture.Options(minTail: 10) with
+                    {
+                        SizeRefusedRunIds = new HashSet<string>(StringComparer.Ordinal) { "run-1" },
+                    },
+                    runs: ledger
+                )
+            )
+        );
+
+        cut.Seq.Should().Be(candidate);
     }
 
     [Fact]
@@ -332,6 +563,76 @@ public sealed class CutSelectorTests
             ),
             CompactionReasons.NoSafeBoundary
         );
+    }
+
+    [Fact]
+    public void RightAfterACheckpoint_EveryCandidateInTheKeptTail_IsSkippedAsTailOnly()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurns(10);
+
+        var skipped = ExpectSkipped(
+            CutSelector.Select(
+                thread.Request(
+                    thread.LastSeq,
+                    ThreadFixture.Options(minTail: 100),
+                    activeBoundarySeq: ThreadFixture.TurnEnd(8)
+                )
+            ),
+            CompactionReasons.NoSafeBoundary
+        );
+
+        skipped.TailOnly.Should().BeTrue("R3 keeps every row past the boundary and nothing else refused a cut");
+    }
+
+    [Fact]
+    public void AnOpenToolCallPastTheBoundary_IsNotTailOnly()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurns(10).ToolCall();
+
+        var skipped = ExpectSkipped(
+            CutSelector.Select(
+                thread.Request(
+                    thread.LastSeq,
+                    ThreadFixture.Options(minTail: 100),
+                    activeBoundarySeq: ThreadFixture.TurnEnd(8)
+                )
+            ),
+            CompactionReasons.NoSafeBoundary
+        );
+
+        skipped.TailOnly.Should().BeFalse("a call still waiting for its result blocks the cut right now");
+    }
+
+    [Fact]
+    public void ADeferredRowPastTheBoundary_IsNotTailOnly()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurns(10, deferredAt: 10);
+
+        var skipped = ExpectSkipped(
+            CutSelector.Select(
+                thread.Request(
+                    thread.LastSeq,
+                    ThreadFixture.Options(minTail: 100),
+                    activeBoundarySeq: ThreadFixture.TurnEnd(8)
+                )
+            ),
+            CompactionReasons.NoSafeBoundary
+        );
+
+        skipped.TailOnly.Should().BeFalse("the deferred placeholder blocks the cut right now");
+    }
+
+    [Fact]
+    public void AProtectedRunThatRefusesCutsTheTailFloorAllows_IsNotTailOnly()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurns(3).Human("no, the other file").ToolTurns(3);
+
+        var skipped = ExpectSkipped(
+            CutSelector.Select(thread.Request(thread.LastSeq, Short)),
+            CompactionReasons.NoSafeBoundary
+        );
+
+        skipped.TailOnly.Should().BeFalse("R3 allows cuts inside the run; R4 refuses them");
     }
 
     [Fact]

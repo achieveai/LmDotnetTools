@@ -1,3 +1,4 @@
+using System.Net;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
@@ -24,6 +25,23 @@ public static class CopilotResponsesAgentFactory
 {
     private const string ResponsesPath = "/responses";
 
+    /// <summary>
+    ///     Statuses this transport treats as transient ON TOP of the global 429/5xx set. The Copilot
+    ///     <c>/responses</c> backend intermittently answers
+    ///     <c>404 {"error":{"message":"","code":"not_found"}}</c> for a request that succeeds on the next
+    ///     attempt (it killed a batch of long-running sub-agents), so the Copilot transport — and only it —
+    ///     retries 404. The global classification in <see cref="HttpRetryHelper"/> is unchanged.
+    /// </summary>
+    private static readonly HttpStatusCode[] s_transientStatusCodes = [HttpStatusCode.NotFound];
+
+    /// <summary>
+    ///     Merges <see cref="s_transientStatusCodes"/> into the caller's retry configuration (or the
+    ///     default when the caller passed none). Caller-supplied values — retry count, delays and any
+    ///     status codes they already opted into — are preserved.
+    /// </summary>
+    private static RetryOptions WithCopilotTransientStatuses(RetryOptions? retryOptions) =>
+        (retryOptions ?? RetryOptions.Default).WithAdditionalRetryableStatusCodes(s_transientStatusCodes);
+
     /// <summary>Creates an <see cref="OpenAiResponsesAgent"/> routed through GitHub Copilot.</summary>
     /// <param name="name">Agent name.</param>
     /// <param name="tokenProvider">Source of the GitHub OAuth bearer token.</param>
@@ -34,6 +52,8 @@ public static class CopilotResponsesAgentFactory
     /// <param name="retryOptions">
     ///     Optional transient-fault retry configuration; applied to BOTH transports (SSE pre-stream
     ///     retry and WebSocket connect-retry). Defaults to <see cref="RetryOptions.Default"/>.
+    ///     Whatever is passed (or not), the Copilot-specific transient statuses in
+    ///     <see cref="s_transientStatusCodes"/> are merged in — caller values are never overwritten.
     /// </param>
     public static OpenAiResponsesAgent Create(
         string name,
@@ -93,17 +113,22 @@ public static class CopilotResponsesAgentFactory
             disposeClient: true,
             logger: logger,
             responsesPath: ResponsesPath,
-            retryOptions: retryOptions
+            retryOptions: WithCopilotTransientStatuses(retryOptions)
         );
     }
 
-    private static IOpenAiResponsesClient CreateWebSocketClient(
+    // internal (not private) so a test can drive the REAL WebSocket construction path through an
+    // injected socket factory and prove the Copilot transient statuses are merged into the connect-retry
+    // configuration. Same spirit as CreateSseClient's innerHandler above: the public Create overload
+    // never supplies socketFactory (production uses a real ClientWebSocket).
+    internal static IOpenAiResponsesClient CreateWebSocketClient(
         string host,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext context,
         CopilotOptions options,
         ILogger? logger,
-        RetryOptions? retryOptions
+        RetryOptions? retryOptions,
+        Func<ICopilotResponsesSocket>? socketFactory = null
     )
     {
         var wsEndpoint = new Uri($"{ToWebSocketScheme(host)}{ResponsesPath}");
@@ -113,7 +138,8 @@ public static class CopilotResponsesAgentFactory
             context,
             options,
             logger,
-            retryOptions: retryOptions
+            socketFactory: socketFactory,
+            retryOptions: WithCopilotTransientStatuses(retryOptions)
         );
     }
 

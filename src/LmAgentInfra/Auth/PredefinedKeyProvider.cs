@@ -5,8 +5,10 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 /// entry id for its whole lifetime (the registry mutates it in place via <see cref="ApplyUpdateAsync"/> on
 /// edit) so a held deferred-auth prompt polling <see cref="GetAccessTokenAsync"/> observes an update
 /// the moment the user saves it. Resolves through <c>AuthWebhookController</c> exactly like the OAuth
-/// providers, but the controller reads <see cref="Hosts"/> / <see cref="BuildHeaders"/> /
-/// <see cref="IncludeExpiry"/> off it to inject a custom header list (or a minted <c>Bearer</c> token).
+/// providers, but the controller snapshots <see cref="Entry"/> once per decision and feeds that ONE
+/// revision to <see cref="BuildHeaders"/> / <see cref="IncludesExpiry"/> to inject a custom header list
+/// (or a minted <c>Bearer</c> token) — so an edit landing mid-decision cannot pair the new credential
+/// with a destination the old revision admitted.
 /// </summary>
 /// <remarks>
 /// <para>Three kinds (<see cref="PredefinedKeyKind"/>):</para>
@@ -74,19 +76,22 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     /// <summary>The entry as it currently stands (secret-bearing — for the registry's rule building only).</summary>
     public PredefinedKeyEntry Entry => _entry;
 
-    /// <summary>The single destination host this key authenticates egress to, as a one-element list.</summary>
-    public IReadOnlyList<string> Hosts => [_entry.Host];
-
     /// <summary>True for the token-minting kinds (their token carries a real expiry the gateway caches on).</summary>
-    public bool IncludeExpiry => _entry.Kind != PredefinedKeyKind.CustomHeaders;
+    public static bool IncludesExpiry(PredefinedKeyEntry entry) => entry.Kind != PredefinedKeyKind.CustomHeaders;
 
     /// <summary>
-    /// The header(s) to inject: the stored list verbatim for custom-headers, or a single
-    /// <c>Bearer &lt;token&gt;</c> under the configured header name for the OAuth kinds.
+    /// The header(s) to inject for ONE revision of the entry: the stored list verbatim for
+    /// custom-headers, or a single <c>Bearer &lt;token&gt;</c> under the configured header name for
+    /// the OAuth kinds. Takes the revision explicitly (rather than reading <see cref="Entry"/>) so
+    /// the webhook builds its response from the same snapshot it validated the destination against —
+    /// an edit that lands between the two must never pair the new credential with the old admission.
     /// </summary>
-    public IReadOnlyList<KeyValuePair<string, string>> BuildHeaders(OAuthAccessToken? token)
+    public static IReadOnlyList<KeyValuePair<string, string>> BuildHeaders(
+        PredefinedKeyEntry entry,
+        OAuthAccessToken? token
+    )
     {
-        var entry = _entry;
+        ArgumentNullException.ThrowIfNull(entry);
         if (entry.Kind == PredefinedKeyKind.CustomHeaders)
         {
             return [.. entry.Headers.Select(h => new KeyValuePair<string, string>(h.Name, h.Value))];

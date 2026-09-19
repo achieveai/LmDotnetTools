@@ -43,6 +43,43 @@ public static class CheckpointReasons
 
     /// <summary>A newer prepare superseded an in-flight checkpoint that never reached a terminal state.</summary>
     public const string Abandoned = "abandoned";
+
+    /// <summary>
+    ///     The active row carries a schema version this build does not know, so its manifest holds
+    ///     sections this build cannot read. Adopting it would show the model a view silently missing
+    ///     whatever the newer writer put there.
+    /// </summary>
+    public const string SchemaTooNew = "schema_too_new";
+}
+
+/// <summary>A queued manual compaction request (<see cref="CompactionState.PendingManual" />).</summary>
+public sealed record PendingManualCompaction
+{
+    [JsonPropertyName("request_id")]
+    public required string RequestId { get; init; }
+
+    /// <summary>What the summary should keep in mind; at most <see cref="ManualCompaction.MaxFocusChars" />.</summary>
+    [JsonPropertyName("focus")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Focus { get; init; }
+
+    [JsonPropertyName("requested_at")]
+    public required DateTimeOffset RequestedAt { get; init; }
+}
+
+/// <summary>
+///     The fit check's last resort (<see cref="CompactionState.ToolResultsTightened" />): tool results with <c>Seq</c> at
+///     or below <see cref="ThroughSeq" /> are shown trimmed to <see cref="PartsPerMillion" /> of the length the view cap
+///     would otherwise show, never below the cap's minimum. Persisted so every later request rebuilds the same bytes.
+/// </summary>
+public sealed record ToolResultTightening
+{
+    [JsonPropertyName("through_seq")]
+    public required long ThroughSeq { get; init; }
+
+    /// <summary>The share of each result's shown length kept, in millionths.</summary>
+    [JsonPropertyName("parts_per_million")]
+    public required int PartsPerMillion { get; init; }
 }
 
 /// <summary>One checkpoint's durable record in the state machine (spec 679 §3.5).</summary>
@@ -78,9 +115,25 @@ public sealed record CheckpointEntry
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
 
+    /// <summary>
+    ///     The summary failure a fallback checkpoint was built instead of (<see cref="CheckpointStats.SummaryFallback" />);
+    ///     null for a summarised checkpoint. Kept through every later status.
+    /// </summary>
+    [JsonPropertyName("summary_fallback")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SummaryFallback { get; init; }
+
     /// <summary>When the entry last changed status.</summary>
     [JsonPropertyName("at")]
     public required DateTimeOffset At { get; init; }
+
+    /// <summary>
+    ///     When the attempt was prepared; never rewritten by a later status change. The thread rate limit counts
+    ///     attempts by it. Null on entries written before it existed, which fall back to <see cref="At" />.
+    /// </summary>
+    [JsonPropertyName("prepared_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? PreparedAt { get; init; }
 
     /// <summary>True for the states a checkpoint can still move out of on the happy path.</summary>
     [JsonIgnore]
@@ -134,6 +187,52 @@ public sealed record CompactionState
     [JsonPropertyName("cooldown_until_generation_ordinal")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? CooldownUntilGenerationOrdinal { get; init; }
+
+    /// <summary>
+    ///     Tool results with <c>Seq</c> at or below this are shown to the model as a short placeholder. It
+    ///     only ever advances, and only when compaction acts, so the view stays byte-stable between turns.
+    /// </summary>
+    [JsonPropertyName("tool_results_cleared_through_seq")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ToolResultsClearedThroughSeq { get; init; }
+
+    /// <summary>
+    ///     Tool results still shown whole that the fit check trimmed harder because nothing else made the request
+    ///     fit; null when it never had to. Clearing past <see cref="ToolResultTightening.ThroughSeq" /> makes it moot.
+    /// </summary>
+    [JsonPropertyName("tool_results_tightened")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ToolResultTightening? ToolResultsTightened { get; init; }
+
+    /// <summary>How many compactions have failed in a row since the last activation.</summary>
+    [JsonPropertyName("consecutive_failures")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int ConsecutiveFailures { get; init; }
+
+    /// <summary>The generation ordinal a failure backoff runs until (exclusive), when one is active.</summary>
+    [JsonPropertyName("failure_backoff_until_generation_ordinal")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? FailureBackoffUntilGenerationOrdinal { get; init; }
+
+    /// <summary>
+    ///     A manual compaction an operator asked for that has not run yet. Persisted so eviction or a restart
+    ///     does not lose it; the runtime clears it in the same write that claims it, so it runs once.
+    /// </summary>
+    [JsonPropertyName("pending_manual")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PendingManualCompaction? PendingManual { get; init; }
+
+    /// <summary>How many <see cref="SizeRefusedRunIds" /> are kept, newest last.</summary>
+    public const int SizeRefusedRunIdsLength = 10;
+
+    /// <summary>
+    ///     Runs that ended because no view fit the window (<c>view_exceeds_window</c> or
+    ///     <c>overflow_after_compaction</c>). R4 does not keep the run after one of these whole: that would
+    ///     make the retry uncuttable for the very reason its predecessor failed.
+    /// </summary>
+    [JsonPropertyName("size_refused_run_ids")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? SizeRefusedRunIds { get; init; }
 
     /// <summary>The entry for <paramref name="checkpointId" />, or null when the thread never recorded it.</summary>
     public CheckpointEntry? Find(string checkpointId) =>

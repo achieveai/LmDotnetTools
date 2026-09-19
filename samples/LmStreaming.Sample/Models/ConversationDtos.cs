@@ -230,6 +230,15 @@ public record ProvisionConversationRequest
     /// the field. Non-empty values are capability-shaped before reaching the provider.
     /// </summary>
     public string? ReasoningEffort { get; init; }
+
+    /// <summary>
+    /// Optional provision-layer sandbox environment variables for THIS conversation (spec §5): wins
+    /// over the workspace's <see cref="Workspace.Env"/> and the mode's <see cref="ChatMode.Env"/>.
+    /// Not changeable after provision. Sandbox sessions are shared per (workspace, app id), so when
+    /// more than one thread activates the same session, the most recently activated thread's map is
+    /// the one in effect. Never logged.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
 }
 
 /// <summary>
@@ -293,6 +302,47 @@ public record ConversationCapabilitiesResponse
     /// older host cannot mint an unusable orphan conversation merely to reveal that it ignored the field.
     /// </summary>
     public required bool RootReasoningEffort { get; init; }
+
+    /// <summary>
+    /// True when <see cref="ProvisionConversationRequest.Env"/> is understood and persisted before the
+    /// hosted root agent is built, and applied as the provision-layer sandbox env (spec §5). Callers
+    /// check this side-effect-free capability before provisioning so an older host cannot mint an
+    /// unusable orphan conversation merely to reveal that it ignored the field.
+    /// </summary>
+    public required bool SandboxEnv { get; init; }
+
+    /// <summary>
+    /// True when <c>POST api/conversations/{threadId}/compaction</c> can be honored: some route runs compaction in
+    /// Compact mode and the kill switch is off. Each request can still be refused for its own conversation.
+    /// </summary>
+    public bool ManualCompaction { get; init; }
+}
+
+/// <summary>Body of <c>POST api/conversations/{threadId}/compaction</c>.</summary>
+public record ManualCompactionRequest
+{
+    /// <summary>What the summary should keep in detail; trimmed and cut to 2000 characters. Optional.</summary>
+    public string? Focus { get; init; }
+}
+
+/// <summary>A manual compaction request the agent took.</summary>
+public record ManualCompactionResponse
+{
+    public required string RequestId { get; init; }
+
+    /// <summary><c>queued</c> for an idle loop, <c>running</c> when an active run will apply it.</summary>
+    public required string Status { get; init; }
+}
+
+/// <summary>A manual compaction request the agent did not take, answered with 409.</summary>
+public record ManualCompactionRefusalResponse
+{
+    /// <summary>
+    /// compaction_off, provider_owned_session, already_pending, in_progress, nothing_to_compact (fewer than two rows
+    /// after the checkpoint, or on an idle loop only the tail the cut rules keep) or no_safe_boundary (on an idle loop,
+    /// something blocks a cut right now: an open or deferred tool call, a protected run, or unsafe state).
+    /// </summary>
+    public required string Reason { get; init; }
 }
 
 /// <summary>

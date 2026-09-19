@@ -1,6 +1,7 @@
 import type { Message } from '@/types';
 import {
   isAgentMessage,
+  isCompactionCheckpointMessage,
   isNotifyMessage,
   isTextMessage,
   isTextUpdateMessage,
@@ -21,8 +22,9 @@ import {
  */
 export function getMergeKind(
   msg: Message
-): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'agent' | 'other' {
+): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'agent' | 'checkpoint' | 'other' {
   if (isNotifyMessage(msg)) return 'notify';
+  if (isCompactionCheckpointMessage(msg)) return 'checkpoint';
   if (isAgentMessage(msg)) return 'agent';
   if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
   if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
@@ -53,6 +55,13 @@ export function getMergeKey(msg: Message, turnSeq = 0): string {
   // notifications onto one pill.
   if (isNotifyMessage(msg)) {
     return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
+  }
+
+  // A compaction checkpoint is keyed by its id ALONE (#721). The live frame is published at activation
+  // with no generation id or order index, while the rehydrated row is stamped with the persisted ones,
+  // so any run/generation component would key the two copies apart and render a second divider.
+  if (isCompactionCheckpointMessage(msg)) {
+    return `${mergeKind}-${msg.checkpoint_id}`;
   }
 
   // An agent-to-agent message carries a collaboration-minted message_id that is unique by contract,

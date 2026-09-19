@@ -67,6 +67,10 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
+        if (providerMode == "test-anthropic")
+        {
+            await page.SetViewportSizeAsync(390, 700);
+        }
 
         await page.SendMessageAsync("what should I pick?");
 
@@ -74,26 +78,44 @@ public sealed class AskUserQuestionTests
         // conversation is NOT finished (a deferred call is not a completed run from the client's view).
         await page.WaitForStreamIdleAsync();
 
-        var pill = page.ToolCallPillByName("AskUserQuestion");
-        await pill.WaitForAsync();
-
-        // Rich content (QuestionRich) only renders once the pill is expanded.
-        await pill.ClickAsync();
+        // Consumer folds the tool timeline, but the blocking form stays docked beside the composer
+        // without requiring the user to discover or expand the activity disclosure.
+        await Assertions.Expect(page.ConsumerViewPreference()).ToBeCheckedAsync();
+        await Assertions.Expect(page.ToolCallPills()).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("question-dock")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToBeVisibleAsync();
         await page.QuestionForm().WaitForAsync();
+        await Assertions.Expect(page.TurnActivityToggle()).ToContainTextAsync("Waiting for your answer");
+
+        var questionDialog = page.GetByTestId("question-review-modal").GetByRole(AriaRole.Dialog);
+        var dialogBox = await questionDialog.BoundingBoxAsync();
+        var viewport = page.ViewportSize;
+        dialogBox.Should().NotBeNull();
+        viewport.Should().NotBeNull();
+        dialogBox!.X.Should().BeGreaterThanOrEqualTo(0);
+        dialogBox.Y.Should().BeGreaterThanOrEqualTo(0);
+        (dialogBox.X + dialogBox.Width).Should().BeLessThanOrEqualTo(viewport!.Width);
+        (dialogBox.Y + dialogBox.Height).Should().BeLessThanOrEqualTo(viewport.Height);
+        await session.SaveSuccessScreenshotAsync($"AskUserQuestion.pending_modal_{providerMode}");
 
         await page.QuestionOption("blue").ClickAsync();
         await page.QuestionSubmitButton().ClickAsync();
-
-        // The resolved, read-only view only appears once the server's ToolCallResultMessage
-        // (is_deferred: false) round-trips back over the WebSocket.
-        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
-        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
 
         // The park truly resumed the SAME multi-turn run: the next scripted turn streamed in. Wait on
         // the text itself (not stream-idle first) — there is a real gap between the answer's ack and
         // the resumed run re-raising the stop button, during which the stream briefly reads as idle.
         await page.AssistantText().WaitForTextContainsAsync("Great, blue it is", timeoutMs: 20_000);
         await page.WaitForStreamIdleAsync();
+        await Assertions.Expect(page.GetByTestId("question-dock")).ToHaveCountAsync(0);
+
+        // Developer keeps the historical resolved-tool diagnostics asserted by this journey. The
+        // timeline pill starts collapsed, so expand it explicitly before checking its resolved body.
+        await page.SelectDeveloperViewAsync();
+        var pill = page.ToolCallPillByName("AskUserQuestion");
+        await pill.WaitForAsync();
+        await pill.ClickAsync();
+        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
+        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
 
         responder
             .RemainingTurns["parent"]
@@ -113,24 +135,26 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
-
         await page.SendMessageAsync("what should I pick?");
         await page.WaitForStreamIdleAsync();
 
-        var pill = page.ToolCallPillByName("AskUserQuestion");
-        await pill.WaitForAsync();
-        await pill.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToBeVisibleAsync();
         await page.QuestionForm().WaitForAsync();
 
         // Skip on a single-question batch submits immediately (it's also the last question) — no
         // separate Submit click needed.
         await page.QuestionSkipButton().ClickAsync();
 
-        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
-        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Skipped");
-
         await page.AssistantText().WaitForTextContainsAsync("skipping that then", timeoutMs: 20_000);
         await page.WaitForStreamIdleAsync();
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToHaveCountAsync(0);
+
+        await page.SelectDeveloperViewAsync();
+        var pill = page.ToolCallPillByName("AskUserQuestion");
+        await pill.WaitForAsync();
+        await pill.ClickAsync();
+        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
+        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Skipped");
 
         responder.RemainingTurns["parent"].Should().Be(0);
 
@@ -153,7 +177,6 @@ public sealed class AskUserQuestionTests
 
         await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
         var page = session.Page;
-
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("what should I pick?");
         await page.WaitForStreamIdleAsync();
@@ -162,9 +185,7 @@ public sealed class AskUserQuestionTests
         var threadId = await page.ConversationItems().First.GetAttributeAsync("data-thread-id");
         threadId.Should().NotBeNullOrEmpty();
 
-        var pillBeforeReload = page.ToolCallPillByName("AskUserQuestion");
-        await pillBeforeReload.WaitForAsync();
-        await pillBeforeReload.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToBeVisibleAsync();
         await page.QuestionForm().WaitForAsync();
 
         // Reload via the SAME deep link (?threadId=), mirroring how a real returning user would land
@@ -175,22 +196,24 @@ public sealed class AskUserQuestionTests
         await page.GotoAsync(deepLink);
         await page.Textarea().WaitForAsync();
 
-        var pillAfterReload = page.ToolCallPillByName("AskUserQuestion");
-        await pillAfterReload.WaitForAsync();
-        await pillAfterReload.ClickAsync();
-
         // Still pending, NOT resolved — proves the deferred placeholder rehydrates correctly.
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToBeVisibleAsync();
         await page.QuestionForm().WaitForAsync();
         (await page.QuestionResolved().CountAsync()).Should().Be(0, "the question must still be pending after reload");
 
         await page.QuestionOption("blue").ClickAsync();
         await page.QuestionSubmitButton().ClickAsync();
 
-        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
-        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
-
         await page.AssistantText().WaitForTextContainsAsync("blue noted", timeoutMs: 20_000);
         await page.WaitForStreamIdleAsync();
+        await Assertions.Expect(page.GetByTestId("question-review-modal")).ToHaveCountAsync(0);
+
+        await page.SelectDeveloperViewAsync();
+        var pillAfterReload = page.ToolCallPillByName("AskUserQuestion");
+        await pillAfterReload.WaitForAsync();
+        await pillAfterReload.ClickAsync();
+        await page.QuestionResolved().WaitForAsync(new() { Timeout = 20_000 });
+        (await page.QuestionResolved().InnerTextAsync()).Should().Contain("Blue");
 
         responder.RemainingTurns["parent"].Should().Be(0);
 

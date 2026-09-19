@@ -18,7 +18,7 @@ public static class ResponseEventParser
     public static ResponseEvent Parse(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
-        return Parse(JsonNode.Parse(json) ?? throw new JsonException("Empty JSON payload"));
+        return Parse(JsonNode.Parse(json) ?? throw new JsonException("Empty JSON payload")) with { RawJson = json };
     }
 
     /// <summary>Parses a pre-parsed <see cref="JsonNode"/> event payload.</summary>

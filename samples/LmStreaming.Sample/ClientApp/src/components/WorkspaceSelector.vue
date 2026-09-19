@@ -10,6 +10,17 @@ import type {
 } from '@/types/workspace';
 import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
+import { getConversationCapabilities } from '@/api/conversationsApi';
+import EnvEditor from './EnvEditor.vue';
+import BaseModal from './BaseModal.vue';
+
+/**
+ * Whether the running gateway can apply per-sandbox env at all. False on a pre-0.1.11 gateway, and
+ * false whenever the capability report cannot be read — see `getConversationCapabilities`. The env
+ * editor is hidden entirely rather than disabled: a disabled editor still shows variables as though
+ * they were in effect, and on this deployment nothing the user types would ever reach the sandbox.
+ */
+const sandboxEnvSupported = ref(false);
 
 /**
  * Tooltip for one workspace row. Three distinct sentences for three distinct states, because the
@@ -56,10 +67,25 @@ const props = defineProps<{
    * component unreachable there, badge and all. See `ChatLayout.workspaceSelectorDisabled`.
    */
   disabled?: boolean;
+  /**
+   * Visual placement of the selector. The default preserves the compact workspace control used by
+   * existing callers; `project` is the wide disclosure shown directly above the chat composer.
+   */
+  presentation?: 'default' | 'project' | 'management';
 }>();
 
 /** Any reason not to act on the workspace list right now — transient or terminal. */
 const interactionBlocked = computed(() => props.disabled === true || props.isLoading === true);
+const isProjectPresentation = computed(() => props.presentation === 'project');
+const isManagementPresentation = computed(() => props.presentation === 'management');
+const managementModalProps = computed(() =>
+  isManagementPresentation.value
+    ? {
+        title: formMode.value === 'create' ? 'New project' : 'Project settings',
+        dataTestId: 'workspace-management-modal',
+      }
+    : {}
+);
 
 const emit = defineEmits<{
   'select-workspace': [workspaceId: string];
@@ -83,12 +109,20 @@ const directoryTouched = ref(false);
 const createMarketplaces = ref<string[]>([]);
 /** Tri-state, exactly as on the wire — `null` = legacy "all plugins", `[]` = none. Never `?? []`. */
 const createPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables for the new workspace. Not tri-state — `{}` means none. */
+const createEnv = ref<Record<string, string>>({});
+/** Live handle on the create form's env rows, so the submit can refuse what they already flag. */
+const createEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Edit form state
 const editWorkspaceId = ref<string | null>(null);
 const editMarketplaces = ref<string[]>([]);
 /** Tri-state, seeded from the workspace being edited. See {@link createPluginSelection}. */
 const editPluginSelection = ref<PluginRef[] | null>(null);
+/** Sandbox environment variables, seeded from the workspace being edited. See {@link seedEditFormFrom}. */
+const editEnv = ref<Record<string, string>>({});
+/** Live handle on the edit form's env rows; see {@link createEnvEditorRef}. */
+const editEnvEditorRef = ref<InstanceType<typeof EnvEditor> | null>(null);
 
 // Marketplace options sourced from the live gateway catalog (GET /api/marketplaces), replacing the
 // former static [core, community] seed. Empty when the gateway is offline (marketplacesUnavailable).
@@ -279,6 +313,18 @@ function pluginSelectionEquals(a: PluginRef[] | null, b: PluginRef[] | null): bo
   return left.every((key, i) => key === right[i]);
 }
 
+/**
+ * Order-insensitive record equality for {@link Workspace.env}. Used by `submitEdit` to decide
+ * whether `env` belongs in the payload at all — see the note there on why sending it unconditionally
+ * would be wasteful (same reasoning as `pluginSelection`, though `env` is not itself tri-state).
+ */
+function sameRecord(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+}
+
 
 const isLocked = computed(() => !!props.lockedWorkspaceId);
 
@@ -297,6 +343,7 @@ const lockedWorkspace = computed<Workspace | null>(() => {
       // `unavailable` says exactly that; `incompatible` would assert a verdict nobody reached.
       compatibility: 'unavailable',
       unsupportedMarketplaces: [],
+      env: {},
     }
   );
 });
@@ -328,6 +375,17 @@ function closeForm(): void {
   formMode.value = 'none';
   formError.value = null;
   submitting.value = false;
+  if (isManagementPresentation.value) dropdownOpen.value = false;
+}
+
+/** User-driven close. An in-flight management save owns this form until its parent resolves. */
+function requestCloseForm(): void {
+  if (isManagementPresentation.value) {
+    if (submitting.value) return;
+    closeDropdown();
+    return;
+  }
+  closeForm();
 }
 
 function handleSelect(workspaceId: string): void {
@@ -355,7 +413,8 @@ function slugify(raw: string): string {
 }
 
 function openCreateForm(): void {
-  if (interactionBlocked.value) return;
+  if (interactionBlocked.value || submitting.value) return;
+  if (isManagementPresentation.value) dropdownOpen.value = true;
   formMode.value = 'create';
   formError.value = null;
   createName.value = '';
@@ -364,6 +423,7 @@ function openCreateForm(): void {
   createMarketplaces.value = [];
   // A new workspace starts with no preference, i.e. legacy "all plugins" — NOT "no plugins".
   createPluginSelection.value = null;
+  createEnv.value = {};
   void loadAvailableMarketplaces();
 }
 
@@ -413,6 +473,13 @@ function submitCreate(): void {
     formError.value = 'Name is required';
     return;
   }
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (createEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const directory = createDirectory.value.trim();
   const payload: WorkspaceCreate = {
     name,
@@ -426,6 +493,9 @@ function submitCreate(): void {
     payload.pluginSelection =
       createPluginSelection.value === null ? null : [...createPluginSelection.value];
   }
+  if (Object.keys(createEnv.value).length > 0) {
+    payload.env = { ...createEnv.value };
+  }
   // Keep the form open and mark it in-flight. The parent awaits the API call and
   // calls closeForm() on success or showFormError() on failure (which re-renders
   // the inline error). Closing here would unmount the error element before the
@@ -436,10 +506,14 @@ function submitCreate(): void {
 
 // --- Edit form -----------------------------------------------------------
 
-function openEditForm(workspace: Workspace): void {
+function openEditForm(workspaceOrId: Workspace | string): void {
+  const workspace = typeof workspaceOrId === 'string'
+    ? props.workspaces.find((item) => item.id === workspaceOrId)
+    : workspaceOrId;
   // Seeding a form from a list that is mid-refresh would capture a stale `pluginsRevision`, so the
   // very first save would 409. Blocked while loading for the same reason as handleSelect.
-  if (interactionBlocked.value || workspace.isSystemDefined) return;
+  if (interactionBlocked.value || submitting.value || !workspace || workspace.isSystemDefined) return;
+  if (isManagementPresentation.value) dropdownOpen.value = true;
   formMode.value = 'edit';
   formError.value = null;
   editWorkspaceId.value = workspace.id;
@@ -451,6 +525,7 @@ function openEditForm(workspace: Workspace): void {
 function seedEditFormFrom(workspace: Workspace): void {
   editMarketplaces.value = [...workspace.marketplaces];
   editPluginSelection.value = seedSelection(workspace.pluginSelection);
+  editEnv.value = { ...(workspace.env ?? {}) };
 }
 
 /**
@@ -500,6 +575,13 @@ function submitEdit(): void {
   if (submitting.value || interactionBlocked.value) return;
   formError.value = null;
   if (!editWorkspaceId.value) return;
+  // The env rows render their own per-row errors, but nothing consulted them: `buildRecord`
+  // collapses two rows sharing a name into one object key, so a duplicate silently dropped a
+  // variable the user had typed while its error sat visible on screen.
+  if (editEnvEditorRef.value?.hasErrors) {
+    formError.value = 'Fix the highlighted environment variables before saving.';
+    return;
+  }
   const payload: WorkspaceUpdate = { marketplaces: [...editMarketplaces.value] };
   const workspace = editWorkspace.value;
   // Include the selection ONLY when it actually differs from what is stored. Setting the key on
@@ -524,6 +606,13 @@ function submitEdit(): void {
   // Otherwise `pluginSelection` is ABSENT from the body — the backend's four-state "leave
   // unchanged". That covers a marketplace-only edit, a no-op save, and the whole UI when the
   // gateway cannot filter plugins: none of them may clobber a stored selection.
+
+  // `env` is included ONLY when it actually differs from what is stored, for the same reason as
+  // `pluginSelection` above: sending it on every save (a rename, a marketplace-only toggle, a no-op
+  // save) would trigger a live-session re-apply on the server for nothing.
+  if (workspace !== null && !sameRecord(editEnv.value, workspace.env ?? {})) {
+    payload.env = { ...editEnv.value };
+  }
   submitting.value = true;
   emit('update-workspace', editWorkspaceId.value, payload);
 }
@@ -538,7 +627,14 @@ function showFormError(message: string): void {
   submitting.value = false;
 }
 
-defineExpose({ showFormError, closeForm, reseedEditForm });
+defineExpose({
+  showFormError,
+  closeForm,
+  closeDropdown,
+  reseedEditForm,
+  openCreateForm,
+  openEditForm,
+});
 
 // --- Outside click / escape ---------------------------------------------
 
@@ -560,6 +656,9 @@ defineExpose({ showFormError, closeForm, reseedEditForm });
  * to close is the only answer this function can give truthfully.
  */
 function handleClickOutside(event: MouseEvent): void {
+  // BaseModal owns backdrop clicks for management. The sidebar opener is a sibling of this host;
+  // treating its still-bubbling click as "outside" closes the modal in the same event that opened it.
+  if (isManagementPresentation.value) return;
   const target = event.target as Node | null;
   if (target instanceof Node && !target.isConnected) {
     return;
@@ -570,6 +669,8 @@ function handleClickOutside(event: MouseEvent): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  // BaseModal owns Escape and focus restoration for management dialogs.
+  if (isManagementPresentation.value) return;
   if (event.key === 'Escape') {
     closeDropdown();
   }
@@ -579,6 +680,17 @@ onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   document.addEventListener('keydown', handleKeydown);
   void loadAvailableMarketplaces();
+  // `getConversationCapabilities` already fails closed internally, but the `.catch` is not
+  // redundant: it keeps that guarantee a property of THIS call site rather than of the API helper's
+  // current implementation. Without it a helper that ever throws leaves an unhandled rejection, and
+  // the editor's visibility would depend on a contract nothing here enforces.
+  void getConversationCapabilities()
+    .then((c) => {
+      sandboxEnvSupported.value = c.sandboxEnv;
+    })
+    .catch(() => {
+      sandboxEnvSupported.value = false;
+    });
 });
 
 onUnmounted(() => {
@@ -603,31 +715,71 @@ watch(
 </script>
 
 <template>
-  <div class="workspace-selector" ref="dropdownRef" data-testid="workspace-selector">
+  <div
+    class="workspace-selector"
+    :class="{
+      'workspace-selector-project': isProjectPresentation,
+      'workspace-selector-management': isManagementPresentation,
+    }"
+    ref="dropdownRef"
+    :data-testid="isManagementPresentation ? 'workspace-management-selector' : 'workspace-selector'"
+  >
     <span
-      v-if="isLocked"
+      v-if="!isManagementPresentation && isLocked"
       class="workspace-badge"
+      :class="{ 'workspace-badge-project': isProjectPresentation }"
       data-testid="workspace-locked-badge"
       :title="`This conversation is locked to ${lockedWorkspace?.name ?? lockedWorkspaceId}`"
     >
-      <span class="badge-label">Workspace:</span>
+      <span class="badge-label">{{ isProjectPresentation ? 'Project:' : 'Workspace:' }}</span>
       <span class="badge-name">{{ lockedWorkspace?.name ?? lockedWorkspaceId }}</span>
       <span class="badge-lock" aria-hidden="true">🔒</span>
     </span>
-    <template v-else>
+    <template v-else-if="!isManagementPresentation">
       <button
         class="selector-btn"
-        :class="{ open: dropdownOpen }"
+        :class="{ open: dropdownOpen, 'selector-btn-project': isProjectPresentation }"
         data-testid="workspace-selector-button"
         @click="toggleDropdown"
         :disabled="interactionBlocked"
+        :aria-expanded="dropdownOpen"
+        aria-controls="workspace-selector-menu"
       >
-        <span class="workspace-label">Workspace:</span>
-        <span class="workspace-name">{{ selectedWorkspace?.name ?? 'Loading...' }}</span>
-        <span class="dropdown-arrow">{{ dropdownOpen ? '▲' : '▼' }}</span>
+        <svg
+          v-if="isProjectPresentation"
+          class="project-folder-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          aria-hidden="true"
+        >
+          <path d="M3.75 6.75A1.75 1.75 0 0 1 5.5 5h4l2 2h7A1.75 1.75 0 0 1 20.25 8.75v8.75a1.75 1.75 0 0 1-1.75 1.75h-13a1.75 1.75 0 0 1-1.75-1.75V6.75Z" />
+        </svg>
+        <span v-if="!isProjectPresentation" class="workspace-label">Workspace:</span>
+        <span class="workspace-name">
+          {{ selectedWorkspace?.name ?? (isProjectPresentation ? 'Choose project' : 'Loading...') }}
+        </span>
+        <span class="dropdown-arrow" aria-hidden="true">{{ dropdownOpen ? '▲' : '▼' }}</span>
       </button>
 
-      <div v-if="dropdownOpen" class="dropdown-menu">
+    </template>
+
+    <component
+      :is="isManagementPresentation ? BaseModal : 'div'"
+      v-if="dropdownOpen"
+      v-bind="managementModalProps"
+      :class="{ 'workspace-dropdown-shell': !isManagementPresentation }"
+      @close="requestCloseForm"
+    >
+      <div
+        id="workspace-selector-menu"
+        class="dropdown-menu"
+        :class="{
+          'dropdown-menu-project': isProjectPresentation,
+          'dropdown-menu-management': isManagementPresentation,
+        }"
+      >
         <div v-if="gateway" class="section-header" data-testid="workspace-gateway-status">
           {{ gateway.canonicalBaseUrl }} · {{ gateway.appId }}
           <span v-if="!gateway.available"> · unavailable</span>
@@ -714,7 +866,7 @@ watch(
           data-testid="workspace-create-form"
           @submit.prevent="submitCreate"
         >
-          <div class="form-title">New workspace</div>
+          <div v-if="!isManagementPresentation" class="form-title">New workspace</div>
           <label class="field">
             <span class="field-label">Name</span>
             <input
@@ -807,6 +959,15 @@ watch(
               </p>
             </div>
           </div>
+          <div v-if="sandboxEnvSupported" class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              ref="createEnvEditorRef"
+              v-model="createEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
+          </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}
           </div>
@@ -815,7 +976,7 @@ watch(
               type="button"
               class="btn-secondary"
               data-testid="workspace-create-cancel"
-              @click="closeForm"
+              @click="requestCloseForm"
             >
               Cancel
             </button>
@@ -837,7 +998,7 @@ watch(
           data-testid="workspace-edit-form"
           @submit.prevent="submitEdit"
         >
-          <div class="form-title">Edit workspace</div>
+          <div v-if="!isManagementPresentation" class="form-title">Edit workspace</div>
           <label class="field">
             <span class="field-label">Name</span>
             <input
@@ -929,6 +1090,15 @@ watch(
               </p>
             </div>
           </div>
+          <div v-if="sandboxEnvSupported" class="field">
+            <span class="field-label">Environment Variables</span>
+            <EnvEditor
+              ref="editEnvEditorRef"
+              v-model="editEnv"
+              testid-prefix="workspace-env"
+              :disabled="submitting || interactionBlocked"
+            />
+          </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
             {{ formError }}
           </div>
@@ -937,7 +1107,7 @@ watch(
               type="button"
               class="btn-secondary"
               data-testid="workspace-edit-cancel"
-              @click="closeForm"
+              @click="requestCloseForm"
             >
               Cancel
             </button>
@@ -952,13 +1122,26 @@ watch(
           </div>
         </form>
       </div>
-    </template>
+    </component>
   </div>
 </template>
 
 <style scoped>
 .workspace-selector {
   position: relative;
+}
+
+.workspace-selector-project {
+  width: 100%;
+  min-width: 0;
+}
+
+.workspace-selector-management {
+  display: contents;
+}
+
+.workspace-dropdown-shell {
+  display: contents;
 }
 
 .selector-btn {
@@ -988,17 +1171,47 @@ watch(
   cursor: not-allowed;
 }
 
+.selector-btn-project {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border-color: #e2e5e9;
+  border-bottom-color: transparent;
+  border-radius: 8px 8px 0 0;
+  background: #f5f6f7;
+  color: #5f6368;
+  text-align: left;
+}
+
+.selector-btn-project:hover:not(:disabled) {
+  background: #eef0f2;
+}
+
+.project-folder-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
 .workspace-label {
   color: #666;
 }
 
 .workspace-name {
+  flex: 1;
+  min-width: 0;
   color: #333;
   font-weight: 500;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.selector-btn-project .workspace-name {
+  max-width: none;
+  color: inherit;
+  font-weight: 400;
 }
 
 .dropdown-arrow {
@@ -1020,6 +1233,37 @@ watch(
   z-index: 100;
   overflow: hidden;
   padding: 4px 0;
+}
+
+.dropdown-menu-project {
+  top: auto;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  margin-top: 0;
+  margin-bottom: 6px;
+  min-width: 0;
+  /* The composer sits above the viewport edge, so viewport height alone overestimates the room
+     above this trigger. Half the viewport (capped for desktop) keeps the panel on-screen at phone
+     height while its own scroll region keeps the full create/edit forms reachable. */
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+}
+
+.dropdown-menu-management {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.dropdown-menu-management .ws-form {
+  padding: 18px 20px 20px;
 }
 
 .menu-section {
@@ -1293,13 +1537,29 @@ watch(
   color: #444;
 }
 
+.workspace-badge-project {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
 .badge-label {
   color: #666;
 }
 
 .badge-name {
+  min-width: 0;
   color: #333;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-badge-project .badge-name {
+  flex: 1;
 }
 
 .badge-lock {

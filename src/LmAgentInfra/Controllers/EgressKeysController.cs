@@ -58,6 +58,12 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
             );
         }
 
+        // Port: an explicit value must be a real TCP port; blank on an update preserves the stored one.
+        if (request.Port is { } requestedPort && requestedPort is < 1 or > 65535)
+        {
+            return BadRequest(new { error = "Port must be in 1..65535." });
+        }
+
         if (!TryParseKind(request.Kind, out var kind))
         {
             return BadRequest(
@@ -75,11 +81,12 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         }
 
         var id = existing?.Id ?? Guid.NewGuid().ToString("N");
+        var port = request.Port ?? existing?.Port ?? 443;
 
         var (entry, error) =
             kind == PredefinedKeyKind.CustomHeaders
-                ? BuildCustomHeadersEntry(id, request.Host, request, existing)
-                : BuildOAuthEntry(id, request.Host, kind, request, existing);
+                ? BuildCustomHeadersEntry(id, request.Host, port, request, existing)
+                : BuildOAuthEntry(id, request.Host, port, kind, request, existing);
 
         if (error is not null)
         {
@@ -88,10 +95,11 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
 
         await registry.UpsertAsync(entry!, ct).ConfigureAwait(false);
         logger.LogInformation(
-            "Egress key {ProviderId} {Action} (host {Host}, kind {Kind}).",
+            "Egress key {ProviderId} {Action} (host {Host}:{Port}, kind {Kind}).",
             $"{PredefinedKeyRegistry.ProviderIdPrefix}{id}",
             existing is null ? "created" : "updated",
             request.Host,
+            port,
             request.Kind
         );
         return Ok(ToView(entry!));
@@ -150,6 +158,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     private static (PredefinedKeyEntry? entry, string? error) BuildCustomHeadersEntry(
         string id,
         string host,
+        int port,
         EgressKeyRequest request,
         PredefinedKeyEntry? existing
     )
@@ -162,7 +171,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
                 return (null, "At least one header is required.");
             }
 
-            return (existing with { Id = id, Host = host }, null);
+            return (existing with { Id = id, Host = host, Port = port }, null);
         }
 
         // GET masks header values, so the edit form round-trips each header NAME with a blank value.
@@ -206,6 +215,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
             {
                 Id = id,
                 Host = host,
+                Port = port,
                 Kind = PredefinedKeyKind.CustomHeaders,
                 Headers = resolved,
             },
@@ -216,6 +226,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     private static (PredefinedKeyEntry? entry, string? error) BuildOAuthEntry(
         string id,
         string host,
+        int port,
         PredefinedKeyKind kind,
         EgressKeyRequest request,
         PredefinedKeyEntry? existing
@@ -261,6 +272,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
             {
                 Id = id,
                 Host = host,
+                Port = port,
                 Kind = kind,
                 HeaderName = headerName,
                 TokenEndpoint = tokenEndpoint,
@@ -278,6 +290,7 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         new(
             Id: entry.Id,
             Host: entry.Host,
+            Port: entry.Port,
             Kind: KindToWire(entry.Kind),
             HeaderName: entry.HeaderName,
             HeaderNames: [.. entry.Headers.Select(h => h.Name)],
@@ -318,7 +331,11 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         };
 }
 
-/// <summary>Create/update request for a predefined egress key. Secret fields left blank on an update preserve the stored value.</summary>
+/// <summary>
+/// Create/update request for a predefined egress key. Secret fields left blank on an update preserve
+/// the stored value. <paramref name="Port"/> is the destination TCP port (1..65535); <c>null</c> means
+/// 443 on create and "keep the stored port" on update.
+/// </summary>
 public sealed record EgressKeyRequest(
     string? Id,
     string Host,
@@ -329,7 +346,8 @@ public sealed record EgressKeyRequest(
     string? ClientId,
     string? ClientSecret,
     string? RefreshToken,
-    IReadOnlyList<string>? Scopes
+    IReadOnlyList<string>? Scopes,
+    int? Port = null
 );
 
 /// <summary>One custom header name/value pair from the CRUD request. SECRET: <see cref="Value"/> is credential material.</summary>
@@ -339,6 +357,7 @@ public sealed record EgressHeaderInput(string Name, string Value);
 public sealed record EgressKeyView(
     string Id,
     string Host,
+    int Port,
     string Kind,
     string HeaderName,
     IReadOnlyList<string> HeaderNames,

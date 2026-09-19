@@ -6,12 +6,18 @@ import path from 'path';
 import ChatLayout from '@/components/ChatLayout.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
+import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import {
   UnsupportedPluginsError,
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
+import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
+import type { SubAgentSummary } from '@/api/subAgentsApi';
+import type { QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { ToolCallResultMessage } from '@/types';
+import { closeEgressDialog, openEgressDialog } from '@/composables/useEgressAuth';
 
 // Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
 // replaced optional-ized every field and silently drifted from the server DTO — `visibility` (#445)
@@ -28,6 +34,8 @@ const makeConversation = (overrides: Partial<ConversationSummary> = {}): Convers
 });
 
 const sharedMocks = vi.hoisted(() => ({
+  questionEntries: [] as QuestionInboxEntry[],
+  questionEntriesRef: null as Ref<QuestionInboxEntry[]> | null,
   chatLoading: false,
   isSending: false,
   modesLoading: false,
@@ -88,6 +96,7 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  clearMessages: vi.fn(),
   // #246: browser-hosted client tools (AskUserQuestion) gating.
   hasPendingClientQuestion: false,
   submitClientToolResult: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
@@ -99,6 +108,12 @@ const sharedMocks = vi.hoisted(() => ({
   // typed errors workspacesApi throws, and assert what the parent's catch forwards to the child.
   createWorkspace: vi.fn(async () => {}),
   updateWorkspace: vi.fn(async () => {}),
+  // Mode create/update, routed through sharedMocks for the same reason — a test can make them
+  // REJECT with InvalidEnvError and assert it reaches ModeEditor's form-error text.
+  createMode: vi.fn(async () => {}),
+  // Parameters declared (and unused) so `mock.calls[0][0]` is typed — a test asserts WHICH mode id
+  // the update was routed to, and a zero-arity mock types its call tuple as empty.
+  updateMode: vi.fn(async (_modeId: string, _data: unknown) => {}),
   // The WorkspaceSelector methods ChatLayout reaches through its template ref.
   showFormError: vi.fn(),
   closeForm: vi.fn(),
@@ -115,6 +130,11 @@ const sharedMocks = vi.hoisted(() => ({
   // The latest conversation_todo frame ref inside the useChat mock. The REAL useTodoBoard watches
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
+  subAgentChildren: [] as SubAgentSummary[],
+  focusedAgentIdRef: null as Ref<string | null> | null,
+  focusChild: vi.fn(async (_agentId: string) => {}),
+  subAgentQuestionResult: null as ToolCallResultMessage | null,
+  cumulativeTotalTokens: 0,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -164,6 +184,18 @@ vi.mock('@/composables/useChatModes', async () => {
       createdAt: 0,
       updatedAt: 0,
     },
+    // A USER-defined mode, so the management modal renders an Edit button and the update path
+    // (`ChatLayout.handleUpdateMode`) is reachable at all. System modes offer only Copy.
+    {
+      id: 'custom',
+      name: 'Custom Mode',
+      description: 'User made',
+      systemPrompt: 'Be custom',
+      enabledTools: undefined,
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+    },
   ]);
 
   const currentModeId = ref('default');
@@ -184,8 +216,8 @@ vi.mock('@/composables/useChatModes', async () => {
         sharedMocks.selectMode(modeId);
       }),
       switchMode: sharedMocks.switchMode,
-      createMode: vi.fn(async () => {}),
-      updateMode: vi.fn(async () => {}),
+      createMode: sharedMocks.createMode,
+      updateMode: sharedMocks.updateMode,
       deleteMode: vi.fn(async () => {}),
       copyMode: vi.fn(async () => {}),
       currentMode: computed(() => modes.value[0]),
@@ -201,6 +233,8 @@ vi.mock('@/composables/useChat', async () => {
   const { ref, computed } = await import('vue');
   return {
     getDisplayText: vi.fn((text: string) => text),
+    isTestInstruction: (text: string) =>
+      text.includes('<|instruction_start|>') && text.includes('<|instruction_end|>'),
     useChat: (options: { provisionThreadId?: () => Promise<string> }) => {
       // Captured so a test can invoke the provisioning hook the way the real `useChat` does on the
       // first send of a session — the send path, unlike the "New chat" button, is reachable before
@@ -209,6 +243,7 @@ vi.mock('@/composables/useChat', async () => {
       const threadId = ref<string | null>(sharedMocks.currentThreadId);
       const conversationTodo = ref<unknown>(null);
       const contextPressure = ref<unknown>(null);
+      const compactionStatus = ref<unknown>(null);
       // Published (like providerSelectionRef) so a test can mutate them after mount.
       sharedMocks.chatThreadIdRef = threadId;
       sharedMocks.conversationTodoRef = conversationTodo;
@@ -222,20 +257,28 @@ vi.mock('@/composables/useChat', async () => {
           promptTokens: 0,
           uncachedInputTokens: 0,
           completionTokens: 0,
-          totalTokens: 0,
+          totalTokens: sharedMocks.cumulativeTotalTokens,
           cachedTokens: 0,
           cacheCreationTokens: 0,
+        }),
+        cumulativeCost: ref({
+          estimatedCostMicros: null,
+          providerReportedCostMicros: null,
+          currency: 'USD',
         }),
         // Hoisted useTodoBoard(...) watches this eagerly to establish its dependency, so unlike the
         // lazily-read fields above it must actually be present here (#583).
         conversationTodo,
         // Same for the hoisted useContextReport(...) (#685).
         contextPressure,
+        // Same for the hoisted useManualCompaction(...).
+        compactionStatus,
+        connectionEpoch: ref(0),
         pendingMessages: ref([]),
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
         sendMessage: vi.fn(async () => {}),
-        clearMessages: vi.fn(),
+        clearMessages: sharedMocks.clearMessages,
         cancelStream: vi.fn(async () => {}),
         disconnectWebSocket: sharedMocks.disconnectWebSocket,
         // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
@@ -317,16 +360,31 @@ vi.mock('@/composables/useWorkspaces', async () => {
 vi.mock('@/api/conversationsApi', () => ({
   updateConversationMetadata: vi.fn(async () => {}),
   conversationExists: (threadId: string) => sharedMocks.conversationExists(threadId),
+  // WorkspaceSelector probes this on mount to decide whether to offer the env editor at all.
+  // Supported by default here so these cases keep exercising the full form.
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
 }));
 
 // The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
 // this the hoisted useContextReport would hit real fetch on every started conversation.
 vi.mock('@/api/contextApi', () => ({
   getConversationContext: vi.fn(async () => null),
+  requestCompaction: vi.fn(),
+  supportsManualCompaction: vi.fn(async () => 'unsupported'),
+  MAX_COMPACTION_FOCUS_LENGTH: 2000,
 }));
 
 // The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
 // mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
+vi.mock('@/composables/useQuestionInbox', async () => {
+  const { ref } = await import('vue');
+  return { useQuestionInbox: () => {
+    const entries = ref(sharedMocks.questionEntries);
+    sharedMocks.questionEntriesRef = entries;
+    return { entries, isRefreshing: ref(false), error: ref(null), refresh: vi.fn(async () => {}) };
+  } };
+});
+
 vi.mock('@/composables/useSubAgentPanel', async () => {
   const { ref } = await import('vue');
   return {
@@ -336,27 +394,385 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       if (getParentThreadId) {
         sharedMocks.subAgentThreadGetter = getParentThreadId;
       }
+      const focusedAgentId = ref<string | null>(null);
+      sharedMocks.focusedAgentIdRef = focusedAgentId;
       return {
-        children: ref([]),
-        focusedAgentId: ref<string | null>(null),
+        children: ref(sharedMocks.subAgentChildren),
+        focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
         error: ref<string | null>(null),
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
         refreshChildren: vi.fn(async () => {}),
-        focusChild: vi.fn(async () => {}),
+        focusChild: sharedMocks.focusChild,
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
         submitToFocusedChild: sharedMocks.submitToFocusedChild,
-        getResultForToolCall: vi.fn(() => null),
+        getResultForToolCall: vi.fn(() => sharedMocks.subAgentQuestionResult),
       };
     },
   };
 });
 
+describe('ChatLayout view preference', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: {
+            props: ['viewPreference'],
+            template: '<div data-test="message-list-probe" :data-view="viewPreference">Transcript</div>',
+          },
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ContextCostPanel: { template: '<div data-testid="context-cost-panel">Context</div>' },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    localStorage.clear();
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.cumulativeTotalTokens = 123;
+    sharedMocks.disconnectWebSocket.mockReset();
+    sharedMocks.markStreamIdle.mockReset();
+    sharedMocks.markStreamLoading.mockReset();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    sharedMocks.cumulativeTotalTokens = 0;
+    window.history.pushState({}, '', '/');
+  });
+
+  it('defaults to Consumer and hides context and token diagnostics', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect((wrapper.get('[data-testid="view-preference-consumer"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(false);
+    const launcher = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    expect(launcher.attributes('aria-expanded')).toBe('false');
+    expect(launcher.attributes('aria-label')).toBe('Open Work and agents');
+    expect(launcher.attributes('title')).toBe('Open Work and agents');
+    expect(launcher.text()).toBe('');
+    expect(launcher.find('svg[aria-hidden="true"]').exists()).toBe(true);
+    expect(launcher.element.closest('.app-header-right')).not.toBeNull();
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+  });
+
+  it('uses one full-width app header above the hosted sidebar and chat body', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const appHeader = wrapper.get('[data-testid="app-header"]');
+    const shellBody = wrapper.get('[data-testid="shell-body"]');
+    expect(appHeader.element.parentElement).toBe(wrapper.get('[data-testid="chat-layout"]').element);
+    expect(shellBody.element.parentElement).toBe(wrapper.get('[data-testid="chat-layout"]').element);
+    expect(appHeader.get('.app-header-left').text()).toContain('LmStreaming Chat');
+    expect(appHeader.get('[data-testid="sidebar-toggle"]').attributes('aria-label')).toBe('Collapse sidebar');
+    expect(appHeader.get('.app-header-center [aria-label="Conversation view"]')).toBeTruthy();
+    expect(appHeader.get('.app-header-right [data-testid="conversation-inspector-launcher"]')).toBeTruthy();
+    expect(shellBody.findComponent({ name: 'ConversationSidebar' }).classes()).toContain('hosted-sidebar');
+    expect(shellBody.get('main.chat-main')).toBeTruthy();
+    expect(wrapper.find('.not-found-menu-btn').exists()).toBe(false);
+
+    await appHeader.get('[data-testid="sidebar-toggle"]').trigger('click');
+    expect(appHeader.get('[data-testid="sidebar-toggle"]').attributes('aria-label')).toBe('Expand sidebar');
+    expect(shellBody.findComponent({ name: 'ConversationSidebar' }).attributes('iscollapsed')).toBe('true');
+  });
+
+  it('restores Developer and reveals context and token diagnostics', async () => {
+    localStorage.setItem('lmstreaming:view-preference', 'developer');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect((wrapper.get('[data-testid="view-preference-developer"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="context-cost-panel"]').isVisible()).toBe(true);
+    expect(wrapper.get('[data-testid="usage-banner"]').isVisible()).toBe(true);
+    expect(wrapper.get('[data-testid="conversation-inspector-launcher"]').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+  });
+
+  it('keeps the preference switch out of focus mode', async () => {
+    window.history.pushState({}, '', '/?focus=1');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="view-preference-consumer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="view-preference-developer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector-launcher"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="header-actions-menu-button"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="app-header"] h1').text()).toContain('LmStreaming Chat');
+    expect(wrapper.find('[data-testid="sidebar-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('.app-header-center').exists()).toBe(false);
+    expect(wrapper.find('.app-header-right').exists()).toBe(false);
+    expect(wrapper.find('.chat-context-header').exists()).toBe(false);
+  });
+
+  it('switches views without remounting chat state or touching the connection', async () => {
+    sharedMocks.chatLoading = true;
+    const wrapper = mountLayout();
+    await flushPromises();
+    const transcript = wrapper.get('[data-test="message-list-probe"]').element;
+    transcript.scrollTop = 41;
+    const composerWrapper = wrapper.get('[data-testid="chat-input-textarea"]');
+    await composerWrapper.setValue('unfinished draft');
+    const composer = composerWrapper.element;
+
+    await wrapper.get('[data-testid="view-preference-developer"]').setValue(true);
+    expect(wrapper.get('[data-test="message-list-probe"]').attributes('data-view')).toBe('developer');
+    await wrapper.get('[data-testid="view-preference-consumer"]').setValue(true);
+
+    expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
+    expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
+    expect(wrapper.get('[data-test="message-list-probe"]').element.scrollTop).toBe(41);
+    expect((wrapper.get('[data-testid="chat-input-textarea"]').element as HTMLTextAreaElement).value).toBe('unfinished draft');
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.markStreamIdle).not.toHaveBeenCalled();
+    expect(sharedMocks.markStreamLoading).not.toHaveBeenCalled();
+    expect(localStorage.getItem('lmstreaming:view-preference')).toBe('consumer');
+  });
+
+  it('opens and closes the inspector without remounting transcript or composer', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    document.body.appendChild(wrapper.element);
+    const transcript = wrapper.get('[data-test="message-list-probe"]').element;
+    const composer = wrapper.get('[data-testid="chat-input-textarea"]').element;
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    const inspectorToggle = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    expect(inspectorToggle.isVisible()).toBe(true);
+    expect(inspectorToggle.attributes('aria-expanded')).toBe('true');
+    expect(inspectorToggle.attributes('aria-label')).toBe('Close Work and agents');
+    const more = wrapper.get('[data-testid="header-actions-menu-button"]');
+    expect(more.isVisible()).toBe(true);
+    await more.trigger('click');
+    expect(wrapper.get('[data-testid="header-actions-menu"]').isVisible()).toBe(true);
+    expect(wrapper.find('.inspector-close').exists()).toBe(false);
+    await inspectorToggle.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="message-list-probe"]').element).toBe(transcript);
+    expect(wrapper.get('[data-testid="chat-input-textarea"]').element).toBe(composer);
+    expect(inspectorToggle.attributes('aria-expanded')).toBe('false');
+    expect(inspectorToggle.attributes('aria-label')).toBe('Open Work and agents');
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="conversation-inspector-launcher"]').element);
+    wrapper.unmount();
+  });
+});
+
+describe('ChatLayout inspector agent selection', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-42',
+    name: 'Reviewer',
+    template: 'review',
+    task: 'Review the result',
+    status: 'running',
+    threadId: 'subagent-agent-42',
+    lastActivityUtc: null,
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.subAgentChildren = [child];
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+    document.body.replaceChildren();
+  });
+
+  async function openAgents(wrapper: ReturnType<typeof mountLayout>): Promise<void> {
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    await wrapper.get('#inspector-tab-agents').trigger('click');
+  }
+
+  it('closes the narrow drawer, activates the child, and focuses its conversation tab', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 900 });
+    const wrapper = mountLayout();
+    await openAgents(wrapper);
+
+    await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(false);
+    const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
+    expect(childTab.classes()).toContain('active');
+    expect(document.activeElement).toBe(childTab.element);
+    wrapper.unmount();
+  });
+
+  it('keeps the wide dock open while activating a child', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    const wrapper = mountLayout();
+    await openAgents(wrapper);
+
+    await wrapper.get('[data-testid="subagent-focus-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    const childTab = wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === child.agentId)!;
+    expect(childTab.classes()).toContain('active');
+    wrapper.unmount();
+  });
+});
+
+describe('ChatLayout question inbox automatic retry', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-question',
+    name: 'Question agent',
+    template: 'research',
+    task: 'Ask for input',
+    status: 'running',
+    threadId: 'child-question',
+    lastActivityUtc: null,
+  };
+  const deferredResult = {
+    $type: 'tool_call_result',
+    tool_call_id: 'question-1',
+    result: '',
+    is_deferred: true,
+  } as ToolCallResultMessage;
+  const entry: QuestionInboxEntry = {
+    key: 'root:thread-1/agent:agent-question/child:child-question/tool:question-1',
+    rootThreadId: 'thread-1',
+    conversationTitle: 'Current conversation',
+    conversation: makeConversation({ threadId: 'thread-1', title: 'Current conversation' }),
+    agentId: child.agentId,
+    agentName: child.name ?? null,
+    childThreadId: child.threadId,
+    toolCallId: 'question-1',
+    toolCall: {
+      tool_call_id: 'question-1',
+      function_name: 'AskUserQuestion',
+      function_args: JSON.stringify({ question: 'Which option?' }),
+    },
+    result: deferredResult,
+    prompt: 'Which option?',
+  };
+
+  beforeEach(() => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [entry.conversation];
+    sharedMocks.subAgentChildren = [child];
+    sharedMocks.questionEntries = [entry];
+    sharedMocks.subAgentQuestionResult = deferredResult;
+    sharedMocks.focusChild.mockReset();
+    sharedMocks.focusChild.mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    sharedMocks.questionEntries = [];
+    sharedMocks.questionEntriesRef = null;
+    sharedMocks.subAgentChildren = [];
+    sharedMocks.focusedAgentIdRef = null;
+    sharedMocks.subAgentQuestionResult = null;
+  });
+
+  it('retries a current child question after the first focus attempt fails', async () => {
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="question-inbox-trigger"]').trigger('click');
+    await wrapper.get('.question-inbox-item').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Could not connect to this agent. Try again.');
+    expect(sharedMocks.focusChild).toHaveBeenCalledTimes(1);
+
+    sharedMocks.focusChild.mockImplementation(async (agentId: string) => {
+      sharedMocks.focusedAgentIdRef!.value = agentId;
+    });
+    await wrapper.findAll('[data-testid="conversation-tab"]')
+      .find((tab) => tab.attributes('data-tab-id') === 'main')!
+      .trigger('click');
+    await flushPromises();
+    sharedMocks.questionEntriesRef!.value = [];
+    await flushPromises();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    sharedMocks.questionEntriesRef!.value = [entry];
+    await flushPromises();
+
+    expect(sharedMocks.focusChild).toHaveBeenCalledTimes(2);
+    expect(wrapper.getComponent({ name: 'SubAgentTranscript' }).props('requestedQuestionId'))
+      .toBe('question-1');
+    wrapper.unmount();
+  });
+
+  it('leaves another conversation in the inbox until the user selects it', async () => {
+    const otherEntry: QuestionInboxEntry = {
+      ...entry,
+      key: 'root:thread-2/agent:root/child:root/tool:question-1',
+      rootThreadId: 'thread-2',
+      conversationTitle: 'Other conversation',
+      conversation: makeConversation({ threadId: 'thread-2', title: 'Other conversation' }),
+      agentId: null,
+      agentName: 'Main agent',
+      childThreadId: null,
+    };
+    sharedMocks.questionEntries = [otherEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mount(ChatLayout, { global: { stubs: {
+      ConversationSidebar: true, MessageList: true, PendingMessageQueue: true,
+      PendingQuestionDock: true, ChatInput: true,
+    } } });
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(wrapper.findComponent({ name: 'SubAgentTranscript' }).exists()).toBe(false);
+
+    await wrapper.get('[data-testid="question-inbox-trigger"]').trigger('click');
+    await wrapper.get('.question-inbox-item').trigger('click');
+    await flushPromises();
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+});
+
 describe('ChatLayout mode switching', () => {
   beforeEach(() => {
+    localStorage.clear();
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
@@ -384,7 +800,7 @@ describe('ChatLayout mode switching', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -411,7 +827,7 @@ describe('ChatLayout mode switching', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -444,7 +860,7 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
           ModeSelector: {
             props: ['disabled'],
             template:
@@ -495,6 +911,242 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
   });
 });
 
+describe('ChatLayout provider placement', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-provider-placement',
+    name: 'Child agent',
+    template: 'default',
+    task: 'Reply to the parent',
+    status: 'running',
+    threadId: 'subagent-provider-placement',
+    lastActivityUtc: null,
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          WorkspaceSelector: { template: '<div data-testid="workspace-selector-stub">Workspace</div>' },
+          ModeSelector: { template: '<div data-testid="mode-selector-stub">Mode</div>' },
+          HeaderActionsMenu: { template: '<div data-testid="header-actions-stub">More</div>' },
+          ProviderSelector: {
+            props: ['disabled'],
+            emits: ['select-provider'],
+            template:
+              '<button data-testid="provider-selector-stub" :disabled="disabled" @click="$emit(\'select-provider\', \'openai\')">Provider</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.subAgentChildren = [child];
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+  });
+
+  it('places one Mode on the root composer left and Provider before Send on the right', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const headerActions = wrapper.get('.app-header-right [data-testid="header-actions-stub"]');
+    expect(headerActions.text()).toBe('More');
+    expect(wrapper.find('.chat-context-header').exists()).toBe(false);
+    expect(wrapper.find('.header-context').exists()).toBe(false);
+
+    const provider = wrapper.get('[data-testid="provider-selector-stub"]');
+    const rootComposer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
+    const mode = rootComposer.get('[data-testid="chat-input-mode-control"]');
+    expect(mode.get('[data-testid="mode-selector-stub"]').text()).toBe('Mode');
+    const actions = rootComposer.get('[data-testid="chat-input-actions"]');
+    expect(actions.get('[data-testid="provider-selector-stub"]').element).toBe(provider.element);
+    expect(provider.element.nextElementSibling).toBe(actions.get('[data-testid="send-button"]').element);
+    expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="mode-selector-stub"]')).toHaveLength(1);
+  });
+
+  it('does not add the root provider control to the sub-agent composer', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agents"]').trigger('click');
+    await wrapper.get('[data-testid="agent-picker-option"][data-agent-id="agent-provider-placement"]').trigger('click');
+    await flushPromises();
+
+    const childComposer = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input"]');
+    expect(childComposer.find('[data-testid="provider-selector-stub"]').exists()).toBe(false);
+    expect(childComposer.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="mode-selector-stub"]')).toHaveLength(1);
+  });
+});
+
+describe('ChatLayout workspace project integration', () => {
+  const openCreateForm = vi.fn();
+  const openEditForm = vi.fn();
+  const closeDropdown = vi.fn();
+  const repoWorkspace: Workspace = {
+    id: 'repo',
+    name: 'Repository',
+    directoryRelPath: 'repo',
+    marketplaces: [],
+    env: {},
+    isSystemDefined: false,
+    createdAt: 1,
+    updatedAt: 1,
+    compatibility: 'compatible',
+    unsupportedMarketplaces: [],
+  };
+
+  const sidebarStub = defineComponent({
+    props: { isCollapsed: Boolean },
+    emits: ['newChatInWorkspace', 'newProject', 'editProject'],
+    template:
+      '<div><button data-testid="folder-new-chat" :data-collapsed="String(isCollapsed)" @click="$emit(\'newChatInWorkspace\', \'repo\')">Start in Repository</button><button data-testid="sidebar-new-project" @click="$emit(\'newProject\')">New project</button><button data-testid="sidebar-edit-project" @click="$emit(\'editProject\', \'repo\')">Project settings</button></div>',
+  });
+
+  const workspaceSelectorStub = defineComponent({
+    inheritAttrs: false,
+    props: { presentation: String },
+    setup(_, { expose }) {
+      expose({ openCreateForm, openEditForm, closeDropdown });
+      return {};
+    },
+    template:
+      '<div v-if="presentation === \'management\'" data-testid="workspace-management-stub" /><button v-else data-testid="workspace-selector-stub">Repository</button>',
+  });
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: sidebarStub,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          WorkspaceSelector: workspaceSelectorStub,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.workspaces = [repoWorkspace];
+    sharedMocks.selectedWorkspaceId = 'default';
+    sharedMocks.selectedProviderId = 'anthropic';
+    sharedMocks.setModeId?.('default');
+    sharedMocks.workspaceCatalogLoad = Promise.resolve();
+    sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.selectWorkspace.mockImplementation((workspaceId: string) => {
+      if (sharedMocks.workspaceSelectionRef) {
+        sharedMocks.workspaceSelectionRef.value = workspaceId;
+      }
+    });
+    sharedMocks.createNewConversation.mockReset();
+    sharedMocks.createNewConversation.mockResolvedValue('thread-provisioned');
+    sharedMocks.setThreadId.mockReset();
+    openCreateForm.mockReset();
+    openEditForm.mockReset();
+    closeDropdown.mockReset();
+  });
+
+  afterEach(() => {
+    sharedMocks.workspaces = [];
+    sharedMocks.selectWorkspace.mockReset();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    window.history.pushState({}, '', '/');
+  });
+
+  it('starts a blank chat in the folder workspace without reserving until first send', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="folder-new-chat"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectWorkspace).toHaveBeenCalledWith('repo');
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith(null);
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+
+    await sharedMocks.chatOptions!.provisionThreadId!();
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'repo',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+  });
+
+  it('shows one editable project picker above the root composer only for a blank chat', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const composer = wrapper.get('[data-testid="main-view"] [data-testid="chat-input"]');
+    const project = composer.get('[data-testid="chat-input-project-control"]');
+    expect(project.find('[data-testid="workspace-selector-stub"]').exists()).toBe(true);
+    expect(project.element.nextElementSibling).toBe(
+      composer.get('[data-testid="chat-input-surface"]').element
+    );
+    expect(wrapper.findAll('[data-testid="workspace-selector-stub"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="workspace-management-stub"]')).toHaveLength(1);
+    expect(wrapper.find('.chat-context-header [data-testid="workspace-selector-stub"]').exists()).toBe(false);
+
+    wrapper.unmount();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', workspace: 'repo' })];
+    const established = mountLayout();
+    await flushPromises();
+    expect(established.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
+  });
+
+  it('keeps the project picker out of focus mode', async () => {
+    window.history.pushState({}, '', '/?focus=1');
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="workspace-selector-stub"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-management-stub"]').exists()).toBe(false);
+    window.history.pushState({}, '', '/');
+  });
+
+  it('routes sidebar project management actions to the shared form host', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="sidebar-new-project"]').trigger('click');
+    expect(closeDropdown).toHaveBeenCalledOnce();
+    expect(openCreateForm).toHaveBeenCalledOnce();
+
+    await wrapper.get('[data-testid="sidebar-edit-project"]').trigger('click');
+    expect(openEditForm).toHaveBeenCalledWith('repo');
+  });
+
+  it('collapses the sidebar after a folder starts a mobile draft', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    const wrapper = mountLayout();
+    await flushPromises();
+    const launcher = wrapper.get('[data-testid="folder-new-chat"]');
+    expect(launcher.attributes('data-collapsed')).toBe('false');
+    window.innerWidth = 520;
+
+    await launcher.trigger('click');
+    await flushPromises();
+
+    expect(launcher.attributes('data-collapsed')).toBe('true');
+  });
+});
+
 // Provider is mutable while the conversation is idle and locked only while streaming (mirrors mode).
 // A messageless thread applies the pick locally; a started conversation switches the backend provider
 // and reflects it in the sidebar summary; while streaming the selector is disabled and does neither.
@@ -506,7 +1158,9 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
           ProviderSelector: {
             props: ['disabled'],
             template:
@@ -816,7 +1470,9 @@ describe('ChatLayout client-tool question gating (#246)', () => {
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
           ModeSelector: {
             props: ['disabled'],
             template: '<button data-test="mode-select" :disabled="disabled">Mode</button>',
@@ -943,6 +1599,9 @@ describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
     await flushPromises();
 
     const mainView = wrapper.get('[data-testid="main-view"]');
+    expect(mainView.attributes('id')).toBe('conversation-main-view');
+    expect(mainView.attributes('role')).toBe('region');
+    expect(mainView.attributes('aria-label')).toBe('Main conversation');
     expect((mainView.element as HTMLElement).style.display).toBe('none');
   });
 });
@@ -1045,7 +1704,7 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           WorkspaceSelector: WorkspaceSelectorStub,
         },
       },
@@ -1055,8 +1714,8 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
-    sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
     sharedMocks.createWorkspace.mockReset();
     sharedMocks.updateWorkspace.mockReset();
     sharedMocks.showFormError.mockReset();
@@ -1170,6 +1829,36 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
     expect(sharedMocks.closeForm).toHaveBeenCalledTimes(1);
     expect(sharedMocks.showFormError).not.toHaveBeenCalled();
   });
+
+  /**
+   * `invalid_env` is a PARTIAL success on the workspace path: the store saved the workspace and only
+   * the gateway refused the env, so `useWorkspaces` reloads the catalog — which is exactly the
+   * lost-update setup the 409 re-seed exists for. The open form still holds pre-save values; the next
+   * save would send a REPLACEMENT env map built from them and delete what the server kept. So the
+   * re-seed must cover this branch too.
+   *
+   * RED if the catch narrows back to `e instanceof WorkspaceRevisionConflictError`: 0 re-seeds.
+   */
+  it('re-seeds the edit form after a workspace invalid_env rejection too', async () => {
+    sharedMocks.updateWorkspace.mockRejectedValueOnce(
+      new InvalidEnvError('Invalid environment variable names: 1BAD.', ['1BAD'])
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.reseedEditForm).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.showFormError).toHaveBeenCalledTimes(1);
+    // The offending name still reaches the user; a re-seed that swallowed it would leave them with a
+    // silently reverted form and no idea which row was wrong.
+    expect(sharedMocks.showFormError.mock.calls[0][0]).toContain('1BAD');
+    expect(sharedMocks.closeForm).not.toHaveBeenCalled();
+    expect(
+      sharedMocks.reseedEditForm.mock.invocationCallOrder[0]
+    ).toBeLessThan(sharedMocks.showFormError.mock.invocationCallOrder[0]);
+  });
 });
 
 /**
@@ -1235,10 +1924,8 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
-    sharedMocks.currentThreadId = 'thread-1';
-    // No `workspace` on the summary: the selector must render as an editable dropdown, not a
-    // locked badge (a locked selector would hide the form for an unrelated reason).
-    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
     sharedMocks.useRealWorkspaces = true;
     listCalls = 0;
     putBodies = [];
@@ -1303,7 +1990,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
           // WorkspaceSelector deliberately NOT stubbed — its watcher is the code under test.
@@ -1380,7 +2067,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -1454,7 +2141,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -1517,7 +2204,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
         },
@@ -1536,6 +2223,130 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
 
     expect(wrapper.find('[data-testid="workspace-create-form"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('demo/ghost');
+
+    wrapper.unmount();
+  });
+});
+
+// Mode-side mirror of the workspace `invalid_env` surfacing above (Task 5 fix round 1): a rejected
+// create/update must reach ModeEditor's inline error, not just a console.error. Unlike the workspace
+// suite, `useChatModes` has no "real composable" toggle to fall back on, so this drives the genuine
+// ModeSelector -> ModeManagementModal -> ModeEditor chain (none of them stubbed) while mocking the
+// API at the composable level via `sharedMocks.createMode`/`updateMode`, the same seam the workspace
+// tests use for `createWorkspace`/`updateWorkspace`.
+describe('ChatLayout surfaces mode invalid_env failures inline', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: { template: '<div><slot name="mode-control" /></div>' },
+          ProviderSelector: true,
+          WorkspaceSelector: true,
+          // ModeSelector, ModeManagementModal and ModeEditor deliberately NOT stubbed — the ref
+          // chain threaded through them for this fix is the code under test.
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.hasPendingClientQuestion = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.createMode.mockReset();
+    sharedMocks.updateMode.mockReset();
+  });
+
+  it('leaves the create form mounted with the offending keys visible after a rejected mode save', async () => {
+    sharedMocks.createMode.mockRejectedValueOnce(
+      new InvalidEnvError(
+        'One or more environment variable names are invalid. (HTTP_PROXY)',
+        ['HTTP_PROXY'],
+        'mode'
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-create-new"]').trigger('click');
+
+    await wrapper.get('[data-testid="mode-editor-name"]').setValue('New Mode');
+    await wrapper.get('#mode-prompt').setValue('Be helpful.');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.createMode).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain('HTTP_PROXY');
+
+    wrapper.unmount();
+  });
+
+  /**
+   * `handleUpdateMode` is a separate catch from `handleCreateMode` and was previously uncovered, so
+   * the create test above proved nothing about editing an existing mode — the far more common way to
+   * hit an env rejection, since that is where an already-saved variable gets changed.
+   */
+  it('leaves the EDIT form mounted with the offending keys visible after a rejected mode update', async () => {
+    sharedMocks.updateMode.mockRejectedValueOnce(
+      new InvalidEnvError(
+        'One or more environment variable names are invalid. (HTTP_PROXY)',
+        ['HTTP_PROXY'],
+        'mode'
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-edit-custom"]').trigger('click');
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.updateMode).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.updateMode.mock.calls[0][0]).toBe('custom');
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain('HTTP_PROXY');
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The SUCCESS path, which the two rejection cases cannot establish: they only show the form is
+   * still there, which a handler that never closes anything also satisfies. This pins that the form
+   * does close when the save works, so "stays open" is a decision and not the only behaviour.
+   */
+  it('closes the manage form when the mode update succeeds', async () => {
+    sharedMocks.updateMode.mockResolvedValueOnce(undefined);
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    await wrapper.get('.manage-item').trigger('click');
+    await wrapper.get('[data-testid="mode-edit-custom"]').trigger('click');
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(sharedMocks.updateMode).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="mode-editor-name"]').exists()).toBe(false);
+    // The modal itself stays up (the user is still managing modes); only the form closed.
+    expect(wrapper.find('[data-testid="mode-management-modal"]').exists()).toBe(true);
 
     wrapper.unmount();
   });
@@ -1761,6 +2572,105 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
   });
 });
 
+describe('ChatLayout header actions menu', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          MarketplaceModal: true,
+          EgressAuthModal: true,
+          FileBrowserModal: true,
+          ShareConversationModal: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    window.history.pushState({}, '', '/');
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.chatLoading = false;
+    sharedMocks.clearMessages.mockClear();
+    closeEgressDialog();
+  });
+
+  afterEach(() => document.body.replaceChildren());
+
+  async function choose(wrapper: ReturnType<typeof mountLayout>, testId: string): Promise<void> {
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+    await wrapper.get(`[data-testid="${testId}"]`).trigger('click');
+    await flushPromises();
+  }
+
+  it('routes each secondary action to the existing owner and restores More focus after modal close', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await choose(wrapper, 'marketplace-button');
+    const marketplace = wrapper.findComponent({ name: 'MarketplaceModal' });
+    expect(marketplace.exists()).toBe(true);
+    marketplace.vm.$emit('close');
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="header-actions-menu-button"]').element);
+
+    await choose(wrapper, 'egress-auth-button');
+    expect(wrapper.findComponent({ name: 'EgressAuthModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'EgressAuthModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'file-browser-button');
+    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'FileBrowserModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'share-button');
+    expect(wrapper.findComponent({ name: 'ShareConversationModal' }).exists()).toBe(true);
+    wrapper.findComponent({ name: 'ShareConversationModal' }).vm.$emit('close');
+    await flushPromises();
+
+    await choose(wrapper, 'clear-button');
+    expect(sharedMocks.clearMessages).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="header-actions-menu-button"]').element);
+    wrapper.unmount();
+  });
+
+  it('passes the existing no-thread and streaming disabled states into menu actions', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.chatLoading = true;
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+
+    expect(wrapper.get('[data-testid="file-browser-button"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="share-button"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="clear-button"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it('does not steal focus when an unrelated auth flow opens and closes Egress auth', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    const inspector = wrapper.get('[data-testid="conversation-inspector-launcher"]');
+    (inspector.element as HTMLButtonElement).focus();
+
+    openEgressDialog('api.example.com');
+    await flushPromises();
+    const modal = wrapper.findComponent({ name: 'EgressAuthModal' });
+    expect(modal.exists()).toBe(true);
+    modal.vm.$emit('close');
+    await flushPromises();
+
+    expect(document.activeElement).toBe(inspector.element);
+    wrapper.unmount();
+  });
+});
+
 // #445 item 9, the host half of #375's visibility criterion. Visibility is stored server-side and
 // reaches the client on the conversation LISTING, so ChatLayout is what hands it to the share
 // control — and what re-lists once that control has made the server flip it.
@@ -1792,12 +2702,17 @@ describe('ChatLayout share control visibility (#375)', () => {
     sharedMocks.loadConversations.mockClear();
   });
 
+  async function openShare(wrapper: ReturnType<typeof mountWithShareModal>): Promise<void> {
+    await wrapper.get('[data-testid="header-actions-menu-button"]').trigger('click');
+    await wrapper.get('[data-testid="share-button"]').trigger('click');
+    await flushPromises();
+  }
+
   it('hands the share control the visibility the listing reported for the open conversation', async () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
 
     const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
     expect(modal.exists()).toBe(true);
@@ -1813,8 +2728,7 @@ describe('ChatLayout share control visibility (#375)', () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
 
     const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
     expect(modal.props('canShare')).toBe(false);
@@ -1824,8 +2738,7 @@ describe('ChatLayout share control visibility (#375)', () => {
     const wrapper = mountWithShareModal();
     await flushPromises();
 
-    await wrapper.get('[data-testid="share-button"]').trigger('click');
-    await flushPromises();
+    await openShare(wrapper);
     // The mount-time list is not what is under test here.
     sharedMocks.loadConversations.mockClear();
 
@@ -1859,6 +2772,7 @@ describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#
     updatedAt: 0,
     compatibility: 'unavailable',
     unsupportedMarketplaces: [],
+    env: {},
   });
 
   beforeEach(() => {
@@ -1902,7 +2816,7 @@ describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#
           ConversationSidebar: true,
           MessageList: true,
           PendingMessageQueue: true,
-          ChatInput: true,
+          ChatInput: false,
           ModeSelector: true,
           ProviderSelector: true,
           // WorkspaceSelector deliberately NOT stubbed — reaching its rows is the whole point.
@@ -1991,11 +2905,21 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
   // raises (through BaseModal), and skips the preview fetch the real one fires on mount.
   const ArtifactPreviewModalStub = defineComponent({
     // Declared so the D6 test below can assert the prop ChatLayout drives, not a fallthrough attr.
-    props: { besideSidebar: { type: Boolean, default: false } },
-    emits: ['close'],
+    props: {
+      besideSidebar: { type: Boolean, default: false },
+      threadId: { type: String, default: undefined },
+      path: { type: String, default: undefined },
+      target: { type: String, default: undefined },
+    },
+    emits: ['close', 'toggle-expand', 'resolved'],
     template:
       '<div data-test-id="artifact-preview-modal">'
       + '<button data-test="modal-close" @click="$emit(\'close\')">close</button>'
+      + '<button data-test="modal-expand" @click="$emit(\'toggle-expand\')">expand</button>'
+      // Stands in for the real modal reporting a `target` opener's server-resolved canonical path
+      // (F-001, #784) — always the same file the board chip below opens by `path`, so a test can
+      // drive either opener order and assert they land in one tab.
+      + '<button data-test="modal-resolved" @click="$emit(\'resolved\', \'docs/spec.md\')">resolved</button>'
       + '</div>',
   });
 
@@ -2007,6 +2931,7 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
           MessageList: true,
           PendingMessageQueue: true,
           ChatInput: true,
+          ShareConversationModal: true,
           TodoBoardPanel: TodoBoardPanelStub,
           // The SUBJECT here is ChatLayout's mount gate, not the modal's internals
           // (ArtifactPreviewModal.test.ts owns those).
@@ -2020,6 +2945,8 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     const wrapper = mountLayout();
     await flushPromises();
     sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
     await flushPromises();
     await wrapper.get('[data-test="board-chip"]').trigger('click');
     expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
@@ -2071,17 +2998,180 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
   });
 
-  it('tells the modal an expanded sidebar column is beside it, and stops when it collapses (#594 D6)', async () => {
-    // The prop is the testable seam of the reworked D6 fix (#603 F-001): jsdom computes no layout,
-    // so the backdrop geometry itself is pinned by the source-text guards below; THIS pins that
-    // ChatLayout only claims the column while the sidebar is actually expanded — collapsed, the
-    // 280px offset would expose an unclickable dead strip instead of a sidebar.
+  it('hosts the preview inside the inspector instead of opening a modal beside the sidebar', async () => {
     const wrapper = await mountWithOpenModal();
-    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(true);
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).attributes()).toHaveProperty('embedded');
+    expect(wrapper.find('[data-testid="workspace-preview-region"]').exists()).toBe(true);
+  });
 
-    wrapper.findComponent({ name: 'ConversationSidebar' }).vm.$emit('toggle-collapse');
+  it('restores the mounted conversation when the inspector closes from expanded reading', async () => {
+    const wrapper = await mountWithOpenModal();
+    await wrapper.get('[data-test="modal-expand"]').trigger('click');
+    expect(wrapper.get('main.chat-main').attributes('style')).toContain('display: none');
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.get('main.chat-main').attributes('style') ?? '').not.toContain('display: none');
+  });
+
+  it('clamps a saved workspace width for a narrow viewport and restores it after widening', async () => {
+    localStorage.setItem('lmstreaming.workspaceWidth', '900');
+    localStorage.setItem('lmstreaming.previewHeight', '5000');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 });
+    const wrapper = mountLayout();
     await flushPromises();
-    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(false);
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 900px');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    window.dispatchEvent(new Event('resize'));
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).not.toContain('--inspector-width: 900px');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 });
+    window.dispatchEvent(new Event('resize'));
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 900px');
+    expect(localStorage.getItem('lmstreaming.workspaceWidth')).toBe('900');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    window.dispatchEvent(new Event('resize'));
+    await wrapper.get('[data-testid="sidebar-toggle"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 826px');
+
+    sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+    await wrapper.get('[data-test="board-chip"]').trigger('click');
+    const verticalSplitter = wrapper.get('[data-testid="workspace-vertical-splitter"]');
+    expect(verticalSplitter.attributes('aria-valuenow')).toBe(verticalSplitter.attributes('aria-valuemax'));
+    expect(localStorage.getItem('lmstreaming.previewHeight')).toBe('5000');
+    await wrapper.get('[data-test="modal-expand"]').trigger('click');
+    expect(wrapper.get('[data-testid="conversation-inspector"]').attributes('style')).toContain('--inspector-width: 1193px');
+  });
+
+  describe('chat file links', () => {
+    // Stands in for MessageList → TextMessage: injects exactly what TextMessage injects and calls
+    // `open` the way its click handler does, so the test drives ChatLayout's provider, not a copy.
+    const MessageListLinkStub = defineComponent({
+      setup() {
+        const links = inject<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS)!;
+        return { links };
+      },
+      template:
+        '<div>'
+        + '<span data-test="links-thread">{{ links.threadId.value }}</span>'
+        + '<button data-test="file-link" @click="links.open({ threadId: \'thread-1\', target: \'B:\\\\ws\\\\a.md\' })">a</button>'
+        + '<button data-test="file-link-two" @click="links.open({ threadId: \'thread-1\', target: \'B:\\\\ws\\\\b.md\' })">b</button>'
+        + '<button data-test="stale-link" @click="links.open({ threadId: \'thread-old\', target: \'b.md\' })">b</button>'
+        + '</div>',
+    });
+
+    const mountWithLinks = async () => {
+      const wrapper = mount(ChatLayout, {
+        global: {
+          stubs: {
+            ConversationSidebar: true,
+            MessageList: MessageListLinkStub,
+            PendingMessageQueue: true,
+            ChatInput: true,
+            TodoBoardPanel: TodoBoardPanelStub,
+            ArtifactPreviewModal: ArtifactPreviewModalStub,
+          },
+        },
+      });
+      await flushPromises();
+      return wrapper;
+    };
+
+    it('provides the started conversation id to the message tree', async () => {
+      const wrapper = await mountWithLinks();
+      expect(wrapper.get('[data-test="links-thread"]').text()).toBe('thread-1');
+    });
+
+    it('opens the preview for a clicked link with its raw target against the current conversation', async () => {
+      const wrapper = await mountWithLinks();
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+
+      const modal = wrapper.getComponent(ArtifactPreviewModalStub);
+      expect(modal.props('threadId')).toBe('thread-1');
+      expect(modal.props('target')).toBe('B:\\ws\\a.md');
+      expect(modal.props('path')).toBeUndefined();
+    });
+
+    it('ignores a link rendered for a different conversation', async () => {
+      const wrapper = await mountWithLinks();
+
+      await wrapper.get('[data-test="stale-link"]').trigger('click');
+
+      expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(false);
+    });
+
+    it('still passes a board chip as a path, not a target', async () => {
+      const wrapper = await mountWithOpenModal();
+      const modal = wrapper.getComponent(ArtifactPreviewModalStub);
+      expect(modal.props('path')).toBe('docs/spec.md');
+      expect(modal.props('target')).toBeUndefined();
+    });
+
+    it('keeps multiple deduplicated tabs across agent switches and clears them on a root switch', async () => {
+      const wrapper = await mountWithLinks();
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      await wrapper.get('[data-test="file-link-two"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      sharedMocks.focusedAgentIdRef!.value = 'agent-1';
+      await flushPromises();
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      sharedMocks.chatThreadIdRef!.value = 'thread-2';
+      await flushPromises();
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(0);
+    });
+
+    // F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) build
+    // their tab id from the raw opener-specific string, so the same server-resolved file opened
+    // once each way used to land in two tabs. Both orders must converge on one.
+    it('dedupes a path opener into a tab already resolved from a target opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      // The modal reports the target's server-resolved canonical path — the same file the board
+      // chip below opens by `path` ('docs/spec.md').
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+    });
+
+    it('dedupes a target opener into a tab already open from a path opener for the same file', async () => {
+      const wrapper = await mountWithLinks();
+      sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+      await flushPromises();
+      await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+      await flushPromises();
+
+      await wrapper.get('[data-test="board-chip"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(1);
+
+      await wrapper.get('[data-test="file-link"]').trigger('click');
+      expect(wrapper.findAll('.preview-tabs [role="tab"]')).toHaveLength(2);
+
+      // The now-active target tab resolves to the same canonical path the chip's tab already carries.
+      await wrapper.getComponent(ArtifactPreviewModalStub).get('[data-test="modal-resolved"]').trigger('click');
+      await flushPromises();
+
+      const tabs = wrapper.findAll('.preview-tabs [role="tab"]');
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0].attributes('aria-selected')).toBe('true');
+    });
   });
 });
 
@@ -2113,15 +3203,9 @@ describe('ChatLayout artifact-preview / sidebar geometry (#594 D6 / #603 F-001, 
     }
   });
 
-  it('stops the preview backdrop exactly at the sidebar column it exposes — the pair that must move together', () => {
-    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
-    // Repeating `.modal-backdrop` in the compound selector is load-bearing: 0,3,0 out-specifies
-    // BaseModal's `inset: 0` at 0,2,0, so bundle source order never decides the cascade.
-    expect(modal).toMatch(
-      /\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*280px/
-    );
+  it('sizes the project sidebar through its desktop custom property', () => {
     const sidebar = readSrc('../../components/ConversationSidebar.vue');
-    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*280px/);
+    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*var\(--sidebar-width\)/);
   });
 
   it('returns the backdrop to full viewport at the sidebar\'s own mobile breakpoint', () => {

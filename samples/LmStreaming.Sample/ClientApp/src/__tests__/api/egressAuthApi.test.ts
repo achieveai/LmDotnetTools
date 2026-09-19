@@ -14,6 +14,7 @@ function mockFetchOnce(ok: boolean, body: unknown, status = ok ? 200 : 400) {
 const sampleView: EgressKeyView = {
   id: 'key-1',
   host: 'api.example.com',
+  port: 443,
   kind: 'custom-headers',
   headerName: 'Authorization',
   headerNames: ['Authorization'],

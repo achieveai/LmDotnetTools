@@ -36,6 +36,7 @@ public sealed class CodexMockProviderTests
         var page = await context.NewPageAsync();
 
         await page.GotoAsync(factory.ServerAddress);
+        await page.SelectDeveloperViewAsync();
         await page.Textarea().WaitForAsync();
         await page.NewChatButton().ClickAsync();
 
@@ -80,6 +81,7 @@ public sealed class CodexMockProviderTests
         var page = await context.NewPageAsync();
 
         await page.GotoAsync(factory.ServerAddress);
+        await page.SelectDeveloperViewAsync();
         await page.Textarea().WaitForAsync();
         await page.NewChatButton().ClickAsync();
 

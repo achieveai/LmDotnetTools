@@ -529,7 +529,15 @@ public sealed class WorkspaceTranscriptLineTests
         json.GetProperty("message_type").GetString().Should().Be(nameof(CompactionCheckpointMessage));
         json.GetProperty("role").GetString().Should().Be("User");
         var inner = JsonDocument.Parse(json.GetProperty("message_json").GetString()!).RootElement;
-        inner.GetProperty("$type").GetString().Should().Be(CompactionCheckpointMessage.TypeDiscriminator);
+        // Derived, not pinned: the $type a checkpoint carries is decided by its SCHEMA VERSION, so a
+        // literal here says "the mirror still works" only until the next bump. The mirror's own claim is
+        // that it copies message_json verbatim, which is what the assertion below has to express.
+        inner
+            .GetProperty("$type")
+            .GetString()
+            .Should()
+            .Be(CompactionCheckpointMessage.DiscriminatorFor(checkpoint.SchemaVersion))
+            .And.Be(CompactionCheckpointMessage.TypeDiscriminatorV2, "this build writes schema 2 rows");
         inner.GetProperty("checkpoint_id").GetString().Should().Be("cp-1");
         inner
             .GetProperty("manifest")

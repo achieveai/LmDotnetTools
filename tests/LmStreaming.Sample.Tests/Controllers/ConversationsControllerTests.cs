@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
+using LmStreaming.Sample.Tests.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Controllers;
@@ -32,6 +33,8 @@ public class ConversationsControllerTests
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
         ConversationStatusResolver? statusResolver = null,
+        SandboxSessionRegistry? sandboxSessionRegistry = null,
+        SandboxEnvApplier? envApplier = null,
         LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
     )
     {
@@ -50,7 +53,11 @@ public class ConversationsControllerTests
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
             new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
-            workflowPublication
+            // Named, not positional: the controller has more than one optional trailing parameter, so a
+            // positional argument here silently binds to whichever one happens to come first.
+            sandboxSessionRegistry: sandboxSessionRegistry,
+            envApplier: envApplier,
+            workflowPublication: workflowPublication
         );
     }
 
@@ -930,7 +937,59 @@ public class ConversationsControllerTests
         response.SpawnSuppression.Should().BeTrue();
         response.ActionToolSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
+        // No sandbox registry is wired into this controller, so nothing here could apply env to a
+        // session. It used to report true regardless — a claim about the BUILD rather than about the
+        // running gateway, which is what a client gates its env editors on. See
+        // GetCapabilities_SandboxEnv_FollowsTheRegistrysObservedGatewaySupport below for the pair
+        // that pins both answers.
+        response.SandboxEnv.Should().BeFalse();
     }
+
+    /// <summary>
+    /// <c>sandboxEnv</c> reports what the REGISTRY has observed about the live gateway, in both
+    /// directions.
+    /// <para>
+    /// The registry trips its flag the first time the gateway answers that it has no session-env
+    /// route (a pre-0.1.11 image). A client that trusted a hardcoded <c>true</c> would offer env
+    /// editors on exactly that deployment and collect variables the gateway can never apply —
+    /// silently, since nothing downstream fails.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task GetCapabilities_SandboxEnv_FollowsTheRegistrysObservedGatewaySupport()
+    {
+        await using var pool = CreatePool();
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var registry = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out var captured);
+
+        var supported = CreateController(
+            new InMemoryConversationStore(),
+            pool,
+            Mock.Of<IChatModeStore>(),
+            sandboxSessionRegistry: registry
+        );
+
+        ReadCapabilities(supported.GetCapabilities())
+            .SandboxEnv.Should()
+            .BeTrue("nothing has yet contradicted the gateway supporting env");
+
+        // Drive the registry into the unsupported state the same way a real pre-0.1.11 gateway does.
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws"));
+        captured.PatchEnvStatus = System.Net.HttpStatusCode.NotFound;
+        _ = await registry.EnsureSessionEnvAsync(
+            session.SessionId,
+            new Dictionary<string, string> { ["A"] = "1" },
+            "t1"
+        );
+        registry.SessionEnvSupported.Should().BeFalse("guard: the arrangement must actually have tripped it");
+
+        ReadCapabilities(supported.GetCapabilities())
+            .SandboxEnv.Should()
+            .BeFalse("the report must follow the gateway, not the build");
+    }
+
+    private static ConversationCapabilitiesResponse ReadCapabilities(IActionResult result) =>
+        Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(result).Value);
 
     [Fact]
     public async Task SwitchProvider_ReturnsConflict_WhenRunIsInProgress()
@@ -1759,6 +1818,68 @@ public class ConversationsControllerTests
                 "an accepted turn the agent has not started is work in hand, and the send is the only "
                     + "place that knows it was accepted"
             );
+    }
+
+    /// <summary>
+    /// F-002's wiring half. A workspace's sandbox session is shared by every conversation in it, so
+    /// "whose env is live" changes underneath a POOLED agent that is never rebuilt. Applying env only at
+    /// agent construction therefore left the first conversation running with the second's variables; the
+    /// turn path has to reconcile. What the reconcile does is covered in <c>SandboxEnvApplierTests</c> —
+    /// this pins that the dispatch surface calls it at all, for the thread being dispatched.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ReconcilesTheThreadsSandboxEnv_BeforeDispatch()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-send-env";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
+
+        var envApplier = new RecordingActivationEnvApplier();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes(), envApplier: envApplier);
+
+        var result = await controller.SendMessage(
+            ThreadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
+
+        Assert.IsType<AcceptedResult>(result);
+        envApplier.ActivatedThreadIds.Should().Equal(ThreadId);
+    }
+
+    /// <summary>
+    /// The non-vacuity partner: a send that never reaches dispatch must not reconcile either. Without
+    /// this, an unconditional call at the top of the method would satisfy the test above.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotReconcileEnv_WhenTheThreadIsUnknown()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+
+        var envApplier = new RecordingActivationEnvApplier();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes(), envApplier: envApplier);
+
+        var result = await controller.SendMessage(
+            "thread-that-was-never-provisioned",
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
+
+        Assert.IsType<NotFoundObjectResult>(result);
+        envApplier.ActivatedThreadIds.Should().BeEmpty();
     }
 
     [Fact]

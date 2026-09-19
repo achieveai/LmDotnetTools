@@ -145,6 +145,9 @@ public partial class Checks : UnknownBase {
     [Xunit.Theory, Xunit.MemberData(nameof(Values))] public void Dynamic(int value) {}
     [WindowsOnlyFact(Skip = "Fixture skip")] public void Platform() {}
     [Xunit.Fact(Skip = null)] public void NullSkip() {}
+    [SkippableFact] public void RuntimeGate() { Skip.IfNot(System.Environment.GetEnvironmentVariable("GATE") == "1", "Gate closed."); }
+    [SkippableFact] public void RuntimeGateHelper() { RequireGate(); }
+    private static void RequireGate() { Skip.IfNot(false, "Indirect."); }
     [GlobalAlias] public void GloballyAliasedAttribute() {}
     [Microsoft.VisualStudio.TestTools.UnitTesting.TestMethod] public void Storage() {}
     public class Nested { [Xunit.Fact] public void Baseline() {} }
@@ -170,7 +173,7 @@ public sealed class PartialConcrete : PartialBase {}
     $declarationLines = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     $declarations = @($declarationLines | ForEach-Object { $_ | ConvertFrom-Json })
     $coreCases = @($declarations | Where-Object { $_.kind -eq "test-declaration" -and $_.path -eq "tests/Core/Core.csproj" })
-    Assert-True ($coreCases.Count -eq 13) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
+    Assert-True ($coreCases.Count -eq 15) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
     # A test attribute aliased in ANOTHER file must still resolve. Without project-wide global
     # aliases it matches no known attribute and no unresolved-attribute gap, so the family
     # vanishes from inventory, manifest comparison and selection with nothing to notice it.
@@ -198,6 +201,8 @@ public sealed class PartialConcrete : PartialBase {}
     Assert-True (($coreCases | Where-Object method -eq "Storage").testFramework -eq "mstest") "Test framework is separate from target framework."
     Assert-True (($coreCases | Where-Object method -eq "Platform").skipConditions -contains 'WindowsOnlyFact(Skip = "Fixture skip")') "Platform and static skip declarations must remain visible without evaluating them."
     Assert-True (@(($coreCases | Where-Object method -eq "NullSkip").skipConditions).Count -eq 0) "An explicitly null static Skip value must not authorize a NotExecuted result."
+    Assert-True ((($coreCases | Where-Object method -eq "RuntimeGate").skipConditions -join "|") -clike '*Skip.IfNot(*GATE*') "A runtime Skip.IfNot gate in the method body must be recorded, so a legitimately skipped run is not read as an undeclared NotExecuted."
+    Assert-True (@(($coreCases | Where-Object method -eq "RuntimeGateHelper").skipConditions).Count -eq 0) "A gate reached only through a helper stays unrecorded: this parser never follows calls, and claiming otherwise would authorize any NotExecuted result."
     Assert-True (($coreCases | Where-Object method -eq "Shared").sourcePath -eq "shared/Linked.cs") "Literal linked sources are attributed to their owning project."
     Assert-True (@($coreCases | Where-Object { $_.runtimeStatus -ne "not-run" -or $null -ne $_.discoveredTestCount }).Count -eq 0) "Source parsing never claims runtime discovery."
     $coreDeclarationContainer = $declarations | Where-Object { $_.kind -eq "dotnet-project" -and $_.path -eq "tests/Core/Core.csproj" }

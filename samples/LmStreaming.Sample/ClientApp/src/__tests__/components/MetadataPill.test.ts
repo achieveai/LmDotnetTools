@@ -9,10 +9,11 @@ import { MessageType } from '@/types';
 
 function mountPill(
   items: Array<ToolsCallMessage | ReasoningMessage>,
-  getResult: (id: string | null | undefined) => ToolCallResultMessage | null = () => null
+  getResult: (id: string | null | undefined) => ToolCallResultMessage | null = () => null,
+  presentation: 'card' | 'activity-row' = 'card'
 ) {
   return mount(MetadataPill, {
-    props: { items },
+    props: { items, presentation },
     global: { provide: { [GET_RESULT_FOR_TOOL_CALL]: getResult } },
   });
 }
@@ -63,6 +64,21 @@ describe('MetadataPill — reasoning (stays inline)', () => {
 });
 
 describe('MetadataPill — tool delegation (one pill per tool_call)', () => {
+  it('defaults to card presentation and forwards activity-row only when requested', () => {
+    const items = [toolsCall('presentation', 'Read', { file_path: 'notes.md' })];
+    const card = mountPill(items);
+    expect(card.get('[data-testid="metadata-pill"]').classes()).not.toContain(
+      'metadata-pill--activity-row'
+    );
+    expect(card.getComponent({ name: 'ToolPill' }).props('presentation')).toBe('card');
+
+    const activity = mountPill(items, () => null, 'activity-row');
+    expect(activity.get('[data-testid="metadata-pill"]').classes()).toContain(
+      'metadata-pill--activity-row'
+    );
+    expect(activity.getComponent({ name: 'ToolPill' }).props('presentation')).toBe('activity-row');
+  });
+
   it('renders a single tool_call as one tool-call-pill carrying the raw data-tool-name', () => {
     const w = mountPill([toolsCall('c1', 'sandbox-Bash', { command: 'ls' })]);
     const pills = w.findAll('[data-testid="tool-call-pill"]');
@@ -130,6 +146,14 @@ describe('MetadataPill — container expansion', () => {
     await w.get('.pill-header').trigger('click');
     expect(items.classes()).toContain('expanded');
     expect(w.text()).toContain('Collapse');
+  });
+
+  it('shows every activity row without a no-op Show all control', () => {
+    const w = mountPill(many(5), () => null, 'activity-row');
+
+    expect(w.find('.pill-header').exists()).toBe(false);
+    expect(w.findAll('[data-testid="tool-call-pill"]')).toHaveLength(5);
+    expect(w.text()).not.toContain('Show all');
   });
 });
 

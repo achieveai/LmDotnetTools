@@ -8,15 +8,19 @@ import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
+import { InvalidEnvError } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
-import SubAgentListPanel from './SubAgentListPanel.vue';
-import TodoBoardPanel from './TodoBoardPanel.vue';
+import QuestionInbox from './QuestionInbox.vue';
+import { useQuestionInbox, type QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import ConversationInspector from './ConversationInspector.vue';
+import PanelSplitter from './PanelSplitter.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
@@ -24,6 +28,8 @@ import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useTodoBoard } from '@/composables/useTodoBoard';
 import { useContextReport } from '@/composables/useContextReport';
+import { useManualCompaction } from '@/composables/useManualCompaction';
+import { useViewPreference, type ViewPreference } from '@/composables/useViewPreference';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -32,6 +38,8 @@ import {
   type AgentRoutingLookup,
 } from '@/utils/agentColors';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
+import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
+import { GET_CHECKPOINT_STATE, type CheckpointStateLookup } from '@/composables/messageDisplay';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -40,6 +48,7 @@ import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import FileBrowserModal from './FileBrowserModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
+import HeaderActionsMenu from './HeaderActionsMenu.vue';
 
 const {
   conversations,
@@ -47,6 +56,7 @@ const {
   currentConversation,
   isLoading: conversationsLoading,
   isLoadingMore: conversationsLoadingMore,
+  hasMoreConversations,
   sortMode: conversationSortMode,
   loadConversations,
   loadMoreConversations,
@@ -98,6 +108,16 @@ const {
 } = useWorkspaces();
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const workspaceManagementRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+const modeSelectorRef = ref<InstanceType<typeof ModeSelector> | null>(null);
+const { viewPreference, selectViewPreference } = useViewPreference();
+const showDeveloperDiagnostics = computed(() => viewPreference.value === 'developer');
+
+function handleViewPreferenceChange(event: Event): void {
+  const preference = (event.target as HTMLInputElement).value as ViewPreference;
+  selectViewPreference(preference);
+  if (preference === 'consumer') closeInspector(false);
+}
 
 // Initialize chat with getters for the current mode and provider ids.
 const {
@@ -109,6 +129,8 @@ const {
   cumulativeCost,
   conversationTodo,
   contextPressure,
+  compactionStatus,
+  connectionEpoch,
   pendingMessages,
   pendingAuthRequests,
   dismissAuthRequest,
@@ -225,6 +247,7 @@ const {
   sendToFocusedChild,
   submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
+  refreshChildren: refreshSubAgentChildren,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
 // ToDo board state (#583), hoisted here for the same reason the sub-agent panel is: ONE instance,
@@ -245,21 +268,93 @@ const {
   total: contextTotal,
   status: contextStatus,
   generatedAtUtc: contextGeneratedAtUtc,
+  hydrate: hydrateContextReport,
 } = useContextReport(
   () => subAgentParentThreadId.value,
   () => contextPressure.value,
   () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
 );
 
-// Artifact preview (#583, PR 5): the board panel bubbles a chip's workspace-relative path up here,
-// because the modal needs the thread id and the panel deliberately never learns it. The path is the
-// whole modal state — null means closed. Keyed to the BOARD's thread (subAgentParentThreadId), the
-// same conversation whose task carries the chip.
-const artifactPreviewPath = ref<string | null>(null);
+// Compact now (manual compaction) for the same conversation the panel shows. A committed compaction,
+// manual or automatic, re-reads the report so the panel's compaction state catches up at once.
+const { view: compactionControl, request: requestManualCompaction } = useManualCompaction(
+  () => subAgentParentThreadId.value,
+  () => compactionStatus.value,
+  (report) => void hydrateContextReport(report),
+  { getConnectionEpoch: () => connectionEpoch.value }
+);
+
+// File preview (#583, PR 5; chat file links): two openers bubble a file up here, because the modal
+// needs the thread id and neither opener owns it. The board panel passes a chip's workspace-relative
+// `path`; an assistant message's file link passes its raw `target`, which the modal resolves on the
+// server. This object is the whole modal state — null means closed. Keyed to the BOARD's thread
+// (subAgentParentThreadId): the conversation whose task carries the chip and whose workspace the
+// message's links point into (sub-agent transcripts share it).
+type FilePreviewRequest = { id: string; path: string; target?: undefined; label: string }
+  | { id: string; path?: undefined; target: string; label: string };
+const previewTabs = ref<FilePreviewRequest[]>([]);
+const activePreviewId = ref<string | null>(null);
+const artifactPreview = computed(() => previewTabs.value.find((tab) => tab.id === activePreviewId.value) ?? null);
+// F-003 (#784): a computed instead of an inline template `.map()` — ConversationInspector's own props
+// (like `previewHeight`, updated on every splitter `pointermove`) re-render this component constantly
+// while dragging, and an inline map would rebuild a brand-new tab array and tab objects on every one
+// of those renders even though the tabs themselves did not change. This only recomputes when
+// `previewTabs` itself does.
+const previewTabSummaries = computed(() =>
+  previewTabs.value.map((tab) => ({ id: tab.id, label: tab.label, path: tab.path ?? tab.target }))
+);
+
+function previewLabel(value: string): string {
+  const parts = value.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || value;
+}
+
+function addPreview(request: { path: string } | { target: string }): void {
+  const value = 'path' in request ? request.path : request.target;
+  const id = `${'path' in request ? 'path' : 'target'}:${value}`;
+  if (!previewTabs.value.some((tab) => tab.id === id)) {
+    previewTabs.value.push({ ...request, id, label: previewLabel(value) } as FilePreviewRequest);
+  }
+  activePreviewId.value = id;
+  if (!hasWorkspaceWidthPreference.value && previewTabs.value.length === 1) inspectorWidth.value = 640;
+  inspectorOpen.value = true;
+}
 
 function openArtifactPreview(path: string): void {
-  artifactPreviewPath.value = path;
+  addPreview({ path });
 }
+
+// F-001 (#784): a `path` opener (board chip) and a `target` opener (message file link) never agree on
+// the same raw id even when they resolve to the identical workspace file — `target` is only resolved
+// to a canonical path by the server, inside ArtifactPreviewModal, once it mounts for the active tab.
+// Rather than resolving `target` here (that stays server-owned) or blocking the tab open on the
+// resolve round trip, the modal reports its resolved path back once known and this reconciles the
+// tab's id onto it: dedupe into an existing canonical tab if one is already open, otherwise rename
+// this tab in place (as a resolved `path` tab) so a later opener for the same file matches it.
+function reconcilePreviewResolution(tabId: string, resolvedPath: string): void {
+  const canonicalId = `path:${resolvedPath}`;
+  if (canonicalId === tabId) return;
+  const tabIndex = previewTabs.value.findIndex((tab) => tab.id === tabId);
+  if (tabIndex === -1) return;
+  const existingIndex = previewTabs.value.findIndex((tab) => tab.id === canonicalId);
+  if (existingIndex !== -1) {
+    previewTabs.value.splice(tabIndex, 1);
+  } else {
+    previewTabs.value[tabIndex] = { id: canonicalId, path: resolvedPath, label: previewLabel(resolvedPath) };
+  }
+  if (activePreviewId.value === tabId) activePreviewId.value = canonicalId;
+}
+
+// Provided to every TextMessage below (main chat and sub-agent transcripts). A link rendered for an
+// earlier conversation that is somehow still clicked after a switch carries the OLD thread id, so it is
+// ignored rather than resolved against the new conversation's workspace.
+provide<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS, {
+  threadId: subAgentParentThreadId,
+  open: (link) => {
+    if (link.threadId !== subAgentParentThreadId.value) return;
+    addPreview({ target: link.target });
+  },
+});
 
 // A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
 // against the NEW thread's workspace. This is also the second half of the #594 D6 fix: with the
@@ -267,10 +362,12 @@ function openArtifactPreview(path: string): void {
 // ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
 // watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
-  artifactPreviewPath.value = null;
+  previewTabs.value = [];
+  activePreviewId.value = null;
+  previewExpanded.value = false;
 });
 
-const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
+const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = useConversationTabs({
   children: subAgentChildren,
   focusedAgentId,
   focusChild,
@@ -281,6 +378,92 @@ const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
 function handleSubAgentSend(text: string): void {
   sendToFocusedChild(text);
 }
+
+const questionInbox = useQuestionInbox(() => currentThreadId.value);
+const questionInboxEntries = computed(() => questionInbox.entries.value.map((entry) => ({
+  ...entry,
+  agentName: entry.agentName || 'Main agent',
+})));
+const requestedQuestionId = ref('');
+const pendingQuestionAgentIds = computed(() => [...new Set(questionInbox.entries.value
+  .filter((entry) => entry.rootThreadId === currentThreadId.value && entry.agentId)
+  .map((entry) => entry.agentId!))]);
+const questionBusy = ref(false);
+const questionOpen = ref(false);
+const questionNavigating = ref(false);
+async function selectTab(id: string): Promise<void> {
+  if (questionBusy.value) return;
+  await selectConversationTab(id);
+}
+const questionNavigationError = ref<string | null>(null);
+const autoOpenedQuestions = new Set<string>();
+const questionScope = computed(() => `${currentThreadId.value ?? 'draft'}:${activeTabId.value}`);
+const questionSource = computed(() => `${currentConversation.value?.title || 'Conversation'} · ${
+  activeTabId.value === 'main' ? 'Main agent' : subAgentChildren.value.find((child) => child.agentId === activeTabId.value)?.name || 'Agent'
+}`);
+
+function questionOpened(id: string): void {
+  autoOpenedQuestions.add(JSON.stringify([currentThreadId.value, activeTabId.value, id]));
+}
+
+function autoQuestionKey(entry: QuestionInboxEntry): string {
+  return JSON.stringify([entry.rootThreadId, entry.agentId || 'main', entry.toolCallId]);
+}
+
+async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
+  if (questionBusy.value || questionNavigating.value) return;
+  questionNavigating.value = true;
+  questionNavigationError.value = null;
+  requestedQuestionId.value = '';
+  try {
+    if (entry.rootThreadId !== currentThreadId.value) {
+      addOrUpdateConversation(entry.conversation);
+      await handleSelectConversation(entry.rootThreadId);
+    }
+    if (currentThreadId.value !== entry.rootThreadId) return;
+    if (entry.agentId) {
+      await refreshSubAgentChildren();
+      if (!subAgentChildren.value.some((child) => child.agentId === entry.agentId)) {
+        throw new Error('This agent is no longer available. Refresh the question inbox.');
+      }
+      await selectTab(entry.agentId);
+      if (focusedAgentId.value !== entry.agentId) throw new Error('Could not connect to this agent. Try again.');
+    } else {
+      await selectTab('main');
+    }
+    await nextTick();
+    const result = entry.agentId ? getSubAgentResultForToolCall(entry.toolCallId) : getResultForToolCall(entry.toolCallId);
+    if (!result?.is_deferred) {
+      questionNavigationError.value = 'This question is no longer waiting for an answer.';
+      void questionInbox.refresh();
+      return;
+    }
+    requestedQuestionId.value = entry.toolCallId;
+    if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+  } catch (err) {
+    // A partial tab change can mount a dock before child focus finishes. Do not let that transient
+    // `opened` event suppress a later automatic retry when navigation itself did not succeed.
+    autoOpenedQuestions.delete(autoQuestionKey(entry));
+    questionNavigationError.value = err instanceof Error ? err.message : 'Could not open this question. Try again.';
+  } finally {
+    questionNavigating.value = false;
+  }
+}
+
+function selectInboxQuestion(key: string): void {
+  const entry = questionInbox.entries.value.find((candidate) => candidate.key === key);
+  if (entry) void openInboxQuestion(entry);
+}
+
+watch([questionInbox.entries, currentThreadId, questionOpen, questionBusy], () => {
+  if (questionOpen.value || questionBusy.value || questionNavigating.value || document.visibilityState === 'hidden') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  const entry = questionInbox.entries.value.find((candidate) =>
+    candidate.rootThreadId === currentThreadId.value && !autoOpenedQuestions.has(autoQuestionKey(candidate)));
+  if (entry) void openInboxQuestion(entry);
+}, { flush: 'post' });
+
+watch(questionScope, () => { questionOpen.value = false; questionBusy.value = false; });
 
 // Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
 // shadows this with the child's own resolver for its subtree.
@@ -298,14 +481,137 @@ provide(GET_AGENT_COLOR, getAgentColor);
 const getAgentRouting: AgentRoutingLookup = (parsedArgs, resultText) =>
   resolveAgentRoutingFromCall(parsedArgs, resultText, subAgentChildren.value);
 provide(GET_AGENT_ROUTING, getAgentRouting);
+// Provide checkpointId → compaction state (#721) so a compaction divider can badge a checkpoint the
+// context report says was rolled back; the persisted row itself never learns that.
+const getCheckpointState: CheckpointStateLookup = (checkpointId) =>
+  contextRows.value.find((row) => row.compaction.checkpointId === checkpointId)?.compaction.state ?? null;
+provide(GET_CHECKPOINT_STATE, getCheckpointState);
 
 const sidebarCollapsed = ref(false);
+const LEFT_WIDTH_KEY = 'lmstreaming.projectsWidth';
+const RIGHT_WIDTH_KEY = 'lmstreaming.workspaceWidth';
+const PREVIEW_HEIGHT_KEY = 'lmstreaming.previewHeight';
+const LEFT_DEFAULT = 280;
+const RIGHT_DEFAULT = 320;
+const MIN_CHAT_WIDTH = 360;
+const hasWorkspaceWidthPreference = ref(false);
+function storedNumber(key: string, fallback: number): number {
+  try {
+    const stored = localStorage.getItem(key);
+    if (key === RIGHT_WIDTH_KEY) {
+      hasWorkspaceWidthPreference.value = stored !== null;
+    }
+    if (stored === null) return fallback;
+    const value = Number(stored);
+    return Number.isFinite(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+const sidebarWidth = ref(storedNumber(LEFT_WIDTH_KEY, LEFT_DEFAULT));
+const inspectorWidth = ref(storedNumber(RIGHT_WIDTH_KEY, RIGHT_DEFAULT));
+const previewHeight = ref(storedNumber(PREVIEW_HEIGHT_KEY, Math.round((window.innerHeight - 54) * 0.65)));
+const previewExpanded = ref(false);
+const shellDragging = ref(false);
+const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
+const viewportHeight = ref(typeof window === 'undefined' ? 900 : window.innerHeight);
+const preferredRightWidth = computed(() => clamp(inspectorWidth.value, 300, 960));
+const effectiveRightWidth = computed(() =>
+  viewportWidth.value > 1100 && inspectorOpen.value ? preferredRightWidth.value : 0
+);
+const desktopLeftMax = computed(() =>
+  Math.min(420, Math.max(220, viewportWidth.value - effectiveRightWidth.value - MIN_CHAT_WIDTH - 14))
+);
+const clampedSidebarWidth = computed(() => clamp(sidebarWidth.value, 220, desktopLeftMax.value));
+const effectiveLeftWidth = computed(() =>
+  viewportWidth.value <= 768 || sidebarCollapsed.value ? 0 : clampedSidebarWidth.value
+);
+const desktopRightMax = computed(() =>
+  Math.min(960, Math.max(300, viewportWidth.value - effectiveLeftWidth.value - MIN_CHAT_WIDTH - 14))
+);
+const clampedInspectorWidth = computed(() => clamp(inspectorWidth.value, 300, desktopRightMax.value));
+const renderedInspectorWidth = computed(() =>
+  previewExpanded.value
+    ? Math.max(300, viewportWidth.value - effectiveLeftWidth.value - 7)
+    : clampedInspectorWidth.value
+);
+const previewMaxHeight = computed(() => Math.max(180, viewportHeight.value - 220));
+const previewDefaultHeight = computed(() =>
+  clamp(Math.round((viewportHeight.value - 54) * 0.65), 180, previewMaxHeight.value)
+);
+const clampedPreviewHeight = computed(() => clamp(previewHeight.value, 180, previewMaxHeight.value));
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+// F-003 (#784): these only update the live in-memory value now. Persisting to `localStorage` moved
+// onto the driving PanelSplitter itself (`persist-key`), which flushes once per gesture instead of on
+// every `pointermove` tick these setters used to receive.
+function setSidebarWidth(value: number): void {
+  sidebarWidth.value = clamp(value, 220, desktopLeftMax.value);
+}
+
+function setInspectorWidth(value: number): void {
+  inspectorWidth.value = clamp(value, 300, desktopRightMax.value);
+  hasWorkspaceWidthPreference.value = true;
+}
+
+function setPreviewHeight(value: number): void {
+  previewHeight.value = clamp(value, 180, previewMaxHeight.value);
+}
+function closePreview(id: string): void {
+  const index = previewTabs.value.findIndex((tab) => tab.id === id);
+  if (index < 0) return;
+  previewTabs.value.splice(index, 1);
+  if (activePreviewId.value === id) activePreviewId.value = previewTabs.value[Math.min(index, previewTabs.value.length - 1)]?.id ?? null;
+  if (!previewTabs.value.length) {
+    previewExpanded.value = false;
+    if (!hasWorkspaceWidthPreference.value) inspectorWidth.value = RIGHT_DEFAULT;
+  }
+  void nextTick(() => {
+    const active = Array.from(document.querySelectorAll<HTMLElement>('[data-preview-id]'))
+      .find((element) => element.dataset.previewId === activePreviewId.value);
+    (active ?? inspectorLauncherRef.value)?.focus();
+  });
+}
 const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
+const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
+const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'files' | 'share' | null>(null);
+const inspectorOpen = ref(false);
+const inspectorSection = ref<'work' | 'agents'>('work');
+const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
+let inspectorInitialized = false;
+
+function openInspector(): void {
+  inspectorOpen.value = true;
+}
+
+function toggleInspector(): void {
+  if (inspectorOpen.value) closeInspector();
+  else openInspector();
+}
+
+function closeInspector(restoreFocus = true): void {
+  inspectorOpen.value = false;
+  previewExpanded.value = false;
+  if (restoreFocus) void nextTick(() => inspectorLauncherRef.value?.focus());
+}
+
+function handleInspectorAgentSelect(agentId: string, closeDrawer: boolean): void {
+  selectTab(agentId);
+  if (!closeDrawer) return;
+  closeInspector(false);
+  void nextTick(() => {
+    const tab = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="conversation-tab"]'))
+      .find((button) => button.dataset.tabId === agentId);
+    tab?.focus();
+  });
+}
 
 /**
  * Closes the egress-auth modal, resetting both the header-button flag and any
@@ -314,6 +620,36 @@ const shareModalOpen = ref(false);
 function handleCloseEgressModal(): void {
   egressAuthModalOpen.value = false;
   closeEgressDialog();
+  restoreHeaderActionsFocus('egress');
+}
+
+function closeMarketplaceModal(): void {
+  marketplaceModalOpen.value = false;
+  restoreHeaderActionsFocus('marketplace');
+}
+
+function closeFileBrowserModal(): void {
+  fileBrowserModalOpen.value = false;
+  restoreHeaderActionsFocus('files');
+}
+
+function closeShareModal(): void {
+  shareModalOpen.value = false;
+  restoreHeaderActionsFocus('share');
+}
+
+function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  modalOpenedFromHeaderActions.value = modal;
+  if (modal === 'marketplace') marketplaceModalOpen.value = true;
+  else if (modal === 'egress') egressAuthModalOpen.value = true;
+  else if (modal === 'files') fileBrowserModalOpen.value = true;
+  else shareModalOpen.value = true;
+}
+
+function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+  if (modalOpenedFromHeaderActions.value !== modal) return;
+  modalOpenedFromHeaderActions.value = null;
+  void nextTick(() => headerActionsMenuRef.value?.focusTrigger());
 }
 const modeSwitchDisabled = computed(
   () =>
@@ -421,33 +757,59 @@ function handleSelectWorkspace(workspaceId: string): void {
   selectWorkspace(workspaceId);
 }
 
-async function handleCreateWorkspace(data: WorkspaceCreate): Promise<void> {
+async function handleCreateWorkspace(
+  data: WorkspaceCreate,
+  origin: InstanceType<typeof WorkspaceSelector> | null = workspaceSelectorRef.value
+): Promise<void> {
+  const selectedBeforeManagementCreate = origin === workspaceManagementRef.value
+    && currentThreadId.value !== null
+    ? selectedWorkspaceId.value
+    : null;
   try {
     await createWorkspace(data);
-    workspaceSelectorRef.value?.closeForm();
+    if (selectedBeforeManagementCreate) selectWorkspace(selectedBeforeManagementCreate);
+    origin?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to create workspace';
-    workspaceSelectorRef.value?.showFormError(message);
+    origin?.showFormError(message);
   }
 }
 
-async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate): Promise<void> {
+async function handleUpdateWorkspace(
+  workspaceId: string,
+  data: WorkspaceUpdate,
+  origin: InstanceType<typeof WorkspaceSelector> | null = workspaceSelectorRef.value
+): Promise<void> {
   try {
     await updateWorkspace(workspaceId, data);
-    workspaceSelectorRef.value?.closeForm();
+    origin?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
-    if (e instanceof WorkspaceRevisionConflictError) {
-      // updateWorkspace has already re-listed, so the next save would carry a FRESH compare-and-swap
-      // token while the form still held the pre-conflict selection — one more click would pass CAS
-      // and silently overwrite whoever changed it. Re-seed the form from the refreshed workspace so
-      // the pending change is dropped rather than the other writer's. `await nextTick()` first: the
+    if (e instanceof WorkspaceRevisionConflictError || e instanceof InvalidEnvError) {
+      // Two different causes, one required response: the server's copy has moved on and the form has
+      // not. On a CONFLICT, updateWorkspace has already re-listed, so the next save would carry a
+      // FRESH compare-and-swap token while the form still held the pre-conflict selection — one more
+      // click would pass CAS and silently overwrite whoever changed it. On an INVALID_ENV, the write
+      // PARTIALLY succeeded (the store took it, the gateway refused the env), and the env map is sent
+      // as a wholesale REPLACEMENT with no CAS token at all — so a reseed from stale rows would
+      // delete keys the server had actually kept. Re-seed from the refreshed workspace either way, so
+      // the pending change is dropped rather than the stored one. `await nextTick()` first: the
       // refreshed list reaches the child as a prop only after the parent re-renders.
       await nextTick();
-      workspaceSelectorRef.value?.reseedEditForm();
+      origin?.reseedEditForm();
     }
-    workspaceSelectorRef.value?.showFormError(message);
+    origin?.showFormError(message);
   }
+}
+
+function handleNewProject(): void {
+  workspaceSelectorRef.value?.closeDropdown();
+  workspaceManagementRef.value?.openCreateForm();
+}
+
+function handleEditProject(workspaceId: string): void {
+  workspaceSelectorRef.value?.closeDropdown();
+  workspaceManagementRef.value?.openEditForm(workspaceId);
 }
 
 // A conversation requested via ?threadId= that isn't in the backend's conversation list (never
@@ -539,6 +901,7 @@ onMounted(async () => {
 
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
+  if (questionBusy.value) return;
   notFoundThreadId.value = null;
 
   // Disconnect current WebSocket and clear state
@@ -559,8 +922,24 @@ async function handleNewChat(): Promise<void> {
   setThreadId(null);
 }
 
+/** Starts an unreserved draft bound to the workspace whose sidebar folder launched it. */
+async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
+  await settleWorkspaceCatalog();
+  const workspace = workspaces.value.find((candidate) => candidate.id === workspaceId);
+  if (!workspace || !isWorkspaceSelectable(workspace)) {
+    return;
+  }
+
+  await handleNewChat();
+  selectWorkspace(workspaceId);
+  if (window.innerWidth <= 768) {
+    sidebarCollapsed.value = true;
+  }
+}
+
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
+  if (questionBusy.value) return;
   notFoundThreadId.value = null;
   if (threadId === currentThreadId.value) return;
 
@@ -619,6 +998,7 @@ function restoreBindingsFromConversation(threadId: string): void {
 
 // Handle deleting a conversation
 async function handleDeleteConversation(threadId: string): Promise<void> {
+  if (questionBusy.value) return;
   try {
     await removeConversation(threadId);
 
@@ -671,8 +1051,17 @@ async function handleSelectMode(modeId: string): Promise<void> {
 async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
   try {
     await createMode(data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to create mode:', e);
+    if (e instanceof InvalidEnvError) {
+      // Keeps the create form open (with the entered env rows intact) instead of the previous
+      // silent console.error — this is the one failure mode worth surfacing inline, since it names
+      // exactly which keys are wrong and the user can fix them without re-entering everything.
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to create mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -680,8 +1069,14 @@ async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
 async function handleUpdateMode(modeId: string, data: ChatModeCreateUpdate): Promise<void> {
   try {
     await updateMode(modeId, data);
+    modeSelectorRef.value?.closeManageForm();
   } catch (e) {
-    console.error('Failed to update mode:', e);
+    if (e instanceof InvalidEnvError) {
+      modeSelectorRef.value?.showManageFormError(e.message);
+    } else {
+      console.error('Failed to update mode:', e);
+      modeSelectorRef.value?.closeManageForm();
+    }
   }
 }
 
@@ -747,6 +1142,8 @@ function handleToggleCollapse(): void {
 
 // Watch for mobile screen and auto-collapse
 function checkMobile(): void {
+  viewportWidth.value = window.innerWidth;
+  viewportHeight.value = window.innerHeight;
   if (window.innerWidth <= 768) {
     sidebarCollapsed.value = true;
   }
@@ -754,9 +1151,17 @@ function checkMobile(): void {
 
 onMounted(() => {
   checkMobile();
+  if (!inspectorInitialized) {
+    inspectorOpen.value = viewPreference.value === 'developer' && window.innerWidth > 1100;
+    inspectorInitialized = true;
+  }
   window.addEventListener('resize', checkMobile);
   // Poll the active conversation's sub-agents so tabs/launcher populate as children spawn.
   startSubAgentPolling();
+});
+
+watch(focusMode, (focused) => {
+  if (focused) closeInspector(false);
 });
 
 onBeforeUnmount(() => {
@@ -766,32 +1171,135 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-layout" data-testid="chat-layout">
+    <header :class="['app-header', { 'focus-mode': focusMode }]" data-testid="app-header">
+      <div class="app-header-left">
+        <button
+          v-if="!focusMode"
+          class="sidebar-toggle"
+          data-testid="sidebar-toggle"
+          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :aria-expanded="!sidebarCollapsed"
+          @click="handleToggleCollapse"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M7.5 3v14" />
+          </svg>
+        </button>
+        <h1>{{ headerTitle }}</h1>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-center">
+        <fieldset class="view-preference" aria-label="Conversation view">
+          <legend class="sr-only">Conversation view</legend>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="consumer"
+              data-testid="view-preference-consumer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Consumer</span>
+          </label>
+          <label>
+            <input
+              v-model="viewPreference"
+              type="radio"
+              name="view-preference"
+              value="developer"
+              data-testid="view-preference-developer"
+              @change="handleViewPreferenceChange"
+            />
+            <span>Developer</span>
+          </label>
+        </fieldset>
+      </div>
+
+      <div v-if="!focusMode" class="app-header-right">
+        <QuestionInbox :entries="questionInboxEntries" :refreshing="questionInbox.isRefreshing.value"
+          :error="questionInbox.error.value" :disabled="questionBusy || questionNavigating"
+          @select="selectInboxQuestion" @refresh="questionInbox.refresh()" />
+        <HeaderActionsMenu
+          ref="headerActionsMenuRef"
+          :files-disabled="!currentThreadId"
+          :share-disabled="!currentThreadId"
+          :clear-disabled="chatLoading"
+          @open-marketplaces="openHeaderActionModal('marketplace')"
+          @open-egress="openHeaderActionModal('egress')"
+          @open-files="openHeaderActionModal('files')"
+          @open-share="openHeaderActionModal('share')"
+          @clear="clearMessages"
+        />
+        <button
+          id="conversation-inspector-toggle"
+          ref="inspectorLauncherRef"
+          :class="['inspector-launcher', { 'above-inspector-overlay': inspectorOpen }]"
+          data-testid="conversation-inspector-launcher"
+          :aria-label="`${inspectorOpen ? 'Close' : 'Open'} Work and agents`"
+          :title="`${inspectorOpen ? 'Close' : 'Open'} Work and agents`"
+          aria-controls="conversation-inspector"
+          :aria-expanded="inspectorOpen"
+          @click="toggleInspector"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2.5" y="3" width="15" height="14" rx="2" />
+            <path d="M12.5 3v14" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div :class="['shell-body', { resizing: shellDragging }]" data-testid="shell-body">
     <ConversationSidebar
       v-if="!focusMode"
+      id="projects-sidebar"
+      class="hosted-sidebar"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
       :is-loading-more="conversationsLoadingMore"
+      :workspaces="workspaces"
+      :has-more="hasMoreConversations"
       :sort-mode="conversationSortMode"
       :is-collapsed="sidebarCollapsed"
+      :desktop-width="clampedSidebarWidth"
       @new-chat="handleNewChat"
+      @new-chat-in-workspace="handleNewChatInWorkspace"
+      @new-project="handleNewProject"
+      @edit-project="handleEditProject"
       @select-conversation="handleSelectConversation"
       @delete-conversation="handleDeleteConversation"
       @toggle-collapse="handleToggleCollapse"
       @load-more="loadMoreConversations"
       @change-sort-mode="setConversationSortMode"
     />
+    <PanelSplitter
+      v-if="!focusMode && !sidebarCollapsed && viewportWidth > 768"
+      data-testid="projects-splitter" label="Resize projects" orientation="vertical"
+      controls="projects-sidebar" :persist-key="LEFT_WIDTH_KEY"
+      :value="clampedSidebarWidth" :min="220" :max="desktopLeftMax" :default-value="LEFT_DEFAULT"
+      @update:value="setSidebarWidth" @dragging="shellDragging = $event"
+    />
 
-    <main class="chat-main">
+    <WorkspaceSelector
+      v-if="!focusMode"
+      ref="workspaceManagementRef"
+      presentation="management"
+      :workspaces="workspaces"
+      :gateway="workspaceGateway"
+      :selected-workspace-id="selectedWorkspaceId"
+      :locked-workspace-id="null"
+      :is-loading="workspacesLoading"
+      @create-workspace="handleCreateWorkspace($event, workspaceManagementRef)"
+      @update-workspace="(workspaceId, data) => handleUpdateWorkspace(workspaceId, data, workspaceManagementRef)"
+    />
+
+    <main id="chat-main" v-show="!previewExpanded" class="chat-main">
+      <p v-if="questionNavigationError" class="question-navigation-error" role="status">{{ questionNavigationError }}</p>
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
-        <button
-          v-if="sidebarCollapsed && !focusMode"
-          class="menu-btn not-found-menu-btn"
-          @click="handleToggleCollapse"
-          title="Open sidebar"
-        >
-          =
-        </button>
         <div class="not-found-content">
           <h2>Conversation not found</h2>
           <p>The conversation "{{ notFoundThreadId }}" does not exist or is no longer available.</p>
@@ -799,96 +1307,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="chat-view">
-        <header class="chat-header">
-          <button
-            v-if="sidebarCollapsed && !focusMode"
-            class="menu-btn"
-            @click="handleToggleCollapse"
-            title="Open sidebar"
-          >
-            =
-          </button>
-          <h1>{{ headerTitle }}</h1>
-          <div v-if="!focusMode" class="header-actions">
-            <WorkspaceSelector
-              ref="workspaceSelectorRef"
-              :workspaces="workspaces"
-              :gateway="workspaceGateway"
-              :selected-workspace-id="selectedWorkspaceId"
-              :locked-workspace-id="lockedWorkspaceId"
-              :is-loading="workspacesLoading"
-              :disabled="workspaceSelectorDisabled"
-              @select-workspace="handleSelectWorkspace"
-              @create-workspace="handleCreateWorkspace"
-              @update-workspace="handleUpdateWorkspace"
-            />
-            <ProviderSelector
-              :providers="providers"
-              :selected-provider-id="selectedProviderId"
-              :is-loading="providersLoading"
-              :disabled="providerSelectorDisabled"
-              @select-provider="handleSelectProvider"
-            />
-            <ModeSelector
-              :modes="modes"
-              :current-mode-id="currentModeId"
-              :tools="availableTools"
-              :is-loading="modesLoading"
-              :disabled="modeSwitchDisabled"
-              @select-mode="handleSelectMode"
-              @create-mode="handleCreateMode"
-              @update-mode="handleUpdateMode"
-              @delete-mode="handleDeleteMode"
-              @copy-mode="handleCopyMode"
-            />
-            <button
-              class="marketplace-btn"
-              data-testid="marketplace-button"
-              title="Browse marketplaces"
-              @click="marketplaceModalOpen = true"
-            >
-              Marketplaces
-            </button>
-            <button
-              class="egress-auth-btn"
-              data-testid="egress-auth-button"
-              title="Manage egress auth keys"
-              @click="egressAuthModalOpen = true"
-            >
-              Egress Auth
-            </button>
-            <button
-              class="file-browser-btn"
-              data-testid="file-browser-button"
-              title="Browse workspace files"
-              :disabled="!currentThreadId"
-              @click="fileBrowserModalOpen = true"
-            >
-              Files
-            </button>
-            <button
-              class="share-btn"
-              data-testid="share-button"
-              title="Share this conversation"
-              :disabled="!currentThreadId"
-              @click="shareModalOpen = true"
-            >
-              Share
-            </button>
-            <button
-              class="clear-btn"
-              data-testid="clear-button"
-              @click="clearMessages"
-              :disabled="chatLoading"
-            >
-              Clear
-            </button>
-          </div>
-        </header>
-
         <MarketplaceModal
           v-if="marketplaceModalOpen"
-          @close="marketplaceModalOpen = false"
+          @close="closeMarketplaceModal"
         />
 
         <EgressAuthModal
@@ -899,7 +1320,7 @@ onBeforeUnmount(() => {
         <FileBrowserModal
           v-if="fileBrowserModalOpen"
           :thread-id="currentThreadId"
-          @close="fileBrowserModalOpen = false"
+          @close="closeFileBrowserModal"
         />
 
         <!--
@@ -920,20 +1341,27 @@ onBeforeUnmount(() => {
           :visibility="currentConversation?.visibility"
           :can-share="currentConversation?.canShare"
           @changed="loadConversations"
-          @close="shareModalOpen = false"
+          @close="closeShareModal"
         />
 
         <ConversationTabs
           v-if="tabs.length > 1"
           :tabs="tabs"
           :active-tab-id="activeTabId"
+          :pending-question-agent-ids="pendingQuestionAgentIds"
           @select="selectTab"
         />
 
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
-        <div v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view">
-          <MessageList :display-items="displayItems" :is-loading="chatLoading" />
+        <div id="conversation-main-view" v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view"
+          role="region" :aria-labelledby="tabs.length > 1 ? 'conversation-main-selector' : undefined"
+          :aria-label="tabs.length > 1 ? undefined : 'Main conversation'">
+          <MessageList
+            :display-items="displayItems"
+            :is-loading="chatLoading"
+            :view-preference="viewPreference"
+          />
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
@@ -943,14 +1371,18 @@ onBeforeUnmount(() => {
 
           <ContextCostPanel
             v-if="subAgentParentThreadId"
+            v-show="showDeveloperDiagnostics"
             :rows="contextRows"
             :total="contextTotal"
             :status="contextStatus"
             :generated-at-utc="contextGeneratedAtUtc"
+            :compaction="compactionControl"
+            @compact="requestManualCompaction"
           />
 
           <div
             v-if="cumulativeUsage.totalTokens > 0"
+            v-show="showDeveloperDiagnostics"
             class="usage-banner"
             data-testid="usage-banner"
             title="Total sums per-call input tokens, so the cached prompt prefix is re-counted every turn; it already includes usage spent inside sub-agents and workflow tasks. In = fresh (uncached) input this conversation."
@@ -973,20 +1405,66 @@ onBeforeUnmount(() => {
 
           <!-- Docked directly above the input: a question the run is blocked on is something the
                user must ACT on, so it belongs where they act, not inside the transcript's pill. -->
-          <PendingQuestionDock :display-items="displayItems" />
+          <PendingQuestionDock :key="currentThreadId || 'draft'" :display-items="displayItems"
+            :scope-key="`${currentThreadId || 'draft'}:main`" :source-label="`${currentConversation?.title || 'Conversation'} · Main agent`"
+            :active="activeTabId === 'main'" :requested-question-id="activeTabId === 'main' ? requestedQuestionId : ''"
+            @busy-change="questionBusy = $event" @open-change="questionOpen = $event" @opened="questionOpened" />
 
           <ChatInput
             :disabled="isSending && !chatLoading"
             :streaming="chatLoading"
             @send="handleSend"
             @cancel="handleCancel"
-          />
+          >
+            <template v-if="!focusMode" #mode-control>
+              <ModeSelector
+                ref="modeSelectorRef"
+                :modes="modes"
+                :current-mode-id="currentModeId"
+                :tools="availableTools"
+                :is-loading="modesLoading"
+                :disabled="modeSwitchDisabled"
+                @select-mode="handleSelectMode"
+                @create-mode="handleCreateMode"
+                @update-mode="handleUpdateMode"
+                @delete-mode="handleDeleteMode"
+                @copy-mode="handleCopyMode"
+              />
+            </template>
+            <template v-if="currentThreadId === null && !focusMode" #project-control>
+              <WorkspaceSelector
+                ref="workspaceSelectorRef"
+                presentation="project"
+                :workspaces="workspaces"
+                :gateway="workspaceGateway"
+                :selected-workspace-id="selectedWorkspaceId"
+                :locked-workspace-id="null"
+                :is-loading="workspacesLoading"
+                :disabled="workspaceSelectorDisabled"
+                @select-workspace="handleSelectWorkspace"
+                @create-workspace="handleCreateWorkspace($event, workspaceSelectorRef)"
+                @update-workspace="(workspaceId, data) => handleUpdateWorkspace(workspaceId, data, workspaceSelectorRef)"
+              />
+            </template>
+            <template #context-control>
+              <ProviderSelector
+                :providers="providers"
+                :selected-provider-id="selectedProviderId"
+                :is-loading="providersLoading"
+                :disabled="providerSelectorDisabled"
+                @select-provider="handleSelectProvider"
+              />
+            </template>
+          </ChatInput>
         </div>
 
         <!-- SUB-AGENT view: mounted only while a sub-agent tab is active; its own error banner + input
              (routed to the focused child) + child-scoped tool-result provide live inside it. -->
         <SubAgentTranscript
           v-if="activeTabId !== 'main'"
+          :key="questionScope"
+          :question-scope="questionScope" :question-source="questionSource" :requested-question-id="requestedQuestionId"
+          @question-busy="questionBusy = $event" @question-open="questionOpen = $event" @question-opened="questionOpened"
           :active-agent-id="activeTabId"
           :focused-agent-id="focusedAgentId"
           :display-items="focusedDisplayItems"
@@ -994,55 +1472,137 @@ onBeforeUnmount(() => {
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
           :submit-client-tool-result="submitToFocusedChild"
+          :view-preference="viewPreference"
           @send="handleSubAgentSend"
         />
       </div>
     </main>
 
-    <!-- Right-side WORK BOARD (#583). A SIBLING of the sub-agent panel, not nested with it: both stay
-         direct flex children of .chat-layout, so each keeps full column height and independent
-         collapse, and SubAgentListPanel needs no change at all. The board sits inboard of the
-         sub-agent panel so the sub-agent rail stays where it has always been, at the true right edge.
-
-         `v-if="hasTodoBoard"` is load-bearing, not an optimization: a conversation that never touched
-         the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
-         must render NOTHING here rather than an empty board eating the right edge. That is what keeps
-         two right-hand panels affordable. -->
-    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" @open-artifact="openArtifactPreview" />
-
-    <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
-         board's thread id: with no started conversation there is no workspace to preview against.
-         `beside-sidebar` (#594 D6, reworked for #603 F-001): while the EXPANDED sidebar column is
-         on screen, the modal pulls its own backdrop off it so switching conversations stays a
-         single pointer click — nothing is z-lifted, so no element can paint over the dialog and no
-         other modal's backdrop is pierced. `:key` forces a REMOUNT when a different chip is clicked
-         while the modal is open — chips sit under the backdrop today so that path is unreachable,
-         but a reused instance would keep the first file's body under the second file's title
-         (`onMounted` fetches once), so the guard is kept for whatever opens a preview next. -->
-    <ArtifactPreviewModal
-      v-if="artifactPreviewPath && subAgentParentThreadId"
-      :key="artifactPreviewPath"
-      :thread-id="subAgentParentThreadId"
-      :path="artifactPreviewPath"
-      :beside-sidebar="!sidebarCollapsed && !focusMode"
-      @close="artifactPreviewPath = null"
+    <PanelSplitter
+      v-if="!focusMode && inspectorOpen && !previewExpanded && viewportWidth > 1100"
+      data-testid="workspace-splitter" label="Resize workspace" orientation="vertical" :direction="-1"
+      controls="conversation-inspector" :persist-key="RIGHT_WIDTH_KEY"
+      :value="clampedInspectorWidth" :min="300" :max="desktopRightMax" :default-value="RIGHT_DEFAULT"
+      @update:value="setInspectorWidth" @dragging="shellDragging = $event"
     />
-
-    <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
-         composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
-    <SubAgentListPanel
+    <ConversationInspector
+      v-if="!focusMode"
+      :open="inspectorOpen"
+      :active-section="inspectorSection"
+      :desktop-width="renderedInspectorWidth"
+      :preview-tabs="previewTabSummaries"
+      :active-preview-id="activePreviewId"
+      :preview-height="clampedPreviewHeight"
+      :preview-max-height="previewMaxHeight"
+      :preview-default-height="previewDefaultHeight"
+      :expanded="previewExpanded"
+      :tasks="todoTasks"
+      :has-work="hasTodoBoard"
       :children="subAgentChildren"
-      :active-tab-id="activeTabId"
-      @select="selectTab"
-    />
+      :active-conversation-tab-id="activeTabId"
+      external-close-control-id="conversation-inspector-toggle"
+      @close="closeInspector"
+      @select-section="inspectorSection = $event"
+      @open-artifact="openArtifactPreview"
+      @select-agent="handleInspectorAgentSelect"
+      @select-preview="activePreviewId = $event"
+      @close-preview="closePreview"
+      @update:preview-height="setPreviewHeight"
+    >
+      <template #preview>
+        <ArtifactPreviewModal
+          v-if="artifactPreview && subAgentParentThreadId"
+          :key="`${subAgentParentThreadId}:${artifactPreview.id}`"
+          :thread-id="subAgentParentThreadId" :path="artifactPreview.path" :target="artifactPreview.target"
+          embedded :expanded="previewExpanded" @toggle-expand="previewExpanded = !previewExpanded"
+          @close="closePreview(artifactPreview.id)"
+          @resolved="reconcilePreviewResolution(artifactPreview.id, $event)"
+        />
+      </template>
+    </ConversationInspector>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.question-navigation-error { margin: 8px 16px; padding: 10px 12px; color: #795719; background: #fff8ed; border-radius: 6px; font-size: 13px; }
 .chat-layout {
+  position: relative;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+.app-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-width: 0;
+  padding: 12px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.app-header.focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-header-left,
+.app-header-center,
+.app-header-right {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.app-header-left {
+  gap: 10px;
+}
+
+.app-header-center {
+  justify-content: center;
+}
+
+.app-header-right {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-header h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell-body.resizing :deep(.conversation-sidebar) {
+  transition: none;
+}
+
+.hosted-sidebar :deep(.toggle-btn) {
+  display: none;
+}
+
+.shell-body > .hosted-sidebar.conversation-sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 0;
 }
 
 .chat-main {
@@ -1071,142 +1631,145 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-.chat-header {
-  display: flex;
+.sidebar-toggle,
+.inspector-launcher {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #f8f9fa;
-  gap: 12px;
-  /* Let the control row drop below the title (and its own buttons wrap) instead of
-     overflowing the row — otherwise the trailing "Clear" button is clipped off the
-     right edge on typical laptop widths, since the selectors + buttons are wider
-     than the 900px content column. */
-  flex-wrap: wrap;
-}
-
-.menu-btn {
-  width: 32px;
-  height: 32px;
+  justify-content: center;
   padding: 0;
-  background: transparent;
-  border: 1px solid #ccc;
-  border-radius: 4px;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #394553;
   cursor: pointer;
-  font-size: 16px;
-  color: #666;
-  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
 }
 
-.menu-btn:hover {
-  background: #e9ecef;
+.sidebar-toggle svg,
+.inspector-launcher svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
 }
 
-.chat-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  flex: 1;
+.sidebar-toggle:hover,
+.inspector-launcher:hover {
+  border-color: #aeb7c2;
+  background: #eef1f4;
 }
 
-.header-actions {
-  display: flex;
+.view-preference {
+  display: inline-flex;
+  height: 34px;
+  box-sizing: border-box;
   align-items: center;
-  gap: 12px;
-  /* Wrap the controls (right-aligned) rather than clipping them when the row is tight. */
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid #cbd1d8;
+  border-radius: 7px;
+  background: #eef1f4;
 }
 
-.marketplace-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
+.view-preference label {
+  position: relative;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
-.marketplace-btn:hover {
-  background: #2057bd;
+.view-preference input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.egress-auth-btn {
-  padding: 8px 16px;
-  background: #6f42c1;
-  color: white;
-  border: none;
-  border-radius: 6px;
+.view-preference span {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: #59636e;
   font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
+  line-height: 18px;
 }
 
-.file-browser-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
+.view-preference input:checked + span {
+  color: #25313d;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
 }
 
-.egress-auth-btn:hover {
-  background: #5a34a0;
+.view-preference input:focus-visible + span {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
 }
 
-.file-browser-btn:hover:not(:disabled) {
-  background: #2057bd;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.file-browser-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+.inspector-launcher {
+  position: static;
 }
 
-.share-btn {
-  padding: 8px 16px;
-  background: #2d6cdf;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
+.inspector-launcher.above-inspector-overlay {
+  position: relative;
+  z-index: 102;
 }
 
-.share-btn:hover:not(:disabled) {
-  background: #2057bd;
+.sidebar-toggle:focus-visible,
+.inspector-launcher:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
 }
 
-.share-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+@media (max-width: 520px) {
+  .app-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 10px 12px;
+  }
+
+  .app-header-left {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .app-header-right {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .app-header-center {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+  }
+
+  .app-header h1 {
+    font-size: 18px;
+  }
+
+  .app-header.focus-mode {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.clear-btn {
-  padding: 8px 16px;
-  background: #dc3545;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.clear-btn:hover:not(:disabled) {
-  background: #c82333;
-}
-
-.clear-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
+@media (max-width: 768px) {
+  .shell-body > .hosted-sidebar.conversation-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+  }
 }
 
 .error-banner {
@@ -1229,12 +1792,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   position: relative;
-}
-
-.not-found-menu-btn {
-  position: absolute;
-  top: 16px;
-  left: 16px;
 }
 
 .not-found-content {

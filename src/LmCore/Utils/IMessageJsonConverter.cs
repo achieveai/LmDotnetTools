@@ -160,7 +160,14 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
         // Write type discriminator - always include it for IMessage types
         string discriminator;
-        if (_typeToDiscriminator.TryGetValue(valueType, out var registeredDiscriminator))
+        // A checkpoint's discriminator depends on the INSTANCE, not just its type: each schema version
+        // gets its own so a binary that predates the version skips the row rather than adopting the
+        // part of it that it understands. See CompactionCheckpointMessage.DiscriminatorFor.
+        if (value is CompactionCheckpointMessage checkpoint)
+        {
+            discriminator = CompactionCheckpointMessage.DiscriminatorFor(checkpoint.SchemaVersion);
+        }
+        else if (_typeToDiscriminator.TryGetValue(valueType, out var registeredDiscriminator))
         {
             discriminator = registeredDiscriminator;
         }
@@ -286,15 +293,20 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return ContextPressureMessage.TypeDiscriminator;
         }
 
+        if (type == typeof(CompactionStatusMessage))
+        {
+            return CompactionStatusMessage.TypeDiscriminator;
+        }
+
         if (type == typeof(AgentMessage))
         {
             return "agent";
         }
 
-        if (type == typeof(CompactionCheckpointMessage))
-        {
-            return CompactionCheckpointMessage.TypeDiscriminator;
-        }
+        // CompactionCheckpointMessage is deliberately absent: its discriminator depends on the row's
+        // schema version, which a Type does not carry. Write() decides it from the INSTANCE before it
+        // ever reaches here, and leaving a by-type answer in place would be a second source of truth
+        // that silently returns the schema 1 name for a schema 2 row.
 
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
@@ -462,7 +474,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "conversation_usage" => typeof(ConversationUsageMessage),
             "conversation_todo" => typeof(ConversationTodoMessage),
             ContextPressureMessage.TypeDiscriminator => typeof(ContextPressureMessage),
+            CompactionStatusMessage.TypeDiscriminator => typeof(CompactionStatusMessage),
+            // Every checkpoint discriminator this build can read in full. Adding a version here is
+            // what makes THIS build read it; omitting an older one would orphan rows already on disk.
             CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
+            CompactionCheckpointMessage.TypeDiscriminatorV2 => typeof(CompactionCheckpointMessage),
             _ => null,
         };
     }

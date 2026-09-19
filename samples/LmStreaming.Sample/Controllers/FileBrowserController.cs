@@ -258,6 +258,51 @@ public sealed class FileBrowserController(
         }
     }
 
+    /// <summary>
+    /// Resolves a raw file link from a chat message (absolute host path, <c>file://</c> URI, or relative path) to
+    /// the real workspace entry it names, returning its server path, type and size. Only the server knows the
+    /// session's HostPath, so the lexical conversion (<see cref="WorkspaceLinkResolver"/>) runs here, then the same
+    /// authoritative component-wise resolution every other file route uses.
+    /// </summary>
+    [HttpGet("resolve")]
+    public async Task<IActionResult> Resolve(string threadId, [FromQuery] string? target, CancellationToken ct)
+    {
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: false, ct);
+        if (!context.Ok)
+        {
+            return context.Error!;
+        }
+
+        var session = context.Session!;
+        var link = WorkspaceLinkResolver.Resolve(target, session.HostPath);
+        if (!link.Success)
+        {
+            return BadRequest(
+                new
+                {
+                    error = link.FailureCode,
+                    code = link.FailureCode,
+                    threadId,
+                }
+            );
+        }
+
+        try
+        {
+            var resolved = await ResolveTargetAsync(session.SessionId, link.Path!, ct);
+            if (!resolved.Success)
+            {
+                return ResolveFailureResult(resolved.Failure, threadId);
+            }
+
+            return Ok(new ResolvedLinkDto(resolved.ServerPath, FileEntryDto.TypeString(resolved.Type), resolved.Size));
+        }
+        catch (SandboxException ex)
+        {
+            return MapSandbox(ex, threadId);
+        }
+    }
+
     /// <summary>Returns an inline text preview when the file is on the server-side allowlist and within the caps; otherwise a non-previewable reason.</summary>
     [HttpGet("preview")]
     public async Task<IActionResult> Preview(string threadId, [FromQuery] string? path, CancellationToken ct)

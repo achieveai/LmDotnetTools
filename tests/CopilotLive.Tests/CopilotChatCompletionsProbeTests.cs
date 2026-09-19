@@ -89,7 +89,9 @@ public sealed class CopilotChatCompletionsProbeTests
                 HttpStatusCode.BadRequest,
                 "GPT models on Copilot reject max_tokens; this is the asymmetry the proxy must absorb"
             );
-        legacyBody.Should().Contain("max_completion_tokens");
+        // No assertion on the error text: Copilot once named max_completion_tokens in it and now
+        // returns a bare "Bad Request". The same request succeeding with only the parameter renamed
+        // (below) is what pins the rejection on max_tokens.
 
         var (status, body) = await PostChatCompletionsAsync(model, cts.Token, "max_completion_tokens");
         _output.WriteLine($"[max_completion_tokens] status: {(int)status} {status}");

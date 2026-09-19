@@ -41,6 +41,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <param name="ModelSelectionSource">Stable label identifying the winning selection input.</param>
 /// <param name="RequestedReasoningEffort">Normalized effort requested before provider capability shaping.</param>
 /// <param name="ShapedReasoningEffort">Effort placed on the provider request, or null when omitted.</param>
+/// <param name="FailureCode">Machine-readable reason of the run that ended in <see cref="SubAgentStatus.Error"/>, when
+/// the failure had one (<see cref="Messages.RunCompletedMessage.ErrorCode"/>); null otherwise.</param>
 public sealed record SubAgentSnapshot(
     string AgentId,
     string? Name,
@@ -54,7 +56,8 @@ public sealed record SubAgentSnapshot(
     int? EffectiveModelIntelligence = null,
     string ModelSelectionSource = "unknown",
     string? RequestedReasoningEffort = null,
-    string? ShapedReasoningEffort = null
+    string? ShapedReasoningEffort = null,
+    string? FailureCode = null
 );
 
 /// <summary>Final model and reasoning-routing decision captured when a sub-agent provider is built.</summary>
@@ -2239,7 +2242,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     EffectiveModelIntelligence: state.EffectiveModelIntelligence,
                     ModelSelectionSource: state.ModelSelectionSource,
                     RequestedReasoningEffort: state.RequestedReasoningEffort,
-                    ShapedReasoningEffort: state.ShapedReasoningEffort
+                    ShapedReasoningEffort: state.ShapedReasoningEffort,
+                    FailureCode: state.FailureCode
                 )
             );
         }
@@ -2810,6 +2814,27 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         foreach (var (_, state) in _agents)
         {
+            // Settle a child that is still Running/Queued BEFORE anything below can fail or hang. Its run
+            // will never reach a terminal transition of its own — the host is going away — so without
+            // this nothing ever stamps a terminal status onto its persisted metadata, and every later
+            // reader (including one in a brand-new process) keeps seeing `running` for an agent that
+            // stopped existing when the process did.
+            //
+            // BOUNDED for the same reason every other await on this path is: a slow or wedged store must
+            // degrade host shutdown into a logged warning, never hang it. A push abandoned by that bound
+            // (or swallowed inside PersistTerminalStateAsync) leaves disk still saying `running`, which
+            // is acceptable ONLY because the read side is the backstop: a persisted in-flight child with
+            // no live in-memory state is projected as interrupted rather than running
+            // (SubAgentSummary.AsRetained, applied to the persisted roster in AgentHierarchyService).
+            if (state.TryMarkStoppedAtShutdown(SubAgentFailureCodes.HostShutdown, out var shutdownEpoch))
+            {
+                await AwaitBoundedTaskAsync(
+                    PersistTerminalStateAsync(state, shutdownEpoch),
+                    $"terminal status push for sub-agent {state.AgentId}",
+                    "disposal"
+                );
+            }
+
             // Each step is isolated to prevent cascading failures:
             // if StopAsync throws, we still await tasks, dispose the agent, etc.
             try
@@ -3637,11 +3662,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 providerAgent,
                 registry,
                 threadId: ChildThreadId(agentId),
-                // Explicit tool-control overload: a child always gets both browser-hosted client
-                // tools (matching the always-true behavior of the back-compat overload), but that
-                // overload has no descendantQuestionSink parameter — the child's questions must
-                // route to this manager's sink rather than the child's own persist-and-publish path.
-                includeAskUserQuestionTool: true,
+                // Explicit tool-control overload: a child gets both browser-hosted client tools unless
+                // the host opted the question tool out (unattended runs), but this overload is used
+                // regardless because the back-compat one has no descendantQuestionSink parameter — the
+                // child's questions must route to this manager's sink rather than the child's own
+                // persist-and-publish path.
+                includeAskUserQuestionTool: _options.IncludeAskUserQuestionTool,
                 includeNotifyClientTool: true,
                 systemPrompt: template.SystemPrompt,
                 defaultOptions: defaultOptions,
@@ -5046,7 +5072,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Settle this run against continuation admission. Drain or cancel an outstanding send lease
         // before publishing the idle outcome; a cancelled admission is redelivered by SendMessageAsync.
         // Provider lifetime is independent of this run outcome.
-        await state.BeginTerminalDisposalAsync(rcm.IsError);
+        await state.BeginTerminalDisposalAsync(rcm.IsError, rcm.ErrorCode);
 
         // The identity of the transition just published, captured while it is unambiguously current.
         // Everything the caller performs afterwards carries it, so a status that lands after a newer

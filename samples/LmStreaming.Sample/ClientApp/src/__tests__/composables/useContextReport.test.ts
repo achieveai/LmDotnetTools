@@ -176,6 +176,20 @@ describe('useContextReport — hydrate (the authoritative endpoint)', () => {
     expect(store.isLoading.value).toBe(false);
   });
 
+  it('renders a report the caller already read without fetching it again (#774 F-014)', async () => {
+    const store = useContextReport(
+      () => 't1',
+      () => null,
+      () => 0
+    );
+
+    await store.hydrate(report());
+
+    expect(mocks.getConversationContext).not.toHaveBeenCalled();
+    expect(store.status.value).toBe('ready');
+    expect(store.rows.value.map((r) => r.agentId)).toEqual(['root']);
+  });
+
   it('does not call the endpoint with no thread id, and stays idle', async () => {
     const store = useContextReport(
       () => null,

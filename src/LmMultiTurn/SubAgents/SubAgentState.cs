@@ -16,6 +16,24 @@ public enum SubAgentStatus
     Stopped,
 }
 
+/// <summary>
+/// Machine-readable reasons a sub-agent reached a terminal status without its own run classifying it.
+/// </summary>
+/// <remarks>
+/// Stamped into <c>SubAgentSnapshot.FailureCode</c> exactly like a run's own
+/// <c>RunCompletedMessage.ErrorCode</c>, so a reader that already understands failure codes does not
+/// need a second vocabulary to learn why a child stopped.
+/// </remarks>
+public static class SubAgentFailureCodes
+{
+    /// <summary>
+    /// The child was still running when its manager was disposed — the host process stopped underneath
+    /// it. Distinct from a run that failed: nothing about the work went wrong, it simply ended with the
+    /// process, and no later run of this child can ever resume it.
+    /// </summary>
+    public const string HostShutdown = "host_shutdown";
+}
+
 /// <summary>Thrown when the bounded deferred-spawn queue has no remaining capacity.</summary>
 public sealed class SubAgentQueueFullException(int capacity)
     : InvalidOperationException($"The sub-agent queue is full ({capacity} waiting). Retry after an agent completes.")
@@ -440,6 +458,26 @@ internal class SubAgentState
     }
 
     /// <summary>
+    /// Machine-readable reason of the run that reached <see cref="SubAgentStatus.Error"/>
+    /// (<see cref="Messages.RunCompletedMessage.ErrorCode"/>), captured with <see cref="TerminalAtUtc"/> at the same
+    /// transition and cleared with it, so a restarted child never reports its previous run's failure. Also
+    /// carries <see cref="SubAgentFailureCodes.HostShutdown"/> for a child settled by
+    /// <see cref="TryMarkStoppedAtShutdown"/>. Null for a completed run, a failure without a code, and a
+    /// monitor fault. Guarded by <see cref="_lifecycleLock"/>.
+    /// </summary>
+    private string? _failureCode;
+    public string? FailureCode
+    {
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _failureCode;
+            }
+        }
+    }
+
+    /// <summary>
     /// Decides — atomically against a concurrent terminal completion and other concurrent
     /// continuations — how <c>SubAgentManager.SendMessageAsync</c> must continue this sub-agent, and
     /// records the continuation's relay preference.
@@ -551,7 +589,9 @@ internal class SubAgentState
     /// drains outstanding sends before publishing its outcome. A lifecycle-cancelled send is retried
     /// by the manager. The provider remains owned by the reusable loop until runtime teardown.
     /// </summary>
-    public async Task BeginTerminalDisposalAsync(bool isError)
+    /// <param name="isError">True when the run ended in <see cref="SubAgentStatus.Error"/>.</param>
+    /// <param name="failureCode">The failed run's machine-readable reason, recorded as <see cref="FailureCode"/>.</param>
+    public async Task BeginTerminalDisposalAsync(bool isError, string? failureCode = null)
     {
         Task? drain = null;
         CancellationTokenSource? toCancel = null;
@@ -603,6 +643,7 @@ internal class SubAgentState
             _terminalGeneration = _runGeneration;
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
             _terminalAtUtc = DateTimeOffset.UtcNow;
+            _failureCode = isError ? failureCode : null;
             _lifecycleEpoch++;
         }
     }
@@ -684,8 +725,46 @@ internal class SubAgentState
         {
             _terminalGeneration = -1;
             _terminalAtUtc = null;
+            _failureCode = null;
             _status = SubAgentStatus.Running;
             _lifecycleEpoch++;
+        }
+    }
+
+    /// <summary>
+    /// Settles a child that is still <see cref="SubAgentStatus.Running"/> or
+    /// <see cref="SubAgentStatus.Queued"/> when its manager is disposed: the host is stopping, so this
+    /// run will never reach a terminal transition of its own and nothing else would ever record one.
+    /// Uses the SAME generation-aware transition a graceful terminal completion uses, so a racing
+    /// <see cref="TryArmRunning"/> cannot put the child back to Running behind the teardown, and bumps
+    /// the lifecycle epoch so the caller can push the result durably through the epoch guard.
+    /// </summary>
+    /// <param name="failureCode">
+    /// Why the child stopped (<see cref="SubAgentFailureCodes.HostShutdown"/>). Recorded as
+    /// <see cref="FailureCode"/> so a reader can tell "the host went away" from a run that failed.
+    /// </param>
+    /// <param name="lifecycleEpoch">The epoch this transition published, for the durable push.</param>
+    /// <returns>
+    /// True when this call performed the transition. False when the child had ALREADY reached a
+    /// terminal status — its own outcome is the truthful one and must not be overwritten with
+    /// <see cref="SubAgentStatus.Stopped"/>.
+    /// </returns>
+    internal bool TryMarkStoppedAtShutdown(string failureCode, out long lifecycleEpoch)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_status is not (SubAgentStatus.Running or SubAgentStatus.Queued))
+            {
+                lifecycleEpoch = _lifecycleEpoch;
+                return false;
+            }
+
+            _terminalGeneration = _runGeneration;
+            _status = SubAgentStatus.Stopped;
+            _terminalAtUtc = DateTimeOffset.UtcNow;
+            _failureCode = failureCode;
+            lifecycleEpoch = ++_lifecycleEpoch;
+            return true;
         }
     }
 
@@ -718,7 +797,7 @@ internal class SubAgentState
     /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
     /// restarted run that completed before this publish executed is never resurrected to Running. Also
     /// clears any terminal instant left by a PRIOR generation's terminal transition, so a restarted run
-    /// never reports a stale terminal timestamp while Running. Returns true if Running was published.
+    /// never reports a stale terminal timestamp or failure code while Running. Returns true if Running was published.
     /// </summary>
     public bool TryArmRunning(long generation)
     {
@@ -731,6 +810,7 @@ internal class SubAgentState
 
             _status = SubAgentStatus.Running;
             _terminalAtUtc = null;
+            _failureCode = null;
             _lifecycleEpoch++;
             return true;
         }
@@ -757,6 +837,7 @@ internal class SubAgentState
             _terminalGeneration = generation;
             _status = SubAgentStatus.Error;
             _terminalAtUtc = DateTimeOffset.UtcNow;
+            _failureCode = null;
             _lifecycleEpoch++;
             return true;
         }

@@ -317,6 +317,10 @@ try
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
         ?? new SandboxGatewayOptions();
 
+    // An unattended host (the compaction eval runner) turns the browser-hosted question tool off so a
+    // run can never park on a question nobody will answer. Default true keeps the interactive UI as is.
+    var askUserQuestionToolEnabled = builder.Configuration.GetValue("ClientTools:AskUserQuestion", true);
+
     // Fail closed on a bad egress policy. Every configured rule widens a default-deny boundary and
     // every configured provider is a credential-injection point, so a malformed entry must stop the
     // host at startup rather than surface as a confusing gateway rejection on the first sandbox
@@ -762,6 +766,16 @@ try
     // (cited public list prices only, #682) and which ids are deliberately left unpriced.
     _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
+    // #721: the Compaction section, bound once for the process and shared by the pool's loops and the
+    // conversations controller's manual-compaction capability.
+    _ = builder.Services.AddSingleton(sp => CompactionHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>()));
+
+    // Experimental elapsed-time notice: bound once, handed to every root loop the pool builds. On by
+    // default in this sample; see ElapsedTimeNoticeHostSetup.
+    _ = builder.Services.AddSingleton(sp =>
+        ElapsedTimeNoticeHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>())
+    );
+
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -781,6 +795,11 @@ try
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddLmConfig registers this
         // resolver over that catalog. Null only for a container that never registered LmConfig.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
+        // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see
+        // CompactionHostSetup for the test-profile knobs.
+        var compactionOptions =
+            sp.GetRequiredService<AchieveAi.LmDotnetTools.LmMultiTurn.Compaction.CompactionOptions>();
+        var elapsedTimeNoticeOptions = sp.GetRequiredService<ElapsedTimeNoticeHostOptions>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
@@ -986,6 +1005,17 @@ try
                     var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
                     if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
                         workspaceRef = workspaceRef with { BlockProviderEgress = true };
+                    var envApplier = sp.GetRequiredService<SandboxEnvApplier>();
+                    var effectiveEnv = envApplier
+                        .ComputeEffectiveAsync(threadId, effectiveWorkspaceId, mode.Id, CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    // First create carries the full merged map; a gateway-404 recreate only knows the
+                    // workspace layer, which the Ensure call after the session resolves tops up.
+                    workspaceRef = workspaceRef with
+                    {
+                        Env = effectiveEnv,
+                    };
                     if (workspace is not null)
                     {
                         try
@@ -1044,6 +1074,16 @@ try
                     // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
                     // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
                     sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
+                    envApplier
+                        .ApplyForThreadAsync(
+                            threadId,
+                            sandboxSession.SessionId,
+                            effectiveWorkspaceId,
+                            mode.Id,
+                            CancellationToken.None
+                        )
+                        .GetAwaiter()
+                        .GetResult();
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
@@ -1669,7 +1709,8 @@ try
                                     // `mode` and `effectiveMode` hold identical fragment fields (the
                                     // `with` clauses above only rewrite SystemPrompt), so pass the
                                     // unaugmented profile.
-                                    mode
+                                    mode,
+                                    includeAskUserQuestionTool: askUserQuestionToolEnabled
                                 )
                                 .GetAwaiter()
                                 .GetResult();
@@ -2104,6 +2145,11 @@ try
                         providerAgent,
                         filteredRegistry,
                         threadId,
+                        // The designated constructor (the only one taking `compaction:`); both client tools
+                        // stay registered exactly as before unless ClientTools:AskUserQuestion turns the
+                        // question tool off for an unattended host.
+                        includeAskUserQuestionTool: askUserQuestionToolEnabled,
+                        includeNotifyClientTool: true,
                         // The caller's own instructions (the code-review daemon's methodology, output
                         // contract and sub-agent-dispatch protocol), recorded at provision and appended
                         // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
@@ -2157,7 +2203,19 @@ try
                         // subtree: the loop registers itself as the root node and forwards the same handle to
                         // the SubAgentManager it builds, so every descendant shares one directory and one
                         // ledger. Null keeps the legacy tool schemas and per-manager limits.
-                        collaboration: rootCollaboration
+                        collaboration: rootCollaboration,
+                        // Null unless the Compaction section puts some route above Off (#721). The window
+                        // comes from the same capacity resolver the context panel reads; spawned children
+                        // inherit this setup through SubAgentOptions.Compaction.
+                        compaction: CompactionHostSetup.Create(
+                            compactionOptions,
+                            capacityResolver,
+                            normalizedProviderId
+                        ),
+                        // Experimental: null when the ElapsedTimeNotice section is disabled, which leaves
+                        // the turn loop exactly as before. ConversationsController.GetMessages hides the
+                        // persisted notice rows from the browser on reload.
+                        elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
                     );
 
                     // #676: whatever the LAST process wrote about this root's agents is reconciled into
@@ -2411,6 +2469,10 @@ try
         // fail the request, so without it they would be invisible in production.
         logger: sp.GetRequiredService<ILogger<WorkspacePluginSelectionService>>()
     ));
+
+    // Sandbox env reapply (Task 4 fills in the real logic): STUB registered here so
+    // WorkspacesController/ChatModesController can depend on it today.
+    _ = builder.Services.AddSingleton<SandboxEnvApplier>();
 
     // Register the ChatWebSocketManager and the live-connection registry that lets backend
     // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
@@ -3741,7 +3803,8 @@ public partial class Program
         MarketplaceSubAgentLoader marketplaceLoader,
         IWorkspaceStore workspaceStore,
         Microsoft.Extensions.Logging.ILogger logger,
-        AgentProfile mode
+        AgentProfile mode,
+        bool includeAskUserQuestionTool = true
     )
     {
         // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
@@ -3760,6 +3823,13 @@ public partial class Program
         {
             return null;
         }
+
+        // The host's ClientTools:AskUserQuestion switch applies to the whole tree, test seam included:
+        // an unattended host must not have a child park the run on a question either.
+        baseOptions = baseOptions with
+        {
+            IncludeAskUserQuestionTool = includeAskUserQuestionTool,
+        };
 
         // #670: a FRESH sink per conversation, so a run's measurements are that run's. The library
         // stamps the snapshot into the conversation's own metadata, which is what makes the eval able
@@ -4990,6 +5060,15 @@ public partial class Program
     ///     may have no stored workspace (the implicit "default"). That case yields a bare ref, which
     ///     is exactly the pre-existing behaviour: every optional field falls back to its own default.
     ///     </para>
+    ///     <para>
+    ///     <see cref="WorkspaceRef.Env"/> carries the WORKSPACE layer only, which is all this function
+    ///     can see. The first-create path overwrites it moments later with the fully merged map; the
+    ///     reload callback cannot, so the workspace layer is what a recreated session is born with and
+    ///     the mode/provision layers are topped up by the <c>EnsureSessionEnvAsync</c> call that
+    ///     follows. Omitting it here left a gateway-404 replacement with NO env at all until some
+    ///     later edit happened to PATCH it — every variable the user set silently absent for the rest
+    ///     of the conversation.
+    ///     </para>
     /// </summary>
     internal static WorkspaceRef BuildWorkspaceRef(
         string workspaceId,
@@ -4999,7 +5078,8 @@ public partial class Program
             workspaceId,
             workspace?.DirectoryRelPath,
             workspace?.Marketplaces,
-            ToSandboxPluginRefs(workspace?.PluginSelection)
+            ToSandboxPluginRefs(workspace?.PluginSelection),
+            workspace?.Env
         );
 
     /// <summary>

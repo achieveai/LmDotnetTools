@@ -75,6 +75,13 @@ public static class SubAgentProvenance
     public const string TerminalAtKey = "sample.subAgentTerminalAt";
 
     /// <summary>
+    /// Machine-readable reason the child's run failed (<see cref="SubAgentSnapshot.FailureCode"/>, e.g.
+    /// <c>view_exceeds_window</c>). Holds <see cref="RemovalMarker"/> whenever a live snapshot has no code, so a
+    /// continued child does not keep its previous run's failure in persisted metadata.
+    /// </summary>
+    public const string FailureCodeKey = "sample.subAgentFailureCode";
+
+    /// <summary>
     /// The concrete model the child's provider was built with, after spawn/tier/conversation-default/
     /// template/parent precedence resolved (<see cref="SubAgentSnapshot.EffectiveModelId"/>).
     /// </summary>
@@ -215,6 +222,10 @@ public static class SubAgentProvenance
                 // untouched in persisted metadata even though the in-memory snapshot has moved on.
                 builder[TerminalAtKey] = RemovalMarker;
             }
+
+            builder[FailureCodeKey] = !string.IsNullOrWhiteSpace(snapshot.FailureCode)
+                ? snapshot.FailureCode
+                : RemovalMarker;
         }
 
         return builder.ToImmutable();
@@ -281,6 +292,7 @@ public static class SubAgentProvenance
             LastActivityUtc = terminalAt ?? DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
             ParentThreadId = parentThreadId,
             TerminalAtUtc = terminalAt,
+            FailureCode = ReadString(metadata, FailureCodeKey),
             // All three stay nullable. A child that never registered with the live manager — or one whose
             // metadata predates this stamp — has no model recorded, and that must project as null rather
             // than as a plausible default, because the whole reason for the field is to tell a recorded

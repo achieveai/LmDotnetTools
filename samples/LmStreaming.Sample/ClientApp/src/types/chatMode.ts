@@ -43,6 +43,12 @@ export interface ChatMode {
   subAgentModelIntelligenceByType?: Record<string, number>;
   /** Review-child fallback tier for canonical `code-reviewer:*` types absent from the map. */
   defaultSubAgentModelIntelligence?: number;
+  /**
+   * Sandbox environment variables layered onto every session opened in this mode. Absent (undefined)
+   * means the mode sets none — distinct from `null`, which only ever appears on the update DTO as an
+   * explicit clear instruction.
+   */
+  env?: Record<string, string> | null;
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -84,6 +90,11 @@ export interface ChatModeCreateUpdate {
   subAgentModelIntelligenceByType?: Record<string, number>;
   /** Review-child fallback tier for canonical `code-reviewer:*` types absent from the map. */
   defaultSubAgentModelIntelligence?: number;
+  /**
+   * The server is presence-aware on update: omitting this key preserves the stored variables, while
+   * an explicit `null` clears them. Create treats omission and explicit null alike (no variables).
+   */
+  env?: Record<string, string> | null;
 }
 
 /**

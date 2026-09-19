@@ -3,6 +3,38 @@
 $ErrorActionPreference = "Stop"
 $runner = Join-Path $PSScriptRoot "run-priority-tests.ps1"
 function Assert-True { param([bool]$Condition, [string]$Message) if (-not $Condition) { throw $Message } }
+# The manifest gate fails closed on purpose, but a bare assertion message sends the contributor off to
+# rediscover the drift by hand. The runner already computes every error; these two helpers put them in
+# the CI log, grouped and with the next action, so a red check is self-service.
+function Format-PolicyDrift {
+    param($Plan)
+    $errors = @($Plan.policyErrors)
+    if ($errors.Count -eq 0) { return "policyStatus=$($Plan.policyStatus) with no reported errors." }
+    $missing = @($errors | Where-Object { $_ -like "Missing declaration priority rule: *" })
+    $changed = @($errors | Where-Object { $_ -like "Unmatched or changed declaration policy: *" })
+    $other = @($errors | Where-Object { $_ -notlike "Missing declaration priority rule: *" -and $_ -notlike "Unmatched or changed declaration policy: *" })
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("$($errors.Count) policy error(s): $($missing.Count) declaration(s) with no reviewed row, $($changed.Count) whose recorded identity no longer matches, $($other.Count) other.")
+    foreach ($group in @(@("no reviewed row", $missing), @("identity changed", $changed), @("other", $other))) {
+        if ($group[1].Count -eq 0) { continue }
+        $byFile = $group[1] |
+            ForEach-Object { ($_ -split ": ", 2)[1] } |
+            ForEach-Object { if ($_ -match "\|([^|]+)\|") { $Matches[1] } else { $_ } } |
+            Group-Object |
+            Sort-Object Count -Descending
+        $lines.Add("  $($group[0]), by surface:")
+        foreach ($file in @($byFile | Select-Object -First 12)) { $lines.Add("    $($file.Count.ToString().PadLeft(5))  $($file.Name)") }
+        if ($byFile.Count -gt 12) { $lines.Add("    ... and $($byFile.Count - 12) more surface(s)") }
+    }
+    $lines.Add("  Next: ./scripts/run-priority-tests.ps1 -RepositoryRoot . | ConvertFrom-Json | Select-Object -ExpandProperty policyErrors")
+    $lines.Add("  lists every id. Add one reviewed row per declaration to scripts/test-priorities.ndjson using the")
+    $lines.Add("  tiers in scripts/TEST-PRIORITIES.md, then bump the pinned counts below in the same commit.")
+    return ($lines -join [Environment]::NewLine)
+}
+function Assert-Count {
+    param([int]$Actual, [int]$Expected, [string]$What)
+    Assert-True ($Actual -eq $Expected) "$What -- pinned $Expected, manifest now has $Actual (delta $(if ($Actual -ge $Expected) { "+" })$($Actual - $Expected)). Bump the literal in the same commit that changes the rows."
+}
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "priority-tests-$([guid]::NewGuid().ToString('N'))"
 function Invoke-FixtureGit {
     param([string[]]$Arguments)
@@ -216,10 +248,15 @@ try {
     try { & $runner -RepositoryRoot $fixture -Priority P3 -Execute -ApprovedPath @(($all.tests | Where-Object priority -eq "P3").path) | Out-Null } catch { $blocked = $_.Exception.Message -like '*manual scenario*' }
     Assert-True ($blocked -and $global:PriorityTestInvocations.Count -eq 0) "Manual scenario blocks all selected commands before execution."
     $repositoryPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") | ConvertFrom-Json
-    Assert-True ($repositoryPlan.policyStatus -eq "present") "Checked-in priority manifest must match the actual inventory."
+    Assert-True ($repositoryPlan.policyStatus -eq "present") "Checked-in priority manifest must match the actual inventory.$([Environment]::NewLine)$(Format-PolicyDrift $repositoryPlan)"
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "unassigned").Count -eq 0) "Every current test surface must have an explicit or kind-default assignment."
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "P0").Count -gt 0) "Component baseline assignments must not become empty."
-    Assert-True ($repositoryPlan.declarationSummary.known -eq 9566 -and $repositoryPlan.declarationSummary.reviewed -eq 9566) "Every known .NET/script declaration must have exactly one reviewed policy row."
+    # The literal is a tripwire, not the invariant: the invariant is known -eq reviewed, and the count
+    # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
+    # Bump it in the same commit that adds the rows, or this fails with the message below while the
+    # manifest itself is perfectly in sync.
+    Assert-Count $repositoryPlan.declarationSummary.known 10139 "Known .NET/script declarations"
+    Assert-Count $repositoryPlan.declarationSummary.reviewed 10139 "Reviewed policy rows"
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -235,18 +272,19 @@ try {
         Assert-True ($unsupportedTierSubsets.Count -eq 0) "The current $repositoryTier selection must not contain a dotnet subset that execution preflight rejects."
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
-    foreach ($tier in @(@("P0", 277), @("P1", 7292), @("P2", 1870), @("P3", 127))) {
-        Assert-True (@($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count -eq $tier[1]) "Checked-in declaration count for $($tier[0]) must match the reviewed corpus."
+    # Same tripwire contract as the total above: bump these alongside the rows you add.
+    foreach ($tier in @(@("P0", 335), @("P1", 7650), @("P2", 2008), @("P3", 146))) {
+        Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
     $manifestRows = @([System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot "test-priorities.ndjson")) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
-    Assert-True (@($manifestRows | Where-Object kind -ne "test-declaration").Count -eq 39) "Manifest integration must preserve all 39 container/default rows."
+    Assert-True (@($manifestRows | Where-Object kind -ne "test-declaration").Count -eq 41) "Manifest integration must preserve all 41 container/default rows."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.p1FloorExemption -eq "vacuous" }).Count -eq 5) "Manifest integration must preserve the five reviewed vacuity exemptions."
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
-    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count -eq 8953) "Manifest integration must preserve every measured coverage classification whose declaration still exists."
-    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count -eq 104) "Manifest integration must preserve approved projects without coverage capture."
-    Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count -eq 509) "Manifest integration must preserve declarations absent from the frozen capture."
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 8950 "Measured coverage classifications"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 208 "Rows in approved projects without coverage capture"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 981 "Rows absent from the frozen capture"
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

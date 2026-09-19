@@ -88,6 +88,7 @@ public sealed class NotificationPillTests
                 }
         );
         var page = session.Page;
+        await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("research AI papers in the background");
 

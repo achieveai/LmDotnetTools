@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 namespace LmStreaming.Sample.Tests.TestDoubles;
@@ -322,5 +323,23 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId)
                 SpawningSuppressed = input.SuppressSubAgentSpawning && ConfirmsSuppressionOnReceipt,
                 ActionToolsSuppressed = input.SuppressActionTools && ConfirmsActionToolSuppression,
             };
+    }
+}
+
+/// <summary>
+/// A fake whose harness can compact on request. It answers with <see cref="Answer"/> and records every focus it
+/// was handed, so a test can prove a request reached the agent rather than being answered by the host.
+/// </summary>
+internal sealed class CompactingFakeAgent(string threadId) : FakeMultiTurnAgent(threadId), IManualCompactionAgent
+{
+    public ManualCompactionResult Answer { get; set; } =
+        new() { RequestId = "req-1", Status = ManualCompaction.StatusQueued };
+
+    public List<string?> Requests { get; } = [];
+
+    public Task<ManualCompactionResult> RequestCompactionAsync(string? focus = null, CancellationToken ct = default)
+    {
+        Requests.Add(focus);
+        return Task.FromResult(Answer);
     }
 }

@@ -438,6 +438,34 @@ public sealed class WorkspaceTranscriptMirrorTests
         }
     }
 
+    /// <summary>
+    /// Bursts deltas into a capacity-1 channel until the mirror records a drop that happened AFTER this
+    /// call started.
+    /// </summary>
+    /// <remarks>
+    /// Relative to entry, never to zero. Every publish into a capacity-1 channel can overflow it, the
+    /// warm-up's run completions included, whenever the pump is slow to be scheduled. A drop counted
+    /// before the caller's precondition existed then satisfies a <c>ResubscribeCount == 0</c> loop without
+    /// a single burst, and the test goes on to wait for a recovery that already happened.
+    /// </remarks>
+    private static async Task BurstUntilDroppedAsync(PublishingAgent agent, WorkspaceTranscriptMirror mirror)
+    {
+        var dropsBefore = mirror.ResubscribeCount;
+        var deadline = DateTime.UtcNow + Deadline;
+        while (mirror.ResubscribeCount == dropsBefore)
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
+            }
+
+            for (var i = 0; i < 64; i++)
+            {
+                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
+            }
+        }
+    }
+
     /// <summary>Waits until no flush has started for a quiet window, and returns the settled count.</summary>
     private static async Task<int> SettleAsync(FlushCountingStore store)
     {
@@ -866,19 +894,7 @@ public sealed class WorkspaceTranscriptMirrorTests
         mirror.Attach(agent);
         await PublishUntilFlushedAsync(agent, store, 1);
 
-        var deadline = DateTime.UtcNow + Deadline;
-        while (mirror.ResubscribeCount == 0)
-        {
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
-            }
-
-            for (var i = 0; i < 64; i++)
-            {
-                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
-            }
-        }
+        await BurstUntilDroppedAsync(agent, mirror);
 
         _ = mirror.ResubscribeCount.Should().BeGreaterThan(0);
 
@@ -916,19 +932,7 @@ public sealed class WorkspaceTranscriptMirrorTests
         await PublishUntilFlushedAsync(agent, store, 1);
         var baseline = await SettleAsync(store);
 
-        var deadline = DateTime.UtcNow + Deadline;
-        while (mirror.ResubscribeCount == 0)
-        {
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
-            }
-
-            for (var i = 0; i < 64; i++)
-            {
-                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
-            }
-        }
+        await BurstUntilDroppedAsync(agent, mirror);
 
         await WaitForAsync(
             () => store.FlushCount > baseline,
@@ -1177,24 +1181,19 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         // Two flushes, so the EMPTY descendant scan is certainly cached before the child exists.
         await PublishUntilFlushedAsync(agent, store, 2);
+
+        // A drop BEFORE the child exists, forced rather than left to chance. The warm-up above publishes
+        // into the same capacity-1 channel, so under load it can drop on its own; this makes that the
+        // every-run case. Its forced rescan finds nothing, so the cached roster is still the empty one.
+        await BurstUntilDroppedAsync(agent, mirror);
         _ = await SettleAsync(store);
 
         // The child appears while the channel is about to go down, and NOTHING announces it afterwards.
         await SeedSubAgentAsync(store, "agent-2", "reviewer");
 
-        var deadline = DateTime.UtcNow + Deadline;
-        while (mirror.ResubscribeCount == 0)
-        {
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
-            }
-
-            for (var i = 0; i < 64; i++)
-            {
-                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
-            }
-        }
+        // Only a drop counted after the seed has returned is proof of anything: its rescan is issued after
+        // the increment, so it cannot precede the child.
+        await BurstUntilDroppedAsync(agent, mirror);
 
         var expected =
             $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";

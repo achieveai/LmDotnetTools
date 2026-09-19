@@ -103,4 +103,13 @@ public enum SandboxErrorKind
     /// <see cref="SandboxCommandResult.ExitCode"/>, not thrown.)
     /// </summary>
     OperationFailed,
+
+    /// <summary>
+    /// The gateway rejected a submitted environment-variable map (<c>400 invalid_env</c>) — on
+    /// sandbox create or on <see cref="SandboxClient.PatchEnvAsync"/> — because one or more keys are
+    /// disallowed (e.g. reserved or malformed names). The whole request is rejected; nothing is
+    /// applied. <see cref="SandboxException.InvalidKeys"/> names the offending keys when the gateway
+    /// reported them.
+    /// </summary>
+    InvalidEnv,
 }

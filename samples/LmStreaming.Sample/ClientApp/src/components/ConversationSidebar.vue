@@ -1,19 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { ConversationSortMode, ConversationSummary } from '@/types/conversations';
 import { CONVERSATION_SORT_MODES } from '@/types/conversations';
+import type { Workspace } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   conversations: ConversationSummary[];
+  workspaces?: Workspace[];
   currentThreadId: string | null;
   isLoading: boolean;
   isLoadingMore: boolean;
+  hasMore?: boolean;
   sortMode: ConversationSortMode;
   isCollapsed: boolean;
-}>();
+  desktopWidth?: number;
+}>(), {
+  workspaces: () => [],
+  hasMore: false,
+  desktopWidth: 280,
+});
 
 const emit = defineEmits<{
   newChat: [];
+  newProject: [];
+  newChatInWorkspace: [workspaceId: string];
+  editProject: [workspaceId: string];
   selectConversation: [threadId: string];
   deleteConversation: [threadId: string];
   toggleCollapse: [];
@@ -31,8 +43,201 @@ const LOAD_MORE_THRESHOLD_PX = 120;
 const scrollRef = ref<HTMLElement | null>(null);
 const sortMenuOpen = ref(false);
 const sortDropdownRef = ref<HTMLElement | null>(null);
+const openProjectMenuKey = ref<string | null>(null);
+const projectMenuRefs = new Map<string, HTMLElement>();
+const projectMenuTriggerRefs = new Map<string, HTMLButtonElement>();
 
 const sortModes = CONVERSATION_SORT_MODES;
+const LEGACY_GROUP_ID = 'legacy';
+
+interface ConversationGroup {
+  key: string;
+  testId: string;
+  label: string;
+  conversations: ConversationSummary[];
+  workspace: Workspace | null;
+  missingWorkspaceId: string | null;
+}
+
+const groups = computed<ConversationGroup[]>(() => {
+  const byWorkspace = new Map<string, ConversationSummary[]>();
+  const legacy: ConversationSummary[] = [];
+
+  for (const conversation of props.conversations) {
+    if (!conversation.workspace) {
+      legacy.push(conversation);
+      continue;
+    }
+    const rows = byWorkspace.get(conversation.workspace) ?? [];
+    rows.push(conversation);
+    byWorkspace.set(conversation.workspace, rows);
+  }
+
+  const knownIds = new Set(props.workspaces.map((workspace) => workspace.id));
+  const result: ConversationGroup[] = props.workspaces.map((workspace) => ({
+    key: `workspace:${workspace.id}`,
+    testId: workspace.id,
+    label: workspace.name,
+    conversations: byWorkspace.get(workspace.id) ?? [],
+    workspace,
+    missingWorkspaceId: null,
+  }));
+
+  for (const [workspaceId, conversations] of byWorkspace) {
+    if (knownIds.has(workspaceId)) continue;
+    result.push({
+      key: `missing:${workspaceId}`,
+      testId: `missing-${workspaceId}`,
+      label: workspaceId,
+      conversations,
+      workspace: null,
+      missingWorkspaceId: workspaceId,
+    });
+  }
+
+  if (legacy.length > 0) {
+    result.push({
+      key: LEGACY_GROUP_ID,
+      testId: LEGACY_GROUP_ID,
+      label: 'No project',
+      conversations: legacy,
+      workspace: null,
+      missingWorkspaceId: null,
+    });
+  }
+
+  return result;
+});
+
+const collapsedGroups = ref(new Set<string>());
+
+function isGroupExpanded(groupId: string): boolean {
+  return !collapsedGroups.value.has(groupId);
+}
+
+function toggleGroup(groupId: string): void {
+  const next = new Set(collapsedGroups.value);
+  if (next.has(groupId)) next.delete(groupId);
+  else next.add(groupId);
+  collapsedGroups.value = next;
+}
+
+function groupIdForThread(threadId: string | null): string | null {
+  if (!threadId) return null;
+  const conversation = props.conversations.find((row) => row.threadId === threadId);
+  if (!conversation) return null;
+  if (!conversation.workspace) return LEGACY_GROUP_ID;
+  return props.workspaces.some((workspace) => workspace.id === conversation.workspace)
+    ? `workspace:${conversation.workspace}`
+    : `missing:${conversation.workspace}`;
+}
+
+watch(
+  () => props.currentThreadId,
+  (threadId, previousThreadId) => {
+    if (threadId === previousThreadId) return;
+    const groupId = groupIdForThread(threadId);
+    if (!groupId || !collapsedGroups.value.has(groupId)) return;
+    const next = new Set(collapsedGroups.value);
+    next.delete(groupId);
+    collapsedGroups.value = next;
+  }
+);
+
+function canStartConversation(group: ConversationGroup): boolean {
+  return group.workspace !== null && isWorkspaceSelectable(group.workspace);
+}
+
+function canEditProject(group: ConversationGroup): boolean {
+  return group.workspace !== null && !group.workspace.isSystemDefined;
+}
+
+function hasProjectActions(group: ConversationGroup): boolean {
+  return canStartConversation(group) || canEditProject(group);
+}
+
+function setProjectMenuRef(groupKey: string, element: unknown): void {
+  if (element instanceof HTMLElement) projectMenuRefs.set(groupKey, element);
+  else projectMenuRefs.delete(groupKey);
+}
+
+function setProjectMenuTriggerRef(groupKey: string, element: unknown): void {
+  if (element instanceof HTMLButtonElement) projectMenuTriggerRefs.set(groupKey, element);
+  else projectMenuTriggerRefs.delete(groupKey);
+}
+
+function projectMenuItems(groupKey: string): HTMLButtonElement[] {
+  return Array.from(projectMenuRefs.get(groupKey)?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+}
+
+function focusProjectMenuItem(groupKey: string, position: 'first' | 'last'): void {
+  void nextTick(() => {
+    const items = projectMenuItems(groupKey);
+    items[position === 'first' ? 0 : items.length - 1]?.focus();
+  });
+}
+
+function openProjectMenu(groupKey: string, position: 'first' | 'last' = 'first'): void {
+  openProjectMenuKey.value = groupKey;
+  focusProjectMenuItem(groupKey, position);
+}
+
+function closeProjectMenu(restoreFocus = false): void {
+  const groupKey = openProjectMenuKey.value;
+  openProjectMenuKey.value = null;
+  if (restoreFocus && groupKey) {
+    void nextTick(() => projectMenuTriggerRefs.get(groupKey)?.focus());
+  }
+}
+
+function toggleProjectMenu(groupKey: string): void {
+  if (openProjectMenuKey.value === groupKey) closeProjectMenu(true);
+  else openProjectMenu(groupKey);
+}
+
+function handleProjectMenuTriggerKeydown(event: KeyboardEvent, groupKey: string): void {
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    openProjectMenu(groupKey, 'last');
+  } else if (['Enter', ' ', 'ArrowDown'].includes(event.key)) {
+    event.preventDefault();
+    openProjectMenu(groupKey);
+  }
+}
+
+function handleProjectMenuKeydown(event: KeyboardEvent, groupKey: string): void {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeProjectMenu(true);
+    return;
+  }
+  if (event.key === 'Tab') {
+    closeProjectMenu();
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const items = projectMenuItems(groupKey);
+  if (items.length === 0) return;
+  if (event.key === 'Home') return items[0].focus();
+  if (event.key === 'End') return items[items.length - 1].focus();
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  const delta = event.key === 'ArrowDown' ? 1 : -1;
+  items[(current + delta + items.length) % items.length]?.focus();
+}
+
+function startConversation(group: ConversationGroup): void {
+  if (!group.workspace || !canStartConversation(group)) return;
+  closeProjectMenu();
+  emit('newChatInWorkspace', group.workspace.id);
+}
+
+function editProject(group: ConversationGroup): void {
+  if (!group.workspace || !canEditProject(group)) return;
+  projectMenuTriggerRefs.get(group.key)?.focus();
+  closeProjectMenu();
+  emit('editProject', group.workspace.id);
+}
 
 const currentSortLabel = computed(
   () => sortModes.find((m) => m.id === props.sortMode)?.label ?? ''
@@ -73,11 +278,18 @@ function handleClickOutside(event: MouseEvent): void {
   if (sortDropdownRef.value && !sortDropdownRef.value.contains(event.target as Node)) {
     closeSortMenu();
   }
+  if (
+    openProjectMenuKey.value &&
+    !projectMenuRefs.get(openProjectMenuKey.value)?.contains(event.target as Node)
+  ) {
+    closeProjectMenu();
+  }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     closeSortMenu();
+    if (openProjectMenuKey.value) closeProjectMenu(true);
   }
 }
 
@@ -106,12 +318,6 @@ function formatDate(timestamp: number): string {
   }
 }
 
-function truncateText(text: string | undefined, maxLength: number): string {
-  if (!text) return '';
-  if (text.length <= maxLength) return text;
-  return text.substring(0, maxLength) + '...';
-}
-
 function handleDelete(event: Event, threadId: string): void {
   event.stopPropagation();
   if (confirm('Are you sure you want to delete this conversation?')) {
@@ -121,7 +327,7 @@ function handleDelete(event: Event, threadId: string): void {
 </script>
 
 <template>
-  <aside :class="['conversation-sidebar', { collapsed: isCollapsed }]">
+  <aside :class="['conversation-sidebar', { collapsed: isCollapsed }]" :style="{ '--sidebar-width': `${desktopWidth}px` }">
     <div class="sidebar-header">
       <button
         class="toggle-btn"
@@ -130,13 +336,33 @@ function handleDelete(event: Event, threadId: string): void {
       >
         {{ isCollapsed ? '>' : '<' }}
       </button>
-      <button
-        :class="['new-chat-btn', { hidden: isCollapsed }]"
-        @click="emit('newChat')"
-        :tabindex="isCollapsed ? -1 : 0"
-      >
-        + New Chat
-      </button>
+      <div :class="['sidebar-create-actions', { hidden: isCollapsed }]">
+        <button
+          class="new-chat-btn"
+          data-testid="sidebar-new-chat"
+          @click="emit('newChat')"
+          :tabindex="isCollapsed ? -1 : 0"
+        >
+          <svg class="compose-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.375 2.625a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+          </svg>
+          <span>New Chat</span>
+        </button>
+        <button
+          class="new-project-btn"
+          type="button"
+          data-testid="sidebar-new-project"
+          :tabindex="isCollapsed ? -1 : 0"
+          @click="emit('newProject')"
+        >
+          <svg class="new-project-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M1.75 4.25h4l1.35 1.5h7.15v6.75H1.75z" />
+            <path d="M8 7.25v4M6 9.25h4" />
+          </svg>
+          <span>New project</span>
+        </button>
+      </div>
     </div>
 
     <div :class="['sidebar-sort', { hidden: isCollapsed }]" ref="sortDropdownRef">
@@ -178,49 +404,156 @@ function handleDelete(event: Event, threadId: string): void {
         Loading conversations...
       </div>
 
-      <div v-else-if="conversations.length === 0" class="empty-state">
+      <div v-else-if="groups.length === 0" class="empty-state">
         No conversations yet.
         <br />
         Click "New Chat" to start.
       </div>
 
-      <ul v-else class="conversation-list">
+      <ul v-else class="project-list">
         <li
-          v-for="conv in conversations"
-          :key="conv.threadId"
-          :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
-          data-testid="conversation-item"
-          :data-thread-id="conv.threadId"
-          @click="emit('selectConversation', conv.threadId)"
+          v-for="group in groups"
+          :key="group.key"
+          class="project-folder"
+          data-testid="project-folder"
+          :data-testid-group="group.key"
+          :data-missing-workspace-id="group.missingWorkspaceId ?? undefined"
+          :data-project-id="group.workspace?.id ?? undefined"
+          :id="`project-folder-${group.testId}`"
         >
-          <div class="conversation-content">
-            <div class="conversation-title">
-              {{ truncateText(conv.title, 30) }}
-            </div>
-            <div v-if="conv.preview" class="conversation-preview">
-              {{ truncateText(conv.preview, 50) }}
-            </div>
-            <div class="conversation-date">
-              {{ formatDate(conv.lastUpdated) }}
+          <div class="project-heading" :data-testid="`project-folder-${group.testId}`">
+            <button
+              class="project-toggle"
+              type="button"
+              :data-testid="`project-toggle-${group.testId}`"
+              :aria-expanded="isGroupExpanded(group.key)"
+              :aria-controls="`project-conversations-${group.testId}`"
+              @click="toggleGroup(group.key)"
+            >
+              <svg
+                class="disclosure-icon"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path :d="isGroupExpanded(group.key) ? 'm4 6 4 4 4-4' : 'm6 4 4 4-4 4'" />
+              </svg>
+              <svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M1.75 4.25h4l1.35 1.5h7.15v6.75H1.75z" />
+              </svg>
+              <span class="project-name">{{ group.label }}</span>
+            </button>
+            <div
+              v-if="hasProjectActions(group)"
+              :ref="(el) => setProjectMenuRef(group.key, el)"
+              class="project-actions"
+            >
+              <button
+                :id="`project-actions-trigger-${group.testId}`"
+                :ref="(el) => setProjectMenuTriggerRef(group.key, el)"
+                class="project-actions-trigger"
+                type="button"
+                :aria-label="`More options for ${group.label}`"
+                :title="`More options for ${group.label}`"
+                aria-haspopup="menu"
+                :aria-expanded="openProjectMenuKey === group.key"
+                :aria-controls="`project-actions-menu-${group.testId}`"
+                :data-testid="`project-actions-${group.workspace!.id}`"
+                @click="toggleProjectMenu(group.key)"
+                @keydown="handleProjectMenuTriggerKeydown($event, group.key)"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <circle cx="3" cy="8" r="1" />
+                  <circle cx="8" cy="8" r="1" />
+                  <circle cx="13" cy="8" r="1" />
+                </svg>
+              </button>
+              <div
+                v-if="openProjectMenuKey === group.key"
+                :id="`project-actions-menu-${group.testId}`"
+                class="project-actions-menu"
+                role="menu"
+                :aria-labelledby="`project-actions-trigger-${group.testId}`"
+                :data-testid="`project-actions-menu-${group.workspace!.id}`"
+                @keydown="handleProjectMenuKeydown($event, group.key)"
+              >
+                <button
+                  v-if="canStartConversation(group)"
+                  type="button"
+                  role="menuitem"
+                  tabindex="-1"
+                  :data-testid="`start-conversation-${group.workspace!.id}`"
+                  @click="startConversation(group)"
+                >
+                  New conversation
+                </button>
+                <button
+                  v-if="canEditProject(group)"
+                  type="button"
+                  role="menuitem"
+                  tabindex="-1"
+                  :data-testid="`project-settings-${group.workspace!.id}`"
+                  @click="editProject(group)"
+                >
+                  Project settings
+                </button>
+              </div>
             </div>
           </div>
-          <button
-            class="delete-btn"
-            @click="handleDelete($event, conv.threadId)"
-            title="Delete conversation"
+
+          <ul
+            v-show="isGroupExpanded(group.key)"
+            :id="`project-conversations-${group.testId}`"
+            class="conversation-list project-conversations"
+            :data-testid="`project-conversations-${group.testId}`"
           >
-            X
-          </button>
+            <li
+              v-for="conv in group.conversations"
+              :key="conv.threadId"
+              :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
+              data-testid="conversation-item"
+              :data-thread-id="conv.threadId"
+            >
+              <button
+                type="button"
+                class="conversation-select-btn"
+                :title="conv.preview ? `${conv.title}\n${conv.preview}` : conv.title"
+                @click="emit('selectConversation', conv.threadId)"
+              >
+                <div class="conversation-content">
+                  <div class="conversation-title">
+                    {{ conv.title }}
+                  </div>
+                </div>
+              </button>
+              <time class="conversation-date" :datetime="new Date(conv.lastUpdated).toISOString()">
+                {{ formatDate(conv.lastUpdated) }}
+              </time>
+              <button
+                class="delete-btn"
+                @click="handleDelete($event, conv.threadId)"
+                title="Delete conversation"
+              >
+                X
+              </button>
+            </li>
+
+          </ul>
         </li>
 
-        <!-- Only ever shown while a page is actually in flight: once the list is exhausted the
-             parent stops loading, and the bottom of the list is simply the bottom of the list. -->
-        <li
-          v-if="isLoadingMore"
-          class="loading-more"
-          data-testid="conversations-loading-more"
-        >
-          Loading more...
+        <li v-if="hasMore || isLoadingMore" class="load-more-row">
+          <button
+            class="load-more-btn"
+            type="button"
+            data-testid="conversations-load-more"
+            :disabled="isLoadingMore"
+            @click="emit('loadMore')"
+          >
+            {{ isLoadingMore ? 'Loading more...' : 'Load more' }}
+            <span v-if="isLoadingMore" data-testid="conversations-loading-more" class="sr-only">
+              Loading more conversations
+            </span>
+          </button>
         </li>
       </ul>
     </div>
@@ -229,8 +562,8 @@ function handleDelete(event: Event, threadId: string): void {
 
 <style scoped>
 .conversation-sidebar {
-  width: 280px;
-  min-width: 280px;
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
   border-right: 1px solid #e0e0e0;
   display: flex;
   flex-direction: column;
@@ -251,8 +584,28 @@ function handleDelete(event: Event, threadId: string): void {
   border-bottom: 1px solid #e0e0e0;
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
   overflow: hidden;
+}
+
+.sidebar-create-actions {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-create-actions.hidden {
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
 }
 
 .toggle-btn {
@@ -273,11 +626,17 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .new-chat-btn {
-  flex: 1;
-  padding: 10px 12px;
-  background: #007bff;
-  color: white;
-  border: none;
+  flex: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 12px;
+  background: transparent;
+  color: #3f4852;
+  border: 1px solid #cfd4da;
   border-radius: 6px;
   font-size: 14px;
   font-weight: 500;
@@ -292,14 +651,57 @@ function handleDelete(event: Event, threadId: string): void {
     background 0.15s;
 }
 
-.new-chat-btn.hidden {
-  opacity: 0;
-  transform: translateX(-10px);
-  pointer-events: none;
+.new-chat-btn:hover {
+  background: #eef0f2;
+  border-color: #adb5bd;
 }
 
-.new-chat-btn:hover:not(.hidden) {
-  background: #0056b3;
+.new-project-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #5f6874;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-project-btn:hover,
+.new-project-btn:focus-visible {
+  background: #eef0f2;
+  color: #3f4852;
+}
+
+.new-project-btn:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.new-project-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+
+.compose-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
 }
 
 .sidebar-sort {
@@ -436,31 +838,250 @@ function handleDelete(event: Event, threadId: string): void {
   font-size: 14px;
 }
 
+.project-list,
 .conversation-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
+.project-folder {
+  padding: 2px 0;
+}
+
+.project-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px;
+}
+
+.project-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #343a40;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-toggle:hover,
+.project-toggle:focus-visible {
+  background: #e9ecef;
+}
+
+.project-toggle:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.disclosure-icon {
+  width: 10px;
+  height: 16px;
+  flex: 0 0 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  color: #6c757d;
+}
+
+.folder-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: #667085;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+
+.project-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  color: #5f6874;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-actions {
+  position: relative;
+  flex: 0 0 28px;
+}
+
+.project-actions-trigger {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+}
+
+.project-actions-trigger svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.project-actions-trigger:hover,
+.project-actions-trigger:focus-visible,
+.project-actions-trigger[aria-expanded='true'] {
+  background: #e9ecef;
+  color: #343a40;
+}
+
+.project-actions-trigger:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 1px;
+}
+
+.project-actions-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 0;
+  z-index: 110;
+  width: max-content;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid #d6dbe1;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 14%);
+}
+
+.project-actions-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #5f6874;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-actions-menu button:hover,
+.project-actions-menu button:focus-visible {
+  background: #eef0f2;
+  color: #343a40;
+  outline: 0;
+}
+
+.project-conversations .conversation-item {
+  margin: 2px 8px;
+  padding: 6px 8px 6px 40px;
+  border-bottom: 0;
+  border-radius: 6px;
+}
+
+.project-conversations .conversation-item.active {
+  padding-left: 40px;
+}
+
+.load-more-btn {
+  border: 0;
+  background: transparent;
+  color: #59636e;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  color: #0056b3;
+}
+
+.load-more-row {
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.load-more-btn {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #d6d9dd;
+  border-radius: 5px;
+  text-align: center;
+}
+
+.load-more-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .conversation-item {
   padding: 12px 16px;
   border-bottom: 1px solid #e0e0e0;
-  cursor: pointer;
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   transition: background 0.1s;
 }
 
+.conversation-select-btn {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: padding-right 0.15s;
+}
+
+.conversation-item:hover .conversation-select-btn,
+.conversation-item:focus-within .conversation-select-btn {
+  padding-right: 82px;
+}
+
+.conversation-select-btn:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 .conversation-item:hover {
-  background: #e9ecef;
+  background: #eef0f2;
 }
 
 .conversation-item.active {
-  background: #d4e5f7;
-  border-left: 3px solid #007bff;
-  padding-left: 13px;
+  background: #e3e6e9;
+  border-left: 0;
 }
 
 .conversation-content {
@@ -469,27 +1090,27 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .conversation-title {
-  font-weight: 500;
+  font-weight: 400;
   font-size: 14px;
-  margin-bottom: 4px;
+  margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #212529;
-}
-
-.conversation-preview {
-  font-size: 12px;
-  color: #6c757d;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
+  color: #5f6874;
 }
 
 .conversation-date {
+  position: absolute;
+  top: 50%;
+  right: 36px;
+  transform: translateY(-50%);
   font-size: 11px;
-  color: #adb5bd;
+  color: #6c757d;
+  line-height: 20px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
 }
 
 .loading-more {
@@ -500,6 +1121,10 @@ function handleDelete(event: Event, threadId: string): void {
 }
 
 .delete-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
   opacity: 0;
   width: 20px;
   height: 20px;
@@ -515,7 +1140,11 @@ function handleDelete(event: Event, threadId: string): void {
   flex-shrink: 0;
 }
 
-.conversation-item:hover .delete-btn {
+.conversation-item:hover .conversation-date,
+.conversation-item:focus-within .conversation-date,
+.conversation-item:hover .delete-btn,
+.conversation-item:focus-within .delete-btn,
+.delete-btn:focus-visible {
   opacity: 1;
 }
 

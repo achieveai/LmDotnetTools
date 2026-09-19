@@ -256,11 +256,21 @@ public sealed class MultiTurnAgentReplayTests
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
 
+        var subscribed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var publisher = Task.Run(
             async () =>
             {
                 for (var i = 0; i < total; i++)
                 {
+                    if (i == total / 2)
+                    {
+                        // Streaming deltas are live-only (never replayed) and completion closes replay, so a
+                        // subscriber registering after the last delta receives none of them, and one registering
+                        // after completion waits out the timeout. Under load the publisher can get that far
+                        // first. The first half still races the registration; the rest waits for it.
+                        await subscribed.Task.WaitAsync(cts.Token);
+                    }
+
                     await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
                 }
 
@@ -270,17 +280,24 @@ public sealed class MultiTurnAgentReplayTests
         );
 
         var received = new List<int>();
-        await foreach (var m in agent.SubscribeAsync(cts.Token))
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        // The first MoveNextAsync registers the subscriber synchronously (the lock/register runs before the
+        // first await), so the second half of the run is delivered live once this returns.
+        var next = e.MoveNextAsync();
+        subscribed.SetResult();
+        while (await next)
         {
-            if (m is TextUpdateMessage t && int.TryParse(t.Text, out var n))
+            if (e.Current is TextUpdateMessage t && int.TryParse(t.Text, out var n))
             {
                 received.Add(n);
             }
 
-            if (m is RunCompletedMessage)
+            if (e.Current is RunCompletedMessage)
             {
                 break;
             }
+
+            next = e.MoveNextAsync();
         }
 
         await publisher;

@@ -34,6 +34,14 @@ export const MessageType = {
   ConversationTodo: 'conversation_todo',
   // Live-only per-agent context pressure frame for the context/cost panel (#681 → #685)
   ContextPressure: 'context_pressure',
+  // Persisted compaction checkpoint row, rendered as a transcript divider (#721, spec 679 §7.2).
+  // The server gives each checkpoint SCHEMA VERSION its own $type, so that a .NET reader predating a
+  // version skips the row instead of adopting the half of it it understands (spec 679 §8.3). Both
+  // names below are live on the wire: v1 rows are already on disk and v2 is what this server writes.
+  CompactionCheckpoint: 'compaction_checkpoint',
+  CompactionCheckpointV2: 'compaction_checkpoint@2',
+  // Live-only compaction progress frame (manual and automatic): requested → running → applied | refused | failed
+  CompactionStatus: 'compaction_status',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -267,6 +275,11 @@ export interface RunCompletedMessage extends IMessage {
   pendingMessageCount: number;
   isError?: boolean;
   errorMessage?: string | null;
+  /**
+   * Stable machine reason when `isError` and the failure is classified (e.g. `view_exceeds_window`); absent or
+   * null for an unclassified failure. The server sends `ErrorCode`; `normalizeKeys` aliases it.
+   */
+  errorCode?: string | null;
 }
 
 /**
@@ -428,10 +441,47 @@ export interface AgentMessage extends IMessage {
   body?: string | null;
 }
 
+/** A verbatim quote of one canonical row (C# `QuotedItem`). */
+export interface CheckpointQuote {
+  seq: number;
+  quote: string;
+}
+
+/**
+ * CompactionCheckpointMessage matching C# CompactionCheckpointMessage.cs (#717/#721).
+ *
+ * The durable row a compaction commit appends. The agent reads it as a rendered envelope in place of
+ * the rows it covers; the human keeps every row and sees this as a divider (spec 679 §7.2). Like
+ * {@link NotifyMessage} it serializes with role `user`, so every consumer must test for this type
+ * BEFORE it branches on role. Only the fields the divider renders are typed.
+ */
+export interface CompactionCheckpointMessage extends IMessage {
+  $type: typeof MessageType.CompactionCheckpoint | typeof MessageType.CompactionCheckpointV2;
+  /** `cp-{thread-short}-{n}`; unique per checkpoint, so it is the merge key on both live and reload. */
+  checkpoint_id: string;
+  boundary: { seq: number; message_id: string };
+  trigger: 'Preemptive' | 'Reactive' | 'Manual' | 'Shadow';
+  manifest: {
+    current_instruction?: CheckpointQuote[];
+    instructions?: CheckpointQuote[];
+    goals?: string[];
+    decisions?: CheckpointQuote[];
+    tasks?: Array<{ id?: string | null; title: string; status: string }>;
+    artifacts?: Array<{ path: string; hash?: string | null; origin_seq?: number | null }>;
+    agents?: Array<{ agent_id: string; status: string; outcome?: string | null }>;
+  };
+  narrative: string;
+  stats?: { rows_covered?: number; estimated_tokens_before?: number; estimated_tokens_after?: number };
+  /** The user's focus prompt for a manual compaction, when one steered the summary. */
+  focus?: string | null;
+  /** The envelope the model reads; the divider renders the structured fields instead. */
+  text?: string;
+}
+
 /**
  * Normalized data driving the notification pill. `displayItems` produces this from a
- * {@link NotifyMessage}, an {@link AgentMessage}, or a legacy `context_discovery` {@link TextMessage},
- * so all three render through the one unified pill.
+ * {@link NotifyMessage}, an {@link AgentMessage}, a {@link CompactionCheckpointMessage}, or a legacy
+ * `context_discovery` {@link TextMessage}, so all of them render through the one unified pill.
  */
 export interface NotificationDisplayData {
   notifyKind: string;
@@ -446,6 +496,8 @@ export interface NotificationDisplayData {
   contextTruncated?: boolean;
   /** Set only for the `agent-message` kind: which {@link AgentMessageType} the pill is showing. */
   agentMessageType?: AgentMessageType | null;
+  /** Set only for the `compaction` kind: the checkpoint the divider stands for. */
+  checkpointId?: string | null;
 }
 
 /**
@@ -535,6 +587,36 @@ export interface ContextPressureMessage extends IMessage {
   rowsInView?: number;
 }
 
+/** What started a compaction: the user's Compact now / S2S request, or a context threshold. */
+export type CompactionStatusTrigger = 'manual' | 'preemptive' | 'reactive';
+
+/** Where one compaction attempt is. `applied`, `refused` and `failed` are terminal. */
+export type CompactionStatusPhase = 'requested' | 'running' | 'applied' | 'refused' | 'failed';
+
+/**
+ * CompactionStatusMessage: a live-only frame reporting one compaction attempt's progress, for manual
+ * (user-requested) and automatic compactions alike. Transient: never persisted — the durable outcome
+ * is the `compaction_checkpoint` row plus the context report's compaction state. Content-free apart
+ * from `focus`, which is the requesting user's own text. Field names camelCase, like
+ * {@link ContextPressureMessage}.
+ */
+export interface CompactionStatusMessage extends IMessage {
+  $type: typeof MessageType.CompactionStatus;
+  /** The compacted thread. Optional on the wire; the consumer fails closed without it. */
+  threadId?: string | null;
+  /** `root` or the sub-agent id. */
+  agentId?: string | null;
+  /** The 202 `requestId` of a manual request; absent for automatic compactions. */
+  requestId?: string | null;
+  trigger: CompactionStatusTrigger;
+  phase: CompactionStatusPhase;
+  /** Typed refusal/failure reason for `refused` / `failed`. */
+  reason?: string | null;
+  /** The checkpoint an `applied` phase committed. */
+  checkpointId?: string | null;
+  focus?: string | null;
+}
+
 /**
  * Union type for all message types
  */
@@ -560,7 +642,9 @@ export type Message =
   | AgentMessage
   | ConversationUsageMessage
   | ConversationTodoMessage
-  | ContextPressureMessage;
+  | ContextPressureMessage
+  | CompactionCheckpointMessage
+  | CompactionStatusMessage;
 
 // Type guard functions
 
@@ -644,6 +728,23 @@ export function isAgentMessage(msg: IMessage): msg is AgentMessage {
   return msg.$type === MessageType.Agent;
 }
 
+/**
+ * True for a checkpoint row of ANY schema version.
+ *
+ * The server versions this `$type` (`compaction_checkpoint`, `compaction_checkpoint@2`, ...) so that a
+ * .NET reader older than a row skips it rather than adopting a manifest with sections missing. The
+ * client is not a reader in that sense: it renders a divider out of `checkpoint_id` and `narrative`,
+ * which every version carries, and a version it does not know costs it at most a field it was not
+ * going to draw. Failing the match instead would DELETE the divider from the transcript, which is the
+ * worse answer — so this accepts the family rather than an exact name.
+ */
+export function isCompactionCheckpointMessage(msg: IMessage): msg is CompactionCheckpointMessage {
+  return (
+    msg.$type === MessageType.CompactionCheckpoint ||
+    msg.$type.startsWith(`${MessageType.CompactionCheckpoint}@`)
+  );
+}
+
 export function isConversationUsageMessage(msg: IMessage): msg is ConversationUsageMessage {
   return msg.$type === MessageType.ConversationUsage;
 }
@@ -654,6 +755,10 @@ export function isConversationTodoMessage(msg: IMessage): msg is ConversationTod
 
 export function isContextPressureMessage(msg: IMessage): msg is ContextPressureMessage {
   return msg.$type === MessageType.ContextPressure;
+}
+
+export function isCompactionStatusMessage(msg: IMessage): msg is CompactionStatusMessage {
+  return msg.$type === MessageType.CompactionStatus;
 }
 
 /**

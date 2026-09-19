@@ -39,9 +39,10 @@ concurrency:
 env:
   # Pin the gateway + agent image tag the SDK contract is verified against.
   # Bump deliberately when adopting a newer gateway contract.
-  # 0.1.8 is the published direct file/command REST contract image. The previous
-  # 0.1.4 tag was removed from GHCR (only 0.1.6-0.1.8 remain), so pinning it made
-  # this job fail at `docker pull` before exercising any SDK contract.
+  # 0.1.11 is the newest published direct file/command REST contract image. GHCR
+  # retention keeps only a short tail of tags: 0.1.4 vanished once (leaving 0.1.6-0.1.8),
+  # then 0.1.8 vanished too (leaving 0.1.9-0.1.11), and each time the pin made this job
+  # fail at `docker pull` before exercising any SDK contract (#773).
   #
   # WHICH GATEWAY CONTRACT THIS TAG CARRIES. #187 named
   # SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6 as the minimum
@@ -54,7 +55,13 @@ env:
   # this SDK — the SDK requires a release carrying the direct API, of which this tag is
   # the published one. Treat the image tag, not the commit, as the operative pin; the
   # commit records only the older wire shapes the SDK still speaks unchanged.
-  IMAGE_TAG: '0.1.8'
+  #
+  # 0.1.11 is also the first release carrying per-sandbox environment variables (upstream
+  # SandboxedOstoolsMcpServer #183), which the
+  # Env_CreateThenPatch_RoundTrips_AndReachesBash contract test requires. The tag already
+  # had to be at least this high for the retention reason above, so nothing moved here —
+  # but a future bump must not drop BELOW 0.1.11 or that test loses its route.
+  IMAGE_TAG: '0.1.11'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   GATEWAY_PORT: '3987'

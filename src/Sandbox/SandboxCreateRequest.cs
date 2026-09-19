@@ -39,13 +39,20 @@ public sealed class SandboxCreateRequest
     /// </summary>
     public IReadOnlyList<SandboxPluginRef>? PluginSelection { get; }
 
+    /// <summary>
+    /// Per-sandbox environment variables to set at create time, defensively copied at construction.
+    /// Never <c>null</c>; an empty map omits the wire field entirely (see <c>ToWireDto</c>).
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Env { get; }
+
     public SandboxCreateRequest(
         string workspace,
         IReadOnlyList<string>? marketplaces = null,
         IReadOnlyList<SandboxAuthProvider>? authProviders = null,
         IReadOnlyList<SandboxNetworkRule>? networkRules = null,
         SandboxDiscoverySettings? discovery = null,
-        IReadOnlyList<SandboxPluginRef>? pluginSelection = null
+        IReadOnlyList<SandboxPluginRef>? pluginSelection = null,
+        IReadOnlyDictionary<string, string>? env = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -60,5 +67,8 @@ public sealed class SandboxCreateRequest
         // Unlike Marketplaces/AuthProviders/NetworkRules, null and [] are semantically different here
         // (tri-state plugin selection): null must stay null, not collapse to an empty list.
         PluginSelection = pluginSelection is null ? null : [.. pluginSelection];
+        Env = env is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(env, StringComparer.Ordinal);
     }
 }

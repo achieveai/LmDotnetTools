@@ -769,6 +769,7 @@ public record AnthropicRequest
         {
             MergeAdjacentThinkingBlocks(msg.Content);
             OrderAssistantToolUseLast(msg);
+            OrderUserToolResultsFirst(msg);
         }
 
         return merged;
@@ -807,6 +808,34 @@ public record AnthropicRequest
         // particular the tool_use blocks keep their order, which Anthropic pairs to tool_result blocks
         // by id (not position) in the next message.
         var ordered = content.OrderBy(Rank).ToList();
+        content.Clear();
+        content.AddRange(ordered);
+    }
+
+    /// <summary>
+    /// The user-turn counterpart of <see cref="OrderAssistantToolUseLast"/>: Anthropic requires every
+    /// tool_result block to lead the user turn that answers an assistant tool_use, and rejects the turn
+    /// with "tool_use ids were found without tool_result blocks immediately after" when text precedes
+    /// them. History can legitimately interleave user-role text ahead of the result — a notification or
+    /// agent-to-agent envelope delivered into history before the tool returns its result merges into the
+    /// same user turn — so stably reorder each user turn into tool_result → everything else.
+    /// </summary>
+    private static void OrderUserToolResultsFirst(AnthropicMessage message)
+    {
+        if (message.Role != "user")
+        {
+            return;
+        }
+
+        var content = message.Content;
+        if (!content.Any(b => b.Type == "tool_result"))
+        {
+            return;
+        }
+
+        // OrderBy performs a stable sort, so the tool_result blocks keep their relative order (Anthropic
+        // pairs them to tool_use blocks by id, not position) and the trailing text keeps its own.
+        var ordered = content.OrderBy(b => b.Type == "tool_result" ? 0 : 1).ToList();
         content.Clear();
         content.AddRange(ordered);
     }

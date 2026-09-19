@@ -294,6 +294,51 @@ public sealed class ConversationScopingTests
             );
     }
 
+    /// <summary>
+    /// A manual compaction is a write: another tenant's request is refused as unknown, byte for byte and lookup
+    /// for lookup like a thread that was never minted, and a viewer grantee gets the reasoned 403.
+    /// </summary>
+    [Fact]
+    public async Task RequestCompaction_IsScopedLikeAWrite()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var forbiddenGrants = new CountingResourceGrantStore(_grants);
+        var forbidden = await CreateController(Signed(TenantB, Mallory), pool, grantsOverride: forbiddenGrants)
+            .RequestCompaction("alice-thread", request: null, CancellationToken.None);
+        var missingGrants = new CountingResourceGrantStore(_grants);
+        var missing = await CreateController(Signed(TenantB, Mallory), pool, grantsOverride: missingGrants)
+            .RequestCompaction("no-such-thread", request: null, CancellationToken.None);
+
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(forbidden).Value)
+            .Should()
+            .Be(
+                System
+                    .Text.Json.JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(missing).Value)
+                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal)
+            );
+        _ = forbiddenGrants.FindGrantCallCount.Should().BeGreaterThan(0);
+        _ = missingGrants.FindGrantCallCount.Should().Be(forbiddenGrants.FindGrantCallCount);
+
+        _ = await CreateController(Signed(TenantA, Alice), pool)
+            .AddShare(
+                "alice-thread",
+                new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+                CancellationToken.None
+            );
+        var viewer = await CreateController(Signed(TenantA, Bob), pool)
+            .RequestCompaction("alice-thread", request: null, CancellationToken.None);
+
+        var refused = Assert.IsType<ObjectResult>(viewer);
+        _ = refused.StatusCode.Should().Be(403);
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(refused.Value)
+            .Should()
+            .Contain("grant_does_not_confer_action", Exactly.Once());
+    }
+
     /// <summary>Sends to <paramref name="threadId"/> as <paramref name="principal"/> over a fresh counting
     /// grant store, and returns how many grant look-ups the request made.</summary>
     private async Task<int> CountSendLookupsAsync(Principal principal, string threadId, MultiTurnAgentPool pool)

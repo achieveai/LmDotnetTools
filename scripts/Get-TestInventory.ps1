@@ -476,6 +476,20 @@ if ($IncludeDeclarations) {
                                 ).Count -gt 0
                             } |
                             ForEach-Object { $_.ToString() }
+                            # SkippableFact/SkippableTheory gate at RUNTIME, so the attribute carries no
+                            # Skip text and a legitimately skipped run would otherwise read as an
+                            # undeclared NotExecuted. Only calls written literally in this method body are
+                            # recorded: nothing here follows a helper, so a gate behind one stays
+                            # unrecorded rather than authorizing every skip the family could report.
+                            $method.DescendantNodes() |
+                            Where-Object { $_ -is [Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax] } |
+                            Where-Object {
+                                $callee = ($_.Expression.ToString().Replace("global::", "") -split '\.')
+                                $callee.Count -ge 2 -and
+                                $callee[-2] -ceq "Skip" -and
+                                $callee[-1] -cmatch '^(If|IfNot|Always)$'
+                            } |
+                            ForEach-Object { ($_.ToString() -replace '\s+', ' ') }
                         )
                         staticRowCount = if ($parameterization -eq "dynamic") { $null } elseif ($rowCount) { $rowCount } else { 1 }
                         frameworkCandidates = @($container.frameworkCandidates)

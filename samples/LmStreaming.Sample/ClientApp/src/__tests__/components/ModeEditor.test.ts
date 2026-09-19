@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { describe, expect, it, vi } from 'vitest';
+import { mount, flushPromises } from '@vue/test-utils';
 import ModeEditor from '@/components/ModeEditor.vue';
+
+// The env editor is gated on the live gateway reporting support (see `getConversationCapabilities`,
+// which fails closed). Default it to supported so the pre-existing env cases still exercise the
+// editor; the gating itself is asserted in its own case below.
+vi.mock('@/api/conversationsApi', () => ({
+  getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
+}));
+import { getConversationCapabilities } from '@/api/conversationsApi';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 
 const baseMode: ChatMode = {
@@ -143,6 +151,211 @@ describe('ModeEditor description', () => {
     await wrapper.get('form').trigger('submit');
 
     expect(lastSave(wrapper).description).toBe('A user mode');
+  });
+});
+
+describe('ModeEditor env', () => {
+  it('renders an EnvEditor seeded from the mode\'s stored env', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
+
+    const key = wrapper.get<HTMLInputElement>('[data-testid="mode-env-key"]');
+    const value = wrapper.get<HTMLInputElement>('[data-testid="mode-env-value"]');
+    expect(key.element.value).toBe('FOO');
+    expect(value.element.value).toBe('bar');
+  });
+
+  it('omits env from the save payload when it is unchanged', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+
+    expect('env' in lastSave(wrapper)).toBe(false);
+  });
+
+  // The PAIRED positive case. The assertion above is a pure absence: it passes with the whole env
+  // feature deleted. This one fails unless an unchanged save still carries every other field, which
+  // is what makes "env was omitted" mean "env specifically was omitted".
+  it('still sends the rest of the mode when env is omitted as unchanged', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('form').trigger('submit');
+
+    const saved = lastSave(wrapper);
+    expect('env' in saved).toBe(false);
+    expect(saved.name).toBe(baseMode.name);
+    expect(saved.systemPrompt).toBe(baseMode.systemPrompt);
+  });
+
+  // Finding D: the client must not offer env editing on a gateway that cannot apply it.
+  it('hides the env editor entirely when the gateway does not support sandbox env', async () => {
+    vi.mocked(getConversationCapabilities).mockResolvedValueOnce({ sandboxEnv: false });
+
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(false);
+  });
+
+  /** Fails closed: a probe that rejects must hide the editor, not default it on. */
+  it('hides the env editor when the capability probe itself fails', async () => {
+    vi.mocked(getConversationCapabilities).mockRejectedValueOnce(new Error('offline'));
+
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(false);
+  });
+
+  it('shows the env editor when the gateway does support it', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mode-editor-env"]').exists()).toBe(true);
+  });
+
+  it('includes the changed env in the save payload', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('form').trigger('submit');
+
+    expect(lastSave(wrapper).env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+  });
+
+  it('writes an explicit null when every variable is removed from a mode that had some', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    // The env editor renders only after the capability probe resolves.
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-remove"]').trigger('click');
+    await wrapper.get('form').trigger('submit');
+
+    const data = lastSave(wrapper);
+    expect(data.env).toBeNull();
+    const wire = JSON.parse(JSON.stringify(data));
+    expect('env' in wire).toBe(true);
+    expect(wire.env).toBeNull();
+  });
+
+  /**
+   * `EnvEditor` flags a bad row and exposes `hasErrors`, but nothing read it: `validate()` passed and
+   * the mode saved with a duplicate key collapsed away — a variable the user had typed vanished while
+   * its red error was still on screen. These pin the parent half of that contract.
+   */
+  it('refuses to save while a row is malformed', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    await keys[1].setValue('9NOPE');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  it('refuses to save when two rows share a key, the case that silently dropped a value', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    // Case-insensitive on purpose: this is exactly what `buildRecord` would collapse.
+    await keys[1].setValue('foo');
+    await values[1].setValue('second');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+  });
+
+  it('refuses to save when two rows share the exact same key', async () => {
+    // The record keeps one FOO, so the payload alone would look valid; only the row check sees the loss.
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('FOO');
+    await values[1].setValue('second');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(wrapper.get('[data-testid="mode-editor-form-error"]').text()).toContain(
+      'environment variables'
+    );
+  });
+
+  // PAIRED POSITIVE: without it the two "no save" assertions above would still pass if the new guard
+  // were unconditional — i.e. if it blocked every save, valid env included.
+  it('still saves when the added row is valid', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: { mode: { ...baseMode, env: { FOO: 'bar' } }, tools: [] },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mode-env-add"]').trigger('click');
+    const keys = wrapper.findAll('[data-testid="mode-env-key"]');
+    const values = wrapper.findAll('[data-testid="mode-env-value"]');
+    await keys[1].setValue('BAZ');
+    await values[1].setValue('qux');
+    await wrapper.get('form').trigger('submit');
+    await wrapper.vm.$nextTick();
+
+    expect(lastSave(wrapper).env).toEqual({ FOO: 'bar', BAZ: 'qux' });
+    expect(wrapper.find('[data-testid="mode-editor-form-error"]').exists()).toBe(false);
+  });
+
+  it('surfaces an API error from the parent through showFormError', async () => {
+    const wrapper = mount(ModeEditor, { props: { mode: null, tools: [] } });
+
+    (wrapper.vm as unknown as { showFormError: (m: string) => void }).showFormError(
+      'One or more environment variable names are invalid. (HTTP_PROXY)'
+    );
+    await wrapper.vm.$nextTick();
+
+    const error = wrapper.get('[data-testid="mode-editor-form-error"]');
+    expect(error.text()).toContain('HTTP_PROXY');
   });
 });
 

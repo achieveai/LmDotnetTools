@@ -127,7 +127,7 @@ public static class ContextObservationProjection
     ///     (#684; spec 679 §5.5 stamps the decision <em>on the observation</em>) - and neither carries the
     ///     other's fields, so superseding must not blank what it does not itself observe.
     /// </summary>
-    private static ContextObservation Supersede(ContextObservation previous, ContextObservation incoming) =>
+    internal static ContextObservation Supersede(ContextObservation previous, ContextObservation incoming) =>
         incoming with
         {
             MeasuredInputTokens = incoming.MeasuredInputTokens ?? previous.MeasuredInputTokens,

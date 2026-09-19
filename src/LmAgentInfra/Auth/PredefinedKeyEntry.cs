@@ -33,6 +33,14 @@ internal sealed record PredefinedKeyEntry
     /// <summary>The single destination host (exact or <c>*.suffix</c>) this entry authenticates egress to.</summary>
     public required string Host { get; init; }
 
+    /// <summary>
+    /// The single destination TCP port this entry authenticates egress to. Defaults to 443, which is
+    /// also what an entry persisted before the field existed loads as. The egress proxy is TLS-only on
+    /// every port, so a non-443 port (e.g. <c>host.docker.internal:8443</c>) still never egresses the
+    /// credential in cleartext.
+    /// </summary>
+    public int Port { get; init; } = 443;
+
     /// <summary>The credential kind.</summary>
     public required PredefinedKeyKind Kind { get; init; }
 

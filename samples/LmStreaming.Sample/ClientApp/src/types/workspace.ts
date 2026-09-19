@@ -52,6 +52,11 @@ export interface Workspace {
    * {@link WorkspaceUpdate.pluginsRevision}); a stale value is rejected with HTTP 409.
    */
   pluginsRevision?: number;
+  /**
+   * Sandbox environment variables layered onto every session opened for this workspace. Always
+   * present (may be `{}`) — unlike {@link pluginSelection} this is NOT tri-state on the read model.
+   */
+  env: Record<string, string>;
 }
 
 /**
@@ -105,6 +110,11 @@ export interface WorkspaceCreate {
    * no plugins and is NOT the same thing.
    */
   pluginSelection?: PluginRef[] | null;
+  /**
+   * Seed sandbox environment variables. Omitting the property means "no variables" (same as
+   * `WorkspaceCreate.marketplaces` being optional) — there is nothing to leave unchanged on create.
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -132,6 +142,13 @@ export interface WorkspaceUpdate {
    * reported back as a conflict against the sentinel revision `-1`.
    */
   pluginsRevision?: number;
+  /**
+   * Sandbox environment variables, on the wire like {@link WorkspaceCreate.env}: OMIT to leave the
+   * stored map unchanged (sending it triggers a live-session re-apply on the server, so the caller
+   * should only set it when it actually changed); when present it REPLACES the whole map. Unlike
+   * {@link pluginSelection} there is no separate "clear" spelling — an empty object `{}` clears it.
+   */
+  env?: Record<string, string>;
 }
 
 /**

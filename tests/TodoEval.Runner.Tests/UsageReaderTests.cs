@@ -166,6 +166,38 @@ public class UsageReaderTests
         report.Notes.Should().Contain(UsageReport.ToolFamilyNote);
     }
 
+    [Fact]
+    public void Dedupe_KeepsTheMostResolvedCopyOfAnAttempt_NotWhicheverBagWasReadFirst()
+    {
+        // A sub-agent attempt is relayed into two bags: the sub-agent's own bag holds the revision
+        // written before the pricing resolver ran (no cost), the root bag holds the resolved one.
+        // Keeping whichever arrived first dropped the price of every summariser call in the
+        // compaction eval - $39.51 across the programme, with the tokens still counted, so the
+        // figure read as a total while being a lower bound.
+        var unpriced = Row("subagent-1:gen-a", agent: "subagent-1", total: 2471) with
+        {
+            Revision = 1,
+        };
+        var priced = unpriced with { Revision = 11, CostMicros = 2456 };
+
+        var report = UsageReader.Rollup([unpriced, priced], NoTurns);
+
+        report.Totals.TotalTokens.Should().Be(2471, "the same attempt in two bags is still one attempt");
+        report.DuplicateAttemptIds.Should().Be(1);
+        report.Cost.Records.Should().Be(1);
+        report.Cost.RecordsWithCost.Should().Be(1, "the resolved copy is the one that survives");
+        report.Cost.CostMicros.Should().Be(2456);
+    }
+
+    [Fact]
+    public void Dedupe_KeepsTheResolvedCopy_WhicheverOrderTheBagsAreRead()
+    {
+        var unpriced = Row("subagent-1:gen-a", agent: "subagent-1", total: 2471) with { Revision = 1 };
+        var priced = unpriced with { Revision = 11, CostMicros = 2456 };
+
+        UsageReader.Rollup([priced, unpriced], NoTurns).Cost.CostMicros.Should().Be(2456);
+    }
+
     private static UsageRecordRow Row(string attemptId, string agent = "thread-1", long total = 0) =>
         new()
         {

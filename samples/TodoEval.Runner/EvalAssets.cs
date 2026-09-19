@@ -5,6 +5,190 @@ using TodoEval.Runner.Metrics;
 namespace TodoEval.Runner;
 
 /// <summary>
+/// The task's own <c>meta.json</c> (tasks/README.md): what the runner needs to run and judge it.
+/// Absent in the single-task layout, which predates the file.
+/// </summary>
+internal sealed record TaskMeta
+{
+    /// <summary>The family the task belongs to (<c>coding-py</c>, <c>research</c>, <c>steer</c>, ...).</summary>
+    public string? Family { get; init; }
+
+    /// <summary><c>dev</c> or <c>test</c>: which split the task may be tuned against.</summary>
+    public string? Split { get; init; }
+
+    /// <summary>
+    /// Seed words substituted for <c>{SEED}</c>, one per repeat, so repeats of one task are not
+    /// byte-identical. Seed <c>i</c> uses <c>Seeds[i % Seeds.Count]</c>, matching the topic axis.
+    /// </summary>
+    public IReadOnlyList<string> Seeds { get; init; } = [];
+
+    /// <summary>
+    /// Compactions a COMPACTING variant is expected to take on this task under the window clamp. A run
+    /// below the floor never exercised the strategy under test, so J0 marks it invalid rather than
+    /// scoring it. Null means the task states no expectation and the floor never applies.
+    /// </summary>
+    public int? MinCompactions { get; init; }
+
+    /// <summary>The task's own wall-clock budget, overriding the sweep-wide one. Null = use the sweep's.</summary>
+    public int? TimeoutMinutes { get; init; }
+
+    /// <summary>
+    /// The fixture files the task cannot run without, declared so a checkout that is missing them fails
+    /// the run instead of judging an empty workspace. Empty means the task makes no claim and nothing
+    /// is checked.
+    /// </summary>
+    public IReadOnlyList<RequiredFixture> RequiredFixtures { get; init; } = [];
+
+    /// <summary>
+    /// Delay before the <c>## steer</c> correction is sent, measured from the first message. Null with
+    /// a steer section present means "send it as soon as the run is under way" (zero delay). Used only
+    /// when <see cref="SteerAfter"/> is absent: a clock says WHEN the correction is sent, not where in
+    /// the conversation it lands, and those stop agreeing the moment an arm changes how long a run takes.
+    /// </summary>
+    public int? SteerAfterSeconds { get; init; }
+
+    /// <summary>
+    /// The conversation event that releases the <c>## steer</c> correction. Null keeps the legacy
+    /// wall-clock release on <see cref="SteerAfterSeconds"/>, which every sweep before this option
+    /// existed used.
+    /// </summary>
+    public SteerTrigger? SteerAfter { get; init; }
+
+    /// <summary>Seed word for a zero-based repeat index, or null when the task declares no seeds.</summary>
+    public string? SeedForIndex(int seedIndex) => Seeds.Count == 0 ? null : Seeds[seedIndex % Seeds.Count];
+}
+
+/// <summary>
+///     A group of files a task's <c>fixtures/</c> tree must contain before a run of it means anything.
+/// </summary>
+/// <remarks>
+///     c2 is the case this exists for. Its twelve access logs sat under <c>fixtures/logs/</c>, which the
+///     repository's <c>**/logs/</c> rule excluded, so they were never committed: a clean checkout ran the
+///     task against an EMPTY log directory. Nothing failed — the agent was simply asked to read files
+///     that were not there, and the checker scored the result as a bad answer. That is the failure this
+///     declaration converts into a loud one.
+/// </remarks>
+internal sealed record RequiredFixture
+{
+    /// <summary>
+    ///     A path relative to <c>fixtures/</c>, with <c>*</c> and <c>?</c> inside a segment (<c>logs/*.log</c>).
+    ///     Segments are matched one for one, so the glob's depth is part of what it asserts.
+    /// </summary>
+    public required string Glob { get; init; }
+
+    /// <summary>How many files must match. The run fails on anything but exactly this many.</summary>
+    public required int Count { get; init; }
+}
+
+/// <summary>The trigger kinds <see cref="SteerTrigger.Kind"/> accepts.</summary>
+internal static class SteerTriggerKinds
+{
+    /// <summary>Wait for the first input to reach a terminal status, then send.</summary>
+    public const string FirstAnswer = "firstAnswer";
+
+    /// <summary>Wait until the thread shows a given number of calls to a named tool.</summary>
+    public const string ToolCalls = "toolCalls";
+}
+
+/// <summary>
+///     What has to have happened in the conversation before the <c>## steer</c> correction is sent.
+/// </summary>
+/// <remarks>
+/// <para>
+///     The correction's job is to land at a particular POINT IN THE WORK: after the first wave of a
+///     two-wave research task, or partway through a read burst. A wall-clock delay only expresses that
+///     for one run speed, and every arm this eval compares changes run speed — so the same task became
+///     a different task per arm. Measured over 79 s1 runs, the 90-second delay landed anywhere between
+///     1 and 60 Read calls into the work.
+/// </para>
+/// <para>
+///     <see cref="SteerTriggerKinds.FirstAnswer"/> is the one the two-wave tasks need: their steer opens
+///     "Thanks. Now read pages 06-10", which is only a second wave if the first one finished. Under the
+///     clock a slow run had it injected mid-read, destroying the premise the task is built on.
+/// </para>
+/// </remarks>
+internal sealed record SteerTrigger
+{
+    /// <summary>One of <see cref="SteerTriggerKinds"/>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>For <see cref="SteerTriggerKinds.ToolCalls"/>: the tool whose calls are counted.</summary>
+    public string? Tool { get; init; }
+
+    /// <summary>For <see cref="SteerTriggerKinds.ToolCalls"/>: how many calls release the correction.</summary>
+    public int? Count { get; init; }
+
+    /// <summary>Throws unless this trigger is one the runner can actually wait for.</summary>
+    public void Validate(string path)
+    {
+        switch (Kind)
+        {
+            case SteerTriggerKinds.FirstAnswer:
+                return;
+            case SteerTriggerKinds.ToolCalls when Tool is { Length: > 0 } && Count is > 0:
+                return;
+            case SteerTriggerKinds.ToolCalls:
+                throw new InvalidOperationException(
+                    $"{path}: steerAfter '{SteerTriggerKinds.ToolCalls}' needs a non-empty 'tool' and a 'count' above zero."
+                );
+            default:
+                throw new InvalidOperationException(
+                    $"{path}: steerAfter kind '{Kind}' is not one of "
+                        + $"'{SteerTriggerKinds.FirstAnswer}', '{SteerTriggerKinds.ToolCalls}'."
+                );
+        }
+    }
+}
+
+/// <summary>
+/// One task in the sweep's task axis: where it lives, the user message template (with its
+/// <c>{TOPIC}</c>/<c>{SEED}</c> placeholders), the optional mid-run correction, its <c>meta.json</c>,
+/// and the board shape its runs are judged against.
+/// </summary>
+internal sealed record EvalTaskAsset
+{
+    /// <summary>The task id, or null for the single unnamed task of the <c>{EvalDir}/task.md</c> layout.</summary>
+    public required string? Id { get; init; }
+
+    /// <summary>The directory the task's assets live in: its fixtures, checker and hidden material.</summary>
+    public required string Dir { get; init; }
+
+    public required string Template { get; init; }
+
+    /// <summary>
+    /// The <c>## steer</c> correction sent as a SECOND message while the run is still active, or null
+    /// when the task has no such section.
+    /// </summary>
+    public string? Steer { get; init; }
+
+    /// <summary>The task's <c>meta.json</c>, or null in the single-task layout, which has none.</summary>
+    public TaskMeta? Meta { get; init; }
+
+    /// <summary>Null when the task ships no <c>expected-board.json</c>: the run has no board gate.</summary>
+    public required BoardShapeExpectation? ExpectedBoard { get; init; }
+
+    /// <summary>The fixture tree copied into every run's workspace, or null when the task ships none.</summary>
+    public string? FixturesDir
+    {
+        get
+        {
+            var dir = Path.Combine(Dir, EvalAssets.FixturesDirName);
+            return Directory.Exists(dir) ? dir : null;
+        }
+    }
+
+    /// <summary>The task's J1 checker script, or null when the task ships none (then there is no J1 at all).</summary>
+    public string? CheckScript
+    {
+        get
+        {
+            var path = Path.Combine(Dir, EvalAssets.CheckScriptName);
+            return File.Exists(path) ? path : null;
+        }
+    }
+}
+
+/// <summary>
 /// The eval asset set owned by the Testing Mode work item (#618): <c>mode.json</c> (a
 /// ChatModeCreateUpdate payload), <c>task.md</c> (with a <c>{TOPIC}</c> placeholder) and
 /// <c>expected-board.json</c> (the shape the final todo board must satisfy). The runner treats
@@ -14,29 +198,44 @@ namespace TodoEval.Runner;
 /// </summary>
 internal sealed class EvalAssets
 {
+    /// <summary>The subdirectory a multi-task eval keeps its per-task assets under.</summary>
+    public const string TasksDirName = "tasks";
+
+    /// <summary>The per-task tree copied into a run's workspace. Its sibling <c>hidden/</c> never is.</summary>
+    public const string FixturesDirName = "fixtures";
+
+    /// <summary>The task's deterministic J1 checker (tasks/README.md): <c>pwsh check.ps1 -Workspace -Out</c>.</summary>
+    public const string CheckScriptName = "check.ps1";
+
+    /// <summary>The default <c>mode.json</c> leaf, overridable through <c>EvalRunnerConfig.ModeFile</c>.</summary>
+    public const string DefaultModeFileName = "mode.json";
+
     public required JsonObject ModePayload { get; init; }
     public required string ModeName { get; init; }
-    public required string TaskTemplate { get; init; }
-    public required BoardShapeExpectation? ExpectedBoard { get; init; }
 
-    public static EvalAssets Load(string evalDir, string expectedModeName)
+    /// <summary>
+    /// The tasks this sweep runs: exactly one unnamed entry in the single-task layout, or one entry
+    /// per configured task id in the <c>tasks/</c> layout.
+    /// </summary>
+    public required IReadOnlyList<EvalTaskAsset> Tasks { get; init; }
+
+    public static EvalAssets Load(
+        string evalDir,
+        string expectedModeName,
+        IReadOnlyList<string>? taskIds = null,
+        string? modeFileName = null
+    )
     {
-        var modePath = Path.Combine(evalDir, "mode.json");
-        var taskPath = Path.Combine(evalDir, "task.md");
-        var expectedBoardPath = Path.Combine(evalDir, "expected-board.json");
+        var modeFile = string.IsNullOrWhiteSpace(modeFileName) ? DefaultModeFileName : modeFileName;
+        var modePath = Path.Combine(evalDir, modeFile);
 
         if (!File.Exists(modePath))
         {
             throw new FileNotFoundException(
-                $"mode.json not found in eval dir '{evalDir}'. The eval asset set (mode.json, task.md, "
+                $"{modeFile} not found in eval dir '{evalDir}'. The eval asset set (mode.json, task.md, "
                     + "expected-board.json) is delivered by the todo-eval mode work item; point --eval-dir at it.",
                 modePath
             );
-        }
-
-        if (!File.Exists(taskPath))
-        {
-            throw new FileNotFoundException($"task.md not found in eval dir '{evalDir}'.", taskPath);
         }
 
         var modePayload =
@@ -55,45 +254,127 @@ internal sealed class EvalAssets
             );
         }
 
-        BoardShapeExpectation? expectedBoard = null;
-        if (File.Exists(expectedBoardPath))
-        {
-            expectedBoard = BoardShapeExpectation.Load(expectedBoardPath);
-        }
-
         return new EvalAssets
         {
             ModePayload = modePayload,
             ModeName = modeName,
-            TaskTemplate = ExtractTaskMessage(File.ReadAllText(taskPath), taskPath),
-            ExpectedBoard = expectedBoard,
+            Tasks = LoadTasks(evalDir, taskIds),
         };
     }
+
+    /// <summary>
+    /// The configured tasks, or the single unnamed task of the original layout when none is configured.
+    /// A task's <c>task.md</c> is required (a typo'd id must not silently sweep nothing); its
+    /// <c>expected-board.json</c> is optional and its absence means the run has NO board gate — the
+    /// completion criterion is then reported as not measurable rather than failed.
+    /// </summary>
+    private static IReadOnlyList<EvalTaskAsset> LoadTasks(string evalDir, IReadOnlyList<string>? taskIds)
+    {
+        if (taskIds is not { Count: > 0 })
+        {
+            return [Read(id: null, evalDir, $"task.md not found in eval dir '{evalDir}'.")];
+        }
+
+        return
+        [
+            .. taskIds.Select(id =>
+                Read(
+                    id,
+                    Path.Combine(evalDir, TasksDirName, id),
+                    $"task.md not found for task '{id}': expected "
+                        + $"'{Path.Combine(evalDir, TasksDirName, id, "task.md")}'."
+                )
+            ),
+        ];
+
+        static EvalTaskAsset Read(string? id, string dir, string missingMessage)
+        {
+            var taskPath = Path.Combine(dir, "task.md");
+            if (!File.Exists(taskPath))
+            {
+                throw new FileNotFoundException(missingMessage, taskPath);
+            }
+
+            var boardPath = Path.Combine(dir, "expected-board.json");
+            var metaPath = Path.Combine(dir, "meta.json");
+            var (message, steer) = ExtractTaskMessage(File.ReadAllText(taskPath), taskPath);
+            return new EvalTaskAsset
+            {
+                Id = id,
+                Dir = dir,
+                Template = message,
+                Steer = steer,
+                Meta = File.Exists(metaPath) ? LoadMeta(metaPath) : null,
+                ExpectedBoard = File.Exists(boardPath) ? BoardShapeExpectation.Load(boardPath) : null,
+            };
+        }
+    }
+
+    private static TaskMeta LoadMeta(string path)
+    {
+        var meta =
+            JsonSerializer.Deserialize<TaskMeta>(File.ReadAllText(path), MetaOptions)
+            ?? throw new InvalidOperationException($"{path} parsed to null.");
+        meta.SteerAfter?.Validate(path);
+        return meta;
+    }
+
+    private static readonly JsonSerializerOptions MetaOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
+    /// <summary>The heading that begins the mid-run correction, per tasks/README.md.</summary>
+    private const string SteerHeading = "## steer";
 
     /// <summary>
     /// task.md is header documentation, a <c>---</c> marker line, then the user message VERBATIM
     /// (task.md's own contract). Only the part below the first marker line is sent; a file with no
     /// marker is used whole, so a plain-message task file still works.
+    /// <para>
+    /// A <c>## steer</c> heading below the marker ENDS the first message and begins the correction the
+    /// runner sends as a second message while the run is active. Everything above the heading is the
+    /// task; everything below it is the steer. A task with no such heading returns a null steer.
+    /// </para>
     /// </summary>
-    internal static string ExtractTaskMessage(string taskFileText, string path)
+    internal static (string Message, string? Steer) ExtractTaskMessage(string taskFileText, string path)
     {
         var lines = taskFileText.Split('\n');
+        var body = lines;
         for (var i = 0; i < lines.Length; i++)
         {
-            if (lines[i].TrimEnd('\r').Trim() == "---")
+            if (Normalize(lines[i]) == "---")
             {
-                var message = string.Join('\n', lines[(i + 1)..]).Trim();
-                if (message.Length == 0)
-                {
-                    throw new InvalidOperationException($"{path} has a '---' marker but nothing below it.");
-                }
-
-                return message;
+                body = lines[(i + 1)..];
+                break;
             }
         }
 
-        return taskFileText.Trim();
+        var steerAt = Array.FindIndex(
+            body,
+            line => Normalize(line).StartsWith(SteerHeading, StringComparison.OrdinalIgnoreCase)
+        );
+        var message = string.Join('\n', steerAt < 0 ? body : body[..steerAt]).Trim();
+        if (message.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"{path} has nothing below its '---' marker (and above any '{SteerHeading}' heading) to "
+                    + "send as the user message."
+            );
+        }
+
+        var steer = steerAt < 0 ? null : string.Join('\n', body[(steerAt + 1)..]).Trim();
+        if (steer is { Length: 0 })
+        {
+            throw new InvalidOperationException($"{path} has a '{SteerHeading}' heading but nothing below it.");
+        }
+
+        return (message, steer);
     }
+
+    private static string Normalize(string line) => line.TrimEnd('\r').Trim();
 
     private static readonly JsonDocumentOptions DocumentOptions = new()
     {

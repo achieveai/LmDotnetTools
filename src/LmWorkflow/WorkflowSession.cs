@@ -514,7 +514,8 @@ public static class WorkflowSession
     /// <summary>
     ///     Enumerates the controller run as the single ordered consumer of its stream: each message is
     ///     observed in publish order (so a sub-agent result is recorded before any later transition is
-    ///     reached) and, when the enumeration drains, the runtime is signalled complete.
+    ///     reached) and, when the enumeration drains, the runtime is signalled complete — unless the run
+    ///     ended in an error or its stream was severed, either of which fails the workflow instead.
     /// </summary>
     private static async Task DriveAndObserveAsync(
         MultiTurnAgentLoop loop,
@@ -545,6 +546,41 @@ public static class WorkflowSession
                     runtime.SignalFailure(
                         new InvalidOperationException(
                             $"The workflow controller's message stream was severed ({recovery.Reason}) before the run completed."
+                        )
+                    );
+                    return;
+                }
+
+                // A run that ENDS IN AN ERROR is a failed workflow, not a finished one. The loop terminalizes
+                // such a run normally — it publishes RunCompletedMessage(IsError: true), the enumeration then
+                // drains, and the run task still runs to completion, so neither the pump-fault continuation
+                // above nor the catch blocks below ever see it. Without this the drive would fall straight
+                // through to SignalCompletion and report a provider failure as a successful workflow, which is
+                // exactly how a provider-side timeout went silent once such an exception became a run error
+                // rather than a pump fault.
+                //
+                // What makes the failure WIN is that it is signalled HERE, inside the loop body, strictly
+                // before the drain reaches SignalCompletion: both signals are first-wins (TrySetException /
+                // TrySetResult), so the earlier one decides. Returning is not what wins the race — it stops
+                // the already-failed workflow from re-rendering and re-persisting a terminal result it will
+                // never report, and mirrors the severed-stream handling directly above.
+                //
+                // This outranks the runtime's own terminal: an errored run fails the workflow even when
+                // IsComplete is already true. Failing is information-PRESERVING — the terminal the workflow
+                // did reach stays readable on the runtime (IsComplete / CurrentNodeId / Result) while the
+                // error text becomes readable on the exception — whereas completing destroys the error text,
+                // which has no other surface at all. The cancellation catch below deliberately goes the other
+                // way, because a caller-requested stop of an already-finished workflow carries no error.
+                if (message is RunCompletedMessage { IsError: true } failed)
+                {
+                    runtime.SignalFailure(
+                        new InvalidOperationException(
+                            "The workflow controller's run completed with an error: "
+                                + (
+                                    string.IsNullOrWhiteSpace(failed.ErrorMessage)
+                                        ? "(the run reported no detail)"
+                                        : failed.ErrorMessage
+                                )
                         )
                     );
                     return;

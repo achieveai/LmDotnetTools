@@ -5,9 +5,10 @@ import { isReasoningMessage, isToolsCallMessage, normalizeReasoningVisibility } 
 import { truncateText } from '@/utils';
 import ToolPill from '@/components/ToolPill.vue';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   items: Array<ReasoningMessage | ToolsCallMessage>;
-}>();
+  presentation?: 'card' | 'activity-row';
+}>(), { presentation: 'card' });
 
 // Track which reasoning items are expanded (tool pills own their own expansion).
 const expandedItems = ref<Set<number>>(new Set());
@@ -22,7 +23,7 @@ const pillItemsContainer = ref<HTMLElement | null>(null);
 watch(
   () => props.items.length,
   async () => {
-    if (!isPillExpanded.value) {
+    if (props.presentation === 'card' && !isPillExpanded.value) {
       await nextTick();
       if (pillItemsContainer.value) {
         pillItemsContainer.value.scrollTop = pillItemsContainer.value.scrollHeight;
@@ -57,9 +58,17 @@ function isEncryptedReasoning(item: ReasoningMessage): boolean {
 </script>
 
 <template>
-  <div class="metadata-pill" data-testid="metadata-pill">
+  <div
+    class="metadata-pill"
+    :class="{ 'metadata-pill--activity-row': presentation === 'activity-row' }"
+    data-testid="metadata-pill"
+  >
     <!-- Pill header with expand/collapse button -->
-    <div v-if="props.items.length > 3" class="pill-header" @click="togglePillExpansion">
+    <div
+      v-if="presentation === 'card' && props.items.length > 3"
+      class="pill-header"
+      @click="togglePillExpansion"
+    >
       <span class="pill-expand-icon">{{ isPillExpanded ? '▼' : '▶' }}</span>
       <span class="pill-header-text">
         {{ isPillExpanded ? 'Collapse' : `Show all ${props.items.length} items` }}
@@ -95,6 +104,7 @@ function isEncryptedReasoning(item: ReasoningMessage): boolean {
             v-for="(toolCall, tcIndex) in item.tool_calls"
             :key="`${index}-${tcIndex}`"
             :tool-call="toolCall"
+            :presentation="presentation"
           />
         </template>
       </template>
@@ -110,6 +120,27 @@ function isEncryptedReasoning(item: ReasoningMessage): boolean {
   border: 1px solid #e0e0e0;
   margin-bottom: 8px;
   overflow: hidden;
+}
+
+.metadata-pill--activity-row {
+  margin-bottom: 8px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.metadata-pill--activity-row .pill-header {
+  margin-bottom: 6px;
+  padding: 3px 0;
+  background: transparent;
+}
+
+.metadata-pill--activity-row .pill-items {
+  gap: 10px;
+  max-height: none;
+  overflow: visible;
 }
 
 .pill-header {

@@ -380,6 +380,49 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
+    /// Whether the host takes manual compaction requests (<c>manualCompaction</c> on
+    /// <c>GET api/conversations/capabilities</c>). A host without the capability endpoint, or one that omits the
+    /// field, does not. Read this before <see cref="RequestCompactionAsync"/>: an old host answers that route 404,
+    /// which reads the same as an unknown thread.
+    /// </summary>
+    public async Task<bool> SupportsManualCompactionAsync(CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            return false;
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        return ReadBoolProperty(await response.Content.ReadAsStringAsync(ct), "manualCompaction");
+    }
+
+    /// <summary>
+    /// Asks the host to compact the conversation's context now, optionally steered by <paramref name="focus"/>.
+    /// Returns as soon as the host answers: 202 is an accepted request (its id and <c>queued</c>/<c>running</c>
+    /// status), 409 a refusal with the host's reason. Any other status throws, a 404 included.
+    /// </summary>
+    public async Task<S2SCompactionResult> RequestCompactionAsync(string threadId, string? focus, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/compaction",
+            new { Focus = focus },
+            ct
+        );
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var refusal = await response.Content.ReadAsStringAsync(ct);
+            return S2SCompactionResult.Refused(ReadStringProperty(refusal, "reason"));
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        return new S2SCompactionResult(ReadStringProperty(body, "requestId"), ReadStringProperty(body, "status"), null);
+    }
+
+    /// <summary>
     /// Queues a user message onto the thread and returns the input id to poll status by.
     /// <para>
     /// <paramref name="suppressSubAgentSpawning"/> asks the host to run THIS turn with no ability to start
@@ -939,6 +982,18 @@ internal sealed record S2SWorkspace(
 /// run is terminal (null while still running).
 /// </summary>
 internal sealed record S2SStatusResult(string Status, string? RunId, string? ResponseText);
+
+/// <summary>
+/// The host's answer to a manual compaction request: an accepted request's id and status (<c>queued</c> or
+/// <c>running</c>), or the reason it was refused (compaction_off, provider_owned_session, already_pending,
+/// in_progress, nothing_to_compact, no_safe_boundary).
+/// </summary>
+internal sealed record S2SCompactionResult(string? RequestId, string? Status, string? RefusalReason)
+{
+    public bool Accepted => RefusalReason is null;
+
+    public static S2SCompactionResult Refused(string reason) => new(null, null, reason);
+}
 
 /// <summary>
 /// Thrown when the review host cannot honour a message-level contract this review depends on — per-turn

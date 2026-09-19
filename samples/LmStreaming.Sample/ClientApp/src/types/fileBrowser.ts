@@ -45,6 +45,15 @@ export interface PreviewResult {
   lineCount?: number;
 }
 
+/** Result of `GET files/resolve?target=`: a chat file link mapped onto the workspace. */
+export interface ResolvedWorkspaceLink {
+  /** Workspace-relative path, `/`-separated; `''` is the workspace root. */
+  path: string;
+  type: 'file' | 'directory' | 'symlink';
+  /** Byte size for files; `null` when unknown or not a file. */
+  size: number | null;
+}
+
 /** Per-file outcome of an upload; a batch resolves to an array of these preserving mixed results. */
 export interface UploadOutcome {
   name: string;

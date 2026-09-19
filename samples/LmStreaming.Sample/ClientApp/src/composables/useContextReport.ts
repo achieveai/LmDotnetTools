@@ -1,5 +1,6 @@
 import { computed, onScopeDispose, ref, watch } from 'vue';
 import { getConversationContext } from '@/api/contextApi';
+import type { ConversationContextReport } from '@/types/context';
 import type { ContextPressureMessage } from '@/types/messages';
 import {
   applyPressureFrame,
@@ -80,8 +81,11 @@ export function useContextReport(
     if (next !== rows.value) rows.value = next;
   }
 
-  /** Loads the authoritative report — page load, reconnect, conversation switch, refresh key. */
-  async function hydrate(): Promise<void> {
+  /**
+   * Loads the authoritative report — page load, reconnect, conversation switch, refresh key. A caller that
+   * has just read the open conversation's report passes it as `prefetched`, and no second request is made.
+   */
+  async function hydrate(prefetched?: ConversationContextReport): Promise<void> {
     const threadId = getThreadId();
     if (!threadId) {
       reset();
@@ -91,7 +95,7 @@ export function useContextReport(
     const seq = ++hydrateSeq;
     status.value = 'loading';
     try {
-      const report = await getConversationContext(threadId);
+      const report = prefetched ?? (await getConversationContext(threadId));
       if (seq !== hydrateSeq) return; // a newer hydrate owns the store
       if (report === null) {
         rows.value = [];
