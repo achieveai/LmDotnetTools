@@ -31,7 +31,8 @@ export type ContextReportStatus = 'idle' | 'loading' | 'ready' | 'unavailable';
  *  - `getLatestFrame` — the newest `context_pressure` frame seen by `useChat`. Handed in, never
  *    imported, so the panel is testable without the chat machinery.
  *  - `getRefreshKey` — any value whose change means "the endpoint may know more now": the run
- *    going idle (usage rows are persisted at run completion) or the sub-agent roster changing.
+ *    going idle, the sub-agent roster changing, or the live usage total moving (usage rows are
+ *    persisted per model call, including every descendant's).
  *
  * Authority (spec 679 §7.3): the endpoint is authoritative; frames are transient enrichments.
  * Frames only ever UPGRADE a row's observation (a lower generation ordinal is dropped), and they

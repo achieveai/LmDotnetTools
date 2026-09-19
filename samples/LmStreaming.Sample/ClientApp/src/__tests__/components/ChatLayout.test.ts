@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, inject, h, type Ref } from 'vue';
+import { getConversationContext } from '@/api/contextApi';
 import fs from 'fs';
 import path from 'path';
 import ChatLayout from '@/components/ChatLayout.vue';
@@ -135,6 +136,7 @@ const sharedMocks = vi.hoisted(() => ({
   focusChild: vi.fn(async (_agentId: string) => {}),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
   cumulativeTotalTokens: 0,
+  cumulativeUsageRef: null as Ref<{ totalTokens: number }> | null,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -253,14 +255,14 @@ vi.mock('@/composables/useChat', async () => {
         isSending: ref(sharedMocks.isSending),
         error: ref(null),
         usage: ref(null),
-        cumulativeUsage: ref({
+        cumulativeUsage: (sharedMocks.cumulativeUsageRef = ref({
           promptTokens: 0,
           uncachedInputTokens: 0,
           completionTokens: 0,
           totalTokens: sharedMocks.cumulativeTotalTokens,
           cachedTokens: 0,
           cacheCreationTokens: 0,
-        }),
+        })),
         cumulativeCost: ref({
           estimatedCostMicros: null,
           providerReportedCostMicros: null,
@@ -496,6 +498,52 @@ describe('ChatLayout view preference', () => {
     } finally {
       sharedMocks.subAgentChildren = [];
     }
+  });
+
+  describe('context report refresh while a run is busy', () => {
+    const bumpUsage = (totalTokens: number) => {
+      const usage = sharedMocks.cumulativeUsageRef!;
+      usage.value = { ...usage.value, totalTokens };
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('re-reads the report once per window when live usage moves in the Developer view', async () => {
+      const wrapper = mountLayout();
+      await flushPromises();
+      await wrapper.get('[data-testid="view-preference-developer"]').setValue(true);
+      await flushPromises();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      vi.mocked(getConversationContext).mockClear();
+
+      // A child's usage lands mid-run: no roster change and no idle, only the total moves.
+      bumpUsage(500);
+      await flushPromises();
+      bumpUsage(900);
+      await flushPromises();
+      expect(getConversationContext).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+      expect(getConversationContext).toHaveBeenCalledTimes(1);
+      expect(getConversationContext).toHaveBeenCalledWith('thread-1');
+    });
+
+    it('does not re-read on usage in the Consumer view, where the panel is hidden', async () => {
+      mountLayout();
+      await flushPromises();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      vi.mocked(getConversationContext).mockClear();
+
+      bumpUsage(500);
+      await flushPromises();
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+
+      expect(getConversationContext).not.toHaveBeenCalled();
+    });
   });
 
   it('uses one full-width app header above the hosted sidebar and chat body', async () => {
