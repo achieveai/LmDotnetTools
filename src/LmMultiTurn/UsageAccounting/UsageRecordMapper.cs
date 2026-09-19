@@ -79,6 +79,7 @@ public static class UsageRecordMapper
             // Cache-creation tokens are billed separately (additive to the total). Anthropic and related
             // providers surface them via Usage.ExtraProperties; 0 when absent.
             CacheWriteTokens = usage.GetExtraProperty<int>("cache_creation_input_tokens"),
+            CacheWrite1hTokens = CacheWrite1hTokensOf(usage),
             ReasoningTokens = usage.TotalReasoningTokens,
             ProviderReportedCostMicros = providerReportedCostMicros,
             CostProvenance = providerReportedCostMicros is not null
@@ -102,6 +103,22 @@ public static class UsageRecordMapper
         return string.IsNullOrEmpty(reported) || string.Equals(reported, requestedModel, StringComparison.Ordinal)
             ? null
             : reported;
+    }
+
+    /// <summary>
+    ///     The one-hour share of the cache write when the provider reports a TTL split, else null. Either half
+    ///     of the split makes it known: a provider that reports only the 5-minute half wrote no 1h tokens.
+    ///     Null keeps <see cref="ModelPricing" /> honest that its estimate is a lower bound.
+    /// </summary>
+    private static long? CacheWrite1hTokensOf(Usage usage)
+    {
+        var extras = usage.ExtraProperties;
+        if (extras?.ContainsKey("ephemeral_1h_input_tokens") == true)
+        {
+            return usage.GetExtraProperty<int>("ephemeral_1h_input_tokens");
+        }
+
+        return extras?.ContainsKey("ephemeral_5m_input_tokens") == true ? 0 : null;
     }
 
     /// <summary>

@@ -17,9 +17,55 @@ import {
   freshnessLabel,
   rowFromWire,
   temperatureLabel,
+  tokenBreakdown,
   utilizationOf,
   viewFromReport,
 } from '@/utils/contextReport';
+
+describe('tokenBreakdown', () => {
+  it('names every category and says which ones are already counted inside input or output', () => {
+    // The shape of the screenshot that prompted this: cache read is inside input, thinking inside output.
+    const lines = tokenBreakdown({
+      kind: 'value',
+      input: 23_235_406,
+      output: 29_730,
+      cacheRead: 22_102_481,
+      cacheWrite: 0,
+      reasoning: 4_547,
+      total: 23_265_136,
+    });
+
+    expect(lines).toEqual([
+      { key: 'input', label: 'Input', value: '23,235,406', note: null },
+      { key: 'cache-read', label: 'Cache read', value: '22,102,481', note: 'part of input' },
+      { key: 'uncached-input', label: 'Uncached input', value: '1,132,925', note: 'part of input' },
+      { key: 'cache-write', label: 'Cache write', value: '0', note: null },
+      { key: 'output', label: 'Output', value: '29,730', note: null },
+      { key: 'thinking', label: 'Thinking', value: '4,547', note: 'part of output' },
+      { key: 'total', label: 'Total', value: '23,265,136', note: null },
+    ]);
+  });
+
+  it('treats cache reads above input as reported separately, the Anthropic shape', () => {
+    // Anthropic's input_tokens excludes cache reads, so a cached row has cacheRead far above input.
+    const lines = tokenBreakdown({
+      kind: 'value',
+      input: 12,
+      output: 1,
+      cacheRead: 48_000,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 13,
+    });
+
+    expect(lines.find((l) => l.key === 'cache-read')?.note).toBe('reported separately');
+    expect(lines.find((l) => l.key === 'uncached-input')).toMatchObject({ value: '12', note: null });
+  });
+
+  it('has no lines when no usage is recorded', () => {
+    expect(tokenBreakdown({ kind: 'none' })).toEqual([]);
+  });
+});
 
 function observation(overrides: Partial<ContextObservation> = {}): ContextObservation {
   return {

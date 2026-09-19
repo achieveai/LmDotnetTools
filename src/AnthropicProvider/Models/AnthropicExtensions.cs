@@ -73,7 +73,9 @@ public static class AnthropicExtensions
 
             if (response.Usage.CacheCreationInputTokens > 0)
             {
-                usage = usage.SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens);
+                usage = usage
+                    .SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens)
+                    .SetExtraProperty("ephemeral_1h_input_tokens", response.Usage.CacheWrite1hTokens);
             }
 
             messages.Add(

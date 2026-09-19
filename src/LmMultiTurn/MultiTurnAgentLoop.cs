@@ -625,6 +625,9 @@ public sealed class MultiTurnAgentLoop
                 // budget (never null here — MultiTurnAgentBase floors it), so a delegate's Write/Bash
                 // tool_use JSON isn't truncated by the provider's 4096 default (stop_reason=max_tokens).
                 parentMaxToken: DefaultOptions.MaxToken,
+                // Sub-agents whose template leaves caching Off inherit the parent's mode, so a delegate's
+                // growing history is read from cache instead of re-billed as uncached input every call.
+                parentPromptCaching: DefaultOptions.PromptCaching,
                 // Share the root ledger so descendant usage folds into the same conversation total (#196).
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).

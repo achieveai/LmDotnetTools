@@ -260,9 +260,28 @@ const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
 );
 
 // Context/cost panel state (#685), hoisted like the board. Same start gate; the endpoint is
-// authoritative and re-read when the run goes idle (usage rows persist at run completion) or the
-// sub-agent roster changes (a new child gets its own row) — child loops publish their live frames to
-// their own sockets, not this one, so their rows only move on a re-read.
+// authoritative and re-read when the run goes idle, the sub-agent roster changes (a new child gets its
+// own row), or the live usage total moves — child loops publish their live frames to their own sockets,
+// not this one, so their rows only move on a re-read. Usage is persisted per model call, so without the
+// usage tick a child added mid-run keeps "No usage recorded" until the whole root run ends.
+const CONTEXT_USAGE_REFRESH_MS = 5000;
+const contextUsageTick = ref(0);
+let contextUsageTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => cumulativeUsage.value.totalTokens,
+  () => {
+    // Throttled (one re-read per window, trailing) and only while the panel is on screen: a busy
+    // fan-out reports usage on every call of every child.
+    if (!showDeveloperDiagnostics.value || contextUsageTimer !== null) return;
+    contextUsageTimer = setTimeout(() => {
+      contextUsageTimer = null;
+      contextUsageTick.value++;
+    }, CONTEXT_USAGE_REFRESH_MS);
+  }
+);
+onBeforeUnmount(() => {
+  if (contextUsageTimer !== null) clearTimeout(contextUsageTimer);
+});
 const {
   rows: contextRows,
   total: contextTotal,
@@ -272,7 +291,13 @@ const {
 } = useContextReport(
   () => subAgentParentThreadId.value,
   () => contextPressure.value,
-  () => `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}`
+  () =>
+    `${chatLoading.value ? 'busy' : 'idle'}:${subAgentChildren.value.map((c) => c.agentId).join(',')}:${contextUsageTick.value}`
+);
+
+// The context rows carry only agent ids ("agent-7"); label them the way the tabs and roster do.
+const contextAgentNames = computed<Record<string, string>>(() =>
+  Object.fromEntries(subAgentChildren.value.map((c) => [c.agentId, c.name || c.template]))
 );
 
 // Compact now (manual compaction) for the same conversation the panel shows. A committed compaction,
@@ -1377,6 +1402,7 @@ onBeforeUnmount(() => {
             :status="contextStatus"
             :generated-at-utc="contextGeneratedAtUtc"
             :compaction="compactionControl"
+            :agent-names="contextAgentNames"
             @compact="requestManualCompaction"
           />
 

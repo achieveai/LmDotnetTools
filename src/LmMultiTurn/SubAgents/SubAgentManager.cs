@@ -78,6 +78,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly IMultiTurnAgent _parentAgent;
     private readonly string? _parentModelId;
     private readonly int? _parentMaxToken;
+    private readonly PromptCachingMode _parentPromptCaching;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
 
@@ -535,7 +536,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         Func<Task>? persistUsageAsync = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
+        PromptCachingMode parentPromptCaching = PromptCachingMode.Off
     )
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
@@ -602,6 +604,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         // none — so a delegate gets the same headroom as the conversation that spawned it instead of the
         // provider's 4096 default that truncates tool-call JSON. Null when the parent carried no budget.
         _parentMaxToken = parentMaxToken;
+        // The parent's prompt-caching mode, inherited by sub-agents whose template leaves it Off — without
+        // it a delegate re-bills its whole history as uncached input on every model call.
+        _parentPromptCaching = parentPromptCaching;
         // The parent's lifecycle wiring, from which each child's bundle is derived at spawn time.
         _lifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
         // The parent agent's handle on the collaboration, when the host enabled one. Null keeps every
@@ -3390,7 +3395,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                         template.DefaultOptions,
                         effectiveModel,
                         _parentModelId,
-                        _parentMaxToken
+                        _parentMaxToken,
+                        _parentPromptCaching
                     )?.ModelId,
                     requestedReasoningEffort,
                     modelSelectionSource: modelSelectionSource
@@ -3398,12 +3404,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        // Resolve the sub-agent's options with model + budget inheritance (override > tier > template > parent).
+        // Resolve the sub-agent's options with model + budget + caching inheritance (override > tier > template > parent).
         var defaultOptions = ResolveSubAgentOptions(
             template.DefaultOptions,
             effectiveModel,
             _parentModelId,
-            _parentMaxToken
+            _parentMaxToken,
+            _parentPromptCaching
         );
         // Validate the tool-set request BEFORE anything with a side effect: the owned provider below is
         // allocated for disposal, and AgentThreadOwnership.InheritAsync is a durable write that creates
@@ -3788,7 +3795,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="GenerateReplyOptions.MaxToken"/> wins, else the parent's effective budget
     /// (<paramref name="parentMaxToken"/>) — so a delegate gets the spawning conversation's headroom
     /// instead of the provider's 4096 default, which truncates a tool-call's argument JSON at
-    /// <c>stop_reason=max_tokens</c>. Any other template option fields are preserved. Returns null only
+    /// <c>stop_reason=max_tokens</c>. Prompt caching inherits too: a template left at
+    /// <see cref="PromptCachingMode.Off"/> (the default, so indistinguishable from "unset") takes the
+    /// parent's <paramref name="parentPromptCaching"/> — otherwise a delegate re-bills its whole history
+    /// as uncached input on every call. Any other template option fields are preserved. Returns null only
     /// when nothing is available anywhere AND the template carried no options, so the previous
     /// "inherit the provider's own defaults" behavior is unchanged when there is genuinely nothing to set.
     /// </summary>
@@ -3796,7 +3806,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         GenerateReplyOptions? templateDefaults,
         string? modelOverride,
         string? parentModelId,
-        int? parentMaxToken = null
+        int? parentMaxToken = null,
+        PromptCachingMode parentPromptCaching = PromptCachingMode.Off
     )
     {
         var templateModel = templateDefaults?.ModelId;
@@ -3808,8 +3819,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         var hasModel = !string.IsNullOrWhiteSpace(model);
         // Only apply an inherited budget when the template didn't set its own — the template always wins.
         var inheritBudget = templateDefaults?.MaxToken is null && parentMaxToken is not null;
+        var inheritCaching =
+            (templateDefaults?.PromptCaching ?? PromptCachingMode.Off) == PromptCachingMode.Off
+            && parentPromptCaching != PromptCachingMode.Off;
 
-        if (!hasModel && !inheritBudget)
+        if (!hasModel && !inheritBudget && !inheritCaching)
         {
             // Nothing to set — preserve the exact previous behavior (return the template unchanged, null
             // included) so a genuinely empty resolution still yields the provider's own defaults.
@@ -3829,6 +3843,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (inheritBudget)
         {
             resolved = resolved with { MaxToken = parentMaxToken };
+        }
+
+        if (inheritCaching)
+        {
+            resolved = resolved with { PromptCaching = parentPromptCaching };
         }
 
         return resolved;
