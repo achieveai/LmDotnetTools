@@ -19,6 +19,7 @@ import {
   formatTokens,
   freshnessLabel,
   temperatureLabel,
+  tokenBreakdown,
   tokensLabel,
   usageCompletenessLabel,
   type ContextRowView,
@@ -49,6 +50,8 @@ const props = defineProps<{
   generatedAtUtc: string | null;
   /** Compact now state; absent (or `supported: false`) hides the button. */
   compaction?: CompactionControlView;
+  /** Display name per sub-agent id, from the sub-agent roster; an id missing here shows as the raw id. */
+  agentNames?: Readonly<Record<string, string>>;
 }>();
 
 const emit = defineEmits<{
@@ -139,7 +142,7 @@ watch(compactBlockedReason, (reason) => {
 });
 
 function agentName(row: ContextRowView): string {
-  return row.agentId === 'root' ? 'Main agent' : row.agentId;
+  return row.agentId === 'root' ? 'Main agent' : (props.agentNames?.[row.agentId] ?? row.agentId);
 }
 
 function percentOf(row: ContextRowView): number {
@@ -320,6 +323,7 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
         <thead>
           <tr>
             <th scope="col">Agent</th>
+            <th scope="col">Model</th>
             <th scope="col">Context window</th>
             <th scope="col">Usage</th>
             <th scope="col">Cost</th>
@@ -340,6 +344,7 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
                 <span class="context-agent-kind">{{ executionKindLabel(row.executionKind) }}</span>
                 <span v-if="row.provisional" class="context-badge context-badge-provisional">live only</span>
               </th>
+              <td data-label="Model" data-testid="context-model" class="context-model">{{ row.modelId ?? 'unknown' }}</td>
               <td data-label="Context window" class="context-capacity-cell">
                 <div
                   v-if="row.capacity.kind === 'known'"
@@ -406,7 +411,7 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
               </td>
             </tr>
             <tr v-if="isOpen(row)" :id="detailsId(row)" class="context-row-details" data-testid="context-row-details">
-              <td colspan="6">
+              <td colspan="7">
                 <dl class="context-dl">
                   <dt>Compaction</dt>
                   <dd data-testid="context-compaction">{{ compactionLabel(row.compaction) }}</dd>
@@ -416,8 +421,6 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
                     <dt>Checkpoint</dt>
                     <dd>{{ row.compaction.checkpointId }}</dd>
                   </template>
-                  <dt>Model</dt>
-                  <dd>{{ row.modelId ?? 'unknown' }}</dd>
                   <template v-if="row.capacity.kind === 'known'">
                     <dt>Window</dt>
                     <dd data-testid="context-window-detail">
@@ -434,9 +437,21 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
                   <template v-if="row.tokens.kind === 'value'">
                     <dt>Tokens</dt>
                     <dd>
-                      in {{ formatTokens(row.tokens.input) }}, out {{ formatTokens(row.tokens.output) }},
-                      cache read {{ formatTokens(row.tokens.cacheRead) }}, cache write
-                      {{ formatTokens(row.tokens.cacheWrite) }}, reasoning {{ formatTokens(row.tokens.reasoning) }}
+                      <table class="context-token-table">
+                        <tbody>
+                          <tr
+                            v-for="line in tokenBreakdown(row.tokens)"
+                            :key="line.key"
+                            data-testid="context-token-line"
+                            :data-key="line.key"
+                            :class="{ 'context-token-sub': line.note, 'context-token-total': line.key === 'total' }"
+                          >
+                            <th scope="row">{{ line.label }}</th>
+                            <td class="context-token-value">{{ line.value }}</td>
+                            <td class="context-token-note">{{ line.note ?? '' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </dd>
                   </template>
                   <dt>Thread</dt>
@@ -449,6 +464,7 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
         <tfoot v-if="total">
           <tr class="context-total" data-testid="context-total">
             <th scope="row" data-label="Agent">Total (all agents)</th>
+            <td data-label="Model"></td>
             <td data-label="Context window"></td>
             <td data-label="Usage" data-testid="context-total-tokens" :data-kind="total.tokens.kind">
               {{ tokensLabel(total.tokens) }}
@@ -769,6 +785,44 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
   word-break: break-word;
 }
 
+.context-model {
+  white-space: nowrap;
+}
+
+/* The token breakdown nests inside a details cell, so it undoes the outer table's cell styling. */
+.context-table .context-token-table {
+  width: auto;
+  border-collapse: collapse;
+}
+
+.context-table .context-token-table th,
+.context-table .context-token-table td {
+  padding: 0 12px 0 0;
+  border-bottom: none;
+  font-weight: 400;
+}
+
+.context-table .context-token-table .context-token-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-table .context-token-table .context-token-note {
+  color: #6c757d;
+  font-size: 12px;
+}
+
+.context-table .context-token-table .context-token-sub th {
+  padding-left: 16px;
+  color: #6c757d;
+}
+
+.context-table .context-token-table .context-token-total th,
+.context-table .context-token-table .context-token-total td {
+  font-weight: 600;
+  border-top: 1px solid #dee2e6;
+}
+
 .context-total th,
 .context-total td {
   font-weight: 600;
@@ -840,6 +894,26 @@ function onRowKeydown(event: KeyboardEvent, index: number): void {
 
   .context-dl {
     grid-template-columns: 1fr;
+  }
+
+  /* Keep the nested breakdown a real table; the card rules above would stack each cell. */
+  .context-table .context-token-table {
+    display: table;
+  }
+
+  .context-table .context-token-table tbody {
+    display: table-row-group;
+  }
+
+  .context-table .context-token-table tr {
+    display: table-row;
+    padding: 0;
+    border-bottom: none;
+  }
+
+  .context-table .context-token-table th,
+  .context-table .context-token-table td {
+    display: table-cell;
   }
 }
 </style>

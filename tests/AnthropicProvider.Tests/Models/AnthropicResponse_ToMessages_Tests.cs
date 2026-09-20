@@ -354,6 +354,30 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal(300, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
     }
 
+    [Theory]
+    [InlineData("", 0)]
+    [InlineData(""", "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}""", 200)]
+    public void NonStreaming_CacheWrite_ReportsTheOneHourSplit(string cacheCreation, int expectedOneHour)
+    {
+        // Same contract as the streaming parser: a cache write always carries its 1h share, 0 when the
+        // response has no split, because this provider only sends default (5-minute) cache_control.
+        var json = $$"""
+            {
+              "id": "msg_ttl", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+              "content": [ { "type": "text", "text": "hello" } ], "stop_reason": "end_turn",
+              "usage": { "input_tokens": 10, "output_tokens": 5, "cache_creation_input_tokens": 300{{cacheCreation}} }
+            }
+            """;
+        var response =
+            JsonSerializer.Deserialize<AnthropicResponse>(json)
+            ?? throw new InvalidOperationException("Failed to deserialize response");
+
+        var usage = Assert.IsType<UsageMessage>(response.ToMessages("test-agent").Single(m => m is UsageMessage)).Usage;
+
+        Assert.True(usage.ExtraProperties.ContainsKey("ephemeral_1h_input_tokens"));
+        Assert.Equal(expectedOneHour, usage.GetExtraProperty<int>("ephemeral_1h_input_tokens"));
+    }
+
     // Simple class to represent an SSE event
     private class SseEvent
     {

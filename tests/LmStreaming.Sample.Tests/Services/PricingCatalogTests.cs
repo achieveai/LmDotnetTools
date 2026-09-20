@@ -530,7 +530,9 @@ public class PricingCatalogTests
                 ("Pricing:Models:claude-sonnet-4-5-20250929:CompletionPerMillion", "15"),
                 ("Pricing:Models:claude-sonnet-4-5-20250929:MaxContextTokens", "200000"),
                 ("Pricing:Models:claude-sonnet-4-5-20250929:MaxOutputTokens", "64000"),
-                ("Pricing:Models:claude-sonnet-4-5-20250929:Aliases:0", "claude-sonnet-4-5")
+                ("Pricing:Models:claude-sonnet-4-5-20250929:Aliases:0", "claude-sonnet-4-5"),
+                // Cap off: this test pins the catalog window itself, not the host's ceiling.
+                ("ContextWindow:MaxTokens", "0")
             )
         );
 
@@ -548,11 +550,117 @@ public class PricingCatalogTests
     {
         var configuration = Config(
             ("Pricing:Models:gpt-4o:PromptPerMillion", "2.5"),
-            ("Pricing:Models:gpt-4o:CompletionPerMillion", "10")
+            ("Pricing:Models:gpt-4o:CompletionPerMillion", "10"),
+            ("ContextWindow:MaxTokens", "0")
         );
 
         ResolverFrom(configuration).Resolve("gpt-4o").Should().NotBeNull();
         CapacityFrom(configuration).Resolve("gpt-4o").Should().BeNull("an unknown window is unknown, not zero");
+    }
+
+    // --- ContextWindow:MaxTokens: the host's ceiling on every window, and the window of a model the catalog
+    // does not know (Claude CLI / Codex / unlisted Copilot ids), so the gauge and compaction work for them. ---
+
+    [Fact]
+    public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault156KWindow()
+    {
+        var capacity = CapacityFrom(Config()).Resolve("gpt-5.6-sol");
+
+        capacity.Should().NotBeNull("an unknown model falls back to the host cap rather than no window");
+        capacity!.WindowTokens.Should().Be(PricingCatalog.DefaultMaxContextTokens);
+        PricingCatalog.DefaultMaxContextTokens.Should().Be(156_000);
+        capacity.MaxOutputTokens.Should().BeNull("the cap states a window, not an output ceiling");
+    }
+
+    [Fact]
+    public void AWindowLargerThanTheCap_IsClampedToIt_KeepingItsOutputCeiling()
+    {
+        var capacity = CapacityFrom(
+                Config(
+                    ("Pricing:Models:claude-sonnet-4-5-20250929:PromptPerMillion", "3"),
+                    ("Pricing:Models:claude-sonnet-4-5-20250929:CompletionPerMillion", "15"),
+                    ("Pricing:Models:claude-sonnet-4-5-20250929:MaxContextTokens", "200000"),
+                    ("Pricing:Models:claude-sonnet-4-5-20250929:MaxOutputTokens", "64000")
+                )
+            )
+            .Resolve("claude-sonnet-4-5-20250929");
+
+        capacity!.WindowTokens.Should().Be(156_000);
+        capacity.MaxOutputTokens.Should().Be(64_000);
+    }
+
+    [Fact]
+    public void AWindowSmallerThanTheCap_IsLeftAlone()
+    {
+        var capacity = CapacityFrom(
+                Config(
+                    ("Pricing:Models:gpt-4o:PromptPerMillion", "2.5"),
+                    ("Pricing:Models:gpt-4o:CompletionPerMillion", "10"),
+                    ("Pricing:Models:gpt-4o:MaxContextTokens", "128000")
+                )
+            )
+            .Resolve("gpt-4o");
+
+        capacity!.WindowTokens.Should().Be(128_000);
+    }
+
+    [Fact]
+    public void AConfiguredCap_ReplacesTheDefault()
+    {
+        var resolver = CapacityFrom(Config(("ContextWindow:MaxTokens", "100000")));
+
+        resolver.Resolve("gpt-5.6-sol")!.WindowTokens.Should().Be(100_000);
+    }
+
+    [Fact]
+    public void ANegativeCap_FailsAtStartup_RatherThanSilentlyTurningTheCapOff()
+    {
+        var act = () => CapacityFrom(Config(("ContextWindow:MaxTokens", "-1")));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*ContextWindow:MaxTokens*");
+    }
+
+    [Fact]
+    public void TheShippedAppsettings_CapsContextAt156K()
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+
+        configuration.GetValue<long?>("ContextWindow:MaxTokens").Should().Be(156_000);
+    }
+
+    [Theory]
+    [InlineData("gpt-6-astra")]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-5.6-terra")]
+    [InlineData("gpt-5.6-luna")]
+    [InlineData("claude-fable-5-1")]
+    [InlineData("claude-fable-5.1")]
+    [InlineData("claude-opus-5")]
+    [InlineData("claude-sonnet-5")]
+    // The `copilot` provider's default when COPILOT_MODEL is unset (Program.cs), so a default run prices.
+    [InlineData("claude-sonnet-4.5")]
+    [InlineData("claude-haiku-4.5")]
+    [InlineData("claude-haiku-4-5")]
+    [InlineData("deepseek-v4-pro")]
+    [InlineData("deepseek-flash")]
+    [InlineData("deepseek-v4-flash")]
+    public void TheShippedAppsettings_PricesTheCopilotModelsTheSampleRuns_AndCapsTheirWindow(string modelId)
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+
+        ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(156_000);
+    }
+
+    [Theory]
+    [InlineData("gpt-5.3-codex")]
+    [InlineData("claude-sonnet-4-6")]
+    public void TheShippedAppsettings_LeavesDeliberatelyUnpricedIds_Unavailable(string modelId)
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+
+        // Codex and the Claude CLI bill by subscription; a guessed rate would be summed and believed (#378).
+        ResolverFrom(configuration).Resolve(modelId).Should().BeNull($"'{modelId}' has no cited public price");
     }
 
     [Fact]

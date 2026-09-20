@@ -7,7 +7,7 @@ public class EvalRunnerConfigTests
     {
         var config = EvalRunnerConfig.Load(configPath: null);
 
-        config.Models.Should().Equal("deepseek-v4-flash", "gpt-5.6-luna");
+        config.Models.Should().Equal("deepseek-flash", "gpt-5.6-luna");
         config.Seeds.Should().Be(5);
         config.PerRunTimeoutMinutes.Should().Be(20);
         config.MaxParallelRuns.Should().Be(1, "runs are sequential unless explicitly parallelized");
@@ -151,7 +151,7 @@ public class CliOptionsTests
 
         merged.Seeds.Should().Be(2);
         merged.Host.PublishDir.Should().Be("C:/pub");
-        merged.Models.Should().Equal("deepseek-v4-flash", "gpt-5.6-luna");
+        merged.Models.Should().Equal("deepseek-flash", "gpt-5.6-luna");
         merged.MaxParallelRuns.Should().Be(1);
     }
 

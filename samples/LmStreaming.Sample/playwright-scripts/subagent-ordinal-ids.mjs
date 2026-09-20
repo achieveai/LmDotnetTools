@@ -153,7 +153,7 @@ async (page) => {
       // ---------------- Phase 1: fresh conversation, alpha + beta => agent-1 / agent-2 ----------------
       await page.goto(BASE);
       await tid('chat-input-textarea').waitFor({ timeout: 20000 });
-      await page.getByRole('button', { name: '+ New Chat' }).click();
+      await page.locator('[data-testid="sidebar-new-chat"]').click();
       await tid('header-actions-menu-button').click();
       await tid('clear-button').click();
       await tid('provider-selector-button').click();

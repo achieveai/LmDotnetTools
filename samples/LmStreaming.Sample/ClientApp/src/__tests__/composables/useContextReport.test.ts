@@ -221,25 +221,59 @@ describe('useContextReport — hydrate (the authoritative endpoint)', () => {
     expect(store.isLoading.value).toBe(false);
   });
 
-  it('lets only the newest hydrate write when two overlap', async () => {
+  it('coalesces refreshes that arrive while a read is unresolved into ONE trailing read', async () => {
+    // The endpoint scans every persisted descendant per request, so a refresh window shorter than the
+    // scan must not stack requests: at most one is active, and everything that arrived while it ran
+    // collapses into a single trailing read carrying the latest state.
     const first = deferred<ConversationContextReport | null>();
-    const second = deferred<ConversationContextReport | null>();
-    mocks.getConversationContext.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const trailing = deferred<ConversationContextReport | null>();
+    mocks.getConversationContext.mockReturnValueOnce(first.promise).mockReturnValueOnce(trailing.promise);
+    const key = ref(0);
     const store = useContextReport(
       () => 't1',
+      () => null,
+      () => key.value
+    );
+
+    const h1 = store.hydrate();
+    key.value = 1;
+    await nextTick();
+    await flush();
+    key.value = 2;
+    await nextTick();
+    await flush();
+    expect(mocks.getConversationContext).toHaveBeenCalledTimes(1); // nothing stacked behind the first
+
+    first.resolve(report());
+    await h1;
+    await flush();
+    expect(mocks.getConversationContext).toHaveBeenCalledTimes(2); // exactly one trailing read
+
+    trailing.resolve(report([agent({ agentId: 'root' }), agent({ agentId: 'a1', threadId: 'sub-1' })]));
+    await flush();
+    expect(store.rows.value.map((r) => r.agentId)).toEqual(['root', 'a1']);
+    expect(store.isLoading.value).toBe(false);
+  });
+
+  it('lets only the newest hydrate write when a conversation switch overlaps a read', async () => {
+    const first = deferred<ConversationContextReport | null>();
+    mocks.getConversationContext.mockReturnValueOnce(first.promise);
+    const threadId = ref<string | null>('t1');
+    const store = useContextReport(
+      () => threadId.value,
       () => null,
       () => 0
     );
 
     const h1 = store.hydrate();
-    const h2 = store.hydrate();
-    second.resolve(report([agent({ agentId: 'root' }), agent({ agentId: 'a1', threadId: 'sub-1' })]));
-    await h2;
+    threadId.value = null; // the switch resets the store and invalidates the read in flight
+    await nextTick();
+    await flush();
     first.resolve(report());
     await h1;
 
-    expect(store.rows.value.map((r) => r.agentId)).toEqual(['root', 'a1']);
-    expect(store.isLoading.value).toBe(false);
+    expect(store.rows.value).toHaveLength(0);
+    expect(store.status.value).toBe('idle');
   });
 });
 

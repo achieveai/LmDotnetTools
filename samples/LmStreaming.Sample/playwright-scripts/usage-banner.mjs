@@ -48,7 +48,7 @@ async (page) => {
   };
   const totalOf = (t) => parseInt((t.match(/Total:\s*(\d+)/) || [])[1] || '0', 10);
   const newChat = async () => {
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
     await tid('provider-selector-button').click();
     await tid(`provider-option-${PROVIDER}`).click();
   };

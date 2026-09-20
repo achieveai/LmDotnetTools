@@ -640,7 +640,14 @@ public sealed class MultiTurnAgentLoop
                 lifecycleServices: subAgentLifecycleServices ?? LifecycleServices,
                 // This loop's own collaboration handle, from which the manager derives each child's.
                 collaboration: collaboration
-            );
+            )
+            {
+                // Sub-agents whose template leaves caching Off inherit the parent's mode, so a delegate's
+                // growing history is read from cache instead of re-billed as uncached input every call.
+                // Set here rather than as a constructor argument to keep the published constructor's CLR
+                // signature intact for already-compiled package consumers.
+                ParentPromptCaching = DefaultOptions.PromptCaching,
+            };
 
             SubAgentTools = new SubAgentToolProvider(SubAgentManager, source, subAgentOptions.ExposedToolNames);
 

@@ -200,6 +200,11 @@ public static class MessagePersistenceConverter
     /// partner removed, preserving the relative order of everything kept.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// The second caller is <c>AgentContextProjection.Build</c>, which removes rows by seq and can
+    /// therefore orphan a half the same way a skipped row does. Restore and the execution view are the
+    /// only two places rows disappear, so they share one sweep rather than two that can disagree.
+    /// </para>
     /// One message may carry SEVERAL tool call ids, so dropping one result can invalidate a message
     /// that also holds calls whose results ARE present — which in turn orphans those results. The
     /// sweep therefore iterates to a fixed point rather than making a single pass. Ids are the only
@@ -220,7 +225,7 @@ public static class MessagePersistenceConverter
     /// before the aggregate can reach a store.
     /// </para>
     /// </remarks>
-    private static List<IMessage> DropUnpairedToolMessages(IReadOnlyList<IMessage> messages)
+    internal static List<IMessage> DropUnpairedToolMessages(IReadOnlyList<IMessage> messages)
     {
         var keep = new bool[messages.Count];
         Array.Fill(keep, true);

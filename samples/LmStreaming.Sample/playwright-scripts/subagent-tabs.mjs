@@ -81,7 +81,7 @@ async (page) => {
 
     // Fresh chat on the mock provider (General Assistant is the default mode → Agent + calculate wired).
     // Clear first so this box is isolated from any prior/concurrent conversation content on this dev host.
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
     await tid('header-actions-menu-button').click();
     await tid('clear-button').click();
     await tid('provider-selector-button').click();

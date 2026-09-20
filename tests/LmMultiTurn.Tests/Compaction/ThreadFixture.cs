@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace LmMultiTurn.Tests.Compaction;
@@ -154,6 +155,13 @@ internal sealed class ThreadFixture
                 GenerationId = NextGeneration(),
             }
         );
+
+    /// <summary>
+    /// The loop's own elapsed-time notice: a user-role row injected between turns, so it looks like human
+    /// input to anything that only reads the role.
+    /// </summary>
+    public ThreadFixture ElapsedNotice(int seconds = 300) =>
+        Add(ElapsedTimeNotice.Build(TimeSpan.FromSeconds(seconds), DateTimeOffset.UnixEpoch) with { RunId = _runId });
 
     public ThreadFixture Notify(
         string kind = "subagent-completion",

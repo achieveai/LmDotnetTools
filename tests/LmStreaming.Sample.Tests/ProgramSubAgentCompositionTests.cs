@@ -516,7 +516,10 @@ public sealed class ProgramSubAgentCompositionTests
             new SubAgentOptions { Templates = rebound.Source.Templates },
             rebound.Source,
             parentModelId: "parent-model"
-        );
+        )
+        {
+            ParentPromptCaching = PromptCachingMode.Auto,
+        };
 
         _ = await manager.SpawnAsync("inherited", "inherit");
         _ = await manager.SpawnAsync("tiered", "tier");
@@ -544,6 +547,11 @@ public sealed class ProgramSubAgentCompositionTests
             .BeOfType<ResponseReasoningOptions>()
             .Which.Effort.Should()
             .Be("xhigh");
+        // Every route (inherited, tier-resolved, explicit) keeps the parent's prompt caching, or a Claude
+        // delegate re-bills its whole history as uncached input on every call.
+        inheritedOptions[0]!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+        routedOptions["tier-model"]!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+        routedOptions["explicit-model"]!.PromptCaching.Should().Be(PromptCachingMode.Auto);
         rebound.Source.Templates["tiered"].IsModelExplicitlySelected.Should().BeFalse();
         rebound.Source.Templates["tiered"].IsModelTierResolved.Should().BeTrue();
         rebound.Source.Templates["explicit"].IsModelExplicitlySelected.Should().BeTrue();

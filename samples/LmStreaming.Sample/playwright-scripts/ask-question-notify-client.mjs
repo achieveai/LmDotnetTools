@@ -125,7 +125,7 @@ async (page) => {
     await tid('send-button').click();
   };
   /**
-   * "+ New Chat" then pick the provider. The retry is not defensive padding: on first load the app
+   * "New Chat" then pick the provider. The retry is not defensive padding: on first load the app
    * restores the most recent conversation ASYNCHRONOUSLY, and a restored thread re-locks the
    * provider selector *after* a New Chat click has already unlocked it. Clicking once and trusting
    * Playwright's auto-wait loses that race and stalls on a permanently disabled button.
@@ -133,7 +133,7 @@ async (page) => {
   const newChat = async () => {
     const deadline = Date.now() + 30000;
     for (;;) {
-      await page.getByRole('button', { name: '+ New Chat' }).click();
+      await page.locator('[data-testid="sidebar-new-chat"]').click();
       try {
         await page.waitForFunction(
           () => {

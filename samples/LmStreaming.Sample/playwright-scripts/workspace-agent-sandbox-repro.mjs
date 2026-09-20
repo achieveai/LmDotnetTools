@@ -39,7 +39,7 @@ async (page) => {
   try {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
 
     // Workspace
     await tid('workspace-selector-button').click();

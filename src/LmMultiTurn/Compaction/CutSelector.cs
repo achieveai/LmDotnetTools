@@ -452,6 +452,19 @@ internal static class CutSelector
     }
 
     /// <summary>R1's pairing half, with the same id extractors the restore-time sweep uses.</summary>
+    /// <summary>
+    ///     Which rows hold tool calls, which pairs straddle a candidate cut, and which calls are still open.
+    /// </summary>
+    /// <remarks>
+    ///     Neither extractor below has an arm for <c>ToolsCallAggregateMessage</c> or <c>CompositeMessage</c>,
+    ///     and both carry tool ids by composition, so a row of either type would contribute nothing and read as
+    ///     a row taking no part in pairing. That is safe only because canonical history cannot hold one:
+    ///     <c>MessageTransformationMiddleware.AssignMessageOrdering</c> (LmCore) throws
+    ///     <see cref="NotSupportedException" /> for both types rather than let them downstream, and the
+    ///     aggregate form exists only on the way OUT to a provider. Stated here because the dependency is in
+    ///     another assembly and nothing links the two: relax that guard and this class needs both arms, as does
+    ///     <c>MessagePersistenceConverter.DropUnpairedToolMessages</c>, which rests on the same invariant.
+    /// </remarks>
     private sealed class ToolPairing
     {
         private readonly List<(long CallSeq, long ResultSeq)> _pairs = [];

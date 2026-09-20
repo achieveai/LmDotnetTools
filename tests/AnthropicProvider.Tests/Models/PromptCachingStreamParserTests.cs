@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
 public class PromptCachingStreamParserTests
@@ -143,5 +145,68 @@ public class PromptCachingStreamParserTests
         // Input tokens from message_start should be preserved
         Assert.Equal(100, usageMessage.Usage.PromptTokens);
         Assert.Equal(125, usageMessage.Usage.TotalTokens);
+    }
+
+    [Fact]
+    public void ProcessEvent_CacheWriteWithoutTtlSplit_ReportsZeroOneHourTokens()
+    {
+        // This provider only sends default-TTL cache_control, so every write is a 5-minute write. Saying so
+        // explicitly (0 one-hour tokens) is what lets the cost estimate be complete instead of a lower bound.
+        var usage = StreamUsage("""{"input_tokens": 200, "cache_creation_input_tokens": 1500}""");
+
+        Assert.Equal(1500, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
+        Assert.True(usage.ExtraProperties.ContainsKey("ephemeral_1h_input_tokens"));
+        Assert.Equal(0, usage.GetExtraProperty<int>("ephemeral_1h_input_tokens"));
+    }
+
+    [Fact]
+    public void ProcessEvent_CacheWriteWithTtlSplit_ReportsTheOneHourTokens()
+    {
+        var usage = StreamUsage(
+            """
+            {
+                "input_tokens": 200,
+                "cache_creation_input_tokens": 1500,
+                "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 500}
+            }
+            """
+        );
+
+        Assert.Equal(500, usage.GetExtraProperty<int>("ephemeral_1h_input_tokens"));
+    }
+
+    [Fact]
+    public void ProcessEvent_NoCacheWrite_OmitsTheOneHourSplit()
+    {
+        var usage = StreamUsage("""{"input_tokens": 200, "cache_creation_input_tokens": 0}""");
+
+        Assert.False(usage.ExtraProperties.ContainsKey("ephemeral_1h_input_tokens"));
+    }
+
+    private static Usage StreamUsage(string messageStartUsage)
+    {
+        var parser = new AnthropicStreamParser();
+        parser.ProcessEvent(
+            "message_start",
+            $$"""
+            {
+                "type": "message_start",
+                "message": {"id": "msg_ttl", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+                    "content": [], "usage": {{messageStartUsage}}}
+            }
+            """
+        );
+        var results = parser.ProcessEvent(
+            "message_delta",
+            """
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                "usage": {"output_tokens": 10}
+            }
+            """
+        );
+
+        return Assert.Single(results.OfType<UsageMessage>()).Usage;
     }
 }
