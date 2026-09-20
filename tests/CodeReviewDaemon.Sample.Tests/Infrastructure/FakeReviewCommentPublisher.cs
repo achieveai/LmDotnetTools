@@ -43,6 +43,7 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     /// <summary>How many times the backstop scan was run. It is a real provider round-trip, so a caller that
     /// reaches the publisher at all shows up here even when it ends up posting nothing.</summary>
     public int FindCallCount { get; private set; }
+    public Action? OnFind { get; set; }
 
     public Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
@@ -51,6 +52,7 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     )
     {
         FindCallCount++;
+        OnFind?.Invoke();
         return Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var comment) ? comment : null);
     }
 

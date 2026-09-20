@@ -17,6 +17,45 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class LmStreamingS2SClientTests
 {
+    [Fact]
+    public async Task Workflow_provider_preflight_refuses_global_capability_without_selected_provider_grant()
+    {
+        using var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app", "key");
+        await Assert.ThrowsAsync<ReviewHostContractException>(() =>
+            client.EnsureWorkflowPublicationAsync(default, "claude")
+        );
+        Assert.Single(handler.Requests);
+        Assert.Contains("providerId=claude", handler.Requests[0].Uri.Query);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Workflow_publication_preflight_requires_the_explicit_host_capability(bool supports)
+    {
+        using var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":"
+                + (supports ? "true" : "false")
+                + "}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s2s-secret", "app", "key");
+        if (supports)
+            await client.EnsureWorkflowPublicationAsync(default);
+        else
+            await Assert.ThrowsAsync<ReviewHostContractException>(() => client.EnsureWorkflowPublicationAsync(default));
+        Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+    }
+
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 

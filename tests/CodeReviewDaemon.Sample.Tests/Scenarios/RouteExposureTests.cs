@@ -4,21 +4,15 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
-/// <summary>
-/// AC#4: the daemon's runtime HTTP surface is <strong>exactly</strong> two gateway callbacks —
-/// <c>POST /api/auth/webhook/{provider}</c> (post-auth callback) and
-/// <c>POST /api/discovery/context_discovery</c> (context-discovery callback, which must return 2xx or the
-/// gateway tears down the sandbox session) — and nothing else. The daemon does its PR-watching by polling
-/// and runs all git/fs work in the sandbox, so it deliberately exposes no other endpoints. This test
-/// enumerates the host's mapped endpoints and fails if any route other than those two is reachable.
-/// </summary>
+/// <summary>Only authenticated gateway callbacks and the scoped workflow publication callback are exposed.</summary>
 public sealed class RouteExposureTests
 {
     private const string WebhookPattern = "api/auth/webhook/{provider}";
     private const string DiscoveryPattern = "api/discovery/context_discovery";
+    private const string PublicationPattern = "api/workflow/publication";
 
     [Fact]
-    public void Only_the_two_gateway_callback_routes_are_mapped()
+    public void Only_the_gateway_and_workflow_callback_routes_are_mapped()
     {
         using var factory = new DaemonWebAppFactory();
 
@@ -35,12 +29,13 @@ public sealed class RouteExposureTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        patterns.Should().BeEquivalentTo([WebhookPattern, DiscoveryPattern]);
+        patterns.Should().BeEquivalentTo([WebhookPattern, DiscoveryPattern, PublicationPattern]);
     }
 
     [Theory]
     [InlineData(WebhookPattern)]
     [InlineData(DiscoveryPattern)]
+    [InlineData(PublicationPattern)]
     public void Each_gateway_callback_route_only_accepts_POST(string pattern)
     {
         using var factory = new DaemonWebAppFactory();
@@ -54,5 +49,14 @@ public sealed class RouteExposureTests
 
         httpMethods.Should().NotBeNull();
         httpMethods!.HttpMethods.Should().BeEquivalentTo(["POST"]);
+    }
+
+    [Fact]
+    public async Task Publication_callback_rejects_an_unconfigured_or_missing_credential()
+    {
+        using var factory = new DaemonWebAppFactory();
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/api/workflow/publication", new StringContent("{}"));
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.Unauthorized);
     }
 }

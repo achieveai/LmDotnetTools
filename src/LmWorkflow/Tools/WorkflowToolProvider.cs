@@ -64,6 +64,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
 
     private readonly WorkflowRuntime _runtime;
     private readonly bool _includeSetWorkflow;
+    internal bool RequireControllerCompatibleDefinition { get; init; }
 
     /// <summary>Creates the provider over <paramref name="runtime"/>.</summary>
     /// <param name="runtime">The runtime the tools drive.</param>
@@ -263,6 +264,10 @@ public sealed class WorkflowToolProvider : IFunctionProvider
 
             try
             {
+                if (RequireControllerCompatibleDefinition)
+                {
+                    WorkflowSession.EnsureControllerCompatible(definition);
+                }
                 _runtime.LoadDefinition(definition);
             }
             catch (WorkflowValidationException ex)
@@ -315,6 +320,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
 
             try
             {
+                if (RequireControllerCompatibleDefinition)
+                {
+                    WorkflowSession.EnsureControllerCompatible(
+                        new WorkflowDefinition { Objective = "", Nodes = [node] }
+                    );
+                }
                 _runtime.AddNode(node, previousNodeId, nextNodeId);
             }
             catch (InvalidOperationException ex)

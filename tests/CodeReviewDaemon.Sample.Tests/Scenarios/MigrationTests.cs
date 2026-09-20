@@ -98,7 +98,7 @@ public sealed class MigrationTests
             """
         );
 
-        MigrationRunner.Migrate(connection);
+        MigrationRunner.Migrate(connection, [.. SchemaMigrations.All.Where(m => m.Version <= 8)]);
 
         ColumnExists(connection, "review_run", "governed_failure_count")
             .Should()
@@ -111,6 +111,55 @@ public sealed class MigrationTests
         ReadScalar(connection, "SELECT COUNT(*) FROM review_run WHERE id = 1 AND parked_at IS NULL;")
             .Should()
             .Be("1", "an upgrade must not park work that was merely in flight when it happened");
+    }
+
+    [Fact]
+    public void Workflow_cutover_quarantines_legacy_inflight_stages_but_preserves_completed_evidence()
+    {
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+        MigrationRunner.Migrate(connection, [.. SchemaMigrations.All.Where(m => m.Version < 10)]);
+        Execute(
+            connection,
+            """
+            INSERT INTO repo (provider, normalized_key, display_name, org_or_owner, repo_name, created_at)
+            VALUES ('github', 'k', 'd', 'owner', 'repo', '2026-09-01');
+            """
+        );
+        foreach (var stage in new[] { "Discovered", "ContextReady", "Reviewed", "Judged", "Posted" })
+            Execute(
+                connection,
+                $"""
+                INSERT INTO review_run (repo_id, pr_id, head_sha, base_sha, trigger_watermark,
+                    review_kind, variant_id, mode, stage, workflow_status, pr_lifecycle_state, created_at, updated_at)
+                VALUES (1, '{stage}', 'h', 'b', 'w', 'full', 'primary', 'post', '{stage}', 'Running', 'Open', 'now', 'now');
+                """
+            );
+        Execute(
+            connection,
+            """
+            UPDATE review_run SET workflow_status = 'Completed' WHERE stage = 'Posted';
+            INSERT INTO review_artifact (review_run_id, artifact_schema_version, artifact_kind, provider, payload, created_at)
+            VALUES (3, 1, 'review', 'github', '{"ReviewText":"preserve"}', 'now');
+            """
+        );
+        MigrationRunner.Migrate(connection);
+        MigrationRunner.Migrate(connection);
+        ReadScalar(
+                connection,
+                "SELECT COUNT(*) FROM review_run WHERE parked_at IS NOT NULL AND workflow_status = 'Failed';"
+            )
+            .Should()
+            .Be("4");
+        ReadScalar(
+                connection,
+                "SELECT COUNT(*) FROM review_run WHERE stage = 'Posted' AND parked_at IS NULL AND workflow_status = 'Completed';"
+            )
+            .Should()
+            .Be("1");
+        ReadScalar(connection, "SELECT payload FROM review_artifact WHERE review_run_id = 3;")
+            .Should()
+            .Be("{\"ReviewText\":\"preserve\"}");
     }
 
     [Fact]

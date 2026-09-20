@@ -67,6 +67,7 @@ RUN apt-get update \
         lsb-release \
         procps \
         python3 \
+        python-is-python3 \
         python3-pip \
         software-properties-common \
         sudo \
@@ -116,6 +117,7 @@ RUN dotnet --list-sdks \
     && npm --version \
     && pwsh --version \
     && python3 --version \
+    && python --version \
     && uv --version \
     && docker --version \
     && claude --version \

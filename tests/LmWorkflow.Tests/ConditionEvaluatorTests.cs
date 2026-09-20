@@ -7,7 +7,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     Tests for <see cref="ConditionEvaluator.Evaluate"/>: every leaf operator, numeric vs ordinal-string
+///     Tests for <see cref="ConditionEvaluator.Evaluate(Condition, BindingContext)"/>: every leaf operator, numeric vs ordinal-string
 ///     comparison, value-as-binding resolution, and the <c>all</c>/<c>any</c>/<c>not</c> composites
 ///     including nesting.
 /// </summary>

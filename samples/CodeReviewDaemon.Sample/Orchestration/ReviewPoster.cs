@@ -1,3 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -40,6 +44,7 @@ internal sealed class ReviewPoster
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Body);
 
         var key = IdempotencyKey.Build(request.Key);
+        var bodyHash = request.RequireConfirmedOutcome ? PayloadHash(request) : null;
 
         // First guard: idempotent enqueue. A replay re-finds the existing row with its current status.
         var entry = _store.EnqueueOutbox(
@@ -56,8 +61,33 @@ internal sealed class ReviewPoster
                 Operation = request.Key.Operation,
                 ArtifactKind = request.Key.ArtifactKind,
                 Status = OutboxStatus.Pending,
+                BodyHash = bodyHash,
             }
         );
+
+        if (request.RequireConfirmedOutcome && !string.Equals(entry.BodyHash, bodyHash, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("An existing publication action cannot change its target or body.");
+        }
+        if (request.RequireConfirmedOutcome && request.Key.ArtifactKind == "workflow-publication")
+        {
+            var kind = IntentKind(key);
+            if (_store.TryGetLatestArtifact(request.ReviewRunId, kind) is null)
+            {
+                // This is evidence for the existing receipt, not a second action journal. Save the exact
+                // target before a provider send so recovery never needs a model to recreate its arguments.
+                _store.AddArtifact(
+                    new ReviewArtifact
+                    {
+                        ReviewRunId = request.ReviewRunId,
+                        ArtifactKind = kind,
+                        ArtifactSchemaVersion = 1,
+                        Provider = request.Key.Provider,
+                        Payload = JsonSerializer.Serialize(request),
+                    }
+                );
+            }
+        }
 
         // Terminal replay — the side effect (or the deliberate decision not to act) already happened. Posted is
         // terminal unconditionally (the comment exists). Collected is terminal only for another UNAUTHORIZED
@@ -69,6 +99,14 @@ internal sealed class ReviewPoster
             || (entry.Status is OutboxStatus.Collected && !request.LivePostingAuthorized);
         if (terminal)
         {
+            if (
+                request.RequireConfirmedOutcome
+                && entry.Status == OutboxStatus.Posted
+                && string.IsNullOrWhiteSpace(entry.ProviderResponseId)
+            )
+            {
+                throw new ReviewPublicationUncertainException("The posted receipt has no provider response identity.");
+            }
             _logger.LogInformation(
                 "Outbox {OutboxId} for key {Key} is already {Status}; replay no-op.",
                 entry.Id,
@@ -81,6 +119,7 @@ internal sealed class ReviewPoster
         // Safe default: no live authorization → record as collect-only and never touch the provider.
         if (!request.LivePostingAuthorized)
         {
+            await VerifyCurrentPrAsync(request, cancellationToken).ConfigureAwait(false);
             _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Collected);
             _logger.LogInformation(
                 "Outbox {OutboxId} for key {Key} recorded collect-only (no live posting authorized).",
@@ -97,37 +136,215 @@ internal sealed class ReviewPoster
             .ConfigureAwait(false);
         if (existing is not null)
         {
-            _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Posted, existing.ProviderResponseId);
+            var existingId = request.RequireConfirmedOutcome
+                ? existing.ProviderCommentId ?? existing.ProviderResponseId
+                : existing.ProviderResponseId;
+            _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Posted, existingId);
+            RequireReceipt(request, entry.Id, existingId);
             _logger.LogInformation(
                 "Outbox {OutboxId} for key {Key} already posted as {ResponseId} (found via backstop scan); not re-posting.",
                 entry.Id,
                 key,
                 existing.ProviderResponseId
             );
-            return new PostOutcome(PostOutcomeKind.AlreadyPostedBackstop, entry.Id, existing.ProviderResponseId);
+            return new PostOutcome(PostOutcomeKind.AlreadyPostedBackstop, entry.Id, existingId);
         }
+
+        if (request.RequireConfirmedOutcome && entry.Status is not (OutboxStatus.Pending or OutboxStatus.Collected))
+        {
+            throw new ReviewPublicationUncertainException(
+                "An earlier send has no confirmed outcome; publication was not repeated."
+            );
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request.IsStillAuthorized?.Invoke() == false)
+            throw new InvalidOperationException("Publication authorization expired before sending.");
 
         // Hold the lease. Idempotent: a crashed prior attempt may already sit in Sending, and an authorized
         // retry of a previously collect-only run reopens its Collected row from here.
+        var claimed = false;
         if (entry.Status is OutboxStatus.Pending or OutboxStatus.Collected)
         {
-            _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Sending);
+            claimed = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Sending);
+            if (request.RequireConfirmedOutcome && !claimed)
+            {
+                throw new ReviewPublicationUncertainException("Another attempt owns this publication action.");
+            }
         }
 
+        // The admission check may have happened before the agent chose this action or before the dedupe scan.
+        // Re-read after taking the lease and immediately before the provider write. If the PR changed in that
+        // window, release only a lease claimed by this invocation; no uncertain send was attempted.
+        try
+        {
+            await VerifyCurrentPrAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (claimed)
+            {
+                _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, entry.Status);
+            }
+            throw;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request.IsStillAuthorized?.Invoke() == false)
+            throw new InvalidOperationException("Publication authorization expired before sending.");
         var posted = await _publisher
             .PostReviewCommentAsync(request.Target, key, request.Body, cancellationToken)
             .ConfigureAwait(false);
 
-        _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, OutboxStatus.Posted, posted.ProviderResponseId);
+        var postedId = request.RequireConfirmedOutcome
+            ? posted.ProviderCommentId ?? posted.ProviderResponseId
+            : posted.ProviderResponseId;
+        _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, OutboxStatus.Posted, postedId);
+        RequireReceipt(request, entry.Id, postedId);
         _logger.LogInformation(
             "Outbox {OutboxId} for key {Key} posted as {ResponseId}.",
             entry.Id,
             key,
             posted.ProviderResponseId
         );
-        return new PostOutcome(PostOutcomeKind.Posted, entry.Id, posted.ProviderResponseId);
+        return new PostOutcome(PostOutcomeKind.Posted, entry.Id, postedId);
+    }
+
+    /// <summary>Adopts provider-visible evidence for uncertain workflow sends. Never sends or renews authorization.</summary>
+    public async Task ReconcilePublicationsAsync(
+        long runId,
+        RepoIdentity expectedRepo,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? verifyCurrentPr = null
+    )
+    {
+        var run = _store.GetReviewRun(runId) ?? throw new InvalidOperationException("Publication run is missing.");
+        foreach (
+            var entry in _store
+                .GetOutboxForRun(runId)
+                .Where(entry => entry.ArtifactKind == "workflow-publication" && entry.Status == OutboxStatus.Sending)
+        )
+        {
+            var artifact = _store.TryGetLatestArtifact(runId, IntentKind(entry.IdempotencyKey));
+            if (artifact is null)
+                continue; // Older unknown sends have no reconstructable trusted target.
+            var request = JsonSerializer.Deserialize<PostReviewRequest>(artifact.Payload);
+            if (
+                artifact.ArtifactSchemaVersion != 1
+                || request is null
+                || request.Target?.Repo is null
+                || request.Key is null
+                || !request.RequireConfirmedOutcome
+                || request.ReviewRunId != runId
+                || request.Target.Repo.NormalizedKey != expectedRepo.NormalizedKey
+                || request.Target.Repo.RepoStableId != expectedRepo.RepoStableId
+                || request.Target.PrId != run.PrId
+                || request.Key.HeadSha != run.HeadSha
+                || request.Key.VariantId != run.VariantId
+                || request.Key.ArtifactKind != entry.ArtifactKind
+                || request.Key.Operation != entry.Operation
+                || IdempotencyKey.Build(request.Key) != entry.IdempotencyKey
+                || PayloadHash(request) != entry.BodyHash
+                || artifact.Provider != entry.Provider
+                || entry.Provider != _publisher.Provider
+                || entry.Provider != RepoIdentity.ToPublisherNamespace(expectedRepo.Provider)
+            )
+                throw new InvalidOperationException(
+                    "Publication intent does not match its durable receipt and run scope."
+                );
+            var existing = await _publisher
+                .FindPostedCommentAsync(request.Target, entry.IdempotencyKey, cancellationToken)
+                .ConfigureAwait(false);
+            if (existing is null)
+                continue;
+            var responseId = existing.ProviderCommentId ?? existing.ProviderResponseId;
+            if (string.IsNullOrWhiteSpace(responseId))
+                throw new ReviewPublicationUncertainException("Provider proof has no comment identity.");
+            if (verifyCurrentPr is null)
+                throw new InvalidOperationException("Receipt adoption requires a current PR verifier.");
+            await verifyCurrentPr(cancellationToken).ConfigureAwait(false);
+            _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, OutboxStatus.Posted, responseId);
+            RequireReceipt(request, entry.Id, responseId);
+        }
+    }
+
+    internal void ValidateWorkflowReceipt(
+        ReviewRun run,
+        RepoIdentity repo,
+        string subject,
+        long receiptId,
+        bool reply,
+        bool live
+    )
+    {
+        var entry = _store.GetOutbox(receiptId);
+        var intent = entry is null ? null : _store.TryGetLatestArtifact(run.Id, IntentKind(entry.IdempotencyKey));
+        var request = intent is null ? null : JsonSerializer.Deserialize<PostReviewRequest>(intent.Payload);
+        if (
+            entry is null
+            || request is null
+            || entry.ReviewRunId != run.Id
+            || entry.ArtifactKind != "workflow-publication"
+            || request.Key.ArtifactSubject != subject
+            || request.ReviewRunId != run.Id
+            || request.Key.HeadSha != run.HeadSha
+            || request.Key.VariantId != run.VariantId
+            || request.Target.PrId != run.PrId
+            || request.Target.Repo.NormalizedKey != repo.NormalizedKey
+            || request.Target.Repo.RepoStableId != repo.RepoStableId
+            || request.LivePostingAuthorized != live
+            || !request.RequireConfirmedOutcome
+            || IdempotencyKey.Build(request.Key) != entry.IdempotencyKey
+            || PayloadHash(request) != entry.BodyHash
+            || (reply ? request.Target.Kind != ReviewCommentKind.Reply : request.Target.Kind == ReviewCommentKind.Reply)
+            || (
+                live
+                    ? entry.Status != OutboxStatus.Posted || string.IsNullOrWhiteSpace(entry.ProviderResponseId)
+                    : entry.Status != OutboxStatus.Collected
+            )
+        )
+            throw new InvalidOperationException(
+                "Publication receipt does not match this invocation, target and run mode."
+            );
+    }
+
+    private static string IntentKind(string key) =>
+        "workflow-publication-intent:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+
+    private static string PayloadHash(PostReviewRequest request) =>
+        Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { request.Target, request.Body })))
+        );
+
+    private void RequireReceipt(PostReviewRequest request, long outboxId, string responseId)
+    {
+        if (!request.RequireConfirmedOutcome)
+        {
+            return;
+        }
+        var receipt = _store.GetOutbox(outboxId);
+        if (
+            string.IsNullOrWhiteSpace(responseId)
+            || receipt?.Status != OutboxStatus.Posted
+            || !string.Equals(receipt.ProviderResponseId, responseId, StringComparison.Ordinal)
+        )
+        {
+            throw new ReviewPublicationUncertainException(
+                "The provider result could not be confirmed in the receipt store."
+            );
+        }
+    }
+
+    private static async Task VerifyCurrentPrAsync(PostReviewRequest request, CancellationToken cancellationToken)
+    {
+        if (request.VerifyCurrentPr is not null)
+        {
+            await request.VerifyCurrentPr(cancellationToken).ConfigureAwait(false);
+        }
     }
 }
+
+internal sealed class ReviewPublicationUncertainException(string message) : InvalidOperationException(message);
 
 /// <summary>
 /// One review-comment post request. <see cref="LivePostingAuthorized"/> defaults to <c>false</c> so a
@@ -138,7 +355,10 @@ internal sealed record PostReviewRequest(
     IdempotencyKeyComponents Key,
     ReviewCommentTarget Target,
     string Body,
-    bool LivePostingAuthorized = false
+    bool LivePostingAuthorized = false,
+    bool RequireConfirmedOutcome = false,
+    [property: JsonIgnore] Func<bool>? IsStillAuthorized = null,
+    [property: JsonIgnore] Func<CancellationToken, Task>? VerifyCurrentPr = null
 );
 
 /// <summary>How a <see cref="ReviewPoster.PostReviewAsync"/> call resolved.</summary>

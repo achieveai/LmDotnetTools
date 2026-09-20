@@ -27,7 +27,7 @@ public sealed class WorkflowValidator
         ValidateTerminalExists(nodes, errors);
         ValidateNodeStructure(nodes, errors);
         ValidateTaskIds(nodes, errors);
-        ValidateV1Restrictions(nodes, errors);
+        ValidateV1Restrictions(nodes, errors, def.StrictContracts);
         ValidateAgentTasks(nodes, errors);
         ValidateWrites(nodes, errors);
         ValidateBudgets(def, nodes, errors);
@@ -134,7 +134,11 @@ public sealed class WorkflowValidator
     // upsert writes). Also gates the forward-compat authoring props that are accepted by the model but
     // never honored in V1 (task.parallel, node.maxParallel, joinPolicy.threshold, writes.key) so they
     // fail loudly instead of silently no-op'ing.
-    private static void ValidateV1Restrictions(IReadOnlyList<WorkflowNode> nodes, List<string> errors)
+    private static void ValidateV1Restrictions(
+        IReadOnlyList<WorkflowNode> nodes,
+        List<string> errors,
+        bool strictContracts
+    )
     {
         foreach (var node in nodes)
         {
@@ -181,7 +185,7 @@ public sealed class WorkflowValidator
 
             foreach (var task in procedural.TaskList ?? [])
             {
-                if (task.Delegate != DelegateKind.Agent)
+                if (task.Delegate != DelegateKind.Agent && !(strictContracts && task.Delegate == DelegateKind.Script))
                 {
                     errors.Add(
                         $"Task '{task.Id}' in node '{procedural.Id}' uses delegate '{Wire(task.Delegate)}' "

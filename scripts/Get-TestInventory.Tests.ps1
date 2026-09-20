@@ -28,9 +28,24 @@ foreach ($scriptName in @("Get-TestInventory.ps1", "Get-TestInventory.Tests.ps1"
 }
 
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "test-inventory-$([guid]::NewGuid().ToString('N'))"
+function Invoke-FixtureGit {
+    param([string[]]$Arguments)
+    $routing = @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+    $previous = @{}
+    foreach ($name in $routing) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        if ($null -ne $item) { $previous[$name] = $item.Value }
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try { & git -C $fixture @Arguments }
+    finally {
+        foreach ($name in $routing) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $previous.Keys) { Set-Item -LiteralPath "Env:$name" -Value $previous[$name] }
+    }
+}
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try {
-    git -C $fixture init --quiet
+    Invoke-FixtureGit -Arguments @("init", "--quiet")
     if ($LASTEXITCODE -ne 0) { throw "Could not initialize inventory fixture." }
     Set-FixtureFile ".gitignore" "ignored/`n"
     Set-FixtureFile "tests/Core/Core.csproj" '<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
@@ -59,7 +74,7 @@ EndProject
     Set-FixtureFile "evals/sample/tests/score.tests.ps1" 'throw "Do not execute"'
     Set-FixtureFile "tests/python/test_protocol.py" 'raise Exception("Do not execute")'
     Set-FixtureFile "ignored/Hidden.csproj" '<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
-    git -C $fixture -c core.autocrlf=false add -- .
+    Invoke-FixtureGit -Arguments @("-c", "core.autocrlf=false", "add", "--", ".")
     if ($LASTEXITCODE -ne 0) { throw "Could not stage inventory fixture." }
     Set-FixtureFile "tests/New/New.csproj" '<Project><PropertyGroup><TargetFramework>$(InheritedFramework)</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>'
     Set-FixtureFile "tests/Unknown/Unknown.csproj" '<Project><broken>'
@@ -130,6 +145,9 @@ public partial class Checks : UnknownBase {
     [Xunit.Theory, Xunit.MemberData(nameof(Values))] public void Dynamic(int value) {}
     [WindowsOnlyFact(Skip = "Fixture skip")] public void Platform() {}
     [Xunit.Fact(Skip = null)] public void NullSkip() {}
+    [SkippableFact] public void RuntimeGate() { Skip.IfNot(System.Environment.GetEnvironmentVariable("GATE") == "1", "Gate closed."); }
+    [SkippableFact] public void RuntimeGateHelper() { RequireGate(); }
+    private static void RequireGate() { Skip.IfNot(false, "Indirect."); }
     [GlobalAlias] public void GloballyAliasedAttribute() {}
     [Microsoft.VisualStudio.TestTools.UnitTesting.TestMethod] public void Storage() {}
     public class Nested { [Xunit.Fact] public void Baseline() {} }
@@ -155,7 +173,7 @@ public sealed class PartialConcrete : PartialBase {}
     $declarationLines = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     $declarations = @($declarationLines | ForEach-Object { $_ | ConvertFrom-Json })
     $coreCases = @($declarations | Where-Object { $_.kind -eq "test-declaration" -and $_.path -eq "tests/Core/Core.csproj" })
-    Assert-True ($coreCases.Count -eq 13) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
+    Assert-True ($coreCases.Count -eq 15) "AST must retain recognized aliases and attributes, nested and generic types, inherited-source uncertainty, mixed frameworks and linked methods; unresolved custom attributes are not invented as tests."
     # A test attribute aliased in ANOTHER file must still resolve. Without project-wide global
     # aliases it matches no known attribute and no unresolved-attribute gap, so the family
     # vanishes from inventory, manifest comparison and selection with nothing to notice it.
@@ -164,13 +182,6 @@ public sealed class PartialConcrete : PartialBase {}
     ) "A recognized test attribute reached through a project-wide global using alias must still be inventoried."
     $baseline = $coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline"
     Assert-True ($baseline.id -ceq 'dotnet|tests/Core/Core.csproj|Contracts.Checks.Baseline()') "Declaration identity must be stable, container-scoped and independent of source lines."
-    $checksPath = Join-Path $fixture "tests/Core/Checks.cs"
-    $checksLf = [System.IO.File]::ReadAllText($checksPath) -replace "`r`n?", "`n"
-    [System.IO.File]::WriteAllText($checksPath, $checksLf)
-    $lfHash = (& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline" | Select-Object -First 1).sourceHash
-    [System.IO.File]::WriteAllText($checksPath, ($checksLf -replace "`n", "`r`n"))
-    $crlfHash = (& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline" | Select-Object -First 1).sourceHash
-    Assert-True ($lfHash -ceq $crlfHash) "Declaration source hashes must not depend on Git checkout line endings."
     $genericBaseline = $coreCases | Where-Object method -eq "GenericBaseline"
     Assert-True ($genericBaseline.declaringType -ceq 'Checks+Generic`1+Inner`2') "Every generic declaring-type segment must retain its own arity."
     Assert-True ($genericBaseline.id -ceq 'dotnet|tests/Core/Core.csproj|Contracts.Checks+Generic`1+Inner`2.GenericBaseline()') "Generic declaring-type arity must prevent stable identity collisions."
@@ -190,6 +201,8 @@ public sealed class PartialConcrete : PartialBase {}
     Assert-True (($coreCases | Where-Object method -eq "Storage").testFramework -eq "mstest") "Test framework is separate from target framework."
     Assert-True (($coreCases | Where-Object method -eq "Platform").skipConditions -contains 'WindowsOnlyFact(Skip = "Fixture skip")') "Platform and static skip declarations must remain visible without evaluating them."
     Assert-True (@(($coreCases | Where-Object method -eq "NullSkip").skipConditions).Count -eq 0) "An explicitly null static Skip value must not authorize a NotExecuted result."
+    Assert-True ((($coreCases | Where-Object method -eq "RuntimeGate").skipConditions -join "|") -clike '*Skip.IfNot(*GATE*') "A runtime Skip.IfNot gate in the method body must be recorded, so a legitimately skipped run is not read as an undeclared NotExecuted."
+    Assert-True (@(($coreCases | Where-Object method -eq "RuntimeGateHelper").skipConditions).Count -eq 0) "A gate reached only through a helper stays unrecorded: this parser never follows calls, and claiming otherwise would authorize any NotExecuted result."
     Assert-True (($coreCases | Where-Object method -eq "Shared").sourcePath -eq "shared/Linked.cs") "Literal linked sources are attributed to their owning project."
     Assert-True (@($coreCases | Where-Object { $_.runtimeStatus -ne "not-run" -or $null -ne $_.discoveredTestCount }).Count -eq 0) "Source parsing never claims runtime discovery."
     $coreDeclarationContainer = $declarations | Where-Object { $_.kind -eq "dotnet-project" -and $_.path -eq "tests/Core/Core.csproj" }
@@ -200,6 +213,19 @@ public sealed class PartialConcrete : PartialBase {}
     Assert-True ($scriptCase.testFramework -eq "script" -and $scriptCase.parameterization -eq "atomic") "Standalone assertion scripts stay atomic and are parsed, not invoked."
     $declarationRepeat = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations)
     Assert-True (($declarationLines -join "`n") -ceq ($declarationRepeat -join "`n")) "Declaration output is ordinal and deterministic."
+    $baselineHash = ($coreCases | Where-Object fullyQualifiedName -eq "Contracts.Checks.Baseline").sourceHash
+    $checksPath = Join-Path $fixture "tests/Core/Checks.cs"
+    [System.IO.File]::WriteAllText($checksPath, ([System.IO.File]::ReadAllText($checksPath)).Replace("`n", "`r`n"))
+    $crlfDeclarations = @(& (Join-Path $PSScriptRoot "Get-TestInventory.ps1") -RepositoryRoot $fixture -IncludeDeclarations | ForEach-Object { $_ | ConvertFrom-Json })
+    $crlfHash = (
+        $crlfDeclarations |
+        Where-Object {
+            $_.kind -eq "test-declaration" -and
+            $_.path -eq "tests/Core/Core.csproj" -and
+            $_.fullyQualifiedName -eq "Contracts.Checks.Baseline"
+        }
+    ).sourceHash
+    Assert-True ($crlfHash -ceq $baselineHash) "Declaration source hashes must be identical for LF and CRLF checkouts."
 
     Remove-Item -LiteralPath (Join-Path $fixture "tests/Core/Core.csproj") -Force
     $deleted = Get-Inventory | Where-Object path -eq "tests/Core/Core.csproj"

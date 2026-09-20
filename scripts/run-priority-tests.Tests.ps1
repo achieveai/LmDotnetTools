@@ -36,6 +36,21 @@ function Assert-Count {
     Assert-True ($Actual -eq $Expected) "$What -- pinned $Expected, manifest now has $Actual (delta $(if ($Actual -ge $Expected) { "+" })$($Actual - $Expected)). Bump the literal in the same commit that changes the rows."
 }
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "priority-tests-$([guid]::NewGuid().ToString('N'))"
+function Invoke-FixtureGit {
+    param([string[]]$Arguments)
+    $routing = @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+    $previous = @{}
+    foreach ($name in $routing) {
+        $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        if ($null -ne $item) { $previous[$name] = $item.Value }
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try { & git -C $fixture @Arguments }
+    finally {
+        foreach ($name in $routing) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $previous.Keys) { Set-Item -LiteralPath "Env:$name" -Value $previous[$name] }
+    }
+}
 function Set-FixtureFile {
     param([string]$Path, [string]$Content)
     $full = Join-Path $fixture $Path
@@ -79,7 +94,7 @@ function Set-TrxPlans {
 }
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try {
-    git -C $fixture init --quiet
+    Invoke-FixtureGit -Arguments @("init", "--quiet")
     if ($LASTEXITCODE -ne 0) { throw "Fixture git init failed." }
     Set-FixtureFile "src/Core/Core.csproj" '<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>'
     $solution = "Microsoft Visual Studio Solution File, Format Version 12.00`n"
@@ -240,8 +255,8 @@ try {
     # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
     # Bump it in the same commit that adds the rows, or this fails with the message below while the
     # manifest itself is perfectly in sync.
-    Assert-Count $repositoryPlan.declarationSummary.known 10568 "Known .NET/script declarations"
-    Assert-Count $repositoryPlan.declarationSummary.reviewed 10568 "Reviewed policy rows"
+    Assert-Count $repositoryPlan.declarationSummary.known 10175 "Known .NET/script declarations"
+    Assert-Count $repositoryPlan.declarationSummary.reviewed 10175 "Reviewed policy rows"
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -258,7 +273,7 @@ try {
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
     # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 348), @("P1", 8030), @("P2", 2043), @("P3", 147))) {
+    foreach ($tier in @(@("P0", 335), @("P1", 7676), @("P2", 2017), @("P3", 147))) {
         Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
@@ -267,9 +282,9 @@ try {
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.p1FloorExemption -eq "vacuous" }).Count -eq 5) "Manifest integration must preserve the five reviewed vacuity exemptions."
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9609 "Measured coverage classifications"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 8950 "Measured coverage classifications"
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 208 "Rows in approved projects without coverage capture"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 751 "Rows absent from the frozen capture"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1017 "Rows absent from the frozen capture"
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

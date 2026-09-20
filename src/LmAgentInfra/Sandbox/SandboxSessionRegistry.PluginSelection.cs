@@ -318,6 +318,7 @@ public sealed partial class SandboxSessionRegistry
         var candidateRef = newRef with
         {
             Id = partition.Key.WorkspaceId,
+            BlockProviderEgress = partition.Session.BlockProviderEgress,
             // Feeding the session's own resolved leaf back in is idempotent: it is exactly what
             // SandboxGatewayOptions.ResolveWorkspace produced for the original create, and
             // ResolveWorkspace(leaf) returns that same leaf. A blank leaf means the original create

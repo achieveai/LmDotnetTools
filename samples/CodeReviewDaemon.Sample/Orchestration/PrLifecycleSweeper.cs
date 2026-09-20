@@ -1,7 +1,9 @@
 using System.Globalization;
-using CodeReviewDaemon.Sample.Agents;
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -93,14 +95,10 @@ internal sealed record ReviewedPr(
 );
 
 /// <summary>
-/// Resolves each reviewed PR's persistent notes branch (<c>review/{repo}-{pr}</c>,
-/// created once per PR by <see cref="ReviewBranchManager.CommitNotesAsync"/> and kept across re-reviews)
-/// once the PR closes: merges the branch into the store default branch when the PR merged (if enabled),
-/// deletes it when the PR was abandoned (closed unmerged), and leaves an open PR's branch untouched.
+/// Resolves each reviewed PR once it closes: merged PRs enter the authored workflow, abandoned PRs delete
+/// their artifact branch, and open PRs remain untouched.
 /// <para>
-/// Idempotent for free: <see cref="ReviewBranchManager.MergeToDefaultAsync"/> and
-/// <see cref="ReviewBranchManager.DeleteBranchAsync"/> are themselves git no-ops on an already-merged or
-/// already-deleted branch, so re-sweeping a PR already handled on a prior run does nothing harmful.
+/// <see cref="ReviewBranchManager.DeleteBranchAsync"/> is a git no-op when an abandoned branch is already gone.
 /// </para>
 /// <para>
 /// Each PR is resolved independently in its own try/catch: a transient git/network failure or PR-provider
@@ -114,32 +112,10 @@ internal sealed class PrLifecycleSweeper
     private readonly Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> _getPrLifecycleAsync;
     private readonly ReviewBranchManager _branchManager;
     private readonly string _repoRoot;
-    private readonly string _defaultBranch;
-    private readonly bool _mergeNotesBranchOnClose;
     private readonly ILogger<PrLifecycleSweeper> _logger;
-
-    /// <summary>
-    /// Optional at-close knowledge-extraction seam (Layer-2, design §1): distills durable knowledge from a
-    /// merged PR's accumulated notes into the store's Knowledge Base BEFORE the notes branch merges into the
-    /// default branch, so the same merge carries the new/updated entry into <c>main</c>. Wired in
-    /// <c>Program.cs</c> only when <c>EnableKnowledgeAgent</c> is set; <c>null</c> leaves the sweep unchanged.
-    /// Runs on the Merged path only — never on Open/Abandoned — and its failure never blocks the lifecycle.
-    /// <para>
-    /// The returned <see cref="KnowledgeExtractionOutcome"/> is what makes a failed extraction recoverable: the
-    /// merge deletes the notes branch, so merging over a failure destroys the only input a retry could use.
-    /// </para>
-    /// </summary>
-    private readonly Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? _extractKnowledgeAsync;
-
-    /// <summary>
-    /// How many sweeps may defer a merged PR's merge waiting for its knowledge extraction to succeed. Extraction
-    /// must never block the lifecycle outright (design §6), so the delay is bounded: once a PR has burned this
-    /// many attempts the sweep merges anyway and the extraction is lost — loudly, not silently.
-    /// </summary>
-    private const int MaxExtractionAttempts = 3;
-
-    /// <summary>Extraction attempts spent per notes branch. Not persisted; a restart restarts the budget.</summary>
-    private readonly Dictionary<string, int> _extractionAttempts = new(StringComparer.Ordinal);
+    private readonly ReviewStore _store;
+    private readonly PrOrchestrator _orchestrator;
+    private readonly Func<ReviewedPr, CancellationToken, Task<string?>> _getCurrentHeadShaAsync;
 
     /// <summary>
     /// Notes branches this daemon lifetime has already resolved to a terminal lifecycle (merged-and-swept, or
@@ -155,10 +131,10 @@ internal sealed class PrLifecycleSweeper
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
         ReviewBranchManager branchManager,
         string repoRoot,
-        string defaultBranch,
-        bool mergeNotesBranchOnClose,
         ILogger<PrLifecycleSweeper> logger,
-        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null
+        ReviewStore store,
+        PrOrchestrator orchestrator,
+        Func<ReviewedPr, CancellationToken, Task<string?>> getCurrentHeadShaAsync
     )
     {
         _listReviewedPrsAsync = listReviewedPrsAsync ?? throw new ArgumentNullException(nameof(listReviewedPrsAsync));
@@ -166,11 +142,11 @@ internal sealed class PrLifecycleSweeper
         _branchManager = branchManager ?? throw new ArgumentNullException(nameof(branchManager));
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         _repoRoot = repoRoot;
-        ArgumentException.ThrowIfNullOrWhiteSpace(defaultBranch);
-        _defaultBranch = defaultBranch;
-        _mergeNotesBranchOnClose = mergeNotesBranchOnClose;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _extractKnowledgeAsync = extractKnowledgeAsync;
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _orchestrator = orchestrator ?? throw new ArgumentNullException(nameof(orchestrator));
+        _getCurrentHeadShaAsync =
+            getCurrentHeadShaAsync ?? throw new ArgumentNullException(nameof(getCurrentHeadShaAsync));
     }
 
     /// <summary>
@@ -223,7 +199,16 @@ internal sealed class PrLifecycleSweeper
                 break;
 
             case PrLifecycle.Abandoned:
-                await _branchManager.DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken).ConfigureAwait(false);
+                await using (
+                    await HostRetentionWorkspace
+                        .AcquireRepositoryLockAsync(_repoRoot, cancellationToken)
+                        .ConfigureAwait(false)
+                )
+                {
+                    await _branchManager
+                        .DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 _logger.LogInformation(
                     "PR-lifecycle sweep deleted notes branch '{Branch}' for abandoned {Provider} PR {PrId}.",
                     pr.Branch,
@@ -239,111 +224,87 @@ internal sealed class PrLifecycleSweeper
     }
 
     /// <summary>
-    /// Resolves a merged PR's notes branch (KB extraction, then merge-to-default). Returns <c>true</c> when the
-    /// branch reached a terminal state — merged, already gone, or intentionally left because merge-on-close is
-    /// disabled — and <c>false</c> when the merge should be retried on the next sweep, either because the merge
-    /// push failed or because knowledge extraction failed and still has attempts left.
+    /// Runs the merged route and returns whether the authored workflow reached durable completion.
     /// </summary>
     private async Task<bool> ResolveMergedAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
-        if (!_mergeNotesBranchOnClose)
-        {
-            _logger.LogInformation(
-                "PR-lifecycle sweep left notes branch '{Branch}' for merged {Provider} PR {PrId} (merge-on-close disabled).",
-                pr.Branch,
-                pr.Provider,
-                pr.PrId
-            );
-            return true;
-        }
-
-        // Layer-2 (design §1): distill durable knowledge from the PR's accumulated notes BEFORE the notes
-        // branch merges into the default branch, so the same merge carries the new/updated entry into main.
-        if (
-            _extractKnowledgeAsync is not null
-            && !await TryExtractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false)
-        )
-        {
-            // Extraction failed with attempts left. Returning false leaves the branch uncached AND unmerged, so
-            // the next sweep retries against notes that still exist — merging here would delete the only input
-            // a retry could use and make the failure permanent (defect D5).
-            return false;
-        }
-
-        var merged = await _branchManager
-            .MergeToDefaultAsync(_repoRoot, pr.Branch, _defaultBranch, cancellationToken)
-            .ConfigureAwait(false);
-        _logger.LogInformation(
-            "PR-lifecycle sweep merge of notes branch '{Branch}' for {Provider} PR {PrId} into '{DefaultBranch}': {Merged}.",
-            pr.Branch,
-            pr.Provider,
-            pr.PrId,
-            _defaultBranch,
-            merged
-        );
-        if (merged)
-        {
-            _extractionAttempts.Remove(pr.Branch);
-        }
-
-        return merged;
+        return await RunMergedWorkflowAsync(pr, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Runs one knowledge-extraction attempt for <paramref name="pr"/>. Returns <c>true</c> when the merge may
-    /// proceed — the extraction wrote an entry, legitimately declined, or has now burned every attempt — and
-    /// <c>false</c> when it failed with attempts left and the caller should defer the merge for a retry.
-    /// Extraction never throws out of here: a capability gap degrades the lifecycle, never fails it (design §6).
-    /// </summary>
-    private async Task<bool> TryExtractKnowledgeAsync(ReviewedPr pr, CancellationToken cancellationToken)
+    private async Task<bool> RunMergedWorkflowAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
-        KnowledgeExtractionOutcome outcome;
-        try
+        var repoId = _store.EnsureRepo(pr.Repo);
+        var run =
+            _store.GetLatestReviewRun(repoId, pr.PrId)
+            ?? await CreateMergedOrphanRunAsync(_store, repoId, pr, _getCurrentHeadShaAsync, cancellationToken)
+                .ConfigureAwait(false);
+        if (run.PrLifecycleState != PrLifecycleState.Merged)
         {
-            outcome = await _extractKnowledgeAsync!(pr, cancellationToken).ConfigureAwait(false);
+            _store.UpdateReviewRunState(run.Id, run.Stage, run.WorkflowStatus, PrLifecycleState.Merged);
+            run = run with { PrLifecycleState = PrLifecycleState.Merged };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        var frozen = new JsonObject
         {
-            _logger.LogWarning(
-                ex,
-                "PR-lifecycle sweep knowledge extraction threw for merged {Provider} PR {PrId}.",
-                pr.Provider,
-                pr.PrId
-            );
-            outcome = KnowledgeExtractionOutcome.Failed;
-        }
-
-        if (outcome != KnowledgeExtractionOutcome.Failed)
-        {
-            return true;
-        }
-
-        var attempts = _extractionAttempts.GetValueOrDefault(pr.Branch) + 1;
-        _extractionAttempts[pr.Branch] = attempts;
-        if (attempts < MaxExtractionAttempts)
-        {
-            _logger.LogWarning(
-                "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId} "
-                    + "(attempt {Attempt} of {MaxAttempts}); holding notes branch '{Branch}' back for a retry.",
-                pr.Provider,
-                pr.PrId,
-                attempts,
-                MaxExtractionAttempts,
-                pr.Branch
-            );
-            return false;
-        }
-
-        // The delay extraction may impose on the lifecycle is bounded (design §6). Say so loudly: this is the
-        // one path where knowledge is genuinely lost, and it must not look like an ordinary merge.
-        _logger.LogWarning(
-            "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId} on all "
-                + "{MaxAttempts} attempts; merging notes branch '{Branch}' anyway — this PR's knowledge is lost.",
-            pr.Provider,
-            pr.PrId,
-            MaxExtractionAttempts,
-            pr.Branch
+            ["PullRequest"] = new JsonObject
+            {
+                ["PrId"] = run.PrId,
+                ["HeadSha"] = run.HeadSha,
+                ["BaseSha"] = run.BaseSha,
+                ["Author"] = run.PrAuthor,
+                ["Title"] = run.PrTitle,
+                ["Description"] = run.PrDescription,
+            },
+            ["Merge"] = new JsonObject { ["HeadSha"] = run.HeadSha, ["ArtifactBranch"] = pr.Branch },
+        };
+        var round = _store.CreateOrGetWorkflowRound(
+            new WorkflowRoundSeed
+            {
+                RepoId = run.RepoId,
+                PrId = run.PrId,
+                HeadSha = run.HeadSha,
+                Kind = WorkflowRoundKind.Merged,
+                EventKey = run.HeadSha,
+                FrozenInputJson = frozen.ToJsonString(),
+            }
         );
-        return true;
+        return await _orchestrator.RunRoundAsync(run, round, cancellationToken).ConfigureAwait(false)
+            == WorkflowInvocationStatus.Completed;
+    }
+
+    internal static async Task<ReviewRun> CreateMergedOrphanRunAsync(
+        ReviewStore store,
+        long repoId,
+        ReviewedPr pr,
+        Func<ReviewedPr, CancellationToken, Task<string?>> readHead,
+        CancellationToken cancellationToken
+    )
+    {
+        var headSha = await readHead(pr, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(headSha))
+        {
+            throw new InvalidDataException(
+                "Merged PR has no durable review run and its provider returned no head SHA."
+            );
+        }
+
+        return store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = pr.PrId,
+                HeadSha = headSha,
+                // The provider seam exposes the authoritative merged head but no historical base. A zero-width
+                // range is safe for history preparation: it cannot accidentally review unrelated repository history.
+                BaseSha = headSha,
+                TriggerWatermark = $"merged:{headSha}",
+                ReviewKind = "merged",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Pending,
+                PrLifecycleState = PrLifecycleState.Merged,
+                PrAuthor = pr.Author,
+            }
+        );
     }
 }

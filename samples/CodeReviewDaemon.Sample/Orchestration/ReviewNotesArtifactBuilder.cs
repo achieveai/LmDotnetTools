@@ -7,22 +7,8 @@ using CodeReviewDaemon.Sample.Workspace.Git;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
-/// <summary>
-/// Everything one round's notes build produced: the files to commit, and the same round's findings as data.
-/// <para>
-/// Two returns rather than one because they have different destinations and different failure modes. The
-/// files go to the notes branch through the git commit path; the payload goes to the review store as an
-/// artifact row. Returning both keeps the builder pure — it does no I/O of its own and needs no store handle
-/// — while guaranteeing the markdown and the record are built from one list on one call, which is the only
-/// way the two can be relied on to agree.
-/// </para>
-/// </summary>
-/// <param name="Files">The notes artifacts to commit, in the order they should appear.</param>
-/// <param name="Findings">The round's specialist findings, structured for counting.</param>
-internal sealed record ReviewNotesArtifacts(
-    IReadOnlyList<ReviewArtifactFile> Files,
-    ReviewFindingsArtifactPayload Findings
-);
+/// <summary>Bounded transcript and context files for historical notes export.</summary>
+internal sealed record ReviewNotesArtifacts(IReadOnlyList<ReviewArtifactFile> Files);
 
 /// <summary>
 /// The one sanctioned way transcript text — anything a review agent or its tools produced — is allowed to
@@ -274,21 +260,13 @@ internal sealed class ReviewNotesArtifactBuilder
     /// Produces the round's artifacts, relative to <paramref name="notesRelPath"/> (the lease's per-PR notes
     /// dir — the only path the commit stages). Always returns at least the context file. Never throws for a
     /// transcript-side failure; the returned files record it instead.
-    /// <para>
-    /// <paramref name="shippedReviewBody"/> is the review that actually went out, and it is what makes the
-    /// reconciliation artifact possible: the specialists' findings are already captured, but what happened to
-    /// each one was recorded nowhere. Null is a supported state and is rendered as "not compared" rather than
-    /// as a page of dropped findings — a comparison that did not run and a finding that did not survive are
-    /// different facts, and only one of them is a loss.
-    /// </para>
     /// </summary>
     public async Task<ReviewNotesArtifacts> BuildAsync(
         ReviewRun run,
         RepoIdentity repo,
         string notesRelPath,
         ReviewNotesArtifactContext context,
-        CancellationToken cancellationToken,
-        string? shippedReviewBody = null
+        CancellationToken cancellationToken
     )
     {
         ArgumentNullException.ThrowIfNull(run);
@@ -298,30 +276,11 @@ internal sealed class ReviewNotesArtifactBuilder
         var lead = await BuildLeadFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
         var findings = await BuildFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
 
-        // Built from the specialists' OWN words as read back out of their transcripts — the same text the
-        // per-agent findings files carry, taken before the artifact size budget trims anything, so a finding
-        // cut from a file for space is still reconciled.
-        var sources = findings.Select(f => new ReviewFindingSource(f.Label, f.Template, f.OwnText)).ToArray();
-        var comparable = !string.IsNullOrWhiteSpace(shippedReviewBody);
-        var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedReviewBody);
-        var reconciliationFileName = $"{ReviewFindingReconciler.FileNamePrefix}{round}.md";
-        var reconciliation = ReviewFindingReconciler.Render(round, sources, reconciled, shippedReviewBody);
-
-        var contextFile = BuildContextFile(
-            run,
-            repo,
-            round,
-            context,
-            lead,
-            findings,
-            reconciliationFileName,
-            reconciled.Count
-        );
+        var contextFile = BuildContextFile(run, repo, round, context, lead, findings);
 
         List<ReviewArtifactFile> files =
         [
             new($"{notesRelPath}/PR_Context_{round}.md", contextFile),
-            new($"{notesRelPath}/{reconciliationFileName}", reconciliation),
             new($"{notesRelPath}/{lead.FileName}", lead.Body),
             .. findings.Select(f => new ReviewArtifactFile($"{notesRelPath}/{f.FileName}", f.Body)),
         ];
@@ -336,68 +295,7 @@ internal sealed class ReviewNotesArtifactBuilder
             findings.Count(f => !f.TranscriptRead) + (lead.TranscriptRead ? 0 : 1)
         );
 
-        // The disposition of every specialist finding, as a rate rather than an anecdote. Logged on every
-        // build including the one where nothing changed, because a number that only appears when something
-        // looks wrong has no denominator, and "0 severity-changed out of 0 reconciled" and "0 out of 40" are
-        // not the same review.
-        //
-        // 'not-traceable' is NOT a loss rate and must never be quoted as one. Specialists cite locations they
-        // examined and CLEARED as well as locations they are reporting, so a citation with no shipped
-        // counterpart is most often a cleared one. What this number is good for is movement: a run where it
-        // jumps is a run where the mapping, the review shape, or the fan-out changed.
-        _logger.LogInformation(
-            "Run {RunId}: round {Round} reconciled {Reconciled} specialist finding(s) against the shipped "
-                + "review — {Kept} kept, {SeverityChanged} severity-changed, {Reframed} reframed, "
-                + "{MergedInto} merged-into, {NotTraceable} not traceable to a shipped location "
-                + "(comparison ran: {Compared}).",
-            run.Id,
-            round,
-            reconciled.Count,
-            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Kept),
-            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.SeverityChanged),
-            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Reframed),
-            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.MergedInto),
-            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Dropped),
-            comparable
-        );
-
-        // The same reconciled list, serialised a second way. The markdown above is what an author reads; this
-        // is what a query counts. Both come off the one `reconciled` variable, so the artifact cannot report a
-        // finding the table omits or vice versa.
-        var payload = ReviewFindingsArtifactPayload.Build(
-            context.ReviewRound,
-            sources,
-            reconciled,
-            comparable,
-            run.PromptTemplateHash
-        );
-
-        // A row that was extracted and then failed to reach the record is the one failure this whole artifact
-        // cannot tolerate, because it makes the count silently low and a low count reads exactly like a quiet
-        // review. Warned, not thrown: losing the structured copy must not cost the author their prose review.
-        // Suppressed when the comparison did not run at all — there are no rows to lose in that state, and the
-        // payload records the fact positively rather than as a shortfall.
-        if (comparable && payload.Shortfall != 0)
-        {
-            _logger.LogWarning(
-                "Run {RunId}: round {Round} extracted {Parsed} specialist finding(s) but recorded only "
-                    + "{Recorded} in the findings artifact — {Shortfall} row(s) were lost between extraction "
-                    + "and the record. Per reviewer: {Sources}.",
-                run.Id,
-                round,
-                payload.ParsedCount,
-                payload.RecordedCount,
-                payload.Shortfall,
-                string.Join(
-                    ", ",
-                    payload
-                        .Sources.Where(s => s.Parsed != s.Recorded)
-                        .Select(s => $"{s.Label} {s.Parsed}->{s.Recorded}")
-                )
-            );
-        }
-
-        return new ReviewNotesArtifacts(files, payload);
+        return new ReviewNotesArtifacts(files);
     }
 
     /// <summary>
@@ -430,8 +328,7 @@ internal sealed class ReviewNotesArtifactBuilder
     }
 
     /// <summary>
-    /// One per-reviewer findings file, how its transcript read ended, and the reviewer's own words lifted back
-    /// out so the reconciliation artifact can be built from them.
+    /// One per-reviewer findings file and how its transcript read ended.
     /// <para>
     /// <see cref="TranscriptRead"/> stays a two-valued summary on purpose — it feeds the build's count of
     /// unreadable transcripts, which is a question about the HOST answering. What it must never be used for is
@@ -445,8 +342,7 @@ internal sealed class ReviewNotesArtifactBuilder
         string Body,
         string Label,
         string Template,
-        TranscriptState State,
-        string OwnText
+        TranscriptState State
     )
     {
         public bool TranscriptRead =>
@@ -509,8 +405,7 @@ internal sealed class ReviewNotesArtifactBuilder
             header.ToString(),
             Label,
             LeadTemplate,
-            read.State,
-            read.OwnText
+            read.State
         );
     }
 
@@ -605,8 +500,7 @@ internal sealed class ReviewNotesArtifactBuilder
                     body,
                     label,
                     UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
-                    read.State,
-                    read.OwnText
+                    read.State
                 )
             );
         }
@@ -779,21 +673,11 @@ internal sealed class ReviewNotesArtifactBuilder
 
     /// <summary>
     /// What one call to <see cref="AppendRetainedEntries"/> found, and how the read ended.
-    /// <para>
-    /// <see cref="OwnText"/> is every own turn the filter kept, joined — captured BEFORE the size budget
-    /// decides what fits, so a conclusion trimmed out of the rendered file is still available to the
-    /// reconciliation artifact. It is sanitized but otherwise untouched, and it is untrusted.
-    /// </para>
     /// </summary>
-    private sealed record RetainedTranscript(
-        TranscriptState State,
-        int TotalMessages,
-        int OmittedMessages,
-        string OwnText
-    )
+    private sealed record RetainedTranscript(TranscriptState State, int TotalMessages, int OmittedMessages)
     {
         /// <summary>A read that never produced entries at all — nothing addressed, or the host refused.</summary>
-        public static RetainedTranscript Unread(TranscriptState state) => new(state, 0, 0, string.Empty);
+        public static RetainedTranscript Unread(TranscriptState state) => new(state, 0, 0);
     }
 
     /// <summary>The transcript role whose entries are the agent's own output rather than what it was handed.</summary>
@@ -838,7 +722,7 @@ internal sealed class ReviewNotesArtifactBuilder
                 .AppendLine(" of this agent's messages were tool traffic, token accounting, or empty")
                 .AppendLine("payloads — it produced no prose of its own._");
             AppendReadButEmpty(header, entries.Count, entries.Count);
-            return new RetainedTranscript(TranscriptState.FilteredEmpty, entries.Count, entries.Count, string.Empty);
+            return new RetainedTranscript(TranscriptState.FilteredEmpty, entries.Count, entries.Count);
         }
 
         var budget = UntrustedTranscriptText.MaxArtifactChars;
@@ -886,19 +770,13 @@ internal sealed class ReviewNotesArtifactBuilder
         // Retained entries but not one of them the agent's own: the file above holds only what this reviewer
         // was HANDED. Without this line that reads as a reviewer with little to say, which is the precise
         // confusion this class was built to end.
-        var ownTurns = retained.Where(IsOwnTurn).ToArray();
-        var state = ownTurns.Length == 0 ? TranscriptState.FilteredEmpty : TranscriptState.Read;
+        var state = retained.Any(IsOwnTurn) ? TranscriptState.Read : TranscriptState.FilteredEmpty;
         if (state == TranscriptState.FilteredEmpty)
         {
             AppendReadButEmpty(header, dropped, entries.Count);
         }
 
-        return new RetainedTranscript(
-            state,
-            entries.Count,
-            dropped,
-            string.Join("\n\n", ownTurns.Select(e => UntrustedTranscriptText.Sanitize(e.Body)))
-        );
+        return new RetainedTranscript(state, entries.Count, dropped);
     }
 
     /// <summary>
@@ -972,9 +850,7 @@ internal sealed class ReviewNotesArtifactBuilder
         string round,
         ReviewNotesArtifactContext context,
         FindingsArtifact lead,
-        IReadOnlyList<FindingsArtifact> findings,
-        string reconciliationFileName,
-        int reconciledCount
+        IReadOnlyList<FindingsArtifact> findings
     )
     {
         var builder = new StringBuilder()
@@ -1107,16 +983,6 @@ internal sealed class ReviewNotesArtifactBuilder
                 .Append(artifact.Label)
                 .AppendLine(ManifestNote(artifact));
         }
-
-        builder
-            .Append("- `")
-            .Append(reconciliationFileName)
-            .Append("` — what the shipped review did with each specialist finding (")
-            .Append(reconciledCount.ToString(CultureInfo.InvariantCulture))
-            .AppendLine(" mapped). Deliberately")
-            .AppendLine("  outside the `PR_Context_`/`PR_Findings_` prefix the next round reads back: it is an audit")
-            .AppendLine("  of this round, not input to the next one, and feeding it forward would put every finding")
-            .AppendLine("  into the following review's context a second time.");
 
         return builder.ToString();
     }

@@ -34,7 +34,8 @@ public class ConversationsControllerTests
         ProviderRegistry? providerRegistry = null,
         ConversationStatusResolver? statusResolver = null,
         SandboxSessionRegistry? sandboxSessionRegistry = null,
-        SandboxEnvApplier? envApplier = null
+        SandboxEnvApplier? envApplier = null,
+        LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
     )
     {
         return new ConversationsController(
@@ -55,7 +56,8 @@ public class ConversationsControllerTests
             // Named, not positional: the controller has more than one optional trailing parameter, so a
             // positional argument here silently binds to whichever one happens to come first.
             sandboxSessionRegistry: sandboxSessionRegistry,
-            envApplier: envApplier
+            envApplier: envApplier,
+            workflowPublication: workflowPublication
         );
     }
 
@@ -933,6 +935,7 @@ public class ConversationsControllerTests
         response.SchemaVersion.Should().Be(1);
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
+        response.ActionToolSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
         // No sandbox registry is wired into this controller, so nothing here could apply env to a
         // session. It used to report true regardless — a claim about the BUILD rather than about the

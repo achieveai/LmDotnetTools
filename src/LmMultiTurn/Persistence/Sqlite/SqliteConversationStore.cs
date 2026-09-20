@@ -1008,8 +1008,8 @@ public sealed class SqliteConversationStore
             using var command = connection.CreateCommand();
             command.CommandText = """
                 INSERT INTO input_acceptances (
-                    thread_id, input_id, accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id)
-                VALUES ($thread_id, $input_id, $accepted_at, $state, $suppressed, $honored, $reservation_id)
+                    thread_id, input_id, accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id, action_tools_suppressed)
+                VALUES ($thread_id, $input_id, $accepted_at, $state, $suppressed, $honored, $reservation_id, $actions_suppressed)
                 ON CONFLICT(thread_id, input_id) DO NOTHING;
                 """;
             BindAcceptance(command, acceptance);
@@ -1049,7 +1049,7 @@ public sealed class SqliteConversationStore
         command.CommandText = """
             UPDATE input_acceptances
             SET accepted_at = $accepted_at, state = $state, spawning_suppressed = $suppressed,
-                idempotency_honored = $honored
+                idempotency_honored = $honored, action_tools_suppressed = $actions_suppressed
             WHERE thread_id = $thread_id AND input_id = $input_id AND reservation_id = $reservation_id;
             """;
         BindAcceptance(command, acceptance);
@@ -1084,6 +1084,7 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$accepted_at", acceptance.AcceptedAt.ToUnixTimeMilliseconds());
         _ = command.Parameters.AddWithValue("$state", acceptance.State.ToString());
         _ = command.Parameters.AddWithValue("$suppressed", acceptance.SpawningSuppressed ? 1 : 0);
+        _ = command.Parameters.AddWithValue("$actions_suppressed", acceptance.ActionToolsSuppressed ? 1 : 0);
         _ = command.Parameters.AddWithValue("$honored", acceptance.IdempotencyHonored ? 1 : 0);
         _ = command.Parameters.AddWithValue("$reservation_id", acceptance.ReservationId.ToString("N"));
     }
@@ -1097,7 +1098,7 @@ public sealed class SqliteConversationStore
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id
+            SELECT accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id, action_tools_suppressed
             FROM input_acceptances
             WHERE thread_id = $thread_id AND input_id = $input_id;
             """;
@@ -1116,7 +1117,8 @@ public sealed class SqliteConversationStore
             Enum.Parse<InputAcceptanceState>(reader.GetString(1)),
             reader.GetInt64(2) != 0,
             reader.GetInt64(3) != 0,
-            Guid.Parse(reader.GetString(4))
+            Guid.Parse(reader.GetString(4)),
+            reader.GetInt64(5) != 0
         );
     }
 

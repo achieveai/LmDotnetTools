@@ -11,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 ///     never has to remember which fields belong to which node type (the exact failure that made the
 ///     internal <see cref="WorkflowDefinition"/> hard to author directly: it emitted <c>label</c>,
 ///     <c>prompt</c>, <c>type:"action"</c> and was rejected). <see cref="ToDefinition"/> translates this
-///     into the internal, engine-facing <see cref="WorkflowDefinition"/>; the internal model is unchanged.
+///     into the internal, engine-facing <see cref="WorkflowDefinition"/>. Typed YAML adds opt-in invocation contracts.
 /// </summary>
 /// <remarks>
 ///     Field-to-node mapping:
@@ -45,6 +45,22 @@ public sealed record SimpleWorkflow
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>The authored contract version; required for YAML.</summary>
+    public int? Version { get; init; }
+
+    /// <summary>Named JSON Schema types available to input and output contracts.</summary>
+    public JsonObject? Types { get; init; }
+
+    /// <summary>The named schema for the workflow input.</summary>
+    public string? InputType { get; init; }
+
+    /// <summary>Whether this definition uses the strict automatic execution contract.</summary>
+    [JsonIgnore]
+    public bool StrictContracts { get; init; }
+
+    /// <summary>Reads strict JSON-compatible YAML into the existing flat authoring model.</summary>
+    public static SimpleWorkflow DeserializeYaml(string yaml) => WorkflowYaml.Read(yaml);
+
     /// <summary>The high-level objective the workflow pursues.</summary>
     public string Objective { get; init; } = string.Empty;
 
@@ -74,13 +90,32 @@ public sealed record SimpleWorkflow
 /// <summary>One uniform step in a <see cref="SimpleWorkflow"/>. Which optional fields apply depends on <see cref="Kind"/>.</summary>
 public sealed record SimpleStep
 {
+    /// <summary>Named input schema and typed binding document.</summary>
+    public string? InputType { get; init; }
+    public JsonNode? Input { get; init; }
+
+    /// <summary>Named output schema, validated before saving the result.</summary>
+    public string? OutputType { get; init; }
+
+    /// <summary>The host-bound conversation to continue and trusted workspace skills.</summary>
+    public string? Session { get; init; }
+    public IReadOnlyList<string>? Skills { get; init; }
+    public IReadOnlyList<string>? Tools { get; init; }
+    public string? Model { get; init; }
+
+    /// <summary>Workspace-relative script path for a script step.</summary>
+    public string? Script { get; init; }
+
+    /// <summary>Maximum format-only output correction attempts.</summary>
+    public int MaxValidationRetries { get; init; }
+
     /// <summary>Unique step id.</summary>
     public string Id { get; init; } = string.Empty;
 
     /// <summary>Human-readable title. Defaults to <see cref="Id"/> when omitted.</summary>
     public string? Title { get; init; }
 
-    /// <summary>The step kind: <c>start</c>, <c>agent</c>, <c>parallel</c>, <c>branch</c>, or <c>end</c>.</summary>
+    /// <summary>The step kind: <c>start</c>, <c>agent</c>, <c>script</c>, <c>parallel</c>, <c>branch</c>, or <c>end</c>.</summary>
     public string Kind { get; init; } = string.Empty;
 
     /// <summary>
@@ -166,6 +201,10 @@ public sealed record SimpleAgent
 /// <summary>One condition of a <c>branch</c> step.</summary>
 public sealed record SimpleBranch
 {
+    /// <summary>Normalized structured condition for strict YAML; legacy prose stays in When.</summary>
+    [JsonIgnore]
+    public JsonNode? StructuredWhen { get; init; }
+
     /// <summary>The (prose) condition that selects this branch.</summary>
     public string When { get; init; } = string.Empty;
 
@@ -282,12 +321,13 @@ public static class SimpleWorkflowTranslator
             throw new WorkflowValidationException(errors);
         }
 
-        return new WorkflowDefinition
+        var definition = new WorkflowDefinition
         {
             SchemaVersion = 1,
             Objective = workflow.Objective,
             Nodes = nodes,
         };
+        return workflow.StrictContracts ? WorkflowContractValidator.Apply(workflow, definition) : definition;
     }
 
     /// <summary>
@@ -387,9 +427,15 @@ public static class SimpleWorkflowTranslator
 
             case "agent":
             case "task":
+            case "script":
                 // 'prompt' stays required — a sub-agent with no instructions has nothing to do, and there is
                 // no honest default for it. 'agent' and 'next' both have one, so they don't.
-                RequireField(errors, id, "prompt", step.Prompt);
+                RequireField(
+                    errors,
+                    id,
+                    kind == "script" ? "script" : "prompt",
+                    kind == "script" ? step.Script : step.Prompt
+                );
                 var fanOut = !string.IsNullOrWhiteSpace(step.ForEach);
                 return new ProceduralNode
                 {
@@ -403,6 +449,14 @@ public static class SimpleWorkflowTranslator
                         new WorkflowTask
                         {
                             Id = $"{id}:task",
+                            Delegate = kind == "script" ? DelegateKind.Script : DelegateKind.Agent,
+                            Session = step.Session,
+                            Skills = step.Skills,
+                            Tools = step.Tools,
+                            ModelId = step.Model,
+                            Script = step.Script,
+                            Input = step.Input?.DeepClone(),
+                            MaxValidationRetries = step.MaxValidationRetries,
                             SubagentType = SubagentTypeOrDefault(step.Agent),
                             ModelIntelligence = step.ModelIntelligence,
                             PromptTemplate = step.Prompt ?? string.Empty,
@@ -478,7 +532,7 @@ public static class SimpleWorkflowTranslator
                     [
                         .. branches.Select(b => new Branch
                         {
-                            When = JsonValue.Create(b.When ?? string.Empty),
+                            When = b.StructuredWhen?.DeepClone() ?? JsonValue.Create(b.When ?? string.Empty),
                             To = b.Goto ?? string.Empty,
                         }),
                     ],

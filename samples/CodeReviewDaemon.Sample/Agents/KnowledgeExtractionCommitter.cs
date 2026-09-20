@@ -3,7 +3,7 @@ using CodeReviewDaemon.Sample.Workspace.Git;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// Carries the at-close <see cref="KnowledgeAgent"/> extraction write into the store's default branch. On a
+/// Carries the at-close structured knowledge extraction write into the store's default branch. On a
 /// merged PR the sweeper store clone has no LOCAL notes branch, so this fetches and checks the PR's notes
 /// branch out (<c>checkout -B &lt;branch&gt; origin/&lt;branch&gt;</c>) BEFORE extraction runs, so the layered
 /// <c>KnowledgeBase/…</c> write lands on that branch; then — only when the gated extraction actually wrote an
@@ -36,7 +36,7 @@ internal sealed class KnowledgeExtractionCommitter
 
     /// <summary>
     /// Checks the notes branch out, runs <paramref name="extractAsync"/> (the gated
-    /// <see cref="KnowledgeAgent.TryExtractAsync"/> call), and — when it returns a write — commits and pushes
+    /// scoped extraction call), and — when it returns a write — commits and pushes
     /// <c>KnowledgeBase/</c> onto <paramref name="branch"/> with a <c>kb: extract from &lt;sourcePrRef&gt;</c>
     /// message. A gate decline commits nothing (the checkout is left clean). Never throws for a
     /// git/agent/extraction/IO failure — every step is checked and, on failure, logged and reported as
@@ -225,4 +225,38 @@ internal sealed class KnowledgeExtractionCommitter
 
         return false;
     }
+}
+
+/// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>
+/// is worth retrying, and the caller cannot tell the two non-writing outcomes apart without it.</summary>
+internal enum KnowledgeExtractionOutcome
+{
+    /// <summary>An entry was written to the Knowledge Base.</summary>
+    Wrote,
+
+    /// <summary>The agent legitimately declined — the PR carried no durable knowledge. Not a failure.</summary>
+    Declined,
+
+    /// <summary>The attempt failed (unusable reply, or the write/commit/push did not land). Retryable.</summary>
+    Failed,
+}
+
+/// <summary>
+/// The outcome of an extraction attempt, plus — when it wrote — the Knowledge Base entry and the agent
+/// run id that produced it.
+/// </summary>
+internal sealed record KnowledgeExtractionResult(
+    KnowledgeExtractionOutcome Outcome,
+    string? EntryFileName = null,
+    string? RunId = null
+)
+{
+    public static KnowledgeExtractionResult Declined(string? runId) =>
+        new(KnowledgeExtractionOutcome.Declined, RunId: runId);
+
+    public static KnowledgeExtractionResult Failed(string? runId = null) =>
+        new(KnowledgeExtractionOutcome.Failed, RunId: runId);
+
+    public static KnowledgeExtractionResult Wrote(string entryFileName, string? runId) =>
+        new(KnowledgeExtractionOutcome.Wrote, entryFileName, runId);
 }

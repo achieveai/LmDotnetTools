@@ -120,6 +120,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
+            await VerifyStoreOriginAsync(_git, storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
             if (!_requireSdkOwnershipMarker)
             {
                 return;
@@ -154,6 +155,70 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
         await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Verifies the configured repository identity without fetching or changing any remote.</summary>
+    public static async Task VerifyStoreOriginAsync(
+        GitRunner git,
+        string storeRoot,
+        string expectedUrl,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(git);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedUrl);
+        foreach (var push in new[] { false, true })
+        {
+            string[] arguments = push
+                ? ["-C", storeRoot, "remote", "get-url", "--push", "--all", "origin"]
+                : ["-C", storeRoot, "remote", "get-url", "--all", "origin"];
+            var result = await git.RunAsync(arguments, storeRoot, cancellationToken).ConfigureAwait(false);
+            var urls = result.Stdout.Split(
+                ['\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
+            if (!result.Succeeded || urls.Length != 1 || !SameStoreOrigin(expectedUrl, urls[0]))
+            {
+                throw new InvalidOperationException(
+                    "Review store origin does not match the configured repository; refusing to reuse it."
+                );
+            }
+        }
+    }
+
+    private static bool SameStoreOrigin(string expected, string actual)
+    {
+        if (
+            !Uri.TryCreate(expected, UriKind.Absolute, out var expectedUri)
+            || !Uri.TryCreate(actual, UriKind.Absolute, out var actualUri)
+            || expectedUri.Scheme is not ("https" or "http")
+            || actualUri.Scheme != expectedUri.Scheme
+            || expectedUri.Port != actualUri.Port
+            || expectedUri.Query.Length != 0
+            || actualUri.Query.Length != 0
+            || expectedUri.Fragment.Length != 0
+            || actualUri.Fragment.Length != 0
+        )
+        {
+            return false;
+        }
+        var left = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(OriginSpelling(expectedUri)));
+        var right = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(OriginSpelling(actualUri)));
+        var pathComparison =
+            left.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            || left.Host.Equals("dev.azure.com", StringComparison.OrdinalIgnoreCase)
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+        return left.Kind == right.Kind
+            && left.Host.Equals(right.Host, StringComparison.OrdinalIgnoreCase)
+            && left.RepoPath.Equals(right.RepoPath, pathComparison);
+    }
+
+    // Remove authority userinfo before invoking the shared parser. Escape path @ characters so they
+    // cannot be mistaken for userinfo by its scp/HTTP security-policy parser.
+    private static string OriginSpelling(Uri uri) =>
+        uri.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.UriEscaped)
+            .Replace("@", "%40", StringComparison.Ordinal)
+            .TrimEnd('/');
 
     public async Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
     {

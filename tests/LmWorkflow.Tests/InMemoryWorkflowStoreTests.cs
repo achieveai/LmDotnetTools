@@ -96,18 +96,57 @@ public class InMemoryWorkflowStoreTests
 
         var act = () => WorkflowInstanceSnapshot.FromJson(json);
 
-        act.Should().Throw<NotSupportedException>().WithMessage("*newer than supported*");
+        act.Should().Throw<NotSupportedException>().WithMessage("*outside supported versions*");
     }
 
     [Fact]
     public void FromJson_CurrentSchemaVersion_Loads()
     {
-        const string json = """{ "schemaVersion": 1, "instanceId": "wf-current" }""";
+        const string json = """{ "schemaVersion": 2, "instanceId": "wf-current" }""";
 
         var snapshot = WorkflowInstanceSnapshot.FromJson(json);
 
         snapshot.SchemaVersion.Should().Be(WorkflowInstanceSnapshot.CurrentSchemaVersion);
         snapshot.InstanceId.Should().Be("wf-current");
+    }
+
+    [Fact]
+    public void Schema1_snapshot_resumes_and_next_runtime_save_upgrades_to_schema2()
+    {
+        var legacy = JsonNode.Parse(PopulatedSnapshot("legacy").ToJson())!.AsObject();
+        legacy["schemaVersion"] = 1;
+        legacy.Remove("sessions");
+        legacy.Remove("deadlines");
+        var loaded = WorkflowInstanceSnapshot.FromJson(legacy.ToJsonString());
+        loaded.SchemaVersion.Should().Be(1);
+        loaded.Sessions.Should().BeEmpty();
+        loaded.Deadlines.Should().BeEmpty();
+        var saved = WorkflowRuntime.FromSnapshot(loaded).Snapshot();
+        saved.SchemaVersion.Should().Be(2);
+        saved.State.ToJsonString().Should().Be(loaded.State.ToJsonString());
+        saved.Tasks.Should().Contain(value => value.Status == WorkflowTaskStatus.Validated);
+    }
+
+    [Fact]
+    public void Schema1_reader_guard_refuses_schema2_inflight_execution_state()
+    {
+        var snapshot = PopulatedSnapshot("automatic") with
+        {
+            Sessions = new Dictionary<string, string> { ["parent"] = "host-thread" },
+            Deadlines = new Dictionary<string, DateTimeOffset> { [AnalyzeUnit] = DateTimeOffset.UtcNow },
+        };
+        // Frozen schema-1 envelope guard, from the reader before automatic execution was introduced.
+        // The legacy DTO ignores additive JSON fields, so its schema gate is the downgrade barrier.
+        var legacyRead = () =>
+        {
+            var envelope = JsonNode.Parse(snapshot.ToJson())!;
+            if (envelope["schemaVersion"]!.GetValue<int>() > 1)
+                throw new NotSupportedException("Workflow snapshot schema version is newer than supported 1.");
+        };
+        legacyRead.Should().Throw<NotSupportedException>();
+        var current = WorkflowInstanceSnapshot.FromJson(snapshot.ToJson());
+        current.Sessions.Should().Contain("parent", "host-thread");
+        current.Deadlines.Should().ContainKey(AnalyzeUnit);
     }
 
     [Fact]

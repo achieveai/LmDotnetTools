@@ -9,7 +9,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <see cref="ParseFrontmatter"/> reads that flat block into a <see cref="KnowledgeEntryMeta"/>, and
 /// <see cref="RenderIndex"/> emits <c>_index.jsonl</c> — one compact JSON object per line, stable key
 /// order, sorted by file — so the same set of entries always regenerates byte-identically (no spurious
-/// diffs). Kept separate from the IO in <see cref="KnowledgeAgent"/> so it is unit-testable in isolation.
+/// diffs). Kept separate from the IO in the historical review implementation so it is unit-testable in isolation.
 /// A minimal hand-rolled reader (no YAML dependency) covers only the flat scalar/list keys above.
 /// </summary>
 internal static class KnowledgeIndex

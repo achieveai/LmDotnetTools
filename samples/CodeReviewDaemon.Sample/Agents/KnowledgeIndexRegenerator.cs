@@ -1,3 +1,4 @@
+using CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Agents;
@@ -9,7 +10,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// always cheaper to recompute than to reconcile, and there is never a reason to accept one side of a
 /// conflict on them.
 /// <para>
-/// It lives outside <see cref="KnowledgeAgent"/> because it has two callers with nothing else in common:
+/// It lives outside the former knowledge agent because it has two callers with nothing else in common:
 /// the extraction pass, which regenerates after writing an entry, and the notes-branch merge in
 /// <see cref="Workspace.Git.ReviewBranchManager"/>, which regenerates AFTER the merge lands so the listings
 /// describe the merged tree rather than whichever side the merge strategy happened to pick. The second
@@ -51,15 +52,7 @@ internal sealed class KnowledgeIndexRegenerator
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(knowledgeBaseDir);
 
-        var metas = await CollectEntryMetasAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        var index = KnowledgeIndex.RenderIndex(metas);
-
-        // _toc.md link labels: the blank-title fallback to file path lives in
-        // KnowledgeTableOfContents.RenderItems now (issue #259), so every caller gets it for free —
-        // pass the raw Title through here.
-        var tocEntries = metas.Select(meta => new KnowledgeEntry(meta.File, meta.Title)).ToList();
-        var toc = KnowledgeTableOfContents.Render(tocEntries);
+        var (index, toc) = await RenderListingsAsync(knowledgeBaseDir, [], cancellationToken).ConfigureAwait(false);
 
         var indexChanged = await WriteIfChangedAsync(knowledgeBaseDir, IndexFileName, index, cancellationToken)
             .ConfigureAwait(false);
@@ -67,6 +60,22 @@ internal sealed class KnowledgeIndexRegenerator
             .ConfigureAwait(false);
 
         return indexChanged || tocChanged;
+    }
+
+    /// <summary>Renders the future listings from current entries and exact replacements, without modifying the checkout.</summary>
+    public async Task<(string Index, string Toc)> RenderListingsAsync(
+        string knowledgeBaseDir,
+        IReadOnlyList<KnowledgeEntryMeta> replacements,
+        CancellationToken cancellationToken
+    )
+    {
+        var existing = await CollectEntryMetasAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
+        var replacedPaths = replacements.Select(meta => meta.File).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var metas = existing.Where(meta => !replacedPaths.Contains(meta.File)).Concat(replacements).ToList();
+        return (
+            KnowledgeIndex.RenderIndex(metas),
+            KnowledgeTableOfContents.Render([.. metas.Select(meta => new KnowledgeEntry(meta.File, meta.Title))])
+        );
     }
 
     /// <summary>
@@ -194,14 +203,14 @@ internal sealed class KnowledgeIndexRegenerator
 
     /// <summary>
     /// True for the reserved per-developer review-feedback directory
-    /// (<see cref="ReviewFeedbackAgent.DevelopersDirectory"/>). Those records are about ONE person and are
+    /// (<see cref="DeveloperIdentity.DevelopersDirectory"/>). Those records are about ONE person and are
     /// delivered by targeted injection into that person's own PRs; letting them into <c>_index.jsonl</c> /
     /// <c>_toc.md</c> would put every developer's record into every reviewer's context and spend the shared
     /// retrieval budget on it. Matched case-insensitively because a case-insensitive checkout (Windows)
     /// collapses <c>Developers/</c> onto <c>developers/</c>.
     /// </summary>
     internal static bool IsDevelopersDirectory(string name) =>
-        string.Equals(name, ReviewFeedbackAgent.DevelopersDirectory, StringComparison.OrdinalIgnoreCase);
+        string.Equals(name, DeveloperIdentity.DevelopersDirectory, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The scope (first path segment) of <paramref name="relPath"/>, or <c>null</c> when it has none.</summary>
     internal static string? ScopeSegment(string relPath)

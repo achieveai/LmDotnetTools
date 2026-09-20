@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmEval;
-using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Eval;
 
 namespace CodeReviewDaemon.Sample.Tests.Eval;
@@ -146,58 +145,5 @@ public class ModelFamilyTests
         );
 
         composition.Should().BeOfType<PanelComposition.Degraded>();
-    }
-
-    // ---- both sides speak the rule ---------------------------------------------------------------
-
-    /// <summary>
-    /// The judge side of the contradiction. <c>JudgeAgent</c> recorded <c>JudgeRequest.Provider</c> as
-    /// the judge's model family — and that field is the <b>repo host</b> (<c>github</c> / <c>ado</c>),
-    /// not an LLM vendor at all. Read against a generator family produced by the corpus reader it can
-    /// never match, so the exclusion is dead; read against a repo host that happened to share a name
-    /// with a vendor it would fire for no reason.
-    /// </summary>
-    [Fact]
-    public void The_judge_family_is_derived_from_the_judge_model_not_the_repo_host()
-    {
-        var request = new JudgeRequest(1, "github", "primary", "grade this")
-        {
-            JudgeModelId = "openrouter/anthropic/claude-opus-4.5",
-            GeneratorModelId = "openai/gpt-5",
-        };
-
-        JudgeAgent.JudgeFamilyOf(request).Should().Be("anthropic");
-    }
-
-    /// <summary>
-    /// A judge run whose model id was never recorded resolves to the sentinel rather than to the repo
-    /// host — refuse to guess, and say which value is the guess-free one.
-    /// </summary>
-    [Fact]
-    public void A_judge_whose_model_was_never_recorded_carries_the_unresolved_family()
-    {
-        var request = new JudgeRequest(1, "github", "primary", "grade this");
-
-        JudgeAgent.JudgeFamilyOf(request).Should().Be(ModelFamilies.Unresolved);
-    }
-
-    /// <summary>
-    /// The same substitution one field over: the ballot's model <i>id</i> also stood as the repo host.
-    /// A reader asking "which model issued this grade?" was answered <c>github</c>.
-    /// </summary>
-    [Fact]
-    public void The_judge_model_id_is_the_judge_model_and_never_the_repo_host()
-    {
-        var recorded = new JudgeRequest(1, "github", "primary", "grade this") { JudgeModelId = "openai/gpt-5" };
-
-        JudgeAgent.JudgeModelIdOf(recorded).Should().Be("openai/gpt-5");
-
-        var unrecorded = new JudgeRequest(1, "github", "primary", "grade this");
-
-        JudgeAgent
-            .JudgeModelIdOf(unrecorded)
-            .Should()
-            .Be(JudgeAgent.UnrecordedModelId)
-            .And.NotBe("github", "the repo host is not the model that issued the grade");
     }
 }

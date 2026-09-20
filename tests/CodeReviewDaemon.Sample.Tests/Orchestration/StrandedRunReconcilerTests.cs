@@ -114,11 +114,11 @@ public sealed class StrandedRunReconcilerTests
     {
         // A crash between the last stage's write and its terminal status leaves a row at the final stage with a
         // non-terminal status — stranded by the letter of the sweep, but with nothing left to do:
-        // StageMachine.RemainingStages of a complete stage is empty, so the orchestrator would execute no stage
+        // A Posted run has no authored workflow work left, so the orchestrator would execute no task
         // and return. Resuming it therefore burned a resume slot every pass to accomplish nothing, and the pass
         // whose job is to drain stranded runs could never drain this one. It is a pure function of the row, so
         // it is answered before the provider is asked at all.
-        var harness = new Harness().WithRows(Row(id: 11, stage: StageMachine.Terminal));
+        var harness = new Harness().WithRows(Row(id: 11, stage: ReviewStage.Posted));
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
@@ -133,7 +133,7 @@ public sealed class StrandedRunReconcilerTests
         // The over-refusal pin for the retirement above: it must key on the run being COMPLETE, not merely on
         // being far along. Retiring at the second-to-last stage would silently write off reviews that still owe
         // their final stage — the exact permanent-abandonment this whole sweep exists to prevent.
-        var lastIncomplete = StageMachine.Order[^2];
+        var lastIncomplete = ReviewStage.Judged;
         var harness = new Harness().WithRows(Row(id: 11, stage: lastIncomplete));
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);

@@ -10,6 +10,10 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\LmWorkflow\AchieveAi.LmDotnetTools.LmWorkflow.csproj" />
+    <Content Include=".review\**\*" Exclude=".review\**\__pycache__\**;.review\**\*.pyc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- SQLite is the daemon's orchestration source of truth (review_run / poll_cursor /
          review_outbox / review_artifact). Pinned to the version already used across
          LmMultiTurn / Misc. -->
@@ -43,10 +47,5 @@
          inspects internal wiring, so the generated top-level Program and any internal types must be
          visible to the test assembly. -->
     <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
-  </ItemGroup>
-  <ItemGroup>
-    <!-- The Web SDK does not auto-glob EmbeddedResource items, so the daemon's YAML/Scriban prompt
-         template (DaemonAgentFactory) must be included explicitly, with a stable LogicalName. -->
-    <EmbeddedResource Include="Prompts\daemon-prompts.yaml" LogicalName="CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml" />
   </ItemGroup>
 </Project>

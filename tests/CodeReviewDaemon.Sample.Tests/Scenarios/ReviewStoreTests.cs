@@ -1017,6 +1017,33 @@ public sealed class ReviewStoreTests
         reopened.WasDedupContextLost(runId).Should().BeTrue();
     }
 
+    [Fact]
+    public void Active_workspace_projection_tracks_latest_assignment_and_survives_reopen()
+    {
+        using var db = new TempSqliteDatabase();
+        long runId;
+        using (var store = new ReviewStore(db.ConnectionString))
+        {
+            runId = SeedRun(store);
+            foreach (var active in new[] { true, false, true })
+            {
+                store.AddArtifact(
+                    new ReviewArtifact
+                    {
+                        ReviewRunId = runId,
+                        ArtifactSchemaVersion = 1,
+                        ArtifactKind = "workflow-workspace-assignment",
+                        Provider = "github",
+                        Payload = active ? "{\"Active\":true}" : "{\"Active\":false}",
+                    }
+                );
+                store.ListActiveWorkflowWorkspaceRuns().Select(r => r.Id).Should().Equal(active ? [runId] : []);
+            }
+        }
+        using var reopened = new ReviewStore(db.ConnectionString);
+        reopened.ListActiveWorkflowWorkspaceRuns().Select(r => r.Id).Should().Equal(runId);
+    }
+
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
     private static RepoIdentity SampleRepo() =>
