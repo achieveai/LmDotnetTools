@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, shallowRef, watch } from 'vue';
 import DiagramViewer from './DiagramViewer.vue';
+import SmilesViewer from './SmilesViewer.vue';
 import type { TextMessage } from '@/types';
 import { parseMarkdown } from '@/utils/markdown';
 import {
@@ -57,24 +58,36 @@ const diagrams = shallowRef<Array<{
   source: string;
   language: 'mermaid' | 'plantuml';
 }>>([]);
-const diagramsReady = computed(() => props.isComplete !== false);
-// Replacing the HTML surface also retires its diagram hosts. Vue owns the viewers through
+/*
+ * ```smiles fences become chemical-structure figures. They are hoisted exactly like diagrams -- and
+ * for the same reason -- rather than rendered inside `parseMarkdown`: the drawing is generated SVG,
+ * so it belongs to `sanitizeDiagramSvg`'s policy and to a component, not to the Markdown allowlist.
+ * (Math is different: KaTeX output is small and bounded, so `parseMarkdown` renders it in place
+ * under its own sanitizer -- see utils/mathMarkdown.ts -- and needs nothing here.)
+ */
+const structures = shallowRef<Array<{ target: HTMLElement; source: string }>>([]);
+const embedsReady = computed(() => props.isComplete !== false);
+// Replacing the HTML surface also retires its embed hosts. Vue owns the viewers through
 // Teleport; generated SVG never passes through or broadens the Markdown HTML allowlist.
-const contentKey = computed(() => `${diagramsReady.value}:${parsedText.value}`);
+const contentKey = computed(() => `${embedsReady.value}:${parsedText.value}`);
 watch(markdownElement, (element) => {
   diagrams.value = [];
-  if (!element || !diagramsReady.value) return;
-  const next: typeof diagrams.value = [];
+  structures.value = [];
+  if (!element || !embedsReady.value) return;
+  const nextDiagrams: typeof diagrams.value = [];
+  const nextStructures: typeof structures.value = [];
   for (const code of element.querySelectorAll('pre > code')) {
     const fence = [...code.classList].find((name) => name.startsWith('language-'))?.slice(9).toLowerCase();
-    if (!fence || !['mermaid', 'plantuml', 'puml', 'uml'].includes(fence)) continue;
+    if (!fence || !['mermaid', 'plantuml', 'puml', 'uml', 'smiles'].includes(fence)) continue;
     const target = document.createElement('div');
-    target.className = 'diagram-host';
+    target.className = fence === 'smiles' ? 'smiles-host' : 'diagram-host';
     const source = code.textContent ?? '';
     code.parentElement?.replaceWith(target);
-    next.push({ target, source, language: fence === 'mermaid' ? 'mermaid' : 'plantuml' });
+    if (fence === 'smiles') nextStructures.push({ target, source });
+    else nextDiagrams.push({ target, source, language: fence === 'mermaid' ? 'mermaid' : 'plantuml' });
   }
-  diagrams.value = next;
+  diagrams.value = nextDiagrams;
+  structures.value = nextStructures;
 }, { flush: 'post' });
 
 /** One delegated listener for every link in the v-html body, including clicks on nested elements. */
@@ -93,6 +106,9 @@ function onContentClick(event: MouseEvent): void {
     <div :key="contentKey" ref="markdownElement" class="markdown-content" v-html="parsedText" @click="onContentClick"></div>
     <Teleport v-for="(diagram, index) in diagrams" :key="contentKey + index" :to="diagram.target">
       <DiagramViewer :source="diagram.source" :language="diagram.language" />
+    </Teleport>
+    <Teleport v-for="(structure, index) in structures" :key="`smiles${contentKey}${index}`" :to="structure.target">
+      <SmilesViewer :source="structure.source" />
     </Teleport>
     <span v-if="isStreaming" class="cursor">|</span>
   </div>
