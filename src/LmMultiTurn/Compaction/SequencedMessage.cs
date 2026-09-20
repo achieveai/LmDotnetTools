@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
@@ -42,9 +43,18 @@ public sealed record SequencedMessage(long Seq, string? MessageId, string? RunId
     ///     agent's message counts only when it is a directive (<see cref="AgentMessageType.DelegateTask" /> or
     ///     <see cref="AgentMessageType.Steer" />); a question, update, response or delivery failure is content, like
     ///     a notification.
+    /// <para>
+    ///     An elapsed-time notice is the same thing in <see cref="TextMessage" /> clothing: user-role on the wire
+    ///     so Anthropic will merge it, but written by the loop and saying nothing the person asked for. Counting
+    ///     it as input is not a cosmetic miscount — a run that received one looks like a run carrying a mid-run
+    ///     correction, so the cut declines to take it; its text is quoted into the checkpoint as a current
+    ///     instruction and carried forward for the rest of the thread; and it spends the summary's human-row
+    ///     budget. Excluding it here is what makes all three stop, since each reads this one predicate.
+    /// </para>
     /// </summary>
     public bool IsHumanRow =>
         Message.Role == Role.User
+        && !ElapsedTimeNotice.IsNotice(Message)
         && Message
             is not (
                 NotifyMessage

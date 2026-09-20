@@ -604,11 +604,21 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Aggregates singular tool messages into plural versions.
-    /// Converts multiple ToolCallMessage instances into a single ToolsCallMessage,
-    /// and multiple ToolCallResultMessage instances into a single ToolsCallResultMessage.
-    /// Preserves MessageOrderIdx ordering throughout.
+    /// Folds every tool message in a generation into at most one ToolsCallMessage and one
+    /// ToolsCallResultMessage. Singular ToolCallMessage/ToolCallResultMessage instances are
+    /// converted to their plural form, and several plural messages in the same generation are
+    /// merged rather than left side by side. Preserves MessageOrderIdx ordering throughout.
     /// </summary>
+    /// <remarks>
+    /// The single-message-per-kind result is a precondition of
+    /// <see cref="TryCreateToolCallAggregate" />, which only ever picks up the first call message
+    /// and the first result message in a group. Anything it leaves behind is discarded by the
+    /// caller, so a generation carrying two call messages used to lose the second one's calls
+    /// while the matching results still reached the provider. That combination is rejected with
+    /// "No tool call found for function call output with call_id ...", which no retry can clear.
+    /// A generation can hold more than one message of a kind when history mixes singular and
+    /// plural forms, or when two tool rounds were recorded under one GenerationId.
+    /// </remarks>
     private static List<IMessage> AggregateToolMessages(List<IMessage> group)
     {
         // If group is empty, nothing to do
@@ -621,19 +631,19 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         var sorted = group.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue).ToList();
 
         var result = new List<IMessage>();
-        var toolCallMessages = new List<ToolCallMessage>();
-        var toolCallResultMessages = new List<ToolCallResultMessage>();
+        var toolCallSources = new List<IMessage>();
+        var toolCallResultSources = new List<IMessage>();
 
         // Separate tool messages from other messages, preserving order
         foreach (var message in sorted)
         {
             switch (message)
             {
-                case ToolCallMessage tcm:
-                    toolCallMessages.Add(tcm);
+                case ToolCallMessage or ToolsCallMessage:
+                    toolCallSources.Add(message);
                     break;
-                case ToolCallResultMessage tcrm:
-                    toolCallResultMessages.Add(tcrm);
+                case ToolCallResultMessage or ToolsCallResultMessage:
+                    toolCallResultSources.Add(message);
                     break;
                 default:
                     result.Add(message);
@@ -641,77 +651,134 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             }
         }
 
-        // Aggregate ToolCallMessages into ToolsCallMessage
-        if (toolCallMessages.Count > 0)
+        // Aggregate every tool call in the generation into one ToolsCallMessage
+        if (toolCallSources.Count > 0)
         {
-            var firstToolCall = toolCallMessages[0];
-
-            // Convert each ToolCallMessage to ToolCall
-            // ToolCallMessage inherits from ToolCall, so we can create ToolCall from it
-            var toolCalls = toolCallMessages
-                .Select(tcm => new ToolCall
-                {
-                    FunctionName = tcm.FunctionName,
-                    FunctionArgs = tcm.FunctionArgs,
-                    Index = tcm.Index,
-                    ToolCallId = tcm.ToolCallId,
-                    ToolCallIdx = tcm.ToolCallIdx,
-                    ExecutionTarget = tcm.ExecutionTarget,
-                })
-                .ToImmutableList();
-
-            var toolsCallMessage = new ToolsCallMessage
-            {
-                ToolCalls = toolCalls,
-                Role = firstToolCall.Role,
-                FromAgent = firstToolCall.FromAgent,
-                GenerationId = firstToolCall.GenerationId,
-                Metadata = firstToolCall.Metadata,
-                ThreadId = firstToolCall.ThreadId,
-                RunId = firstToolCall.RunId,
-                ParentRunId = firstToolCall.ParentRunId,
-                MessageOrderIdx = firstToolCall.MessageOrderIdx,
-            };
-
-            result.Add(toolsCallMessage);
+            // A lone plural message is already in the target shape; keep the instance as-is.
+            result.Add(
+                toolCallSources is [ToolsCallMessage onlyToolsCall]
+                    ? onlyToolsCall
+                    : MergeToolCallMessages(toolCallSources)
+            );
         }
 
-        // Aggregate ToolCallResultMessages into ToolsCallResultMessage
-        if (toolCallResultMessages.Count > 0)
+        // Aggregate every tool result in the generation into one ToolsCallResultMessage
+        if (toolCallResultSources.Count > 0)
         {
-            var firstResult = toolCallResultMessages[0];
-
-            // Convert each ToolCallResultMessage to ToolCallResult
-            var toolCallResults = toolCallResultMessages
-                .Select(tcrm => new ToolCallResult(tcrm.ToolCallId, tcrm.Result)
-                {
-                    ToolName = tcrm.ToolName,
-                    IsError = tcrm.IsError,
-                    ErrorCode = tcrm.ErrorCode,
-                    ExecutionTarget = tcrm.ExecutionTarget,
-                    ContentBlocks = tcrm.ContentBlocks,
-                    IsTruncated = tcrm.IsTruncated,
-                    OriginalBytes = tcrm.OriginalBytes,
-                })
-                .ToImmutableList();
-
-            var toolsCallResultMessage = new ToolsCallResultMessage
-            {
-                ToolCallResults = toolCallResults,
-                Role = firstResult.Role,
-                FromAgent = firstResult.FromAgent,
-                GenerationId = firstResult.GenerationId,
-                Metadata = firstResult.Metadata,
-                ThreadId = firstResult.ThreadId,
-                RunId = firstResult.RunId,
-                MessageOrderIdx = firstResult.MessageOrderIdx,
-            };
-
-            result.Add(toolsCallResultMessage);
+            result.Add(
+                toolCallResultSources is [ToolsCallResultMessage onlyToolsCallResult]
+                    ? onlyToolsCallResult
+                    : MergeToolCallResultMessages(toolCallResultSources)
+            );
         }
 
         // Re-sort result by MessageOrderIdx to maintain order
         return [.. result.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue)];
+    }
+
+    /// <summary>
+    /// Merges call-bearing messages (singular or plural) into a single ToolsCallMessage,
+    /// keeping the calls in source order and taking envelope properties from the first source.
+    /// </summary>
+    private static ToolsCallMessage MergeToolCallMessages(List<IMessage> sources)
+    {
+        var toolCalls = ImmutableList.CreateBuilder<ToolCall>();
+
+        // Only the two call-bearing types reach here; the caller partitions the group by type.
+        foreach (var source in sources)
+        {
+            if (source is ToolsCallMessage toolsCallMessage)
+            {
+                toolCalls.AddRange(toolsCallMessage.ToolCalls);
+            }
+            else if (source is ToolCallMessage toolCallMessage)
+            {
+                // ToolCallMessage inherits from ToolCall, so we can create ToolCall from it
+                toolCalls.Add(
+                    new ToolCall
+                    {
+                        FunctionName = toolCallMessage.FunctionName,
+                        FunctionArgs = toolCallMessage.FunctionArgs,
+                        Index = toolCallMessage.Index,
+                        ToolCallId = toolCallMessage.ToolCallId,
+                        ToolCallIdx = toolCallMessage.ToolCallIdx,
+                        ExecutionTarget = toolCallMessage.ExecutionTarget,
+                    }
+                );
+            }
+        }
+
+        var merged = toolCalls.ToImmutable();
+
+        return sources[0] switch
+        {
+            ToolsCallMessage first => first with { ToolCalls = merged },
+            ToolCallMessage first => new ToolsCallMessage
+            {
+                ToolCalls = merged,
+                Role = first.Role,
+                FromAgent = first.FromAgent,
+                GenerationId = first.GenerationId,
+                Metadata = first.Metadata,
+                ThreadId = first.ThreadId,
+                RunId = first.RunId,
+                ParentRunId = first.ParentRunId,
+                MessageOrderIdx = first.MessageOrderIdx,
+            },
+            _ => new ToolsCallMessage { ToolCalls = merged },
+        };
+    }
+
+    /// <summary>
+    /// Merges result-bearing messages (singular or plural) into a single ToolsCallResultMessage,
+    /// keeping the results in source order and taking envelope properties from the first source.
+    /// </summary>
+    private static ToolsCallResultMessage MergeToolCallResultMessages(List<IMessage> sources)
+    {
+        var toolCallResults = ImmutableList.CreateBuilder<ToolCallResult>();
+
+        // Only the two result-bearing types reach here; the caller partitions the group by type.
+        foreach (var source in sources)
+        {
+            if (source is ToolsCallResultMessage toolsCallResultMessage)
+            {
+                toolCallResults.AddRange(toolsCallResultMessage.ToolCallResults);
+            }
+            else if (source is ToolCallResultMessage toolCallResultMessage)
+            {
+                toolCallResults.Add(
+                    new ToolCallResult(toolCallResultMessage.ToolCallId, toolCallResultMessage.Result)
+                    {
+                        ToolName = toolCallResultMessage.ToolName,
+                        IsError = toolCallResultMessage.IsError,
+                        ErrorCode = toolCallResultMessage.ErrorCode,
+                        ExecutionTarget = toolCallResultMessage.ExecutionTarget,
+                        ContentBlocks = toolCallResultMessage.ContentBlocks,
+                        IsTruncated = toolCallResultMessage.IsTruncated,
+                        OriginalBytes = toolCallResultMessage.OriginalBytes,
+                    }
+                );
+            }
+        }
+
+        var merged = toolCallResults.ToImmutable();
+
+        return sources[0] switch
+        {
+            ToolsCallResultMessage first => first with { ToolCallResults = merged },
+            ToolCallResultMessage first => new ToolsCallResultMessage
+            {
+                ToolCallResults = merged,
+                Role = first.Role,
+                FromAgent = first.FromAgent,
+                GenerationId = first.GenerationId,
+                Metadata = first.Metadata,
+                ThreadId = first.ThreadId,
+                RunId = first.RunId,
+                MessageOrderIdx = first.MessageOrderIdx,
+            },
+            _ => new ToolsCallResultMessage { ToolCallResults = merged },
+        };
     }
 
     /// <summary>

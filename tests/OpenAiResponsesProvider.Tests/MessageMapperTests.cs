@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests;
 
@@ -131,8 +132,28 @@ public sealed class MessageMapperTests
     [Fact]
     public void ToolsCallResultMessage_emits_function_call_output_items()
     {
+        // Both results are paired: an output with no matching call is dropped before it reaches the
+        // wire, so an unpaired fixture here would assert the pairing sweep rather than the mapping.
         var messages = new IMessage[]
         {
+            new ToolsCallMessage
+            {
+                ToolCalls = ImmutableList.Create(
+                    new ToolCall
+                    {
+                        FunctionName = "f",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-1",
+                    },
+                    new ToolCall
+                    {
+                        FunctionName = "g",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-2",
+                    }
+                ),
+                Role = Role.Assistant,
+            },
             new ToolsCallResultMessage
             {
                 ToolCallResults = ImmutableList.Create(
@@ -145,10 +166,10 @@ public sealed class MessageMapperTests
 
         var request = MessageMapper.BuildRequest(messages, options: null);
 
-        request.Input.Should().HaveCount(2);
-        request.Input.Select(i => i.Type).Should().AllBe("function_call_output");
-        request.Input.Select(i => i.CallId).Should().Equal("call-1", "call-2");
-        request.Input.Select(i => i.Output).Should().Equal("result-A", "result-B");
+        var outputs = request.Input.Where(i => i.Type == "function_call_output").ToList();
+        outputs.Should().HaveCount(2);
+        outputs.Select(i => i.CallId).Should().Equal("call-1", "call-2");
+        outputs.Select(i => i.Output).Should().Equal("result-A", "result-B");
     }
 
     [Fact]
@@ -226,6 +247,165 @@ public sealed class MessageMapperTests
         request.Input[2].Type.Should().Be("function_call_output");
         request.Input[2].CallId.Should().Be("call_abc");
         request.Input[2].Output.Should().Be("42");
+    }
+
+    [Fact]
+    public void Orphaned_function_call_output_is_dropped_instead_of_reaching_the_wire()
+    {
+        // A history edit upstream (a compaction cut, a projection that removes rows by seq) can hide
+        // an assistant tool call while its result survives. The Responses API answers the whole
+        // request with 400 "No tool call found for function call output with call_id ...", and since
+        // the same history replays every turn the conversation is wedged permanently. Dropping the
+        // widowed half degrades the request instead of failing it.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "add 17 and 25" },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_orphan",
+                Result = "42",
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Should().ContainSingle();
+        request.Input[0].Type.Should().Be("message");
+    }
+
+    [Fact]
+    public void Orphaned_output_is_dropped_while_paired_items_keep_their_order()
+    {
+        // One ToolsCallResultMessage can answer several calls, only some of which survived the cut.
+        // The drop is per call_id, not per message, and everything kept stays in order.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "go" },
+            new ToolsCallMessage
+            {
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "add",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call_kept",
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_gone", "orphan"), new ToolCallResult("call_kept", "42")],
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Should().HaveCount(3);
+        request.Input[0].Type.Should().Be("message");
+        request.Input[1].Type.Should().Be("function_call");
+        request.Input[1].CallId.Should().Be("call_kept");
+        request.Input[2].Type.Should().Be("function_call_output");
+        request.Input[2].CallId.Should().Be("call_kept");
+        request.Input.Select(i => i.CallId).Should().NotContain("call_gone");
+    }
+
+    [Fact]
+    public void Unanswered_function_call_is_kept_because_the_api_accepts_it()
+    {
+        // The mirror image is LEGAL: a turn may end with a call the tool has not answered yet, and
+        // the API accepts it. Dropping it would delete real history to fix a problem that is not one.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "add 17 and 25" },
+            new ToolCallMessage
+            {
+                FunctionName = "add",
+                FunctionArgs = "{\"a\":17,\"b\":25}",
+                ToolCallId = "call_pending",
+                Role = Role.Assistant,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Should().HaveCount(2);
+        request.Input[1].Type.Should().Be("function_call");
+        request.Input[1].CallId.Should().Be("call_pending");
+    }
+
+    [Fact]
+    public void Dropping_an_orphaned_output_is_logged_at_warning_with_the_call_id()
+    {
+        // The drop silently changes what the model sees, so it must leave a trace naming the id —
+        // that id is the only handle on the upstream defect that widowed the output.
+        var logger = new CapturingLogger();
+        var messages = new IMessage[]
+        {
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_orphan",
+                Result = "42",
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null, logger);
+
+        request.Input.Should().BeEmpty();
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Level.Should().Be(LogLevel.Warning);
+        logger.Entries[0].Message.Should().Contain("call_orphan");
+    }
+
+    [Fact]
+    public void A_paired_request_logs_no_warning()
+    {
+        // Non-vacuity guard for the test above: the warning must be caused by the orphan, not by
+        // every request that happens to carry a tool result.
+        var logger = new CapturingLogger();
+        var messages = new IMessage[]
+        {
+            new ToolCallMessage
+            {
+                FunctionName = "add",
+                FunctionArgs = "{}",
+                ToolCallId = "call_abc",
+                Role = Role.Assistant,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_abc",
+                Result = "42",
+                Role = Role.Tool,
+            },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null, logger);
+
+        request.Input.Should().HaveCount(2);
+        logger.Entries.Should().BeEmpty();
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     [Fact]
@@ -344,8 +524,30 @@ public sealed class MessageMapperTests
     {
         const int hardLimit = 10_485_760;
         var oversized = new string('q', 15_231_668);
+        // Both results are paired with their calls: an unpaired output is dropped before the clamp
+        // ever sees it, which would make this a test of the pairing sweep instead.
         var messages = new IMessage[]
         {
+            new ToolsCallMessage
+            {
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "f",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-1",
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+            new ToolCallMessage
+            {
+                FunctionName = "f",
+                FunctionArgs = "{}",
+                ToolCallId = "call-2",
+                Role = Role.Assistant,
+            },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call-1", oversized)],
@@ -361,8 +563,9 @@ public sealed class MessageMapperTests
 
         var request = MessageMapper.BuildRequest(messages, options: null);
 
-        request.Input.Should().HaveCount(2);
-        foreach (var item in request.Input)
+        var outputs = request.Input.Where(i => i.Type == "function_call_output").ToList();
+        outputs.Should().HaveCount(2);
+        foreach (var item in outputs)
         {
             item.Type.Should().Be("function_call_output");
             item.Output.Should().NotBeNull();
@@ -378,6 +581,19 @@ public sealed class MessageMapperTests
     {
         var messages = new IMessage[]
         {
+            new ToolsCallMessage
+            {
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "f",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-1",
+                    },
+                ],
+                Role = Role.Assistant,
+            },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call-1", "result-A")],
@@ -387,6 +603,6 @@ public sealed class MessageMapperTests
 
         var request = MessageMapper.BuildRequest(messages, options: null);
 
-        request.Input[0].Output.Should().Be("result-A");
+        request.Input.Single(i => i.Type == "function_call_output").Output.Should().Be("result-A");
     }
 }

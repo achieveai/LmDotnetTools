@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
@@ -41,6 +42,11 @@ public sealed record ExecutionViewDescriptor(
 ///         4. With <see cref="ToolResultViewOptions" />, tool results at or below the persisted clear
 ///         watermark become placeholders and results over the cap (or the persisted tightened share of it) are
 ///         trimmed to head + marker + tail; the rows themselves are never edited.
+///     </para>
+///     <para>
+///         5. With an active checkpoint the cut is then swept for tool messages it orphaned
+///         (<c>MessagePersistenceConverter.DropUnpairedToolMessages</c>): a call whose result the cut hid,
+///         or a result whose call it hid, is dropped rather than sent as a half a provider rejects.
 ///     </para>
 ///     <para>
 ///         Replaying the store produces the same view (§8): nothing here reads a clock, a counter, or
@@ -113,7 +119,12 @@ internal sealed class AgentContextProjection
             view.Add(toolResults is null ? row.Message : ToolResultView.Apply(row.Message, row.Seq, toolResults));
         }
 
-        return view;
+        // The cut removes rows by seq alone, so it can hide a tool call while its result stays: a row
+        // whose seq the recovery walk never matched is numbered long.MaxValue and rides into the tail
+        // whatever its age. Every provider rejects the surviving half with a 400 — OpenAI as "No tool
+        // call found for function call output" — and nothing downstream repairs it, so the half goes
+        // with the one the cut took. Without a checkpoint nothing is removed and nothing can orphan.
+        return active is null ? view : MessagePersistenceConverter.DropUnpairedToolMessages(view);
     }
 
     /// <summary>Counts and sizes of the view <see cref="Build(string?, IReadOnlyList{SequencedMessage}, CompactionCheckpointMessage?, CheckpointRenderOptions?, ToolResultViewOptions?)" /> would produce.</summary>
@@ -127,30 +138,23 @@ internal sealed class AgentContextProjection
 
         var boundary = active?.Boundary.Seq ?? 0;
         var hidden = 0;
-        var tail = 0;
         foreach (var row in history)
         {
-            if (row.IsCheckpointRow)
-            {
-                continue;
-            }
-
-            if (row.Seq <= boundary)
+            if (!row.IsCheckpointRow && row.Seq <= boundary)
             {
                 hidden++;
             }
-            else
-            {
-                tail++;
-            }
         }
 
+        // The tail is counted off the view rather than off the rows above the boundary, so a row the
+        // orphan sweep dropped is not reported as dispatched. No system prompt is passed, so the only
+        // non-row entry is the envelope.
         var view = Build(systemPrompt: null, history, active, render);
         return new ExecutionViewDescriptor(
             active?.CheckpointId,
             active?.Boundary.Seq,
             hidden,
-            tail,
+            view.Count - (active is null ? 0 : 1),
             CompactionTokenEstimate.Estimate(view, _estimator)
         );
     }

@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 
@@ -25,7 +26,11 @@ internal static class MessageMapper
     /// </summary>
     private static readonly ToolResultLimits s_functionCallOutputLimit = new() { MaxResultBytes = 10_485_760 };
 
-    internal static ResponseCreateRequest BuildRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
+    internal static ResponseCreateRequest BuildRequest(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options,
+        ILogger? logger = null
+    )
     {
         var instructionsBuilder = new StringBuilder();
         var inputItems = new List<ResponseInputItem>();
@@ -34,6 +39,8 @@ internal static class MessageMapper
         {
             MapMessage(message, instructionsBuilder, inputItems);
         }
+
+        DropUnpairedFunctionCallOutputs(inputItems, logger);
 
         // Reasoning-capable models only return reasoning summaries when asked. Mirror the Anthropic
         // "Thinking" convention: a ResponseReasoningOptions placed in ExtraProperties["Reasoning"]
@@ -76,6 +83,65 @@ internal static class MessageMapper
             ToolChoice = options?.ToolChoice is null ? null : JsonValue.Create(options.ToolChoice),
             Reasoning = reasoning,
         };
+    }
+
+    /// <summary>
+    ///     Removes every <c>function_call_output</c> whose <c>call_id</c> has no <c>function_call</c>
+    ///     with that id in the SAME request, keeping the relative order of everything else.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     This is a backstop, not the fix for any particular upstream defect. The API rejects the
+    ///     whole request with <c>400 "No tool call found for function call output with call_id …"</c>,
+    ///     and because the offending history replays on every turn the conversation is wedged
+    ///     permanently — a caller can never talk its way out. Anything that edits history (a
+    ///     compaction cut, a projection that removes rows by seq) can widow an output, so the mapper
+    ///     degrades the request rather than letting one defect become unrecoverable.
+    ///     </para>
+    ///     <para>
+    ///     Only the output side is swept. A <c>function_call</c> with no output is LEGAL — the model
+    ///     is allowed to be mid-turn — and dropping it would delete real history to fix a problem
+    ///     that does not exist. That asymmetry is also why one pass suffices here, unlike
+    ///     <c>MessagePersistenceConverter.DropUnpairedToolMessages</c> (LmMultiTurn), which drops both
+    ///     sides and must therefore iterate to a fixed point: removing an output here can never orphan
+    ///     anything, because nothing is paired against outputs. That sweep is deliberately NOT reused
+    ///     — the provider must not take a dependency on the multi-turn assembly.
+    ///     </para>
+    ///     <para>
+    ///     An output carrying no id at all takes no part in pairing and is kept: it cannot be matched
+    ///     either way, and inventing a verdict would silently drop a tool result on a guess.
+    ///     </para>
+    /// </remarks>
+    private static void DropUnpairedFunctionCallOutputs(List<ResponseInputItem> inputItems, ILogger? logger)
+    {
+        var callIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in inputItems)
+        {
+            if (item.Type == "function_call" && !string.IsNullOrEmpty(item.CallId))
+            {
+                _ = callIds.Add(item.CallId);
+            }
+        }
+
+        _ = inputItems.RemoveAll(item =>
+        {
+            if (
+                item.Type != "function_call_output"
+                || string.IsNullOrEmpty(item.CallId)
+                || callIds.Contains(item.CallId)
+            )
+            {
+                return false;
+            }
+
+            logger?.LogWarning(
+                "Dropping orphaned function_call_output call_id={CallId}: no matching function_call in this "
+                    + "request. The Responses API would reject the whole request with HTTP 400, wedging the "
+                    + "conversation; the tool result is omitted instead.",
+                item.CallId
+            );
+            return true;
+        });
     }
 
     // Options that know how to serialize JsonSchemaObject (notably its Union-typed "type" field).

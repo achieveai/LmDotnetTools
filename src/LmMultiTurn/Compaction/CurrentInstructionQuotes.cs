@@ -25,7 +25,12 @@ internal static partial class CurrentInstructionQuotes
     /// <summary>The token budget for an envelope cap of <paramref name="checkpointTokenCap" />.</summary>
     public static long Budget(long checkpointTokenCap) => (long)(checkpointTokenCap * EnvelopeCapShare);
 
-    /// <summary>The quotes for <paramref name="rows" />, in their order, within <paramref name="budgetTokens" /> when trimming can get there.</summary>
+    /// <summary>
+    ///     The quotes for <paramref name="rows" />, in their order, within <paramref name="budgetTokens" /> when trimming
+    ///     can get there. Every row handed in is quoted: what counts as an instruction is decided upstream by
+    ///     <see cref="SequencedMessage.IsHumanRow" />, which both callers filter on, so rows the loop wrote itself —
+    ///     notifications, tool results, elapsed-time notices — never arrive here in the first place.
+    /// </summary>
     public static IReadOnlyList<QuotedItem> Quote(
         IReadOnlyList<SequencedMessage> rows,
         long budgetTokens,

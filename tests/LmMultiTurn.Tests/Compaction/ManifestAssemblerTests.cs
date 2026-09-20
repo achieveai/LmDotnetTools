@@ -100,6 +100,28 @@ public sealed class ManifestAssemblerTests
     }
 
     [Fact]
+    public void ElapsedTimeNotices_AreQuotedNowhere_WhileTheHumanRowsAroundThemStillAre()
+    {
+        // The notice is a user-role row the loop writes itself, so every "human row" reader counts it as input: a
+        // committed checkpoint quoted three of them among the standing instructions.
+        var thread = new ThreadFixture()
+            .Human("one")
+            .ToolTurns(1)
+            .ElapsedNotice()
+            .Run("run-2")
+            .Human("two")
+            .ToolTurns(1)
+            .ElapsedNotice()
+            .Human("three");
+        var cut = CutAt(thread, thread.LastSeq);
+
+        var manifest = Assemble(thread, cut);
+
+        manifest.CurrentInstruction.Select(q => (q.Seq, q.Quote)).Should().Equal((5L, "two"), (9L, "three"));
+        manifest.Instructions.Select(q => (q.Seq, q.Quote)).Should().Equal((1L, "one"));
+    }
+
+    [Fact]
     public void Tasks_ComeFromTheBoard_FlattenedWithoutRemovedOnes_NotFromTheModel()
     {
         var thread = new ThreadFixture().Human("go").ToolTurns(2);

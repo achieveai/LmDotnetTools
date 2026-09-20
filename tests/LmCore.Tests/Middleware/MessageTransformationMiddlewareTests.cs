@@ -1571,6 +1571,224 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("func1", toolsCall.ToolCalls[0].FunctionName);
     }
     #endregion
+    #region Upstream Tests (Multiple Tool Messages In One Generation)
+
+    /// <summary>
+    /// A generation that carries two plural ToolsCallMessages and one result message covering
+    /// both calls must not lose the second call. Losing it sends the provider a tool result with
+    /// no matching call, which fails the request with
+    /// "No tool call found for function call output with call_id ...".
+    /// </summary>
+    [Fact]
+    public async Task Upstream_KeepsEveryToolCall_WhenGenerationHasTwoPluralToolCallMessages()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_1", "search", 0)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_2", "lookup", 1)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_1", "r1"), new ToolCallResult("call_2", "r2")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        AssertNoOrphanedResults(aggregate);
+        Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+        Assert.Equal(["search", "lookup"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.FunctionName));
+    }
+
+    /// <summary>
+    /// Two complete call/result rounds recorded under one GenerationId must both survive.
+    /// The second pair used to be discarded silently.
+    /// </summary>
+    [Fact]
+    public async Task Upstream_KeepsBothRounds_WhenGenerationHasTwoCallResultPairs()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_1", "search", 0)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_1", "r1")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_2", "lookup", 0)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_2", "r2")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 3,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        AssertNoOrphanedResults(aggregate);
+        Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+        Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
+    }
+
+    /// <summary>
+    /// A generation holding both a plural ToolsCallMessage and a singular ToolCallMessage produces
+    /// two plural call messages once the singular one is folded up, so it hits the same defect.
+    /// </summary>
+    [Fact]
+    public async Task Upstream_KeepsEveryToolCall_WhenGenerationMixesPluralAndSingularToolCalls()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_1", "search", 0)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolCallMessage
+            {
+                FunctionName = "lookup",
+                FunctionArgs = "{}",
+                ToolCallId = "call_2",
+                ToolCallIdx = 1,
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_1", "r1"), new ToolCallResult("call_2", "r2")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        AssertNoOrphanedResults(aggregate);
+        Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+    }
+
+    /// <summary>
+    /// The streaming entry point reconstructs upstream aggregates through the same code path,
+    /// so it must keep every tool call too.
+    /// </summary>
+    [Fact]
+    public async Task UpstreamStreaming_KeepsEveryToolCall_WhenGenerationHasTwoPluralToolCallMessages()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_1", "search", 0)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolsCallMessage
+            {
+                ToolCalls = [NewToolCall("call_2", "lookup", 1)],
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_1", "r1"), new ToolCallResult("call_2", "r2")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+        };
+        var agent = new MockStreamingAgent(
+            new List<IMessage>
+            {
+                new TextMessage { Text = "Done", GenerationId = "gen2" },
+            }.ToAsyncEnumerable()
+        );
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        var stream = await middleware.InvokeStreamingAsync(context, agent);
+        _ = await stream.ToListAsync();
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        AssertNoOrphanedResults(aggregate);
+        Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+    }
+
+    private static ToolCall NewToolCall(string toolCallId, string functionName, int toolCallIdx)
+    {
+        return new ToolCall
+        {
+            FunctionName = functionName,
+            FunctionArgs = "{}",
+            ToolCallId = toolCallId,
+            ToolCallIdx = toolCallIdx,
+        };
+    }
+
+    /// <summary>
+    /// Every result must have a matching call in the same aggregate. A result without one is what
+    /// the provider rejects with HTTP 400 "No tool call found for function call output".
+    /// </summary>
+    private static void AssertNoOrphanedResults(ToolsCallAggregateMessage aggregate)
+    {
+        var callIds = aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId).ToHashSet();
+        var orphaned = aggregate
+            .ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId)
+            .Where(id => !callIds.Contains(id))
+            .ToList();
+        Assert.True(
+            orphaned.Count == 0,
+            $"Tool results with no matching tool call: [{string.Join(", ", orphaned)}]. "
+                + $"Calls present: [{string.Join(", ", callIds)}]."
+        );
+    }
+    #endregion
     #region Helper Classes
     private class MockAgent : IAgent
     {
@@ -1597,6 +1815,7 @@ public class MessageTransformationMiddlewareTests
     private class MockStreamingAgent : IStreamingAgent
     {
         private readonly IAsyncEnumerable<IMessage> _streamToReturn;
+        public List<IMessage> ReceivedMessages { get; } = [];
         public static string Name => "MockStreamingAgent";
 
         public MockStreamingAgent(IAsyncEnumerable<IMessage> streamToReturn)
@@ -1610,6 +1829,7 @@ public class MessageTransformationMiddlewareTests
             CancellationToken cancellationToken = default
         )
         {
+            ReceivedMessages.AddRange(messages);
             return Task.FromResult(_streamToReturn);
         }
 

@@ -766,10 +766,14 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         await Task.Delay(100);
         reserve.IsCompleted.Should().BeFalse("the call must still be retrying, or nothing is being tested");
 
-        // One rename, never a recursive delete: see the remarks above. The blocked call holds no handle on
-        // anything under the thread directory — its create is refused outright and it never opens the record
-        // for reading in this arm — so the rename cannot be contended by the very call it is arranging for.
-        Directory.Move(Path.Combine(_root, Backing, "thread-1"), Path.Combine(_root, Backing + "-detached"));
+        // Detached, never recursive-deleted in place: see the remarks above. This is the same teardown the
+        // suite's own DisposeAsync uses, and for the second reason named in its doc as well as the first —
+        // a plain Directory.Move here was denied outright on the hosted Windows runner (#788), on a tree
+        // nothing in this test holds open. The blocked call keeps no handle between attempts, and 4.5k
+        // creates racing a move locally never denied it once, so the contender is outside the process and
+        // the scanner that helper already absorbs is the candidate that fits. Its detach is still one
+        // atomic rename, which is the only property this arrangement needs.
+        DetachedStoreTeardown.Purge(Path.Combine(_root, Backing, "thread-1"));
         await Task.Delay(100);
 
         cancel.Cancel();

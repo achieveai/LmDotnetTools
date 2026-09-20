@@ -845,12 +845,19 @@ internal sealed class CompactionRuntime
         }
 
         var persisted = await store.LoadMessagesAsync(_host.ThreadId, ct).ConfigureAwait(false);
+
+        // The cursor advances only on a match. Probing from a copy is the whole point: the walk is
+        // forward-only because both lists are in store order, but a restored row that matches nothing must
+        // cost only itself. Advancing the shared cursor while searching spends it on the miss, so one row the
+        // store cannot account for leaves every later row unidentified too — and a row with no identity has
+        // no Seq, which is how a single mismatch used to put the entire remainder of a thread beyond the
+        // reach of every compaction boundary.
         var cursor = 0;
         foreach (var row in restored)
         {
-            for (; cursor < persisted.Count; cursor++)
+            for (var probe = cursor; probe < persisted.Count; probe++)
             {
-                var candidate = persisted[cursor];
+                var candidate = persisted[probe];
                 IMessage converted;
                 try
                 {
@@ -868,7 +875,7 @@ internal sealed class CompactionRuntime
                         _identities.AddOrUpdate(row, new RowIdentity { Id = candidate.Id, Seq = candidate.Seq });
                     }
 
-                    cursor++;
+                    cursor = probe + 1;
                     break;
                 }
             }
@@ -2636,11 +2643,48 @@ internal sealed class CompactionRuntime
     private IReadOnlyList<SequencedMessage> Sequence(IReadOnlyList<IMessage> history)
     {
         var rows = new SequencedMessage[history.Count];
+
+        // "No known Seq" means "appended after the last reconciliation" only for the rows at the END of the
+        // history. Anywhere else it means the recovery walk could not account for the row, and calling that
+        // newer than any boundary is simply false: the row rides into every view whatever its age, while the
+        // rows around it are cut normally. That is how a restored thread came to send tool results whose
+        // calls the cut had already taken, which no provider accepts. So the sentinel is applied only where
+        // its reason holds, and an unknown row elsewhere is placed by its neighbours instead — history is in
+        // store order, so a row is bounded by the identified rows on either side of it.
+        var seqs = new long?[history.Count];
+        var identifiedFollows = new bool[history.Count];
+        var seen = false;
+        for (var i = history.Count - 1; i >= 0; i--)
+        {
+            identifiedFollows[i] = seen;
+            seqs[i] = SeqOf(history[i]);
+            seen |= seqs[i] is not null;
+        }
+
+        var lastKnownSeq = (long?)null;
         for (var i = 0; i < history.Count; i++)
         {
-            // A row without a known Seq was appended after the last reconciliation, so it is newer than
-            // any boundary and belongs to the tail.
-            rows[i] = new SequencedMessage(SeqOf(history[i]) ?? long.MaxValue, null, null, history[i]);
+            long seq;
+            if (seqs[i] is { } known)
+            {
+                seq = known;
+                lastKnownSeq = known;
+            }
+            else if (!identifiedFollows[i])
+            {
+                // Genuinely the tail: nothing identified follows, so nothing contradicts "newer than any
+                // boundary", and a never-reconciled thread keeps behaving exactly as it did before.
+                seq = long.MaxValue;
+            }
+            else
+            {
+                // Travels with the row before it, or — with nothing identified before it — with everything
+                // older than the first row the walk did account for. Either way it is cut together with the
+                // neighbourhood it belongs to rather than outliving it.
+                seq = lastKnownSeq ?? long.MinValue;
+            }
+
+            rows[i] = new SequencedMessage(seq, null, null, history[i]);
         }
 
         return rows;
