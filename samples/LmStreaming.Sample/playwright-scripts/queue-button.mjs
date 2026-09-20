@@ -22,7 +22,7 @@ async (page) => {
     // 1. Fresh chat on the streaming mock; start a long run.
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
     await tid('provider-selector-button').click();
     await tid(`provider-option-${PROVIDER}`).click();
     await tid('chat-input-textarea').fill(LONG);

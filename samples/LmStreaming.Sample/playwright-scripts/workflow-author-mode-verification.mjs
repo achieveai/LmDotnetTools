@@ -26,7 +26,7 @@
 //   8. A closing text message so the run settles to idle (stop-button hidden / send-button visible).
 //
 // Provisions the conversation headlessly via POST /api/conversations + a ?threadId= deep link (the same
-// race-free pattern workspace-agent-egress-auth-test.mjs uses), instead of clicking "+ New Chat", to avoid
+// race-free pattern workspace-agent-egress-auth-test.mjs uses), instead of clicking "New Chat", to avoid
 // the documented Send-binds-to-stale-conversation race.
 //
 // Leak-avoidance: Read/Grep/Skill tool results can carry real repo file content, so only PRESENCE/LENGTH is
@@ -166,7 +166,7 @@ async (page) => {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
 
-    // Provision a fresh, explicitly-bound conversation headlessly — avoids the "+ New Chat" Send race.
+    // Provision a fresh, explicitly-bound conversation headlessly — avoids the "New Chat" Send race.
     const provisioned = await page.evaluate(
       async ({ workspaceId, providerId, modeId }) => {
         const res = await fetch(`${location.origin}/api/conversations`, {

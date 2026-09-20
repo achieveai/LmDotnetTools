@@ -119,34 +119,34 @@ internal static class CheckpointValidator
             }
         }
 
-        var expected = CutSelector.CurrentInstructionRows(context.Rows, boundary);
-        if (manifest.CurrentInstruction.Count != expected.Count)
-        {
-            return CheckpointValidationResult.Fail(
-                "V3",
-                $"CurrentInstruction has {manifest.CurrentInstruction.Count} rows; the current run has {expected.Count} human rows at or before seq {boundary}"
-            );
-        }
-
-        // A current instruction over its budget is quoted trimmed; the trim is recomputed here, never trusted.
+        // The rows the current instruction quotes, and the trim each takes over its budget: both recomputed here,
+        // never trusted. Quote() decides which rows are quotable at all, so the expected count comes from it too.
         var bounded = CurrentInstructionQuotes.Quote(
-            expected,
+            CutSelector.CurrentInstructionRows(context.Rows, boundary),
             CurrentInstructionQuotes.Budget(options.CheckpointTokenCap),
             options.TextEstimator
         );
-        for (var i = 0; i < expected.Count; i++)
+        if (manifest.CurrentInstruction.Count != bounded.Count)
+        {
+            return CheckpointValidationResult.Fail(
+                "V3",
+                $"CurrentInstruction has {manifest.CurrentInstruction.Count} rows; the current run has {bounded.Count} quotable human rows at or before seq {boundary}"
+            );
+        }
+
+        for (var i = 0; i < bounded.Count; i++)
         {
             var quoted = manifest.CurrentInstruction[i];
-            if (quoted.Seq != expected[i].Seq)
+            if (quoted.Seq != bounded[i].Seq)
             {
                 return CheckpointValidationResult.Fail(
                     "V3",
-                    $"CurrentInstruction[{i}] cites seq {quoted.Seq}; expected seq {expected[i].Seq}"
+                    $"CurrentInstruction[{i}] cites seq {quoted.Seq}; expected seq {bounded[i].Seq}"
                 );
             }
 
             if (
-                !string.Equals(quoted.Quote, expected[i].Text, StringComparison.Ordinal)
+                !string.Equals(quoted.Quote, bySeq[bounded[i].Seq].Text, StringComparison.Ordinal)
                 && !string.Equals(quoted.Quote, bounded[i].Quote, StringComparison.Ordinal)
             )
             {

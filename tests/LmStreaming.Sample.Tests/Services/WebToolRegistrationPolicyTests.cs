@@ -64,7 +64,7 @@ public class WebToolRegistrationPolicyTests
 
     [Theory]
     [InlineData("deepseek-v4-pro")]
-    [InlineData("deepseek-v4-flash")]
+    [InlineData("deepseek-flash")]
     public void Apply_RegistersBothTools_ForDiscoveredAnthropicCompatModel_WhenKeyPresent(string providerId)
     {
         var registry = new FunctionRegistry();

@@ -419,6 +419,49 @@ public sealed class CheckpointValidatorTests
     }
 
     [Fact]
+    public void V3_CurrentInstruction_LeavesOutElapsedTimeNotices_SoQuotingOneIsRejected()
+    {
+        // The notice is user-role but authored by the loop, like a tool result: it is no part of the instruction.
+        var thread = new ThreadFixture().Human("start").ToolTurns(2).ElapsedNotice();
+        var boundary = thread.LastSeq;
+        var manifest = ValidManifest() with
+        {
+            CurrentInstruction = [new QuotedItem { Seq = 1, Quote = "start" }],
+            Instructions = [],
+            Decisions = [],
+            Index =
+            [
+                new IndexEntry
+                {
+                    FromSeq = 1,
+                    ToSeq = boundary,
+                    RunId = "run-1",
+                    Headline = "h",
+                },
+            ],
+        };
+        var checkpoint = Checkpoint(manifest) with
+        {
+            Boundary = new CheckpointBoundary { Seq = boundary, MessageId = $"m{boundary}" },
+        };
+
+        CheckpointValidator.Validate(checkpoint, Context(rows: thread.Rows)).IsValid.Should().BeTrue();
+
+        var quotingTheNotice = checkpoint with
+        {
+            Manifest = manifest with
+            {
+                CurrentInstruction =
+                [
+                    .. manifest.CurrentInstruction,
+                    new QuotedItem { Seq = boundary, Quote = thread.Rows[^1].Text! },
+                ],
+            },
+        };
+        ExpectRule(CheckpointValidator.Validate(quotingTheNotice, Context(rows: thread.Rows)), "V3");
+    }
+
+    [Fact]
     public void V4_TaskIdNotOnTheBoard_IsRejected()
     {
         var manifest = ValidManifest() with

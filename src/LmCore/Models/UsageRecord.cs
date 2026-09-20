@@ -137,8 +137,9 @@ public sealed record UsageRecord
 
     /// <summary>
     ///     The portion of <see cref="CacheWriteTokens" /> written with a 1-hour TTL, when the provider reports
-    ///     the split; the remainder was written with the 5-minute TTL. Null when the provider reports only
-    ///     the combined count (the Anthropic provider today), in which case a public estimate prices every
+    ///     the split; the remainder was written with the 5-minute TTL. The Anthropic provider always reports
+    ///     it (0 when the response has no split, since it only sends default 5-minute cache_control). Null
+    ///     when a provider reports only the combined count, in which case a public estimate prices every
     ///     write at the 5m rate and is <see cref="CostCompleteness.Partial" /> (#682).
     /// </summary>
     public long? CacheWrite1hTokens { get; init; }

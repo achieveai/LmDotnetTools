@@ -138,7 +138,7 @@ async (page) => {
     record('chat-ui-loaded (textarea + send-button)', pageLoaded, { urlUsed, hasTextarea, hasSendButton });
 
     // 3. Fresh chat; select the mock provider BEFORE the first send.
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
     await tid('provider-selector-button').click();
     await tid(`provider-option-${PROVIDER}`).click();
     const providerLabel = (await tid('provider-selector-button').textContent())?.trim() ?? null;

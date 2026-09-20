@@ -81,8 +81,8 @@ unscoped `-Priority All` when static impact is insufficient.
 
 ## Case-level migration status
 
-The checked-in manifest classifies **10,139 known .NET method families and atomic script tests**:
-P0 335, P1 7,650, P2 2,008 and P3 146. Each reviewed declaration carries its exact inventory ID and
+The checked-in manifest classifies **10,175 known .NET method families and atomic script tests**:
+P0 335, P1 7,676, P2 2,017 and P3 147. Each reviewed declaration carries its exact inventory ID and
 path, plus behavioral rationale, evidence, component, uncertainties and prerequisites. .NET method
 families also carry their exact source hash. The 38 atomic script rows explicitly carry a null hash,
 so script-content drift remains a documented residual. The runner requires a reviewed policy row for every current known declaration, previews per-method

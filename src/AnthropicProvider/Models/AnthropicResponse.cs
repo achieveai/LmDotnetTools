@@ -83,6 +83,13 @@ public record AnthropicUsage
     public int CacheCreationInputTokens { get; init; }
 
     /// <summary>
+    ///     The 5-minute / 1-hour split of <see cref="CacheCreationInputTokens" />, when the response reports it.
+    /// </summary>
+    [JsonPropertyName("cache_creation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicCacheCreation? CacheCreation { get; init; }
+
+    /// <summary>
     ///     The number of tokens read from cache, if any.
     /// </summary>
     [JsonPropertyName("cache_read_input_tokens")]
@@ -93,6 +100,25 @@ public record AnthropicUsage
     /// </summary>
     [JsonPropertyName("output_tokens")]
     public int OutputTokens { get; init; }
+
+    /// <summary>
+    ///     The one-hour share of the cache write. This provider only sends default-TTL <c>cache_control</c>
+    ///     (<see cref="AnthropicCacheControl" /> has no TTL), so every write it causes is a 5-minute write and
+    ///     an absent split means 0 one-hour tokens.
+    /// </summary>
+    internal int CacheWrite1hTokens => CacheCreation?.Ephemeral1hInputTokens ?? 0;
+}
+
+/// <summary>
+///     Cache-write tokens split by cache TTL.
+/// </summary>
+public record AnthropicCacheCreation
+{
+    [JsonPropertyName("ephemeral_5m_input_tokens")]
+    public int Ephemeral5mInputTokens { get; init; }
+
+    [JsonPropertyName("ephemeral_1h_input_tokens")]
+    public int Ephemeral1hInputTokens { get; init; }
 }
 
 /// <summary>

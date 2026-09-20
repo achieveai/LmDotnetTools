@@ -114,7 +114,9 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
     {
         ArgumentNullException.ThrowIfNull(messages);
 
-        var request = MessageMapper.BuildRequest(messages, options);
+        // The logger is passed so a dropped orphan is not a silent repair: the sweep is a backstop against a
+        // defect upstream, and a backstop nobody can see firing is a defect that never gets found.
+        var request = MessageMapper.BuildRequest(messages, options, _logger);
         _logger.LogDebug(
             "OpenAiResponsesAgent.GenerateReplyStreamingAsync model={Model} inputItems={Count} inputTypes=[{InputTypes}] tools={ToolCount}",
             request.Model,

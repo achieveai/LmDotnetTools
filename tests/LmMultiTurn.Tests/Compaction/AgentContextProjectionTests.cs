@@ -117,7 +117,10 @@ public sealed class AgentContextProjectionTests : IAsyncLifetime
         view.Skip(1)
             .Select(m => m)
             .Should()
-            .Equal(thread.Rows.Where(r => r.Seq is 8 or 10 or 11 or 13 or 14).Select(r => r.Message));
+            .Equal(
+                thread.Rows.Where(r => r.Seq is 10 or 11 or 13 or 14).Select(r => r.Message),
+                "the boundary splits the turn at 7-8, so the orphaned result at 8 goes with its hidden call"
+            );
     }
 
     [Fact]
@@ -150,14 +153,62 @@ public sealed class AgentContextProjectionTests : IAsyncLifetime
         described.ActiveCheckpointId.Should().Be("cp-2");
         described.BoundarySeq.Should().Be(7);
         described.RowsHidden.Should().Be(6, "seq 1,2,3,5,6,7 — the checkpoint row at 4 is not a hidden row");
-        described.RowsInTail.Should().Be(3, "seq 8,10,11");
-        described.EstimatedTokens.Should().Be(4 * ThreadFixture.TokensPerRow, "envelope plus three rows");
+        described.RowsInTail.Should().Be(2, "seq 10,11 — the result at 8 lost the call at 7 to the cut");
+        described.EstimatedTokens.Should().Be(3 * ThreadFixture.TokensPerRow, "envelope plus two rows");
 
         var raw = projection.Describe(thread.Rows, active: null);
         raw.ActiveCheckpointId.Should().BeNull();
         raw.RowsHidden.Should().Be(0);
         raw.RowsInTail.Should().Be(9);
     }
+
+    // ---- Tool pairing across the cut -----------------------------------------------------------
+
+    [Fact]
+    public void ACutBetweenAToolCallAndItsResult_DropsTheStrandedResultToo()
+    {
+        var thread = new ThreadFixture().Human("go").ToolTurn(); // 1 human, 2 call, 3 result
+        var active = Checkpoint("cp-1", boundarySeq: 2);
+
+        var view = AgentContextProjection.Default.Build(null, thread.Rows, active);
+
+        view.Should().ContainSingle("only the envelope survives: a result the cut orphaned cannot be sent");
+        view[0].Should().BeOfType<TextMessage>().Which.Role.Should().Be(Role.User);
+    }
+
+    [Fact]
+    public void AResultWhoseSeqWasNeverRecovered_GoesWithTheCallTheCutHid()
+    {
+        // What a restored thread produces: a row whose identity the recovery walk could not match is
+        // numbered long.MaxValue — "newer than any boundary" — so the result rides into the tail while
+        // its call keeps a real seq below the boundary and is cut.
+        var rows = Renumbered(
+            new ThreadFixture().Human("go").ToolTurn().Human("and then"),
+            m => m is ToolCallResultMessage
+        );
+        var active = Checkpoint("cp-1", boundarySeq: 3);
+
+        var view = AgentContextProjection.Default.Build(null, rows, active);
+
+        view.Should().NotContain(m => m is ToolCallResultMessage, "the call answering it was hidden by the cut");
+        view.Should().HaveCount(2, "the envelope and the human row after the boundary");
+    }
+
+    [Fact]
+    public void ACallWhoseResultTheCutHid_GoesWithIt()
+    {
+        var rows = Renumbered(new ThreadFixture().Human("go").ToolTurn().Human("and then"), m => m is ToolCallMessage);
+        var active = Checkpoint("cp-1", boundarySeq: 3);
+
+        var view = AgentContextProjection.Default.Build(null, rows, active);
+
+        view.Should().NotContain(m => m is ToolCallMessage, "nothing left in the view answers it");
+        view.Should().HaveCount(2);
+    }
+
+    /// <summary>The thread's rows with every row matching <paramref name="stranded" /> renumbered past any boundary.</summary>
+    private static IReadOnlyList<SequencedMessage> Renumbered(ThreadFixture thread, Func<IMessage, bool> stranded) =>
+        [.. thread.Rows.Select(r => stranded(r.Message) ? r with { Seq = long.MaxValue } : r)];
 
     // ---- Tool-result view shaping --------------------------------------------------------------
 

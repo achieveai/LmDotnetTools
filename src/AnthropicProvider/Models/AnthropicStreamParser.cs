@@ -27,6 +27,7 @@ public class AnthropicStreamParser
     private string _role = "assistant";
     private AnthropicUsage? _usage;
     private int _cacheCreationTokens;
+    private int _cacheWrite1hTokens;
     private int _cacheReadTokens;
     private int _initialInputTokens;
 
@@ -545,6 +546,7 @@ public class AnthropicStreamParser
             if (_usage.CacheCreationInputTokens > 0)
             {
                 _cacheCreationTokens = _usage.CacheCreationInputTokens;
+                _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
             }
 
             if (_usage.CacheReadInputTokens > 0)
@@ -601,6 +603,7 @@ public class AnthropicStreamParser
         }
 
         _cacheCreationTokens = _usage.CacheCreationInputTokens;
+        _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
         _cacheReadTokens = _usage.CacheReadInputTokens;
         _initialInputTokens = _usage.InputTokens;
     }
@@ -651,7 +654,9 @@ public class AnthropicStreamParser
 
         if (_cacheCreationTokens > 0)
         {
-            usage = usage.SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens);
+            usage = usage
+                .SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens)
+                .SetExtraProperty("ephemeral_1h_input_tokens", _cacheWrite1hTokens);
         }
 
         return new UsageMessage
@@ -1386,6 +1391,7 @@ public class AnthropicStreamParser
             if (_usage.CacheCreationInputTokens > 0)
             {
                 _cacheCreationTokens = _usage.CacheCreationInputTokens;
+                _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
             }
 
             if (_usage.CacheReadInputTokens > 0)

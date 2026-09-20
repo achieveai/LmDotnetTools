@@ -244,6 +244,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     public AgentCollaborationSetup? Collaboration { get; }
 
     /// <summary>
+    /// The parent's prompt-caching mode, inherited by sub-agents whose template leaves it
+    /// <see cref="PromptCachingMode.Off" /> (see <c>ResolveSubAgentOptions</c>) — without it a delegate
+    /// re-bills its whole history as uncached input on every model call.
+    /// </summary>
+    /// <remarks>
+    /// An init property rather than a constructor parameter on purpose: this type ships in a NuGet package,
+    /// and an optional parameter is still part of the CLR constructor signature, so appending one would
+    /// break already-compiled callers with a <see cref="MissingMethodException" />. A second constructor
+    /// overload would make legacy source calls that omit optional arguments ambiguous.
+    /// <c>SubAgentManagerPublicSurfaceTests</c> pins the published constructor shape.
+    /// </remarks>
+    public PromptCachingMode ParentPromptCaching { get; init; }
+
+    /// <summary>
     /// Per-agent admission bookkeeping, keyed by agent id.
     /// </summary>
     /// <remarks>
@@ -3390,7 +3404,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                         template.DefaultOptions,
                         effectiveModel,
                         _parentModelId,
-                        _parentMaxToken
+                        _parentMaxToken,
+                        ParentPromptCaching
                     )?.ModelId,
                     requestedReasoningEffort,
                     modelSelectionSource: modelSelectionSource
@@ -3398,12 +3413,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        // Resolve the sub-agent's options with model + budget inheritance (override > tier > template > parent).
+        // Resolve the sub-agent's options with model + budget + caching inheritance (override > tier > template > parent).
         var defaultOptions = ResolveSubAgentOptions(
             template.DefaultOptions,
             effectiveModel,
             _parentModelId,
-            _parentMaxToken
+            _parentMaxToken,
+            ParentPromptCaching
         );
         // Validate the tool-set request BEFORE anything with a side effect: the owned provider below is
         // allocated for disposal, and AgentThreadOwnership.InheritAsync is a durable write that creates
@@ -3788,7 +3804,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="GenerateReplyOptions.MaxToken"/> wins, else the parent's effective budget
     /// (<paramref name="parentMaxToken"/>) — so a delegate gets the spawning conversation's headroom
     /// instead of the provider's 4096 default, which truncates a tool-call's argument JSON at
-    /// <c>stop_reason=max_tokens</c>. Any other template option fields are preserved. Returns null only
+    /// <c>stop_reason=max_tokens</c>. Prompt caching inherits too: a template left at
+    /// <see cref="PromptCachingMode.Off"/> (the default, so indistinguishable from "unset") takes the
+    /// parent's <paramref name="parentPromptCaching"/> — otherwise a delegate re-bills its whole history
+    /// as uncached input on every call. Any other template option fields are preserved. Returns null only
     /// when nothing is available anywhere AND the template carried no options, so the previous
     /// "inherit the provider's own defaults" behavior is unchanged when there is genuinely nothing to set.
     /// </summary>
@@ -3796,7 +3815,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         GenerateReplyOptions? templateDefaults,
         string? modelOverride,
         string? parentModelId,
-        int? parentMaxToken = null
+        int? parentMaxToken = null,
+        PromptCachingMode parentPromptCaching = PromptCachingMode.Off
     )
     {
         var templateModel = templateDefaults?.ModelId;
@@ -3808,8 +3828,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         var hasModel = !string.IsNullOrWhiteSpace(model);
         // Only apply an inherited budget when the template didn't set its own — the template always wins.
         var inheritBudget = templateDefaults?.MaxToken is null && parentMaxToken is not null;
+        var inheritCaching =
+            (templateDefaults?.PromptCaching ?? PromptCachingMode.Off) == PromptCachingMode.Off
+            && parentPromptCaching != PromptCachingMode.Off;
 
-        if (!hasModel && !inheritBudget)
+        if (!hasModel && !inheritBudget && !inheritCaching)
         {
             // Nothing to set — preserve the exact previous behavior (return the template unchanged, null
             // included) so a genuinely empty resolution still yields the provider's own defaults.
@@ -3829,6 +3852,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (inheritBudget)
         {
             resolved = resolved with { MaxToken = parentMaxToken };
+        }
+
+        if (inheritCaching)
+        {
+            resolved = resolved with { PromptCaching = parentPromptCaching };
         }
 
         return resolved;

@@ -31,7 +31,8 @@ export type ContextReportStatus = 'idle' | 'loading' | 'ready' | 'unavailable';
  *  - `getLatestFrame` — the newest `context_pressure` frame seen by `useChat`. Handed in, never
  *    imported, so the panel is testable without the chat machinery.
  *  - `getRefreshKey` — any value whose change means "the endpoint may know more now": the run
- *    going idle (usage rows are persisted at run completion) or the sub-agent roster changing.
+ *    going idle, the sub-agent roster changing, or the live usage total moving (usage rows are
+ *    persisted per model call, including every descendant's).
  *
  * Authority (spec 679 §7.3): the endpoint is authoritative; frames are transient enrichments.
  * Frames only ever UPGRADE a row's observation (a lower generation ordinal is dropped), and they
@@ -54,6 +55,15 @@ export function useContextReport(
 
   /** Which in-flight read owns the store; only the newest may write or clear the loading state. */
   let hydrateSeq = 0;
+  /**
+   * Single-flight state. The endpoint re-scans every persisted descendant on each request, so a refresh
+   * window shorter than that scan would otherwise stack concurrent reads that each contend for the
+   * store's lock. At most ONE read is active; everything that asks while it runs collapses into one
+   * trailing read, which starts from the state at that point and so needs no queue of its own.
+   */
+  let readInFlight = false;
+  let trailingRefresh = false;
+  let disposed = false;
 
   function reset(): void {
     hydrateSeq++;
@@ -86,6 +96,13 @@ export function useContextReport(
    * has just read the open conversation's report passes it as `prefetched`, and no second request is made.
    */
   async function hydrate(prefetched?: ConversationContextReport): Promise<void> {
+    if (readInFlight) {
+      // Coalesced, not dropped: the trailing read below runs once this one settles. A prefetched report
+      // is discarded with it — the trailing read supersedes it anyway.
+      trailingRefresh = true;
+      return;
+    }
+
     const threadId = getThreadId();
     if (!threadId) {
       reset();
@@ -93,6 +110,7 @@ export function useContextReport(
     }
 
     const seq = ++hydrateSeq;
+    readInFlight = true;
     status.value = 'loading';
     try {
       const report = prefetched ?? (await getConversationContext(threadId));
@@ -127,6 +145,14 @@ export function useContextReport(
       total.value = null;
       generatedAtUtc.value = null;
       status.value = 'unavailable';
+    } finally {
+      readInFlight = false;
+      if (trailingRefresh) {
+        trailingRefresh = false;
+        // Not awaited: the caller asked for THIS read, and a disposed scope or a closed conversation
+        // must not start another one.
+        if (!disposed && getThreadId()) void hydrate();
+      }
     }
   }
 
@@ -153,6 +179,8 @@ export function useContextReport(
   );
 
   onScopeDispose(() => {
+    disposed = true;
+    trailingRefresh = false;
     stopThreadWatch();
     stopFrameWatch();
     stopRefreshWatch();

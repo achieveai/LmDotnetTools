@@ -54,16 +54,17 @@ namespace LmStreaming.Sample.Services;
 ///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
 ///         <c>MaxContextTokens</c> / <c>MaxOutputTokens</c> (#681) are the model's window and output
 ///         ceiling; they feed <see cref="IModelCapacityResolver" /> so a per-generation context observation
-///         can carry a utilization. Optional: an entry without them still prices and simply shows no gauge.
+///         can carry a utilization. Optional: an entry without them still prices, and gets the
+///         <c>ContextWindow:MaxTokens</c> window (no gauge only when that cap is 0).
 ///     </para>
 ///     <para>
 ///         <b>What is shipped in this repository's appsettings, and why only that.</b> Rates are an
 ///         operational fact with an expiry date, not a code constant, and a wrong one is worse than an absent
 ///         one because it is summed, reported and believed (#378). So the shipped section carries only public
 ///         list prices copied from a vendor's own pricing page, each dated and cited — a cited, dated rate is
-///         not a guess — and only for the ids this sample's per-token API providers default to. Ids served
-///         over a subscription transport (Copilot, the Claude CLI, Codex) are deliberately absent: there is no
-///         per-token price to cite, so their cost resolves null, "unavailable", which is the honest state.
+///         not a guess. The Copilot-served ids the sample runs on carry their vendor's retail API list price
+///         as a public-equivalent estimate: what the same usage would cost on the vendor API, not what the
+///         subscription bills. Claude CLI and Codex defaults stay absent, so their cost resolves null.
 ///         The citation list lives in <c>docs/features/public-pricing-catalog.md</c>. Operators override or
 ///         extend the section in <c>appsettings.&lt;Environment&gt;.json</c> or via environment variables.
 ///     </para>
@@ -142,7 +143,58 @@ public static class PricingCatalog
             return PricingConfigResolver.FromAppConfig(catalog, Source, version);
         });
 
+        // Registered after AddLmConfig's TryAdd, so this capped resolver is the one every consumer gets: the
+        // per-generation context observation (the Context panel's gauge) and the compaction policy's window.
+        var maxContextTokens = ReadMaxContextTokens(configuration);
+        _ = services.AddSingleton<IModelCapacityResolver>(_ =>
+        {
+            var catalogCapacity = ModelCapacityConfigResolver.FromAppConfig(catalog);
+            return maxContextTokens > 0
+                ? new CappedCapacityResolver(catalogCapacity, maxContextTokens)
+                : catalogCapacity;
+        });
+
         return services;
+    }
+
+    /// <summary>Section key for the host's context-window ceiling.</summary>
+    public const string MaxContextTokensKey = "ContextWindow:MaxTokens";
+
+    /// <summary>
+    ///     The ceiling used when <see cref="MaxContextTokensKey" /> is absent. Every resolved window is clamped to
+    ///     it, and a model the catalog has no window for (Claude CLI, Codex, any unlisted Copilot id) gets it, so the
+    ///     Context panel shows a gauge and compaction has a window to measure against instead of skipping with
+    ///     <c>capacity_unknown</c>.
+    /// </summary>
+    public const long DefaultMaxContextTokens = 156_000;
+
+    /// <summary>The configured ceiling; 0 turns the cap off, a negative value is an operator error.</summary>
+    private static long ReadMaxContextTokens(IConfiguration configuration)
+    {
+        var value = configuration.GetValue<long?>(MaxContextTokensKey) ?? DefaultMaxContextTokens;
+        return value >= 0
+            ? value
+            : throw new InvalidOperationException(
+                $"{MaxContextTokensKey} is {value}; use a positive token count, or 0 to turn the cap off."
+            );
+    }
+
+    /// <summary>
+    ///     Clamps every window to <paramref name="maxTokens" /> and answers <paramref name="maxTokens" /> for a
+    ///     model the inner resolver does not know. The output ceiling passes through unchanged.
+    /// </summary>
+    private sealed class CappedCapacityResolver(IModelCapacityResolver inner, long maxTokens) : IModelCapacityResolver
+    {
+        public ModelCapacity? Resolve(string modelId)
+        {
+            var capacity = inner.Resolve(modelId);
+            return capacity is null
+                ? new ModelCapacity(maxTokens, null)
+                : capacity with
+                {
+                    WindowTokens = Math.Min(capacity.WindowTokens, maxTokens),
+                };
+        }
     }
 
     /// <summary>

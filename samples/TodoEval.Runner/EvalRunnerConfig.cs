@@ -17,7 +17,7 @@ internal sealed record EvalRunnerConfig
     public string? ResultsDir { get; init; }
 
     /// <summary>Model ids swept, passed per conversation as the provision-time provider id (#565's per-call model channel on this host).</summary>
-    public IReadOnlyList<string> Models { get; init; } = ["deepseek-v4-flash", "gpt-5.6-luna"];
+    public IReadOnlyList<string> Models { get; init; } = ["deepseek-flash", "gpt-5.6-luna"];
 
     /// <summary>
     /// Topics substituted for <c>{TOPIC}</c>; seed <c>i</c> uses <c>Topics[i % Topics.Count]</c> so
