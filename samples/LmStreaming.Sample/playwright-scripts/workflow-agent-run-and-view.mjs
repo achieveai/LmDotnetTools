@@ -68,7 +68,7 @@ async (page) => {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
 
-    // 1. Provision a workspace-bound conversation headlessly (race-free — avoids the "+ New Chat" flow).
+    // 1. Provision a workspace-bound conversation headlessly (race-free — avoids the "New Chat" flow).
     const provisioned = await page.evaluate(
       async ({ workspaceId, providerId, modeId }) => {
         const res = await fetch(`${location.origin}/api/conversations`, {

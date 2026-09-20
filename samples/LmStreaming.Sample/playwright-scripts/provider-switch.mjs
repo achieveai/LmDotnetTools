@@ -44,7 +44,7 @@ async (page) => {
     // 1. Fresh chat; pick the streaming mock provider BEFORE the first send.
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
     await tid('provider-selector-button').click();
     await tid(`provider-option-${PROVIDER_A}`).click();
 

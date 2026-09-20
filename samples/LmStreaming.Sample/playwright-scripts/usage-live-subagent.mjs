@@ -128,7 +128,7 @@ async (page) => {
       (await tid('usage-banner').count()) === 0;
     let freshChat = false;
     for (let i = 0; i < 5 && !freshChat; i++) {
-      await page.getByRole('button', { name: '+ New Chat' }).click().catch(() => {});
+      await page.locator('[data-testid="sidebar-new-chat"]').click().catch(() => {});
       await page.waitForTimeout(500);
       freshChat = await isEmptyChat();
     }

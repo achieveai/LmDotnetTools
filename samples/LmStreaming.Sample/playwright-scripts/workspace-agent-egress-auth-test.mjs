@@ -7,7 +7,7 @@
 // This is a diagnostic script (not a CI regression — depends on a live sandbox gateway). It PROVISIONS
 // the conversation headlessly via POST /api/conversations (mirrors ConversationDaemon.Sample and
 // DeepLinkHandoffResumeTests.cs) and deep-links into it via ?threadId=, instead of clicking "+ New
-// Chat" — the UI's "+ New Chat" button has a live race where the Send action can silently bind to
+// Chat" — the UI's "New Chat" button has a live race where the Send action can silently bind to
 // whichever conversation/provider was PREVIOUSLY active instead of the fresh one (confirmed twice: it
 // misrouted an instruction-chain prompt into a real, unrelated conversation under a real Copilot
 // provider). Provisioning + a ?threadId= deep link is the app's own documented race-free mechanism for
@@ -93,7 +93,7 @@ async (page) => {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
 
-    // Provision a fresh, explicitly-bound conversation headlessly — no "+ New Chat" click, no race.
+    // Provision a fresh, explicitly-bound conversation headlessly — no "New Chat" click, no race.
     const provisioned = await page.evaluate(
       async ({ workspaceId, providerId, modeId }) => {
         const res = await fetch(`${location.origin}/api/conversations`, {

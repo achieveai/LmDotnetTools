@@ -123,7 +123,7 @@ async (page) => {
   };
   const freshChat = async () => {
     for (let i = 0; i < 5; i++) {
-      await page.getByRole('button', { name: '+ New Chat' }).click().catch(() => {});
+      await page.locator('[data-testid="sidebar-new-chat"]').click().catch(() => {});
       await page.waitForTimeout(500);
       if ((await tid('user-message-group').count()) === 0) return true;
     }

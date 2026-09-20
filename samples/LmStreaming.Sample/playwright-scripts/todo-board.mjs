@@ -170,7 +170,7 @@ async (page) => {
     // 1. Fresh chat on the mock provider, then drive the real task tools.
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await page.locator('[data-testid="sidebar-new-chat"]').click();
 
     // 1b. REFUSE to measure a conversation that already has a board.
     //
@@ -189,7 +189,7 @@ async (page) => {
         pass: false,
         blocked: 'dirty-conversation',
         reason:
-          `"+ New Chat" did not yield an empty board -- ${preRows} row(s) were already on screen ` +
+          `"New Chat" did not yield an empty board -- ${preRows} row(s) were already on screen ` +
           'before this run sent anything, so the app restored an existing conversation. Every count ' +
           'and id assertion below would be measuring the previous run\'s tasks plus this one\'s. ' +
           'Close the browser (fresh context) and re-run. This is NOT a panel failure.',
