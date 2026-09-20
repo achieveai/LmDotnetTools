@@ -490,6 +490,27 @@ function selectInboxQuestion(key: string): void {
   if (entry) void openInboxQuestion(entry);
 }
 
+/**
+ * Questions raised somewhere OTHER than the conversation on screen (BUG 8). `useQuestionInbox`
+ * already sweeps every conversation and every readable child, but the only thing that surfaced a
+ * remote one was the header icon's count — which the user misses — because both the automatic open
+ * below and `PendingQuestionDock` are scoped to the current conversation by construction.
+ *
+ * Deliberately a notice and not an automatically opened form: answering resolves a deferred client
+ * tool over THAT conversation's socket, so opening the form means navigating there, and doing that
+ * unasked would drag the user out of whatever they were reading. Review is one click away and the
+ * label says exactly which conversation and which agent is waiting.
+ */
+const questionsElsewhere = computed(() =>
+  questionInbox.entries.value
+    .filter((entry) => entry.rootThreadId !== currentThreadId.value)
+    .map((entry) => ({
+      key: entry.key,
+      source: `${entry.conversationTitle || 'Conversation'} · ${entry.agentName || 'Main agent'}`,
+      prompt: entry.prompt,
+    }))
+);
+
 watch([questionInbox.entries, currentThreadId, questionOpen, questionBusy], () => {
   if (questionOpen.value || questionBusy.value || questionNavigating.value || document.visibilityState === 'hidden') return;
   if (document.querySelector('[role="dialog"]')) return;
@@ -1387,6 +1408,28 @@ onBeforeUnmount(() => {
           @select="selectTab"
         />
 
+        <!-- Questions waiting in OTHER conversations (BUG 8). Above the tab views, so it is on
+             screen whichever conversation and whichever tab the user is in. -->
+        <div v-if="questionsElsewhere.length" class="elsewhere-questions" data-testid="elsewhere-question-dock">
+          <div v-for="question in questionsElsewhere" :key="question.key" class="elsewhere-question">
+            <svg class="elsewhere-question__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.8 9a2.3 2.3 0 1 1 3.5 2c-.8.5-1.3 1-1.3 2" />
+              <path d="M12 16.8h.01" />
+            </svg>
+            <span class="elsewhere-question__copy">
+              <span class="elsewhere-question__source">
+                <strong>Needs your answer</strong> · {{ question.source }}
+              </span>
+              <span class="elsewhere-question__prompt">{{ question.prompt }}</span>
+            </span>
+            <button type="button" class="elsewhere-question__review" data-testid="elsewhere-question-review"
+              :disabled="questionBusy || questionNavigating" @click="selectInboxQuestion(question.key)">
+              Review
+            </button>
+          </div>
+        </div>
+
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
         <div id="conversation-main-view" v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view"
@@ -1562,6 +1605,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .question-navigation-error { margin: 8px 16px; padding: 10px 12px; color: #795719; background: #fff8ed; border-radius: 6px; font-size: 13px; }
+.elsewhere-questions { display: flex; flex-direction: column; gap: 6px; margin: 8px 16px 0; }
+.elsewhere-question { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #c3d3e9; border-radius: 8px; background: #edf3fc; color: #315c92; }
+.elsewhere-question__icon { flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.elsewhere-question__copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 13px; }
+.elsewhere-question__source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.elsewhere-question__prompt { overflow: hidden; color: #4a5b70; text-overflow: ellipsis; white-space: nowrap; }
+.elsewhere-question__review { flex: 0 0 auto; margin-left: auto; padding: 5px 10px; border: 1px solid #b3c6de; border-radius: 6px; background: #fff; color: #315c92; font: inherit; cursor: pointer; }
+.elsewhere-question__review:disabled { cursor: default; opacity: .55; }
 .chat-layout {
   position: relative;
   display: flex;

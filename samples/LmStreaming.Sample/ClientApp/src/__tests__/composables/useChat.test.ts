@@ -1412,3 +1412,93 @@ describe('useChat first-send reservation vs. navigation (#435)', () => {
     expect(chat.error.value).toBeNull();
   });
 });
+
+/**
+ * BUG 7 (second half): a prompt queued against a conversation must survive the user switching away
+ * and back. The backend already holds it (`MultiTurnAgentBase.PendingInjections`) — only the client
+ * forgot it, because `clearMessages` runs at the START of every switch and empties the queue.
+ */
+describe('useChat pending queue across a conversation switch', () => {
+  const persistedUserText = (text: string, runId: string, orderIdx: number) => ({
+    id: `${runId}-${orderIdx}`,
+    threadId: 'thread-a',
+    runId,
+    messageOrderIdx: orderIdx,
+    timestamp: 1000 + orderIdx,
+    messageType: String(MessageType.Text),
+    role: 'user',
+    messageJson: JSON.stringify({ $type: MessageType.Text, role: 'user', text }),
+  });
+
+  /** Mirrors `ChatLayout.handleSelectConversation`: clear, retarget, then load. */
+  const switchTo = async (chat: ReturnType<typeof useChat>, threadId: string) => {
+    await chat.clearMessages();
+    chat.setThreadId(threadId);
+    await chat.loadMessagesFromBackend(threadId);
+  };
+
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+    conversationsMocks.loadConversationMessages.mockReset();
+    conversationsMocks.loadConversationMessages.mockResolvedValue([]);
+  });
+
+  const queueOnThreadA = async () => {
+    const chat = useChat({ provisionThreadId: async () => 'thread-a' });
+    // No `run_assignment` is delivered on the mocked socket, so the prompt stays queued — the state
+    // the user is in when they switch away mid-run.
+    await chat.sendMessage('the prompt I queued');
+    expect(chat.pendingMessages.value.map((m) => m.content.text)).toEqual(['the prompt I queued']);
+    return chat;
+  };
+
+  it('restores the queue when the user switches back to the conversation that owns it', async () => {
+    const chat = await queueOnThreadA();
+
+    await switchTo(chat, 'thread-b');
+    expect(chat.pendingMessages.value).toEqual([]);
+
+    await switchTo(chat, 'thread-a');
+    expect(chat.pendingMessages.value.map((m) => m.content.text)).toEqual(['the prompt I queued']);
+  });
+
+  it('does not duplicate a parked prompt the backend consumed while the user was away', async () => {
+    const chat = await queueOnThreadA();
+
+    await switchTo(chat, 'thread-b');
+    // While away the backend started the queued run, so the prompt is now persisted history.
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      persistedUserText('the prompt I queued', 'run-2', 0),
+    ]);
+
+    await switchTo(chat, 'thread-a');
+
+    expect(chat.pendingMessages.value).toEqual([]);
+    expect(chat.displayItems.value).toHaveLength(1);
+  });
+
+  it('keeps the queue out of the conversation the user switched INTO', async () => {
+    const chat = await queueOnThreadA();
+
+    await switchTo(chat, 'thread-b');
+
+    expect(chat.pendingMessages.value).toEqual([]);
+  });
+
+  it('leaves the streaming flags alone while parking (the BUG 1 stuck-Stop regression)', async () => {
+    const chat = await queueOnThreadA();
+    chat.markStreamLoading();
+
+    await chat.clearMessages();
+
+    expect(chat.isLoading.value).toBe(true);
+  });
+});

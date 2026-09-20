@@ -865,6 +865,84 @@ describe('ChatLayout question inbox automatic retry', () => {
     expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
+
+  /**
+   * BUG 8: a question raised anywhere must be visible from wherever the user is. Before this, the
+   * only trace of one raised elsewhere was the header inbox icon's count — which the user missed —
+   * because the auto-open watcher and the dock are both scoped to the current conversation.
+   * Deliberately a NOTICE, not an auto-opened modal: answering needs that conversation's socket, so
+   * opening the form means navigating there, and doing that unasked would yank the user out of what
+   * they are reading (pinned by 'leaves another conversation in the inbox until the user selects it').
+   */
+  const remoteEntry: QuestionInboxEntry = {
+    ...entry,
+    key: 'root:thread-9/agent:root/child:root/tool:question-9',
+    rootThreadId: 'thread-9',
+    conversationTitle: 'Budget review',
+    conversation: makeConversation({ threadId: 'thread-9', title: 'Budget review' }),
+    agentId: null,
+    agentName: 'Main agent',
+    childThreadId: null,
+    toolCallId: 'question-9',
+    prompt: 'Which quarter should I start from?',
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, { global: { stubs: {
+      ConversationSidebar: true, MessageList: true, PendingMessageQueue: true,
+      PendingQuestionDock: true, ChatInput: true,
+    } } });
+
+  it('shows a question from ANOTHER conversation on screen, labelled with where it came from', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const dock = wrapper.get('[data-testid="elsewhere-question-dock"]');
+    expect(dock.text()).toContain('Budget review');
+    expect(dock.text()).toContain('Main agent');
+    expect(dock.text()).toContain('Which quarter should I start from?');
+    wrapper.unmount();
+  });
+
+  it('names the sub-agent a remote question came from, not just its conversation', async () => {
+    sharedMocks.questionEntries = [{
+      ...remoteEntry,
+      agentId: 'agent-question',
+      agentName: 'Question agent',
+      childThreadId: 'child-question',
+    }];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="elsewhere-question-dock"]').text()).toContain('Question agent');
+    wrapper.unmount();
+  });
+
+  it('leaves the CURRENT conversation to its own dock rather than listing it as elsewhere', async () => {
+    sharedMocks.questionEntries = [entry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="elsewhere-question-dock"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('opens the remote question — and only on the user asking for it', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    // Still no navigation just because it is on screen.
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="elsewhere-question-review"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
 });
 
 describe('ChatLayout mode switching', () => {

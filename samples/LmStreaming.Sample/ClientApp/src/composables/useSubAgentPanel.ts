@@ -2,12 +2,14 @@ import { ref, watch, onScopeDispose } from 'vue';
 import type {
   Message,
   DisplayItem,
+  TextMessage,
   ToolCallResultMessage,
   ToolCallMessage,
   ToolsCallMessage,
   RunAssignmentMessage,
 } from '@/types';
 import {
+  MessageType,
   isRunAssignmentMessage,
   isRunCompletedMessage,
   isUsageMessage,
@@ -49,6 +51,13 @@ import { logger } from '@/utils';
 const log = logger.forComponent('useSubAgentPanel');
 
 const POLL_INTERVAL_MS = 3000;
+
+/**
+ * Key prefix for the optimistic copy of a reply the user just sent to a child (BUG 7). Chosen to sit
+ * outside the merge-key space: `getMergeKey` always leads with a merge-KIND name, never 'local'.
+ * Exported as an internal seam so the test that pins that guarantee cannot drift from the value.
+ */
+export const OPTIMISTIC_SEND_KEY_PREFIX = 'local-user-';
 
 /**
  * Upper bound on the subscribe-first live buffer. While a focus loads persisted history it BUFFERS
@@ -105,6 +114,9 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   // Per-focus state (rebuilt on every focusChild; never shared with useChat).
   let focusedIndex = new Map<string, DisplayableMessage>();
   let focusedOrder: string[] = [];
+  // Keys of the optimistic copies of the user's own replies (BUG 7; see `recordOptimisticSend`).
+  const optimisticSendKeys = new Set<string>();
+  let optimisticSendSeq = 0;
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
   let childCurrentRunId: string | null = null;
   let focusedConnection: WebSocketConnection | null = null;
@@ -235,8 +247,10 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
 
   /**
    * Rebuild the focused transcript's display items from the per-agent index in arrival order,
-   * skipping pending entries (children never have any). Reuses the SAME pill-grouping used by the
-   * parent chat via the shared {@link buildDisplayItems}.
+   * skipping pending entries. A child has none: it has no queue, because a reply can only be typed
+   * while its connection is open and so is sent, not queued — the optimistic copy of one is inserted
+   * `completed` (see {@link recordOptimisticSend}). Reuses the SAME pill-grouping used by the parent
+   * chat via the shared {@link buildDisplayItems}.
    */
   function rebuildFocusedDisplayItems(): void {
     const ordered: DisplayableMessage[] = [];
@@ -253,6 +267,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   function resetFocusState(): void {
     focusedIndex = new Map();
     focusedOrder = [];
+    optimisticSendKeys.clear();
     toolResults.value = new Map();
     childCurrentRunId = null;
     focusedDisplayItems.value = [];
@@ -514,6 +529,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * surfaced must stay visible alongside the rendered transcript, not be cleared by it.
    */
   function renderDeadConnectionSnapshot(persisted: PersistedMessage[]): void {
+    // Authoritative history replaces the optimistic copy of any reply it already contains (BUG 7).
+    dropOptimisticSends();
     for (const pm of persisted) {
       rehydratePersisted(pm);
     }
@@ -830,6 +847,10 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           log.debug('focusChild: socket closed during reconcile reload; not adopting dead connection', { agentId });
           return;
         }
+        // This reload is a strictly newer snapshot of the child's own history, and it is the ONLY
+        // rehydrate that reuses the index instead of starting from a `resetFocusState`. A reply sent
+        // since the focus began may be in it, so drop the optimistic copy first or it renders twice.
+        dropOptimisticSends();
         for (const pm of reloaded) {
           rehydratePersisted(pm);
         }
@@ -905,6 +926,46 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     resetFocusState();
   }
 
+  /**
+   * Put the user's own reply into the transcript the moment it goes out (BUG 7).
+   *
+   * The parent chat gets this for free: `useChat` holds the prompt in `pendingMessages` and promotes
+   * it when `run_assignment` names it in `inputIds`. A child stream carries no such activation, so
+   * without this the reply was invisible until a refocus reloaded the child's persisted history —
+   * the user saw nothing at all and assumed the send had failed.
+   *
+   * The key is NOT a merge key. {@link getMergeKey} always leads with one of its eight merge-kind
+   * names (`text`/`reasoning`/`tools`/`tool`/`notify`/`agent`/`checkpoint`/`other`), so a key led by
+   * {@link OPTIMISTIC_SEND_KEY_PREFIX} is outside everything it can mint whatever the message's
+   * runId/generationId/tool_call_id happen to be — pinned by a test, because a merge-key collision
+   * here would silently fuse this copy with an unrelated message. That also means the persisted twin
+   * never merges with this copy, so every path that brings history in must drop it first:
+   * `resetFocusState` covers focus, refocus, auto-resume and unfocus (all of them run through
+   * `focusChild`/`unfocusChild`), and the overflow reconcile — the one rehydrate that reuses the
+   * index inside a single focus — drops it explicitly.
+   */
+  function recordOptimisticSend(text: string): void {
+    const key = `${OPTIMISTIC_SEND_KEY_PREFIX}${++optimisticSendSeq}`;
+    optimisticSendKeys.add(key);
+    focusedIndex.set(key, {
+      id: key,
+      role: 'user',
+      status: 'completed',
+      content: { $type: MessageType.Text, role: 'user', text } as TextMessage,
+      timestamp: Date.now(),
+    });
+    focusedOrder.push(key);
+    rebuildFocusedDisplayItems();
+  }
+
+  /** Drop the optimistic replies before authoritative history lands on top of them. */
+  function dropOptimisticSends(): void {
+    if (optimisticSendKeys.size === 0) return;
+    for (const key of optimisticSendKeys) focusedIndex.delete(key);
+    focusedOrder = focusedOrder.filter((key) => !optimisticSendKeys.has(key));
+    optimisticSendKeys.clear();
+  }
+
   /** Send text input to the focused child over its live stream. */
   function sendToFocusedChild(text: string): void {
     if (!focusedConnection || focusedConnection.socket.readyState !== WebSocket.OPEN) {
@@ -912,6 +973,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       return;
     }
     sendWebSocketMessage(focusedConnection, text);
+    recordOptimisticSend(text);
   }
 
   /**
