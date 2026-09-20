@@ -109,8 +109,8 @@ public static class TodoBoardIdentityWiring
     }
 
     /// <summary>
-    ///     Nothing resolved. The live names ride along so the board's refusal can name the agents the
-    ///     caller could have meant instead of sending it after an id.
+    ///     Nothing resolved. The assignable names ride along so the board's refusal can name the agents
+    ///     the caller could have meant instead of sending it after an id.
     /// </summary>
     private static TaskManager.AssigneeResolution Unknown(AgentCollaborationDirectory directory) =>
         new(
@@ -119,19 +119,73 @@ public static class TodoBoardIdentityWiring
             TaskManager.AssigneeLiveness.Unknown,
             Candidates: null,
             DisplayName: null,
-            LiveNames(directory)
+            AssignableNames(directory)
         );
 
-    /// <summary>The names of every live agent, sorted so a refusal reads the same way twice.</summary>
-    private static IReadOnlyList<string> LiveNames(AgentCollaborationDirectory directory) =>
+    /// <summary>
+    ///     Every agent the board could have meant: the ones still running first, then every other
+    ///     registered agent with its lifecycle status appended — <c>"analyst (completed)"</c>. Sorted
+    ///     within each half so a refusal reads the same way twice.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This used to filter on <see cref="AgentDirectoryEntry.IsLive" />, which read as "still
+    ///         running" and is not what that flag means. A sub-agent that finishes its run is NOT
+    ///         retired — <c>SubAgentManager</c> retires only where an agent stops existing (failed
+    ///         spawn, cancelled queue entry, manager disposal), because a finished child keeps its loop
+    ///         and a later message restarts it. So the filter was already letting completed agents
+    ///         through, and the names it dropped were the ones that never ran at all. Either way it was
+    ///         answering a question nobody asked: the board refuses only
+    ///         <see cref="TaskManager.AssigneeLiveness.Unknown" />, so every name in the directory is a
+    ///         name the very next call would have honoured, and a refusal that lists fewer names than
+    ///         it accepts sends the caller round the same refusal again.
+    ///     </para>
+    ///     <para>
+    ///         The bigger correction is the status, not the extra rows. Before, every name was offered
+    ///         bare, so a caller reading the refusal could not tell the agent still working from the one
+    ///         that errored out, and picking wrongly cost it another turn.
+    ///     </para>
+    ///     <para>
+    ///         Status appended rather than a live/finished split, because status is what the caller is
+    ///         actually choosing on and it is the vocabulary every other surface already publishes. An
+    ///         unmarked list would read as "all of these are working on it now"; a two-bucket list would
+    ///         make the reader guess which bucket <c>error</c> fell into.
+    ///     </para>
+    ///     <para>
+    ///         Running first rather than one merged sort: an agent already in flight is the better
+    ///         target whenever one fits, and the reader takes the head of the list.
+    ///     </para>
+    ///     <para>
+    ///         Agents lost to a restart (#676) are absent, because a tombstone is not in the snapshot at
+    ///         all. That is a gap in what this sentence can offer, not a decision made here.
+    ///     </para>
+    ///     <para>
+    ///         Status is read straight off the entry and <see cref="AgentDirectoryEntry.IsLive" /> is not
+    ///         consulted at all, deliberately: every production retirement sets the status first
+    ///         (<c>AgentCollaborationBundle.RetireAgent</c> takes one), so the status already says what
+    ///         happened, and deriving a second label from a flag whose meaning is itself unsettled would
+    ///         put that argument into a sentence the model reads.
+    ///     </para>
+    /// </remarks>
+    private static IReadOnlyList<string> AssignableNames(AgentCollaborationDirectory directory)
+    {
+        var byStatus = directory
+            .Snapshot()
+            .ToLookup(entry =>
+                string.Equals(entry.Status, AgentCollaborationStatuses.Running, StringComparison.Ordinal)
+            );
+
+        return
         [
-            .. directory
-                .Snapshot()
-                .Where(entry => entry.IsLive)
-                .Select(entry => entry.Name)
-                .Distinct(StringComparer.Ordinal)
-                .Order(StringComparer.Ordinal),
+            .. Sorted(byStatus[true].Select(entry => entry.Name)),
+            .. Sorted(byStatus[false].Select(entry => $"{entry.Name} ({entry.Status})")),
         ];
+
+        // Distinct over the RENDERED text, so two agents sharing a name but not a status both survive:
+        // "analyst (completed)" and "analyst (error)" are different answers to "who did you mean?".
+        static IEnumerable<string> Sorted(IEnumerable<string> names) =>
+            names.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+    }
 
     /// <summary>
     ///     The identifiers of every agent carrying <paramref name="name" />, ordered so the refusal

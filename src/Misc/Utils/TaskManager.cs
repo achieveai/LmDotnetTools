@@ -83,9 +83,17 @@ public class TaskManager : ITodoBoardSource
     ///     and what a host with no name to offer keeps getting.
     /// </param>
     /// <param name="KnownNames">
-    ///     When nothing resolved, the names the host COULD have matched — the live agents of this
-    ///     conversation. The refusal lists them so a caller that guessed a name learns the real ones
-    ///     without a roster call. Null or empty when the host has none to offer.
+    ///     When nothing resolved, the names the host COULD have matched. The refusal lists them so a
+    ///     caller that guessed a name learns the real ones without a roster call. Null or empty when the
+    ///     host has none to offer.
+    ///     <para>
+    ///         These are the names this board would ACCEPT, which is not the same as the agents that are
+    ///         running: an assignee that has finished still owns work and is still recorded (only
+    ///         <see cref="AssigneeLiveness.Unknown" /> is refused). A host that can tell the two apart is
+    ///         expected to say so in the string it supplies, because a caller reading this sentence is
+    ///         choosing a target and the two kinds are not interchangeable. The board renders whatever it
+    ///         is given verbatim and draws no distinction of its own.
+    ///     </para>
     /// </param>
     /// <remarks>
     ///     Deliberately carries no failure-code string: the codes below are this board's contract and

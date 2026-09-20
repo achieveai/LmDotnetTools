@@ -201,6 +201,11 @@ public sealed class AgentCollaborationDirectory
     private readonly AgentCollaborationOptions _options;
     private readonly TimeProvider _clock;
 
+    // Issues AgentDirectoryEntry.RetirementSequence. Held here rather than derived from the entries,
+    // because "one past the highest" would renumber from scratch after nothing and would tie whenever
+    // two agents retired concurrently — and the whole value of the field is that it never ties.
+    private long _retirementSequence;
+
     /// <summary>Creates an empty directory for one collaboration.</summary>
     /// <param name="collaborationId">The collaboration this directory describes.</param>
     /// <param name="options">Root configuration supplying the depth, capacity, and inbox bounds.</param>
@@ -386,14 +391,30 @@ public sealed class AgentCollaborationDirectory
     /// Marks an agent as no longer addressable while keeping it visible.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A stopped agent's entry has to outlive it: a sender holding an open Question needs to learn that
     /// its target is gone, and an entry that vanished would be indistinguishable from one that never
-    /// existed.
+    /// existed. The entry stays addressable enough to answer that question: a listing shows it, marked,
+    /// and the todo board still records what it owns rather than losing the claim with the agent.
+    /// </para>
+    /// <para>
+    /// Stamps <see cref="AgentDirectoryEntry.RetirementSequence"/> on the first call only. Retirement is
+    /// idempotent and genuinely called twice — <c>SubAgentManager.DisposeAsync</c> retires every
+    /// admission again at teardown — so renumbering on a repeat would report the whole conversation's
+    /// history as having finished at shutdown, in reverse of the order it actually did.
+    /// </para>
     /// </remarks>
     /// <returns>False when no such agent is registered.</returns>
     public bool TryMarkRetained(string agentId)
     {
-        return TryMutate(agentId, entry => entry with { IsLive = false });
+        // Taken before the mutation because TryMutate re-runs its lambda on a lost CAS, and a sequence
+        // minted per attempt would advance with contention rather than with retirements.
+        var sequence = Interlocked.Increment(ref _retirementSequence);
+
+        return TryMutate(
+            agentId,
+            entry => entry.IsLive ? entry with { IsLive = false, RetirementSequence = sequence } : entry
+        );
     }
 
     /// <summary>

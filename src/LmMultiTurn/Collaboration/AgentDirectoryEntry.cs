@@ -95,6 +95,35 @@ public sealed record AgentDirectoryEntry
     /// </summary>
     public bool IsLive { get; init; } = true;
 
+    /// <summary>
+    /// Where this agent falls in the order the collaboration retired its agents — higher is more
+    /// recent — or null while it is still live.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists so a listing that cannot afford every retained row keeps the rows worth keeping. The
+    /// only order a snapshot otherwise carries is <c>agent_id</c> under
+    /// <see cref="StringComparer.Ordinal"/>, which is LEXICOGRAPHIC — <c>agent-10</c> sorts before
+    /// <c>agent-9</c> — so trimming by it drops the agent that left a moment ago as readily as the one
+    /// that left first, and the recent departure is the one a caller is about to ask about. Dropped, it
+    /// answers as a name nobody ever held rather than as an agent that is gone.
+    /// </para>
+    /// <para>
+    /// A counter rather than a timestamp: two agents retired inside one clock tick have to be
+    /// distinguishable, and a test driving a fake clock must not have to advance it to express
+    /// "afterwards". The values are dense only in issue order; gaps are expected and carry no meaning,
+    /// so nothing may read this as a count of retirements.
+    /// </para>
+    /// <para>
+    /// Deliberately process-local, and deliberately absent from <see cref="CollaborationNodeRecord"/>.
+    /// That record does not persist <see cref="IsLive"/> either: a persisted row comes back only as a
+    /// restart tombstone, which lives outside the registered set and never appears in a snapshot at all.
+    /// There is therefore no retained entry on the far side of a restart for an order to describe, and a
+    /// persisted sequence would be a schema field no reader could ever use.
+    /// </para>
+    /// </remarks>
+    public long? RetirementSequence { get; init; }
+
     /// <summary>Whether this agent has reached a terminal status.</summary>
     public bool IsTerminal =>
         Status

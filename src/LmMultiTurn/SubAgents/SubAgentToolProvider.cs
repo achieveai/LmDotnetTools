@@ -79,6 +79,20 @@ public class SubAgentToolProvider : IFunctionProvider
     internal const int MaxListedAgentIds = 20;
 
     /// <summary>
+    /// How many of the agents that have left <c>GetAgents</c> still lists even when the live agents
+    /// have already spent the whole capacity permit. See <see cref="SelectListedAgents"/> for why a
+    /// floor is needed at all; the number is a budget, not a guarantee that this many rows exist.
+    /// </summary>
+    /// <remarks>
+    /// Small on purpose. A row is roughly 340 bytes, so the floor costs under 3 KB at its worst, which
+    /// is the price of answering "what happened to the agent I was about to message?" rather than
+    /// leaving that name looking like one that never existed. It is a recent-departures window rather
+    /// than a history: a caller asks after the agent that left a moment ago, not the twentieth one
+    /// back.
+    /// </remarks>
+    internal const int MinListedRetainedAgents = 8;
+
+    /// <summary>
     /// The sentence that redirects a workflow id to the tool that accepts it, appended verbatim to
     /// BOTH wait descriptors.
     /// </summary>
@@ -884,9 +898,12 @@ public class SubAgentToolProvider : IFunctionProvider
             Name = GetAgentsToolName,
             Description =
                 "List every agent in this collaboration — not just your own sub-agents — by NAME, with "
-                + "what each one is for, who it reports to, and whether it is still running. Use it to "
-                + "find who already owns a piece of work BEFORE spawning someone new to do it, and to get "
-                + "the name to address with SendMessage. Pass detail='detailed' when you need more: the "
+                + "what each one is for, who it reports to, and its status. Use it to find who already "
+                + "owns, or has already done, a piece of work BEFORE spawning someone new to do it, and "
+                + "to get the name to address with SendMessage. An agent whose status is 'completed' is "
+                + "still a resource: it keeps the context it loaded and a message restarts it, so prefer "
+                + "one of those over a fresh agent. Only a row marked dead can never be reached again. "
+                + "Pass detail='detailed' when you need more: the "
                 + "agent_id and aliases (both also work as addresses), hierarchy depths, whether you may "
                 + "read its transcript, and the tokens it has spent per model. 'primary' names the "
                 + "top-level conversation at every hierarchy depth unless that address collides. "
@@ -1785,10 +1802,19 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (truncated)
         {
+            // Names what was dropped and what its absence means. The previous wording — "nothing you
+            // can still address is missing" — is true and was still the wrong thing to say: it invited
+            // the reader to treat the whole tail as noise, and the tail is where the answer to "why did
+            // that name stop working?" lives. An omitted row is an agent that LEFT, which is a
+            // different fact from a name nobody ever held and leads to a different next action. The
+            // omitted rows are the ones that left longest ago — a claim SelectListedAgents' ordering
+            // keeps. Nothing here says a listed departed agent can be reused: it cannot, and the row's
+            // own `dead` member says so.
             payload["truncation_note"] =
-                $"Showing {listed.Count} of {snapshot.Count} agents. Every LIVE agent is listed; the "
-                + "omitted ones are finished agents kept only for history, so nothing you can still "
-                + "address is missing from this list.";
+                $"Showing {listed.Count} of {snapshot.Count} agents. Every agent you can still reach is "
+                + "listed, plus the ones that left most recently; only agents that left longer ago are "
+                + "omitted. An omitted name is gone rather than unknown, so if you were about to send it "
+                + "work, spawn a replacement instead of retrying the name.";
         }
 
         var usageByAgent = detailed ? UsageByAgent(_manager.UsageLedger) : null;
@@ -1816,7 +1842,8 @@ public class SubAgentToolProvider : IFunctionProvider
     /// <para>
     /// A dictionary rather than an anonymous type because members are conditional: <c>parent_name</c>
     /// is omitted when the agent has no parent or the parent is no longer in the directory, rather
-    /// than written as null, and <c>usage</c> is omitted when nothing was recorded for the agent.
+    /// than written as null, <c>dead</c> appears only for an agent nothing can be delivered to, and
+    /// <c>usage</c> is omitted when nothing was recorded for the agent.
     /// A zero would claim the agent spent nothing; an absent member says nothing was recorded, which
     /// is the only claim this listing can stand behind for an agent that has not run yet or whose
     /// spend went to a ledger this loop cannot see.
@@ -1870,6 +1897,19 @@ public class SubAgentToolProvider : IFunctionProvider
         }
 
         row["status"] = e.Status;
+
+        // Blunt, and present in BOTH shapes, because it is the one thing about an agent that the
+        // reader cannot recover from anything else here. `status` says what the agent DID —
+        // `completed`, `error`, `stopped` — and a completed agent is still perfectly usable: its
+        // loop and provider stay warm and the next message restarts it. `dead` says the opposite,
+        // and only that: nothing can be delivered to this agent again. Written only when true, so a
+        // reader that skips the member sees a usable agent, which is the safe reading and the
+        // common one. A boolean rather than a fourth word in `status`, because the status vocabulary
+        // is shared verbatim with the observation surface and a fourth value would split it.
+        if (!e.IsLive)
+        {
+            row["dead"] = true;
+        }
 
         if (detailed)
         {
@@ -2043,20 +2083,23 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// The rows a <c>GetAgents</c> result carries: every live agent, then as much of the retained tail
-    /// as <paramref name="maxTotalAgents"/> leaves room for.
+    /// The rows a <c>GetAgents</c> result carries: every live agent, then the agents that left most
+    /// recently — as many as <paramref name="maxTotalAgents"/> leaves room for, never fewer than
+    /// <see cref="MinListedRetainedAgents"/>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The directory never removes an entry — a finished agent is marked retained so a sender holding
-    /// an open question can still learn its target is gone — so the listing grows for the whole life of
+    /// The directory never removes an entry — an agent that leaves is marked retained so a sender
+    /// holding an open question can still learn its target is gone rather than be told the name is
+    /// unknown — so the listing grows for the whole life of
     /// a conversation and every turn that calls this tool pays for the entire history in input tokens.
     /// The live half cannot grow: it is bounded by the root-wide capacity permit
     /// (<see cref="AgentCollaborationOptions.MaxTotalAgents"/>), which is why that same bound is the
     /// cap here rather than a second number to keep in step with it. It is a bound on the tail, not a
     /// routine saving: a row is roughly 340 bytes, so at the default permit of 32 the cap starts
-    /// trimming only past 32 total agents and holds the result near 11 KB from there on, while a
-    /// conversation that never exceeds 32 pays about 40 bytes MORE for the three count fields.
+    /// trimming only past 40 total agents (32 plus the retained floor) and holds the result near 14 KB
+    /// from there on, while a conversation that never exceeds that pays about 40 bytes MORE for the
+    /// three count fields.
     /// </para>
     /// <para>
     /// The cap trims the RETAINED tail only. Dropping a live agent would be the one failure mode worth
@@ -2065,14 +2108,24 @@ public class SubAgentToolProvider : IFunctionProvider
     /// the overrun honestly rather than silently hiding one.
     /// </para>
     /// <para>
-    /// Both halves keep the order <see cref="AgentCollaborationDirectory.Snapshot"/> already imposes:
-    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. That is LEXICOGRAPHIC, not numeric —
-    /// <c>agent-10</c> sorts before <c>agent-9</c> — so which retained rows survive the cap is stable
-    /// but unrelated to recency. Determinism is the property being relied on here (repeated calls at an
-    /// unchanged directory read identically instead of shuffling), and it is enough, because the
-    /// omitted rows are finished agents the caller cannot address either way. Preferring the most
-    /// recently retired rows would be a better listing; it needs a retirement order the directory does
-    /// not currently carry.
+    /// The live half keeps the order <see cref="AgentCollaborationDirectory.Snapshot"/> imposes:
+    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. The retained tail does NOT, because
+    /// that order is LEXICOGRAPHIC, not numeric — <c>agent-10</c> sorts before <c>agent-9</c> — so
+    /// trimming by it drops whichever departed agent happens to sort late, which is as likely as not
+    /// the one that left a moment ago and the one the caller is about to ask about. The tail is
+    /// ordered by <see cref="AgentDirectoryEntry.RetirementSequence"/>, most recent first, with the
+    /// identifier breaking a tie the sequence cannot produce but a hand-built entry could. Determinism
+    /// is preserved — repeated calls at an unchanged directory read identically — and recency is now
+    /// the axis the cap trims along, so what survives is what a caller is most likely to ask after.
+    /// </para>
+    /// <para>
+    /// <see cref="MinListedRetainedAgents"/> rows of that tail are listed whatever the live count is.
+    /// Subtracting the live count alone yielded ZERO retained rows the moment the collaboration ran at
+    /// its permit — exactly the busy conversation that has produced departures worth explaining, and
+    /// exactly where a name that answers as "unknown" rather than "gone" is most likely to be a name
+    /// the caller genuinely used a moment ago. The floor is small enough to stay inside the noise of a
+    /// single live row's own cost and is paid only by a conversation that has actually retired that
+    /// many agents.
     /// </para>
     /// </remarks>
     private static List<AgentDirectoryEntry> SelectListedAgents(
@@ -2081,11 +2134,17 @@ public class SubAgentToolProvider : IFunctionProvider
     )
     {
         var listed = snapshot.Where(e => e.IsLive).ToList();
-        var retainedBudget = Math.Max(0, maxTotalAgents - listed.Count);
-        if (retainedBudget > 0)
-        {
-            listed.AddRange(snapshot.Where(e => !e.IsLive).Take(retainedBudget));
-        }
+        var retainedBudget = Math.Max(MinListedRetainedAgents, maxTotalAgents - listed.Count);
+
+        listed.AddRange(
+            snapshot
+                .Where(e => !e.IsLive)
+                // A retained entry always carries a sequence; the coalesce covers an entry built by
+                // hand rather than by TryMarkRetained, and sorts it oldest, which is the safe end.
+                .OrderByDescending(e => e.RetirementSequence ?? 0L)
+                .ThenBy(e => e.AgentId, StringComparer.Ordinal)
+                .Take(retainedBudget)
+        );
 
         return listed;
     }

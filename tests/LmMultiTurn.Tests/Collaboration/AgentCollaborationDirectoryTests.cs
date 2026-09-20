@@ -420,6 +420,39 @@ public class AgentCollaborationDirectoryTests
         entry.Status.Should().Be("completed");
         entry.IsTerminal.Should().BeTrue();
         entry.IsLive.Should().BeFalse();
+        entry
+            .RetirementSequence.Should()
+            .NotBeNull("a listing that cannot show every retained row has " + "to know which rows are recent");
+    }
+
+    [Fact]
+    public void TryMarkRetained_OrdersRetirementsAndDoesNotRenumberOnARepeat()
+    {
+        // Retirement is idempotent and genuinely repeated: SubAgentManager.DisposeAsync retires every
+        // admission again at teardown. Renumbering there would stamp the whole conversation's history
+        // as having finished at shutdown, in reverse of the order it actually did — so the listing
+        // that trims by this field would keep the wrong rows in precisely the long conversation the
+        // trim exists for.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        foreach (var id in new[] { "agent-first", "agent-second" })
+        {
+            _ = directory.TryRegister(root.CreateChild(id, AgentKind.SubAgent, "r", "d"), id, "running");
+        }
+
+        directory.TryMarkRetained("agent-first").Should().BeTrue();
+        directory.TryMarkRetained("agent-second").Should().BeTrue();
+
+        var firstSequence = directory.FindById("agent-first")!.RetirementSequence;
+        var secondSequence = directory.FindById("agent-second")!.RetirementSequence;
+        secondSequence.Should().BeGreaterThan(firstSequence!.Value);
+
+        // The teardown sweep, in the order DisposeAsync would take it.
+        directory.TryMarkRetained("agent-first").Should().BeTrue();
+        directory.TryMarkRetained("agent-second").Should().BeTrue();
+
+        directory.FindById("agent-first")!.RetirementSequence.Should().Be(firstSequence);
+        directory.FindById("agent-second")!.RetirementSequence.Should().Be(secondSequence);
     }
 
     [Fact]

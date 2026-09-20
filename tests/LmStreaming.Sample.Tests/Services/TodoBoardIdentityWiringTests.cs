@@ -145,6 +145,30 @@ public sealed class TodoBoardIdentityWiringTests
         resolved.AgentId.Should().Be(SubAgentThreadIds.AgentIdFor(1));
     }
 
+    [Fact]
+    public void AttachedToABoard_ARetainedAgentCanStillBeAssignedWorkByNameAndById()
+    {
+        // Bug 2's first half, and the answer to it is that assignment was never the broken part.
+        // Taken at the HARDEST case the board accepts: an agent that has left. Its entry and its name
+        // both outlive it (TryMarkRetained keeps both), Resolve does not test IsLive, and the board
+        // refuses only AssigneeLiveness.Unknown — so every assignment path accepts it, and an agent
+        // that merely finished its run, which is still live, is accepted a fortiori. Pinned because
+        // each of those three is a separate decision made elsewhere, and a liveness test added to any
+        // one of them would start refusing agents this board is supposed to keep addressable.
+        var rootA = RootHoldingAgentOne(RootA, "alpha");
+        var agentId = SubAgentThreadIds.AgentIdFor(1);
+        rootA.Directory.TryMarkRetained(agentId).Should().BeTrue();
+
+        var board = new TaskManager();
+        TodoBoardIdentityWiring.Attach(board, rootA, RootA);
+
+        board.AddTask("Summarise what you already read", parentId: null, assignee: "alpha").IsError.Should().BeFalse();
+        board.AddTask("And again, by identifier", parentId: null, assignee: agentId).IsError.Should().BeFalse();
+        board.AssignTask("1", "alpha").IsError.Should().BeFalse();
+
+        board.GetTasks().Select(t => t.Assignee).Should().AllBe(agentId);
+    }
+
     /// <summary>
     ///     The state after a restart: a fresh collaboration for the same root, holding only the live
     ///     root, into which the previous process's agent rows have been reconciled as tombstones.
@@ -304,27 +328,50 @@ public sealed class TodoBoardIdentityWiringTests
             );
     }
 
-    [Fact]
-    public void AnUnknownName_CarriesTheLiveNamesTheDirectoryKnows()
+    /// <summary>Registers one more agent under <paramref name="setup"/>'s root, at a chosen status.</summary>
+    private static void RegisterAgent(AgentCollaborationSetup setup, int ordinal, string name, string status)
     {
-        // The board renders these into its refusal. Live agents only, sorted, so the sentence reads
-        // the same way twice and never offers a name that cannot take work.
+        var agentId = SubAgentThreadIds.AgentIdFor(ordinal);
+        var child = setup.Context.CreateChild(agentId, AgentKind.SubAgent, "worker", $"Stands in for {name}.");
+        setup.Directory.TryRegister(child, name, status).Succeeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AnUnknownName_CarriesEveryAgentTheDirectoryKnows_WithItsStatus()
+    {
+        // Bug 2's reporting half. The refusal used to name LIVE agents only, which read as "running"
+        // and is not what that flag means — a sub-agent that finishes its run is never retired, so the
+        // filter kept completed agents anyway and dropped the ones that never ran. Either way the list
+        // was narrower than what the board accepts: it refuses only Unknown, so every registered agent
+        // is a name the next call would honour, and a refusal listing fewer names than it accepts
+        // sends the caller round the same refusal again. The status is the bigger half of the fix:
+        // offered bare, these five names give the reader no way to tell the agent still working from
+        // the one that errored out.
         var setup = RootHoldingAgentOne(RootA, "alpha");
-        var gone = SubAgentThreadIds.AgentIdFor(2);
-        var child = setup.Context.CreateChild(gone, AgentKind.SubAgent, "worker", "left already");
-        setup.Directory.TryRegister(child, "zulu", "running").Succeeded.Should().BeTrue();
-        setup.Directory.TryMarkRetained(gone).Should().BeTrue();
+        RegisterAgent(setup, 2, "zulu", AgentCollaborationStatuses.Completed);
+        RegisterAgent(setup, 3, "bravo", AgentCollaborationStatuses.Error);
+
+        // The one agent here that IS retained, so the case covers both halves of the old filter: the
+        // marking that was missing, and the row the filter dropped outright.
+        RegisterAgent(setup, 4, "delta", AgentCollaborationStatuses.Stopped);
+        setup.Directory.TryMarkRetained(SubAgentThreadIds.AgentIdFor(4)).Should().BeTrue();
 
         var resolution = TodoBoardIdentityWiring.Resolve(setup.Directory, RootA, "ghost");
 
         resolution.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unknown);
-        resolution.KnownNames.Should().Equal("alpha", "conversation");
+
+        // Running first, each half sorted: the reader takes the head of the list, and an agent already
+        // in flight is the better target whenever one fits.
+        resolution
+            .KnownNames.Should()
+            .Equal("alpha", "conversation", "bravo (error)", "delta (stopped)", "zulu (completed)");
     }
 
     [Fact]
     public void AttachedToABoard_AnUnknownNameIsRefusedNamingTheAgentsItCouldHaveMeant()
     {
         var rootA = RootHoldingAgentOne(RootA, "alpha");
+        RegisterAgent(rootA, 2, "zulu", AgentCollaborationStatuses.Completed);
         var board = new TaskManager();
         _ = board.AddTask("Wire the SSE endpoint");
         TodoBoardIdentityWiring.Attach(board, rootA, RootA);
@@ -332,7 +379,11 @@ public sealed class TodoBoardIdentityWiringTests
         var refusal = board.AssignTask("1", "ghost");
 
         refusal.ErrorCode.Should().Be("assignee_unknown");
-        refusal.Text.Should().Contain("alpha").And.Contain("conversation");
+        refusal
+            .Text.Should()
+            .Contain("alpha")
+            .And.Contain("conversation")
+            .And.Contain("zulu (completed)", "a finished agent is a target the very next call would accept");
     }
 
     [Fact]

@@ -1160,8 +1160,74 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             .BeFalse("an untruncated listing pays nothing for a cap that did not bite");
     }
 
+    /// <summary>
+    /// Retires <paramref name="names"/> in the order given, so a test can say which agent finished
+    /// last and mean it. Each peer's identifier is <c>agent-{name}</c>, which is what lets a caller
+    /// choose a set whose ordinal order disagrees with its retirement order.
+    /// </summary>
+    private IReadOnlyList<string> RetirePeersInOrder(AgentCollaborationSetup root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var (_, peer) = RegisterPeer(root, name);
+            _ = root.Bundle.RetireAgent(peer.AgentId, AgentCollaborationStatuses.Completed);
+        }
+
+        return names;
+    }
+
     [Fact]
-    public async Task GetAgents_OverTheCap_DropsRetainedAgentsAndAnnouncesTheTruncation()
+    public async Task AnAgentThatFinishesItsRun_StaysLiveAndListed_BecauseAFollowUpRestartsIt()
+    {
+        // The load-bearing fact behind "can a finished agent still be given work?". Finishing a run is
+        // NOT retirement: SubAgentManager.RetireAgent is called only where the agent stops existing
+        // (failed spawn, queued-spawn cancellation, manager disposal), because a completed child keeps
+        // its loop and its owned provider so a later message restarts it. So its directory row stays
+        // live, GetAgents lists it, and every liveness gate downstream — delivery, the todo board —
+        // already treats it as reachable. Pinned here because the whole reuse story rests on it and it
+        // is expressed only as an absence of a call, which nothing else would fail on.
+        var root = CreateRegisteredRoot();
+        var (manager, provider) = CreateManager(root);
+
+        _ = await manager.SpawnAsync(
+            "worker",
+            "read the design doc",
+            name: "researcher",
+            role: "worker role",
+            description: "Reads the design doc.",
+            runInBackground: false
+        );
+
+        // The spawn returns the child's answer; the monitor publishes the terminal status just behind
+        // it. Waited for rather than assumed, so this pins the state AFTER completion rather than a
+        // moment that happens to precede it.
+        await Wait.UntilAsync(
+            () => root.Directory.Resolve("researcher").Entry?.Status == AgentCollaborationStatuses.Completed,
+            "the finished sub-agent's terminal status reached the directory",
+            TimeSpan.FromSeconds(5),
+            observed: () => $"status={root.Directory.Resolve("researcher").Entry?.Status}"
+        );
+
+        var entry = root.Directory.Resolve("researcher").Entry;
+        entry.Should().NotBeNull();
+        entry!.IsLive.Should().BeTrue("a finished sub-agent is restarted by the next message, not gone");
+        entry.RetirementSequence.Should().BeNull();
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Should()
+            .ContainSingle(a => a.GetProperty("name").GetString() == "researcher")
+            .Which.GetProperty("is_live")
+            .GetBoolean()
+            .Should()
+            .BeTrue();
+    }
+
+    [Fact]
+    public async Task GetAgents_OverTheCap_DropsTheOldestFinishedAgentsAndAnnouncesTheTruncation()
     {
         // A retired agent's row is never removed from the directory, so the listing grows without
         // bound over a long run and every turn pays for the whole history in input tokens. The cap
@@ -1171,23 +1237,114 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, provider) = CreateManager(root);
         _ = RegisterPeer(root, "live-a");
         _ = RegisterPeer(root, "live-b");
-        foreach (var name in new[] { "done-a", "done-b", "done-c" })
-        {
-            var (_, peer) = RegisterPeer(root, name);
-            _ = root.Bundle.RetireAgent(peer.AgentId, AgentCollaborationStatuses.Completed);
-        }
+        _ = RetirePeersInOrder(root, "done-a", "done-b", "done-c", "done-d", "done-e", "done-f", "done-g", "done-h");
+        _ = RetirePeersInOrder(root, "done-i", "done-j");
 
         var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
 
         using var doc = JsonDocument.Parse(payload.Text);
-        doc.RootElement.GetProperty("total").GetInt32().Should().Be(6);
-        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(3);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(13);
+        doc.RootElement.GetProperty("returned")
+            .GetInt32()
+            .Should()
+            .Be(3 + SubAgentToolProvider.MinListedRetainedAgents);
         doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
-        doc.RootElement.GetProperty("truncation_note").GetString().Should().Contain("finished");
+        // The note has to say what an ABSENCE means, not just that there is one: an omitted agent
+        // left, which is a different fact from a name nobody ever held.
+        doc.RootElement.GetProperty("truncation_note").GetString().Should().Contain("gone rather than unknown");
 
-        var listed = doc.RootElement.GetProperty("agents").EnumerateArray().ToList();
-        listed.Should().OnlyContain(a => a.GetProperty("is_live").GetBoolean());
-        listed.Select(a => a.GetProperty("name").GetString()).Should().BeEquivalentTo([root.Name, "live-a", "live-b"]);
+        // The two that opened the conversation are the two nobody would ask after now.
+        doc.RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Select(a => a.GetProperty("name").GetString())
+            .Should()
+            .NotContain(["done-a", "done-b"])
+            .And.Contain(["done-i", "done-j"]);
+    }
+
+    [Fact]
+    public async Task GetAgents_MarksAnUnreachableAgentDead_AndLeavesAFinishedOneUnmarked()
+    {
+        // Two agents that both stopped working, told apart by the only thing a caller can act on.
+        // "completed" is not a reason to spawn a replacement — that agent's loop is warm and the next
+        // message restarts it — so the row says nothing extra. An agent nothing can be delivered to
+        // gets said so bluntly, in the normal shape, because a reader that has to infer it from an
+        // absent detail-only flag will infer wrongly in whichever direction costs more.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var (_, finished) = RegisterPeer(root, "finished");
+        root.Directory.TryUpdateStatus(finished.AgentId, AgentCollaborationStatuses.Completed).Should().BeTrue();
+        var (_, gone) = RegisterPeer(root, "gone");
+        _ = root.Bundle.RetireAgent(gone.AgentId, AgentCollaborationStatuses.Error);
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        var rows = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .ToDictionary(a => a.GetProperty("name").GetString()!);
+
+        rows["finished"].GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Completed);
+        rows["finished"]
+            .TryGetProperty("dead", out _)
+            .Should()
+            .BeFalse("a finished agent restarts on the next message");
+
+        rows["gone"].GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Error);
+        rows["gone"].GetProperty("dead").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetAgents_WithTheLiveAgentsFillingThePermit_StillListsTheAgentsThatJustFinished()
+    {
+        // Finding 1's distinguishing case, and the one a small directory cannot show. The retained
+        // budget used to be the permit MINUS the live count, so a collaboration running at its permit
+        // was handed ZERO departed agents — in exactly the busy conversation that has produced
+        // departures worth explaining. Every name the caller used a moment ago then answered as
+        // "unknown" rather than "gone", which are different facts leading to different next actions.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 3 });
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "live-a");
+        _ = RegisterPeer(root, "live-b");
+        _ = RetirePeersInOrder(root, "done-a", "done-b");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Select(a => a.GetProperty("name").GetString())
+            .Should()
+            .BeEquivalentTo([root.Name, "live-a", "live-b", "done-a", "done-b"]);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetAgents_KeepsTheFinishedAgentsByRecency_NotByTheOrderTheirIdentifiersSortIn()
+    {
+        // The two orders are made to disagree about the row that matters most. Identifiers sort
+        // LEXICOGRAPHICALLY, so `agent-10` precedes `agent-9` and `agent-9` is last of the ten; it is
+        // also the agent that left most recently. An ordinal trim would therefore drop precisely the
+        // agent a caller is about to ask after, leaving the name it just used looking like one nobody
+        // ever held.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 2 });
+        var (_, provider) = CreateManager(root);
+        _ = RetirePeersInOrder(root, "1", "2", "3", "4", "5", "6", "7", "8", "10", "9");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(11);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+
+        // Most recent first, and exhaustive: the retained half is pinned in full so a change that
+        // merely reshuffles it cannot pass, and "1" and "2" — the oldest — are the two dropped.
+        doc.RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Select(a => a.GetProperty("name").GetString())
+            .Should()
+            .Equal([root.Name, "9", "10", "8", "7", "6", "5", "4", "3"]);
     }
 
     [Fact]
@@ -1200,20 +1357,24 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, provider) = CreateManager(root);
         _ = RegisterPeer(root, "live-a");
         _ = RegisterPeer(root, "live-b");
-        var (_, retired) = RegisterPeer(root, "done-a");
-        _ = root.Bundle.RetireAgent(retired.AgentId, AgentCollaborationStatuses.Completed);
+        _ = RetirePeersInOrder(root, "done-a", "done-b", "done-c", "done-d", "done-e", "done-f", "done-g", "done-h");
+        _ = RetirePeersInOrder(root, "done-i");
 
         var payload = await InvokeAsync(provider, "GetAgents", new { });
 
         using var doc = JsonDocument.Parse(payload.Text);
-        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(3);
-        doc.RootElement.GetProperty("total").GetInt32().Should().Be(4);
+        doc.RootElement.GetProperty("returned")
+            .GetInt32()
+            .Should()
+            .Be(3 + SubAgentToolProvider.MinListedRetainedAgents);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(12);
+        // The overrun is still stated rather than hidden: three live agents against a permit of one.
         doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
         doc.RootElement.GetProperty("agents")
             .EnumerateArray()
             .Select(a => a.GetProperty("name").GetString())
             .Should()
-            .BeEquivalentTo([root.Name, "live-a", "live-b"]);
+            .Contain([root.Name, "live-a", "live-b"]);
     }
 
     [Fact]
