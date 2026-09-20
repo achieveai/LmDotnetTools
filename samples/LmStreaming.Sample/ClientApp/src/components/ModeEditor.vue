@@ -191,12 +191,17 @@ const systemPromptError = ref('');
 const isEditing = computed(() => !!props.mode);
 const title = computed(() => (isEditing.value ? 'Edit Mode' : 'Create New Mode'));
 
-/** Header chips: a glance at what the mode grants, without scrolling to the pickers. */
+/**
+ * Header chip: a glance at what the mode grants, without scrolling to the pickers. A `group:*`
+ * wildcard is counted as a group rather than a tool, for the same reason the picker's own summary
+ * does it — the wildcard is a selection token, not a tool.
+ */
 const enabledToolSummary = computed(() => {
-  const count = selectedToolIds.value.filter((id) => !id.endsWith(':*')).length;
-  const wildcards = selectedToolIds.value.filter((id) => id.endsWith(':*')).length;
-  if (wildcards > 0) return `${count + wildcards === 0 ? 'No' : count} tools + ${wildcards} group${wildcards === 1 ? '' : 's'}`;
-  return count === 1 ? '1 tool' : `${count} tools`;
+  const groups = selectedToolIds.value.filter((id) => id.endsWith(':*')).length;
+  const tools = selectedToolIds.value.length - groups;
+  const toolPart = `${tools} tool${tools === 1 ? '' : 's'}`;
+  if (groups === 0) return toolPart;
+  return `${toolPart} + ${groups} group${groups === 1 ? '' : 's'}`;
 });
 
 // Initialize form when mode changes
