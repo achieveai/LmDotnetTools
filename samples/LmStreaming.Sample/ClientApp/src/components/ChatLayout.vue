@@ -46,7 +46,6 @@ import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
-import FileBrowserModal from './FileBrowserModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
 import HeaderActionsMenu from './HeaderActionsMenu.vue';
 
@@ -634,13 +633,13 @@ const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
-const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
 const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
-const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'files' | 'share' | null>(null);
+const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'share' | null>(null);
 const inspectorOpen = ref(false);
-const inspectorSection = ref<'work' | 'agents'>('work');
+const inspectorSection = ref<'work' | 'files' | 'agents'>('work');
 const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
+const inspectorRef = ref<InstanceType<typeof ConversationInspector> | null>(null);
 let inspectorInitialized = false;
 
 function openInspector(): void {
@@ -684,25 +683,30 @@ function closeMarketplaceModal(): void {
   restoreHeaderActionsFocus('marketplace');
 }
 
-function closeFileBrowserModal(): void {
-  fileBrowserModalOpen.value = false;
-  restoreHeaderActionsFocus('files');
-}
-
 function closeShareModal(): void {
   shareModalOpen.value = false;
   restoreHeaderActionsFocus('share');
 }
 
-function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'share'): void {
   modalOpenedFromHeaderActions.value = modal;
   if (modal === 'marketplace') marketplaceModalOpen.value = true;
   else if (modal === 'egress') egressAuthModalOpen.value = true;
-  else if (modal === 'files') fileBrowserModalOpen.value = true;
   else shareModalOpen.value = true;
 }
 
-function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+/**
+ * "More > Files" is no longer a modal: it opens the right panel and reveals its Files disclosure,
+ * which is where the browser now lives. Focus therefore lands on that disclosure rather than being
+ * restored to the More trigger (there is nothing to close and come back from).
+ */
+function openFilesPanel(): void {
+  inspectorOpen.value = true;
+  modalOpenedFromHeaderActions.value = null;
+  void nextTick(() => inspectorRef.value?.revealSection('files'));
+}
+
+function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'share'): void {
   if (modalOpenedFromHeaderActions.value !== modal) return;
   modalOpenedFromHeaderActions.value = null;
   void nextTick(() => headerActionsMenuRef.value?.focusTrigger());
@@ -1285,7 +1289,7 @@ onBeforeUnmount(() => {
           :clear-disabled="chatLoading"
           @open-marketplaces="openHeaderActionModal('marketplace')"
           @open-egress="openHeaderActionModal('egress')"
-          @open-files="openHeaderActionModal('files')"
+          @open-files="openFilesPanel"
           @open-share="openHeaderActionModal('share')"
           @clear="clearMessages"
         />
@@ -1371,12 +1375,6 @@ onBeforeUnmount(() => {
         <EgressAuthModal
           v-if="egressAuthModalOpen || egressDialogRequest.open"
           @close="handleCloseEgressModal"
-        />
-
-        <FileBrowserModal
-          v-if="fileBrowserModalOpen"
-          :thread-id="currentThreadId"
-          @close="closeFileBrowserModal"
         />
 
         <!--
@@ -1566,6 +1564,7 @@ onBeforeUnmount(() => {
     />
     <ConversationInspector
       v-if="!focusMode"
+      ref="inspectorRef"
       :open="inspectorOpen"
       :active-section="inspectorSection"
       :desktop-width="renderedInspectorWidth"
@@ -1579,6 +1578,7 @@ onBeforeUnmount(() => {
       :has-work="hasTodoBoard"
       :children="subAgentChildren"
       :active-conversation-tab-id="activeTabId"
+      :files-thread-id="subAgentParentThreadId"
       external-close-control-id="conversation-inspector-toggle"
       @close="closeInspector"
       @select-section="inspectorSection = $event"

@@ -2759,7 +2759,9 @@ describe('ChatLayout header actions menu', () => {
           ChatInput: true,
           MarketplaceModal: true,
           EgressAuthModal: true,
-          FileBrowserModal: true,
+          // The Files section hosts the REAL browser now; stubbed here so choosing Files does not
+          // issue a listing fetch from this suite.
+          FileBrowser: true,
           ShareConversationModal: true,
         },
       },
@@ -2798,10 +2800,12 @@ describe('ChatLayout header actions menu', () => {
     wrapper.findComponent({ name: 'EgressAuthModal' }).vm.$emit('close');
     await flushPromises();
 
+    // Files is no longer a modal: it opens the right panel and reveals its Files disclosure.
     await choose(wrapper, 'file-browser-button');
-    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(true);
-    wrapper.findComponent({ name: 'FileBrowserModal' }).vm.$emit('close');
-    await flushPromises();
+    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    expect(wrapper.get('#inspector-tab-files').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="workspace-files-section"]').exists()).toBe(true);
 
     await choose(wrapper, 'share-button');
     expect(wrapper.findComponent({ name: 'ShareConversationModal' }).exists()).toBe(true);
@@ -2826,6 +2830,32 @@ describe('ChatLayout header actions menu', () => {
     expect(wrapper.get('[data-testid="share-button"]').attributes('disabled')).toBeDefined();
     expect(wrapper.get('[data-testid="clear-button"]').attributes('disabled')).toBeDefined();
     wrapper.unmount();
+  });
+
+  // The Files section must be fed the SAME thread id the embedded preview is gated on
+  // (`subAgentParentThreadId`), not the raw `currentThreadId`: a brand-new messageless thread has an
+  // id but no started conversation, so the preview region refuses to mount for it. Feeding the
+  // browser the raw id would list a thread whose files could never be opened.
+  it('feeds the Files section the started-conversation thread id, not the raw current thread id', async () => {
+    // A New Chat that has an id but has not sent anything: not in the sidebar, no rendered items.
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const inspector = wrapper.findComponent({ name: 'ConversationInspector' });
+    expect(inspector.exists()).toBe(true);
+    expect(inspector.props('filesThreadId')).toBeNull();
+    wrapper.unmount();
+
+    // A started conversation (present in the sidebar) DOES flow its id through.
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    const started = mountLayout();
+    await flushPromises();
+    expect(started.findComponent({ name: 'ConversationInspector' }).props('filesThreadId')).toBe(
+      'thread-1'
+    );
+    started.unmount();
   });
 
   it('does not steal focus when an unrelated auth flow opens and closes Egress auth', async () => {

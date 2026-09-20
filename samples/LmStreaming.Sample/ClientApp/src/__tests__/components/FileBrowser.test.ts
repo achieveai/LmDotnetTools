@@ -1,17 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import FileBrowser from '@/components/FileBrowser.vue';
-import FileBrowserModal from '@/components/FileBrowserModal.vue';
-import {
-  sampleListing,
-  noSessionState,
-  binaryPreview,
-  textPreview,
-  jsonResponse,
-} from '../fixtures/fileBrowser';
+import ConversationInspector from '@/components/ConversationInspector.vue';
+import type { FileEntry } from '@/types/fileBrowser';
+import { sampleListing, noSessionState, jsonResponse } from '../fixtures/fileBrowser';
 import { MAX_FOLDER_UPLOAD_FILES } from '@/utils/folderUpload';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  document.body.replaceChildren();
+});
 
 /** Mounts the browser with an initial listing already loaded. Returns the wrapper + fetch spy. */
 async function mountBrowser(initial = sampleListing) {
@@ -25,16 +23,33 @@ async function mountBrowser(initial = sampleListing) {
   return { wrapper, fetchSpy };
 }
 
-/** Mounts the real Files modal (FileBrowser inside BaseModal) with an initial listing loaded. */
-async function mountModal(initial = sampleListing) {
+/**
+ * Mounts the browser in its REAL host — the right panel's Files disclosure — with an initial listing
+ * loaded. The modal that used to host it is gone, so the enclosing surface whose own Escape handling
+ * must not be triggered from inside a browser confirmation is now the inspector.
+ */
+async function mountInInspector(initial = sampleListing) {
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
   fetchSpy.mockResolvedValueOnce(jsonResponse(initial));
-  const wrapper = mount(FileBrowserModal, {
-    props: { threadId: 'thread-1' },
+  const wrapper = mount(ConversationInspector, {
+    props: {
+      open: true,
+      tasks: [],
+      hasWork: false,
+      children: [],
+      activeConversationTabId: 'main',
+      filesThreadId: 'thread-1',
+    },
     attachTo: document.body,
   });
+  await wrapper.get('#inspector-tab-files').trigger('click');
   await flushPromises();
   return { wrapper, fetchSpy };
+}
+
+/** A listing carrying exactly `entries` (workspace/path/moreCount kept from the sample). */
+function listingOf(entries: FileEntry[]) {
+  return { ...sampleListing, entries };
 }
 
 describe('FileBrowser rendering', () => {
@@ -99,28 +114,53 @@ describe('FileBrowser navigation', () => {
   });
 });
 
-describe('FileBrowser preview', () => {
-  it('shows metadata-only (no text panel) for a non-previewable binary file', async () => {
+describe('FileBrowser open-file (preview moved to the panel)', () => {
+  it('emits open-file with the workspace-relative path and renders no inline preview', async () => {
     const { wrapper, fetchSpy } = await mountBrowser();
-    fetchSpy.mockResolvedValueOnce(jsonResponse(binaryPreview));
+    const callsBefore = fetchSpy.mock.calls.length;
 
     await wrapper.find('[data-testid="file-entry-preview-readme.md"]').trigger('click');
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="file-preview-unavailable"]').exists()).toBe(true);
+    expect(wrapper.emitted('openFile')).toEqual([['readme.md']]);
+    // The inline <pre> surface is gone, and the browser no longer calls /preview itself: the
+    // right panel's preview region owns rendering now.
     expect(wrapper.find('[data-testid="file-preview-text"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="file-preview-unavailable"]').exists()).toBe(false);
+    expect(fetchSpy.mock.calls.length).toBe(callsBefore);
   });
 
-  it('renders the returned text in a <pre> for a previewable file', async () => {
+  it('opens a file from its NAME too, joined onto the current directory', async () => {
     const { wrapper, fetchSpy } = await mountBrowser();
-    fetchSpy.mockResolvedValueOnce(jsonResponse(textPreview));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({
+        ...sampleListing,
+        path: 'src',
+        entries: [{ name: 'main.ts', type: 'file', size: 5, nameLossy: false }],
+      })
+    );
 
-    await wrapper.find('[data-testid="file-entry-preview-readme.md"]').trigger('click');
+    await wrapper.find('[data-testid="file-entry-name-src"]').trigger('click');
     await flushPromises();
+    await wrapper.find('[data-testid="file-entry-name-main.ts"]').trigger('click');
 
-    const pre = wrapper.find('[data-testid="file-preview-text"]');
-    expect(pre.exists()).toBe(true);
-    expect(pre.text()).toContain('line one');
+    expect(wrapper.emitted('openFile')).toEqual([['src/main.ts']]);
+  });
+
+  it('navigates on a folder name and emits nothing for symlink / lossy rows', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+
+    // Neither unactionable row can open a tab: their name buttons stay disabled...
+    await wrapper.find('[data-testid="file-entry-name-link"]').trigger('click');
+    await wrapper.find('[data-testid="file-entry-name-lossy.dat"]').trigger('click');
+    expect(wrapper.emitted('openFile')).toBeUndefined();
+
+    // ...and a folder name still navigates rather than opening a preview tab.
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...sampleListing, path: 'src', entries: [] }));
+    await wrapper.find('[data-testid="file-entry-name-src"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.emitted('openFile')).toBeUndefined();
+    expect(fetchSpy.mock.calls.at(-1)?.[0]).toBe('/api/conversations/thread-1/files?path=src');
   });
 });
 
@@ -176,25 +216,42 @@ describe('FileBrowser delete confirmation', () => {
     expect(wrapper.find('[data-testid="file-browser-delete-confirm"]').exists()).toBe(true);
   });
 
-  it('Escape inside the delete-confirm cancels it without closing the Files modal', async () => {
-    const { wrapper, fetchSpy } = await mountModal();
+  it('Escape inside the delete-confirm cancels it without closing the inspector', async () => {
+    const { wrapper, fetchSpy } = await mountInInspector();
     const callsBefore = fetchSpy.mock.calls.length;
 
     await wrapper.find('[data-testid="file-entry-delete-readme.md"]').trigger('click');
     await flushPromises();
 
     const confirmEl = wrapper.find('[data-testid="file-browser-delete-confirm"]').element;
-    // A bubbling Escape from inside the confirm: without scoping it would reach BaseModal's
-    // document-level handler and close the WHOLE modal.
+    // A bubbling Escape from inside the confirm: without scoping it would reach the inspector's
+    // own keydown handler and close the WHOLE right panel.
     confirmEl.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
     await flushPromises();
 
-    // The confirm is cancelled, no DELETE was issued, and the Files modal did NOT close.
+    // The confirm is cancelled, no DELETE was issued, and the inspector did NOT close.
     expect(wrapper.find('[data-testid="file-browser-delete-confirm"]').exists()).toBe(false);
     expect(fetchSpy.mock.calls.length).toBe(callsBefore);
     expect(wrapper.emitted('close')).toBeUndefined();
+  });
+
+  it('hides Delete on a dot-DIRECTORY (agent-managed) but keeps it on a dot-file', async () => {
+    const { wrapper } = await mountBrowser(
+      listingOf([
+        { name: '.claude', type: 'directory', size: null, nameLossy: false },
+        { name: '.gitignore', type: 'file', size: 12, nameLossy: false },
+      ])
+    );
+
+    expect(wrapper.find('[data-testid="file-entry-delete-.claude"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="file-entry-.claude"]').attributes('title')).toBe(
+      'Managed folder'
+    );
+    // A dot-FILE is ordinary user content and stays deletable.
+    expect(wrapper.find('[data-testid="file-entry-delete-.gitignore"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="file-entry-.gitignore"]').attributes('title')).toBeUndefined();
   });
 });
 
@@ -530,12 +587,106 @@ describe('FileBrowser upload single-flight (F5)', () => {
 });
 
 describe('FileBrowser workspace display', () => {
-  it('shows the active workspace id', async () => {
+  it('shows the active workspace id as a chip carrying the full id in its title', async () => {
     const { wrapper } = await mountBrowser();
 
     const ws = wrapper.find('[data-testid="file-browser-workspace"]');
     expect(ws.exists()).toBe(true);
-    expect(ws.text()).toContain('ws-1');
+    // The id is a muted chip now, not a "Workspace: <guid>" headline: the full value lives in the
+    // tooltip so a long guid cannot dominate a 320px panel.
+    expect(ws.attributes('title')).toContain('ws-1');
+    expect(ws.text()).not.toContain('Workspace:');
+  });
+});
+
+describe('FileBrowser no-thread state', () => {
+  it('renders the no-thread state instead of an empty listing when threadId is null', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const wrapper = mount(FileBrowser, { props: { threadId: null }, attachTo: document.body });
+    await flushPromises();
+
+    // A persistent panel is reachable for an unsent New Chat; an empty listing there reads as
+    // "the workspace is empty", which is wrong — there is no workspace at all yet.
+    expect(wrapper.find('[data-testid="file-browser-no-thread"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="file-browser-list"]').exists()).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('FileBrowser filter', () => {
+  it('filters rows client-side without refetching', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const callsBefore = fetchSpy.mock.calls.length;
+
+    await wrapper.find('[data-testid="file-browser-filter"]').setValue('READ');
+
+    expect(wrapper.find('[data-testid="file-entry-readme.md"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="file-entry-src"]').exists()).toBe(false);
+    // The current page is filtered in the client; no new listing request is issued.
+    expect(fetchSpy.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('clears the filter when navigating so the new directory is never silently hidden', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    await wrapper.find('[data-testid="file-browser-filter"]').setValue('src');
+    expect(wrapper.find('[data-testid="file-entry-readme.md"]').exists()).toBe(false);
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...sampleListing, path: 'src' }));
+    await wrapper.find('[data-testid="file-entry-name-src"]').trigger('click');
+    await flushPromises();
+
+    // The filter is dropped on arrival, so the destination is never shown pre-filtered by a term
+    // that only made sense in the directory the user left.
+    const filter = wrapper.find('[data-testid="file-browser-filter"]').element as HTMLInputElement;
+    expect(filter.value).toBe('');
+    expect(wrapper.find('[data-testid="file-entry-readme.md"]').exists()).toBe(true);
+  });
+});
+
+describe('FileBrowser ordering', () => {
+  it('lists folders before files, each group by case-insensitive name', async () => {
+    const { wrapper } = await mountBrowser(
+      listingOf([
+        { name: 'beta.txt', type: 'file', size: 1, nameLossy: false },
+        { name: 'Zeta', type: 'directory', size: null, nameLossy: false },
+        { name: 'Alpha.txt', type: 'file', size: 1, nameLossy: false },
+        { name: 'apps', type: 'directory', size: null, nameLossy: false },
+      ])
+    );
+
+    const names = wrapper
+      .findAll('[data-testid^="file-entry-name-"]')
+      .map((row) => row.text().trim());
+    expect(names).toEqual(['apps', 'Zeta', 'Alpha.txt', 'beta.txt']);
+  });
+});
+
+describe('FileBrowser refresh', () => {
+  it('reloads the CURRENT path rather than resetting to the root', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...sampleListing, path: 'src', entries: [] }));
+    await wrapper.find('[data-testid="file-entry-name-src"]').trigger('click');
+    await flushPromises();
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ ...sampleListing, path: 'src', entries: [] }));
+    await wrapper.find('[data-testid="file-browser-refresh"]').trigger('click');
+    await flushPromises();
+
+    expect(fetchSpy.mock.calls.at(-1)?.[0]).toBe('/api/conversations/thread-1/files?path=src');
+  });
+});
+
+describe('FileBrowser drop target', () => {
+  it('makes the list container the drop target, with the upload buttons in the toolbar', async () => {
+    const { wrapper } = await mountBrowser();
+
+    const dropzone = wrapper.find('[data-testid="file-browser-dropzone"]');
+    expect(dropzone.find('[data-testid="file-browser-list"]').exists()).toBe(true);
+    // The dashed always-on zone is gone: the buttons moved out to the icon toolbar.
+    expect(dropzone.find('[data-testid="file-browser-upload"]').exists()).toBe(false);
+    expect(
+      wrapper.find('[data-testid="file-browser-toolbar"]').find('[data-testid="file-browser-upload"]').exists()
+    ).toBe(true);
   });
 });
 
