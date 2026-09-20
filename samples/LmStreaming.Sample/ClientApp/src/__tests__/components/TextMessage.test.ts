@@ -155,12 +155,21 @@ describe('TextMessage workspace links', () => {
 
   const mountWith = (
     text: string,
-    options: { workspaceLinks?: boolean; threadId?: string | null; provide?: boolean } = {}
+    options: {
+      workspaceLinks?: boolean;
+      workspaceLinkBaseDir?: string;
+      threadId?: string | null;
+      provide?: boolean;
+    } = {}
   ) => {
     const open = vi.fn();
     const threadId = ref<string | null>(options.threadId === undefined ? 'thread-9' : options.threadId);
     const wrapper = mount(TextMessage, {
-      props: { message: assistant(text), workspaceLinks: options.workspaceLinks ?? true },
+      props: {
+        message: assistant(text),
+        workspaceLinks: options.workspaceLinks ?? true,
+        workspaceLinkBaseDir: options.workspaceLinkBaseDir,
+      },
       global: {
         provide: options.provide === false ? {} : { [WORKSPACE_FILE_LINKS]: { threadId, open } },
       },
@@ -178,6 +187,21 @@ describe('TextMessage workspace links', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(open).toHaveBeenCalledWith({ threadId: 'thread-9', target: 'docs/report.md' });
+  });
+
+  it('opens a relative link against the base directory it was written in', async () => {
+    const { wrapper, open } = mountWith('See [evidence](evidence/storage-source-fit.md).', {
+      workspaceLinkBaseDir: 'docs/rdb-embedded-database',
+    });
+
+    wrapper
+      .get('a.workspace-link')
+      .element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(open).toHaveBeenCalledWith({
+      threadId: 'thread-9',
+      target: 'docs/rdb-embedded-database/evidence/storage-source-fit.md',
+    });
   });
 
   it('opens for a click on an element nested inside the link', async () => {

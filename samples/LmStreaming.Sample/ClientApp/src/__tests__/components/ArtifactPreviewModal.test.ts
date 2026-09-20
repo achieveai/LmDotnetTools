@@ -266,17 +266,23 @@ describe('ArtifactPreviewModal — embedded Markdown', () => {
     expect(wrapper.get('code.language-typescript').text()).toContain('const answer = 42;');
   });
 
-  it('keeps workspace links disabled and removes unsafe raw SVG', async () => {
+  /**
+   * A link inside a previewed document is written relative to THAT document, not the workspace root, so the
+   * preview opts into workspace links AND supplies the previewed file's own directory as the base. Before
+   * this, the modal inherited `workspaceLinks: false` from the `TextMessage` default (#784 moved the branch
+   * onto `TextMessage` and carried the default over) and every such link rendered as an inert bare anchor.
+   */
+  it('opens a relative link against the previewed file directory, and removes unsafe raw SVG', async () => {
     const open = vi.fn();
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       jsonResponse({
         previewable: true,
-        text: '[Other file](docs/other.md)\n\n<svg onload="alert(1)"><script>alert(2)</script></svg>',
+        text: '[Other file](evidence/other.md)\n\n<svg onload="alert(1)"><script>alert(2)</script></svg>',
         lineCount: 3,
       })
     );
     const wrapper = mount(ArtifactPreviewModal, {
-      props: { threadId: 'thread-1', path: 'docs/spec.md', embedded: true },
+      props: { threadId: 'thread-1', path: 'docs/rdb/spec.md', embedded: true },
       global: {
         provide: {
           [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open },
@@ -286,12 +292,52 @@ describe('ArtifactPreviewModal — embedded Markdown', () => {
     });
     await flushPromises();
 
-    expect(wrapper.get('a').classes()).not.toContain('workspace-link');
-    await wrapper.get('a').trigger('click');
-    expect(open).not.toHaveBeenCalled();
+    expect(wrapper.get('a').classes()).toContain('workspace-link');
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/rdb/evidence/other.md' });
+
     const markdown = wrapper.get('[data-testid="artifact-preview-markdown"]');
     expect(markdown.find('svg').exists()).toBe(false);
     expect(markdown.find('script').exists()).toBe(false);
+  });
+
+  /** A file at the workspace root has no directory to join, so its links stay root-relative. */
+  it('leaves a link in a root-level file workspace-root relative', async () => {
+    const open = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse({ previewable: true, text: '[Other](docs/other.md)', lineCount: 1 })
+    );
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'README.md', embedded: true },
+      global: { provide: { [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open } } },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/other.md' });
+  });
+
+  /**
+   * The base must come from the SERVER-resolved path, not from the raw opener: a `target` opener carries a
+   * host path (or a `sandbox:` URI), which says nothing about where the file sits in the workspace.
+   */
+  it('bases links on the resolved path when the file was opened by a raw target', async () => {
+    const open = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ path: 'docs/rdb/spec.md', type: 'file', size: 20 }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ previewable: true, text: '[Other](evidence/other.md)', lineCount: 1 })
+    );
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', target: 'sandbox:/workspace/docs/rdb/spec.md', embedded: true },
+      global: { provide: { [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open } } },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/rdb/evidence/other.md' });
   });
 });
 

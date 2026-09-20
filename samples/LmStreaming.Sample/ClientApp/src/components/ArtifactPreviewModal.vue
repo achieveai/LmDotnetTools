@@ -115,6 +115,17 @@ const previewText = computed(() =>
   result.value?.previewable && result.value.text !== undefined ? result.value.text : null
 );
 
+/**
+ * The previewed file's own directory, which a relative link inside its markdown is written against (`''` for a
+ * file at the workspace root). Derived from `resolvedPath` rather than from `props.target`: a `target` opener
+ * carries a host path or a `sandbox:` URI, which says nothing about where the file sits in the workspace.
+ */
+const markdownBaseDir = computed(() => {
+  const path = resolvedPath.value ?? '';
+  const slash = path.lastIndexOf('/');
+  return slash < 0 ? '' : path.slice(0, slash);
+});
+
 const markdownMessage = computed<TextMessageModel>(() => ({
   $type: MessageType.Text,
   role: 'assistant',
@@ -349,7 +360,15 @@ onBeforeUnmount(() => {
         class="markdown-content artifact-preview-markdown"
         data-testid="artifact-preview-markdown"
       >
-        <TextMessage :message="markdownMessage" :is-complete="true" :workspace-links="false" />
+        <!-- Workspace links are ON here: a document's own file links are the point of previewing it. They
+             resolve inside this same workspace through the same server endpoint as a chat message's links, so
+             this opens no door the file browser does not already open. -->
+        <TextMessage
+          :message="markdownMessage"
+          :is-complete="true"
+          :workspace-links="true"
+          :workspace-link-base-dir="markdownBaseDir"
+        />
       </div>
 
       <div v-else-if="table" class="artifact-preview-table-wrap">

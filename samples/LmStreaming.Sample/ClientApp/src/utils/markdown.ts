@@ -7,6 +7,7 @@ import {
   buildWorkspaceLinkHref,
   isWebUrl,
   isWorkspaceLinkCandidate,
+  resolveAgainstBaseDir,
 } from './workspaceLinks';
 
 import bash from 'highlight.js/lib/languages/bash';
@@ -158,9 +159,13 @@ export interface ParseMarkdownOptions {
   /**
    * Rewrite links to workspace files (anything that is not web/mailto/tel or an in-page anchor) into
    * in-page `#workspace-file?` links carrying this conversation id -- see `utils/workspaceLinks.ts`.
-   * Only assistant bubbles pass it; everywhere else such a link renders as before.
+   * Only assistant bubbles and the file preview pass it; everywhere else such a link renders as before.
+   *
+   * `baseDir` is the workspace directory a PLAIN RELATIVE link should be read against: the directory of the
+   * file whose rendered content this is. A chat message is not a file, so it omits it and its relative links
+   * stay workspace-root relative; the preview supplies the previewed file's own directory.
    */
-  workspaceLinks?: { threadId: string };
+  workspaceLinks?: { threadId: string; baseDir?: string };
 }
 
 /**
@@ -196,7 +201,7 @@ function sanitize(html: string, workspaceLinks: ParseMarkdownOptions['workspaceL
     ) {
       data.attrValue = buildWorkspaceLinkHref({
         threadId: workspaceLinks.threadId,
-        target: data.attrValue.trim(),
+        target: resolveAgainstBaseDir(data.attrValue.trim(), workspaceLinks.baseDir),
       });
       rewrittenAnchors.add(node);
     }

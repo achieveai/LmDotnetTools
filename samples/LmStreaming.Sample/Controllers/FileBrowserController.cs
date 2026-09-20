@@ -259,10 +259,11 @@ public sealed class FileBrowserController(
     }
 
     /// <summary>
-    /// Resolves a raw file link from a chat message (absolute host path, <c>file://</c> URI, or relative path) to
-    /// the real workspace entry it names, returning its server path, type and size. Only the server knows the
-    /// session's HostPath, so the lexical conversion (<see cref="WorkspaceLinkResolver"/>) runs here, then the same
-    /// authoritative component-wise resolution every other file route uses.
+    /// Resolves a raw file link from a chat message (absolute host path, <c>file://</c> URI, <c>sandbox:</c>
+    /// container URI, or relative path) to the real workspace entry it names, returning its server path, type and
+    /// size. Only the server knows the session's HostPath, so the lexical conversion
+    /// (<see cref="WorkspaceLinkResolver"/>) runs here, then the same authoritative component-wise resolution every
+    /// other file route uses.
     /// </summary>
     [HttpGet("resolve")]
     public async Task<IActionResult> Resolve(string threadId, [FromQuery] string? target, CancellationToken ct)

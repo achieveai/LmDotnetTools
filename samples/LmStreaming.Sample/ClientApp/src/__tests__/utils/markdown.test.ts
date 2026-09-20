@@ -283,6 +283,22 @@ describe('parseMarkdown workspace links (opt-in)', () => {
     expect(parseWorkspaceLinkHref(a.href ?? '')?.threadId).toBe('thread-123');
   });
 
+  it('resolves a relative link against the baseDir, leaving other shapes alone', () => {
+    const withBase = { workspaceLinks: { threadId: 'thread-123', baseDir: 'docs/rdb-embedded-database' } };
+    const [rel, abs] = anchors(
+      parseMarkdown('[s](evidence/storage-source-fit.md) [a](/workspace/docs/a.md)', withBase)
+    );
+    expect(parseWorkspaceLinkHref(rel.href ?? '')?.target).toBe(
+      'docs/rdb-embedded-database/evidence/storage-source-fit.md'
+    );
+    expect(parseWorkspaceLinkHref(abs.href ?? '')?.target).toBe('/workspace/docs/a.md');
+  });
+
+  it('keeps a relative link workspace-root relative when no baseDir is given', () => {
+    const [a] = anchors(parseMarkdown('[s](docs/a.md)', opts));
+    expect(parseWorkspaceLinkHref(a.href ?? '')?.target).toBe('docs/a.md');
+  });
+
   it('is off by default: a host path is still dropped and no workspace-link class appears', () => {
     const html = parseMarkdown('[a](B:\\ws\\a.md) [b](docs/a.md)');
     const [a, b] = anchors(html);

@@ -424,6 +424,48 @@ public class FileBrowserControllerTests
     }
 
     [Fact]
+    public async Task ResolveLink_SandboxSchemeContainerPath_Returns200WithRelativePath()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [File("design-specification.md", size: 42)];
+
+        // The session mounts at host "/host/ws", but a `sandbox:` link is written against the CONTAINER
+        // mount, so it must resolve without ever being compared to the host path.
+        var result = await controller.Resolve(
+            ThreadId,
+            "sandbox:/workspace/docs/design-specification.md",
+            CancellationToken.None
+        );
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/design-specification.md", "file", 42));
+    }
+
+    [Fact]
+    public async Task ResolveLink_BaseDirJoinedPathWithDotDot_ResolvesToTheSibling()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [Dir("rdb"), Dir("siblings")];
+        browser.Listings["docs/siblings"] = [File("x.md", size: 7)];
+
+        // What the renderer sends for `../siblings/x.md` written inside docs/rdb/design-specification.md:
+        // the previewed file's directory joined onto the href, with the dot segments left for the resolver.
+        // The controller's own component-wise pass refuses a `..`, so this only reaches it normalised.
+        var result = await controller.Resolve(ThreadId, "docs/rdb/../siblings/x.md", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/siblings/x.md", "file", 7));
+    }
+
+    [Fact]
     public async Task ResolveLink_WindowsHostPath_StripsPrefixCaseInsensitively()
     {
         var (controller, browser) = Build();

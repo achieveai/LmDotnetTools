@@ -25,6 +25,12 @@ const props = withDefaults(
      * assistant bubbles only; it has an effect only under a ChatLayout that has a conversation id.
      */
     workspaceLinks?: boolean;
+    /**
+     * Workspace directory a PLAIN RELATIVE link in this text should be read against. The file preview passes
+     * the previewed file's own directory, because a link written inside a document means "relative to that
+     * document". A chat message is not a file, so it passes nothing and its links stay root-relative.
+     */
+    workspaceLinkBaseDir?: string;
   }>(),
   { isComplete: true, workspaceLinks: false }
 );
@@ -33,7 +39,9 @@ const fileLinks = inject<WorkspaceFileLinksContext | null>(WORKSPACE_FILE_LINKS,
 
 const workspaceLinkOptions = computed(() => {
   const threadId = fileLinks?.threadId.value;
-  return props.workspaceLinks && threadId ? { threadId } : undefined;
+  return props.workspaceLinks && threadId
+    ? { threadId, baseDir: props.workspaceLinkBaseDir }
+    : undefined;
 });
 
 const parsedText = computed(() =>
