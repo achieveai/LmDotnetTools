@@ -26,6 +26,20 @@ public static class FileBrowserLimits
     /// <summary>Text preview line cap: 5000 lines.</summary>
     public const int PreviewLineCap = 5000;
 
+    /// <summary>
+    /// Spreadsheet preview byte cap: 4 MiB. Deliberately separate from <see cref="PreviewByteCap"/> and much
+    /// larger: an <c>.xlsx</c> is a deflate-compressed OOXML package, so 256 KiB of bytes is an arbitrarily
+    /// small workbook, while what actually bounds the work and the response is <see cref="PreviewLineCap"/>
+    /// rows x <see cref="PreviewColumnCap"/> columns x <see cref="PreviewSheetCap"/> sheets.
+    /// </summary>
+    public const long SpreadsheetPreviewByteCap = 4_194_304;
+
+    /// <summary>Columns kept per spreadsheet row; cells beyond this are dropped and the sheet is marked truncated.</summary>
+    public const int PreviewColumnCap = 256;
+
+    /// <summary>Sheets read from one workbook; the remainder is dropped and the table is marked truncated.</summary>
+    public const int PreviewSheetCap = 32;
+
     /// <summary>Maximum directory rows returned in one listing; the remainder is reported as a count.</summary>
     public const int MaxListingRows = 500;
 }

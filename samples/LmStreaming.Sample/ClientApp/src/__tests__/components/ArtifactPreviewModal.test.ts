@@ -405,9 +405,15 @@ describe('ArtifactPreviewModal — viewers', () => {
       'data/items.csv'
     );
 
+    // The header/body cells are addressed past the row-number gutter that `DataTablePreview` adds —
+    // it is presentation, not a data column, so it is excluded rather than expected.
     const table = wrapper.get('[data-testid="artifact-preview-table"]');
-    expect(table.findAll('th').map((th) => th.text())).toEqual(['name', 'qty']);
-    expect(table.findAll('tbody tr').map((tr) => tr.findAll('td').map((td) => td.text()))).toEqual([
+    expect(table.findAll('[data-testid="data-table-header"]').map((th) => th.text())).toEqual(['name', 'qty']);
+    expect(
+      table
+        .findAll('tbody tr')
+        .map((tr) => tr.findAll('td:not(.data-table-gutter)').map((td) => td.text()))
+    ).toEqual([
       ['Widget, large', '3'],
       ['Bolt', '10'],
     ]);
@@ -418,7 +424,46 @@ describe('ArtifactPreviewModal — viewers', () => {
       jsonResponse({ previewable: true, text: 'a\tb\n1\t2', lineCount: 2 }),
       'out.tsv'
     );
-    expect(wrapper.get('[data-testid="artifact-preview-table"]').findAll('th')).toHaveLength(2);
+    expect(
+      wrapper.get('[data-testid="artifact-preview-table"]').findAll('[data-testid="data-table-header"]')
+    ).toHaveLength(2);
+  });
+
+  it('renders an XLSX from the table the SERVER parsed, without any client-side text parsing', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({
+        previewable: true,
+        table: {
+          sheets: [
+            { name: 'Summary', rows: [['region', 'total'], ['north', '12']], truncated: false },
+            { name: 'Detail', rows: [['sku'], ['A-1']], truncated: false },
+          ],
+          truncated: false,
+        },
+      }),
+      'reports/q3.xlsx'
+    );
+
+    expect(wrapper.findAll('[data-testid="data-table-sheet-tab"]').map((t) => t.text())).toEqual([
+      'Summary',
+      'Detail',
+    ]);
+    expect(
+      wrapper.get('[data-testid="artifact-preview-table"]').findAll('[data-testid="data-table-header"]').map((th) => th.text())
+    ).toEqual(['region', 'total']);
+    // There is no `text` in that response at all: a viewer that still went through the delimited-text
+    // path would render nothing here.
+    expect(wrapper.find('[data-testid="artifact-preview-text"]').exists()).toBe(false);
+  });
+
+  it('shows the server reason when a workbook cannot be read', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({ previewable: false, reason: 'corrupt_spreadsheet' }),
+      'broken.xlsx'
+    );
+
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('corrupt_spreadsheet');
+    expect(wrapper.find('[data-testid="artifact-preview-table"]').exists()).toBe(false);
   });
 
   it('shows an image from the download bytes as a typed object URL, and revokes it on close', async () => {

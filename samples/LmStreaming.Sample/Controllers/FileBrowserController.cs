@@ -304,7 +304,11 @@ public sealed class FileBrowserController(
         }
     }
 
-    /// <summary>Returns an inline text preview when the file is on the server-side allowlist and within the caps; otherwise a non-previewable reason.</summary>
+    /// <summary>
+    /// Returns an inline preview when the file is on the server-side allowlist and within the caps;
+    /// otherwise a non-previewable reason. A text file comes back as <c>Text</c>; an OOXML workbook comes
+    /// back as <c>Table</c>, parsed here so the client never handles workbook bytes.
+    /// </summary>
     [HttpGet("preview")]
     public async Task<IActionResult> Preview(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
@@ -342,8 +346,17 @@ public sealed class FileBrowserController(
                 return Ok(new PreviewResultDto(false, "binary", null, null));
             }
 
+            // A workbook is compressed, so 256 KiB of it is an arbitrarily small spreadsheet; it gets its
+            // own, larger byte cap, and what actually bounds the response is the reader's row/column/sheet
+            // caps. Everything else about the shape of this path — refuse by listed size first, then by
+            // streamed bytes — is deliberately identical to the text path below.
+            var isSpreadsheet = FilePreviewPolicy.IsSpreadsheet(name);
+            var byteCap = isSpreadsheet
+                ? FileBrowserLimits.SpreadsheetPreviewByteCap
+                : FileBrowserLimits.PreviewByteCap;
+
             // Refuse an over-large file by its listed size WITHOUT reading a byte.
-            if (target.Size is > FileBrowserLimits.PreviewByteCap)
+            if (target.Size > byteCap)
             {
                 return Ok(new PreviewResultDto(false, "too_large", null, null));
             }
@@ -351,12 +364,19 @@ public sealed class FileBrowserController(
             var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(
                 session.SessionId,
                 target.ServerPath,
-                FileBrowserLimits.PreviewByteCap + 1,
+                byteCap + 1,
                 ct
             );
-            if (bytes.LongLength > FileBrowserLimits.PreviewByteCap)
+            if (bytes.LongLength > byteCap)
             {
                 return Ok(new PreviewResultDto(false, "too_large", null, null));
+            }
+
+            if (isSpreadsheet)
+            {
+                // The reader owns its own failure mode: a malformed or encrypted workbook comes back as a
+                // non-previewable reason, so nothing here can turn a bad file into a 500.
+                return Ok(SpreadsheetPreviewReader.Read(bytes));
             }
 
             string text;

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace LmStreaming.Sample.FileBrowser;
@@ -37,8 +38,28 @@ public sealed record NoSessionStateDto(string State, string? WorkspaceId)
     public static NoSessionStateDto For(string? workspaceId) => new(StateValue, workspaceId);
 }
 
-/// <summary>A text-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded).</summary>
-public sealed record PreviewResultDto(bool Previewable, string? Reason, string? Text, int? LineCount);
+/// <summary>One worksheet of a <see cref="TablePreviewDto"/>: its <see cref="Name"/> and its already-capped
+/// <see cref="Rows"/> of cell strings. <see cref="Truncated"/> is true when rows or columns were dropped.</summary>
+public sealed record SheetPreviewDto(string Name, IReadOnlyList<IReadOnlyList<string>> Rows, bool Truncated);
+
+/// <summary>A tabular preview: one entry per worksheet, in workbook order. A delimited text file has exactly one.
+/// <see cref="Truncated"/> is true when whole sheets past the sheet cap were dropped — a per-sheet
+/// <see cref="SheetPreviewDto.Truncated"/> cannot say that, and dropping them silently would be a lie.</summary>
+public sealed record TablePreviewDto(IReadOnlyList<SheetPreviewDto> Sheets, bool Truncated = false);
+
+/// <summary>A file-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded/corrupt_spreadsheet).</summary>
+/// <remarks>
+/// <see cref="Table"/> is populated ONLY for a spreadsheet preview, where <see cref="Text"/> and
+/// <see cref="LineCount"/> stay null. It is omitted from the JSON when null (rather than written as
+/// <c>"table": null</c>) so a text preview's response body is unchanged by this member's existence.
+/// </remarks>
+public sealed record PreviewResultDto(
+    bool Previewable,
+    string? Reason,
+    string? Text,
+    int? LineCount,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TablePreviewDto? Table = null
+);
 
 /// <summary>A chat file link resolved to a real workspace entry: its server <see cref="Path"/>, lowercase gateway <see cref="Type"/>, and listed <see cref="Size"/>.</summary>
 public sealed record ResolvedLinkDto(string Path, string Type, long? Size);

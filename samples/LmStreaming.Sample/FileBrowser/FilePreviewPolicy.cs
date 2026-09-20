@@ -2,9 +2,11 @@ namespace LmStreaming.Sample.FileBrowser;
 
 /// <summary>
 /// The single, centralized, server-side allowlist that decides whether a workspace file is eligible for
-/// inline text preview (WI #195). The server is authoritative — the client only renders whatever the
-/// preview endpoint returns. Eligibility is by file extension (or a small set of well-known extension-less
-/// names); a non-listed file is treated as binary and offered as download-only. A file under a
+/// inline preview (WI #195). The server is authoritative — the client only renders whatever the preview
+/// endpoint returns. Eligibility is by file extension (or a small set of well-known extension-less names);
+/// a non-listed file is treated as binary and offered as download-only. Two disjoint sets feed it: the TEXT
+/// allowlist, whose bytes are decoded as UTF-8, and <see cref="SpreadsheetExtensions"/>, whose bytes go to
+/// <see cref="SpreadsheetPreviewReader"/> instead. A file under a
 /// dot-directory is excluded outright, ahead of the allowlist — see <see cref="IsUnderDotDirectory"/>.
 /// </summary>
 public static class FilePreviewPolicy
@@ -87,6 +89,18 @@ public static class FilePreviewPolicy
         ".gitattributes",
     };
 
+    /// <summary>
+    /// The OOXML spreadsheet extensions, kept SEPARATE from <see cref="PreviewableExtensions"/> because they
+    /// are not text: a file here is handed to <see cref="SpreadsheetPreviewReader"/> and never decoded as
+    /// UTF-8. Legacy <c>.xls</c> (binary BIFF) and <c>.xlsb</c> are deliberately absent — the first is a much
+    /// larger binary parse surface to expose to an untrusted file, the second is not supported by the reader.
+    /// </summary>
+    private static readonly HashSet<string> SpreadsheetExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".xlsx",
+        ".xlsm",
+    };
+
     private static readonly HashSet<string> PreviewableExactNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "dockerfile",
@@ -105,8 +119,9 @@ public static class FilePreviewPolicy
     };
 
     /// <summary>
-    /// True when <paramref name="name"/> (a file's non-recursive name) is on the text-preview allowlist.
-    /// Matches by extension first, then by well-known extension-less name.
+    /// True when <paramref name="name"/> (a file's non-recursive name) is eligible for inline preview —
+    /// either on the text allowlist (extension first, then well-known extension-less name) or a spreadsheet.
+    /// A caller that needs to know WHICH reader to use asks <see cref="IsSpreadsheet"/>.
     /// </summary>
     public static bool IsPreviewable(string name)
     {
@@ -116,12 +131,27 @@ public static class FilePreviewPolicy
         }
 
         var ext = Path.GetExtension(name);
-        if (!string.IsNullOrEmpty(ext) && PreviewableExtensions.Contains(ext))
+        if (!string.IsNullOrEmpty(ext) && (PreviewableExtensions.Contains(ext) || SpreadsheetExtensions.Contains(ext)))
         {
             return true;
         }
 
         return PreviewableExactNames.Contains(name);
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is an OOXML workbook, i.e. the preview must go through
+    /// <see cref="SpreadsheetPreviewReader"/> and its own byte cap rather than the UTF-8 text path.
+    /// </summary>
+    public static bool IsSpreadsheet(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var ext = Path.GetExtension(name);
+        return !string.IsNullOrEmpty(ext) && SpreadsheetExtensions.Contains(ext);
     }
 
     /// <summary>

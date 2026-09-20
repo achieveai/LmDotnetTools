@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import BaseModal from './BaseModal.vue';
 import TextMessage from './TextMessage.vue';
+import DataTablePreview from './DataTablePreview.vue';
 import {
   FileBrowserError,
   NoSessionError,
@@ -11,10 +12,10 @@ import {
   previewFile,
   resolveWorkspaceLink,
 } from '@/api/fileBrowserApi';
-import { isNoSession, type PreviewResult } from '@/types/fileBrowser';
+import { isNoSession, type PreviewResult, type TablePreview } from '@/types/fileBrowser';
 import { MessageType, type TextMessage as TextMessageModel } from '@/types';
 import { isMarkdownArtifact } from '@/utils/todoBoard';
-import { delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
+import { delimitedTablePreview } from '@/utils/delimitedText';
 import { logger } from '@/utils';
 
 /**
@@ -29,9 +30,10 @@ import { logger } from '@/utils';
  * 5000-line cap, UTF-8-only, dot-directory exclusions) for text, `download` (64 MiB) for image bytes.
  *
  * Viewers, by extension: `.md`/`.markdown` through the app's completed `TextMessage` pipeline (including
- * diagrams); `.csv`/`.tsv` as a table; common images as `<img>` over a re-typed blob; any other
- * previewable text as `<pre>`. A non-previewable file shows the server's `reason`. Every resolved file
- * also gets a Download action.
+ * diagrams); `.csv`/`.tsv` (parsed here) and `.xlsx`/`.xlsm` (parsed by the server) through the shared
+ * `DataTablePreview`; common images as `<img>` over a re-typed blob; any other previewable text as
+ * `<pre>`. A non-previewable file shows the server's `reason`. Every resolved file also gets a
+ * Download action.
  */
 const log = logger.forComponent('ArtifactPreviewModal');
 
@@ -109,7 +111,6 @@ const imageType = computed(() => {
 });
 
 const isMarkdown = computed(() => isMarkdownArtifact(resolvedPath.value ?? ''));
-const delimiter = computed(() => delimiterForPath(resolvedPath.value ?? ''));
 
 const previewText = computed(() =>
   result.value?.previewable && result.value.text !== undefined ? result.value.text : null
@@ -132,11 +133,15 @@ const markdownMessage = computed<TextMessageModel>(() => ({
   text: previewText.value ?? '',
 }));
 
-const table = computed(() =>
-  previewText.value !== null && delimiter.value
-    ? parseDelimitedText(previewText.value, delimiter.value)
-    : null
-);
+/**
+ * The tabular view, from EITHER source. A spreadsheet arrives already parsed as `result.table` (the
+ * server reads the workbook; the client never sees its bytes); a `.csv`/`.tsv` is parsed here from the
+ * preview text into the same single-sheet shape. Both render through `DataTablePreview`.
+ */
+const table = computed<TablePreview | null>(() => {
+  if (result.value?.previewable && result.value.table) return result.value.table;
+  return previewText.value !== null ? delimitedTablePreview(resolvedPath.value ?? '', previewText.value) : null;
+});
 
 const isFolder = ref(false);
 
@@ -371,23 +376,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div v-else-if="table" class="artifact-preview-table-wrap">
-        <table class="artifact-preview-table" data-testid="artifact-preview-table">
-          <thead v-if="table.rows.length > 0">
-            <tr>
-              <th v-for="(cell, c) in table.rows[0]" :key="c">{{ cell }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, r) in table.rows.slice(1)" :key="r">
-              <td v-for="(cell, c) in row" :key="c">{{ cell }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="table.truncated" class="artifact-preview-message">
-          Showing the first {{ table.rows.length }} rows. Download the file to see all of it.
-        </div>
-      </div>
+      <DataTablePreview v-else-if="table" :table="table" />
 
       <pre
         v-else-if="previewText !== null"
@@ -589,31 +578,6 @@ onBeforeUnmount(() => {
   display: block;
   max-width: 100%;
   margin: 8px auto;
-}
-
-.artifact-preview-table-wrap {
-  padding: 8px;
-}
-
-.artifact-preview-table {
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.artifact-preview-table th,
-.artifact-preview-table td {
-  border: 1px solid #e0e0e0;
-  padding: 4px 8px;
-  text-align: left;
-  vertical-align: top;
-  white-space: pre-wrap;
-}
-
-.artifact-preview-table th {
-  position: sticky;
-  top: 0;
-  background: #f3f4f6;
-  font-weight: 600;
 }
 
 .artifact-preview-footer {
