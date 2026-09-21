@@ -119,7 +119,8 @@ public sealed class AgentHierarchyService(
         // StartWorkflowAgent runs + their delegates. The live snapshot (when the WorkflowManager is present)
         // is write-through-persisted to a small on-disk index, and the response is the union of live ∪
         // persisted (live wins) — so completed workflow/delegate tabs SURVIVE A SERVER RESTART that evicts
-        // the in-memory manager. Delegate transcripts already persist as subagent-{id} threads, so a
+        // the in-memory manager. Delegate transcripts already persist as subagent-{scope}-{agentId}
+        // threads, so a
         // persisted tab replays read-only.
         var workflowTabs = new List<SubAgentSummary>();
         if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
@@ -321,12 +322,13 @@ public sealed class AgentHierarchyService(
         // Every roster a reader is handed (GetAgents, CheckAgents, the listing) publishes a NAME for each
         // row, and messaging resolves that name through the collaboration directory — but this lookup used
         // to match identifiers only, so the identifier a reader was actually given came back as if the
-        // agent did not exist. The raw target is matched against the rows FIRST, so a tab id or node id
-        // still selects exactly the row it always did and no live name can retarget one; only a target no
-        // row claims is canonicalized, through the same Directory.Resolve that messaging uses, so one
-        // addressing answer covers both surfaces. Resolve refuses an ambiguous name outright rather than
-        // guessing, and an unresolved target falls through unchanged to the refusal below — which stays
-        // content-free, so widening addressing never widens what a refusal discloses.
+        // agent did not exist. The raw target is matched against the rows FIRST, and Find matches every
+        // row's identifiers before it considers any row's name, so a tab id or node id still selects
+        // exactly the row it always did and no name can retarget one; only a target no row claims is
+        // canonicalized, through the same Directory.Resolve that messaging uses, so one addressing answer
+        // covers both surfaces. Both refuse an ambiguous name outright rather than guessing, and an
+        // unresolved target falls through unchanged to the refusal below — which stays content-free, so
+        // widening addressing never widens what a refusal discloses.
         var row =
             AgentHierarchyProjection.Find(rows, agentId)
             ?? AgentHierarchyProjection.Find(rows, collaboration.Directory.Resolve(agentId).Entry?.AgentId ?? agentId);

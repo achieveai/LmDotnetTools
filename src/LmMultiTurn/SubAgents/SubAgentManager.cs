@@ -164,7 +164,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static readonly TimeSpan PerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromSeconds(10);
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
-    private readonly ConcurrentDictionary<string, string> _namesToIds = new();
+
+    // OrdinalIgnoreCase, deliberately the same rule as AgentCollaborationDirectory's _byName. The
+    // two grant paths agree by design (see GrantLegacyName), and applying the comparer to only one
+    // of them would make the name an agent is given depend on whether collaboration is switched on.
+    private readonly ConcurrentDictionary<string, string> _namesToIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
 

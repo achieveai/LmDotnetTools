@@ -268,6 +268,42 @@ public sealed record SubAgentSummary
         };
     }
 
+    /// <summary>
+    ///     The name a row that never carried one answers to: <c>{template}-{ordinal}</c>, the same
+    ///     handle <c>SubAgentManager</c> derives at spawn for a caller who supplied no name.
+    /// </summary>
+    /// <remarks>
+    ///     Republishing <see cref="AgentId" /> as the name, as this used to, put an identifier in the
+    ///     one field every roster presents as a NAME: a reader was shown <c>agent-3</c>, addressed
+    ///     <c>agent-3</c>, and reached the right agent only because ids are resolved before names —
+    ///     while the agent's real granted name, the one its own transcript and telemetry carry, was
+    ///     nowhere in the listing. Deriving it here restores the name the agent was actually given,
+    ///     because the ordinal in its id is the ordinal that built that name.
+    ///     <para>
+    ///         Falls back to <see cref="AgentId" /> for a row whose id is not ordinal-shaped (a
+    ///         workflow handle, a pre-#705 row), where there is no ordinal to rebuild from and
+    ///         inventing one would be worse than an identifier.
+    ///     </para>
+    /// </remarks>
+    private string DerivedName()
+    {
+        if (!SubAgentThreadIds.IsOrdinalAgentId(AgentId))
+        {
+            return AgentId;
+        }
+
+        // The template's last ':' segment, dropping any plugin prefix
+        // (code-reviewer:performance-review -> performance-review), mirroring DeriveReadableName.
+        var separator = Template.LastIndexOf(':');
+        var role = separator >= 0 && separator < Template.Length - 1 ? Template[(separator + 1)..] : Template;
+        if (string.IsNullOrWhiteSpace(role))
+        {
+            role = "agent";
+        }
+
+        return $"{role}-{AgentId[SubAgentThreadIds.AgentIdPrefix.Length..]}";
+    }
+
     /// <summary>Projects this row into the shared, versioned persisted node shape.</summary>
     /// <remarks>
     ///     The sample's index and the collaboration core converge here: whatever the index stores, it can
@@ -286,7 +322,7 @@ public sealed record SubAgentSummary
         {
             AgentId = AgentNodeId ?? AgentId,
             CollaborationId = CollaborationId,
-            Name = Name ?? AgentId,
+            Name = Name ?? DerivedName(),
             ParentAgentId = ParentAgentId,
             AncestorAgentIds = AncestorAgentIds ?? [],
             Kind = Enum.Parse<CollaborationAgentKind>(AgentKind),

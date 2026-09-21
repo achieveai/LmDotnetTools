@@ -179,6 +179,31 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
+    public void TryRegister_WithANameThatDiffersOnlyInCase_CollidesLikeAnyOtherRepeat()
+    {
+        // A name is addressed by a model writing prose, and "Reviewer" and "reviewer" are the same
+        // word to whoever typed them. Treating them as two agents made the SPELLING of a message
+        // decide which agent heard it — the retargeting hazard this whole file is built around,
+        // reached by a route no collision rule was watching.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+
+        var second = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "Reviewer",
+            "running"
+        );
+
+        second.Succeeded.Should().BeTrue();
+        second.Entry!.Name.Should().Be("Reviewer-2", "the requested spelling is kept, the collision is not");
+
+        // Both stay addressable, in either spelling, exactly as an ordinary collision leaves them.
+        directory.Resolve("REVIEWER").Entry!.AgentId.Should().Be("agent-1");
+        directory.Resolve("reviewer-2").Entry!.AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
     public void Resolve_AfterASuffixedRegistration_AddressesEachAgentUnambiguously()
     {
         // The point of suffixing rather than latching: BOTH agents stay reachable by name. The old

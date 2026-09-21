@@ -186,7 +186,12 @@ public sealed class AgentCollaborationDirectory
     // Name is not an identity. A name maps to one agent or, once two agents have claimed it, to
     // permanent ambiguity — never to "the most recent one", because silently retargeting an alias
     // would send a reply to a different agent than the one the sender was talking to.
-    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.Ordinal);
+    //
+    // Case-insensitive, because a name is addressed by a model writing prose. "Reviewer" and
+    // "reviewer" are the same word to whoever typed them, so treating them as two agents makes the
+    // spelling of a message decide which agent hears it. Collision is the honest answer: the second
+    // claimant is suffixed and both remain addressable.
+    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.OrdinalIgnoreCase);
 
     // Agents a previous process registered and this one cannot reach. Kept apart from the live maps
     // rather than registered as not-live entries, so nothing that walks the collaboration — a listing,
@@ -196,7 +201,12 @@ public sealed class AgentCollaborationDirectory
         StringComparer.Ordinal
     );
 
-    private readonly ConcurrentDictionary<string, NameBinding> _invalidatedByName = new(StringComparer.Ordinal);
+    // Same comparer as _byName: a name looked up here is one a live lookup already missed, and
+    // answering "no such agent" for a spelling the live map would have matched would make the two
+    // halves of resolution disagree.
+    private readonly ConcurrentDictionary<string, NameBinding> _invalidatedByName = new(
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private readonly AgentCollaborationOptions _options;
     private readonly TimeProvider _clock;

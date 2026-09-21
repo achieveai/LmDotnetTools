@@ -151,7 +151,8 @@ public sealed class WebSocketConversationGate
     /// check is a formality: a caller passes their OWN parent thread id (which they are trivially
     /// authorized for) together with someone else's <c>agentId</c>. All three LIVE lookups in the
     /// handler are parent-scoped and would miss, but the handler then falls back to replaying
-    /// <c>subagent-{agentId}</c> straight out of the store - so an authorized parent id becomes a
+    /// the child's <c>subagent-{scope}-{agentId}</c> thread straight out of the store - so an authorized
+    /// parent id becomes a
     /// passphrase for any child in the deployment. The durable parent link stamped by
     /// <see cref="SubAgentProvenance"/> is what closes that.
     /// </para>

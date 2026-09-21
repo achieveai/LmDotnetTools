@@ -18,7 +18,8 @@ namespace LmStreaming.Sample.Services;
 ///     conversation's workflow + delegate tabs (see <see cref="PersistTabs"/> / <see cref="GetPersistedTabs"/>).
 ///     The endpoint write-throughs the live snapshot on each poll and reads back the merged (live ∪ persisted)
 ///     set, so completed workflow tabs survive a restart. Delegate transcripts are already persisted as
-///     <c>subagent-{id}</c> threads in the conversation store, so a persisted tab replays read-only.
+///     <c>subagent-{scope}-{agentId}</c> threads in the conversation store, so a persisted tab replays
+///     read-only.
 ///     </para>
 ///     <para>
 ///     Since #244 the same index also carries hierarchy nodes spawned by the Agent tool, and every row

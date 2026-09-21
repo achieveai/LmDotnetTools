@@ -725,7 +725,8 @@ creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsyn
   `GET /api/conversations/{threadId}/subagents` already demands, and then checks that the named child
   is actually that parent's, using the durable link `SubAgentProvenance` stamps. Without the second
   check the first is a formality: a caller passes their own parent id with someone else's `agentId`,
-  the parent-scoped live lookups miss, and the handler replays `subagent-{agentId}` out of the store.
+  the parent-scoped live lookups miss, and the handler replays the child's `subagent-{scope}-{agentId}`
+  thread out of the store.
 - **A child whose provenance does not check out does not refuse the handshake.** It loses the
   persisted replay and the socket answers `subagent_unavailable` — byte for byte what an `agentId`
   that names nothing answers. Refusing the handshake instead would make the two tell apart, which is
