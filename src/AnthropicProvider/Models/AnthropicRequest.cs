@@ -887,7 +887,7 @@ public record AnthropicRequest
                 && !string.IsNullOrEmpty(block.ThinkingSignature)
             )
             {
-                signedThinking.Add(block.Thinking);
+                _ = signedThinking.Add(block.Thinking);
             }
         }
 
