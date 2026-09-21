@@ -1,7 +1,9 @@
 using System.Collections.Immutable;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.FileBrowser;
+using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
@@ -269,6 +271,26 @@ public class WorkspaceRawEndpointTests
     }
 
     /// <summary>
+    /// <c>allow-popups</c> is absent too, and for a different reason from <c>allow-same-origin</c>: the
+    /// document's own URL carries the grant, so <c>window.open</c> to an off-origin URL would hand a live
+    /// read credential to another host — and a top-level navigation is something no directive in this policy
+    /// can stop. <c>allow-scripts</c> stays, because a report that cannot run its own chart script is not a
+    /// preview of that report.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_SandboxCsp_NeverGrantsPopups()
+    {
+        var (controller, browser, grants) = Build();
+        browser.Listings[""] = [File("index.html")];
+
+        _ = await Get(controller, grants, "index.html");
+
+        var csp = controller.Response.Headers.ContentSecurityPolicy.ToString();
+        csp.Should().NotContain("allow-popups");
+        csp.Should().Contain("allow-scripts");
+    }
+
+    /// <summary>
     /// An inert type gets no CSP. Not an oversight: a sandbox directive on a subresource response neither
     /// travels to the document that fetched it nor restricts anything on its own, and attaching one to every
     /// image would make the header meaningless as a signal.
@@ -439,5 +461,60 @@ public class WorkspaceRawEndpointTests
 
         result.Should().BeOfType<ConflictObjectResult>();
         browser.ReadCalls.Should().Be(0);
+    }
+
+    // -------- The grant is bound to the caller it was minted for --------
+
+    private static Principal PrincipalNamed(string id) =>
+        new()
+        {
+            TenantId = "tnt_a",
+            Actor = new PrincipalRef(PrincipalKind.EndUser, id),
+            Source = PrincipalSource.Interactive,
+        };
+
+    /// <summary>
+    /// A grant minted for one caller, presented by another, is refused at the controller — the grant is a
+    /// bearer credential, so a leaked one (browser history, a shared link, a proxy log) must not become a
+    /// second caller's read access to the first caller's workspace.
+    /// </summary>
+    /// <remarks>
+    /// <c>403</c> rather than <c>401</c>: nothing is wrong with the token, and the caller IS authenticated,
+    /// so there is nothing for a refresh to fix. <see cref="Identity.WorkspaceGrantPrincipalSourceTests"/>
+    /// covers the enforcing-host door; this covers what the ACTION does once a principal is on the context,
+    /// which is the check that still applies when some other front door established it.
+    /// </remarks>
+    [Fact]
+    public async Task RawWorkspaceFile_GrantMintedForAnotherPrincipal_Is403()
+    {
+        var (controller, browser, grants) = Build();
+        SeedNestedTree(browser);
+        var minted = grants.Mint(ThreadId, PrincipalNamed("tnt_a:oid_owner")).Token;
+        controller.HttpContext.Items[IdentityHttpItems.PrincipalKey] = PrincipalNamed("tnt_a:oid_intruder");
+
+        var result = await Get(controller, grants, "report/index.html", token: minted);
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        refusal.Value.Should().NotBeNull();
+        System.Text.Json.JsonSerializer.Serialize(refusal.Value).Should().Contain("grant_principal_mismatch");
+        browser.ReadCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The companion that keeps the case above from passing for the wrong reason: the SAME principal is
+    /// served. Without this, a check that refused every authenticated caller would look correct.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_GrantMintedForTheSamePrincipal_IsServed()
+    {
+        var (controller, browser, grants) = Build();
+        SeedNestedTree(browser);
+        var minted = grants.Mint(ThreadId, PrincipalNamed("tnt_a:oid_owner")).Token;
+        controller.HttpContext.Items[IdentityHttpItems.PrincipalKey] = PrincipalNamed("tnt_a:oid_owner");
+
+        var result = await Get(controller, grants, "report/index.html", token: minted);
+
+        result.Should().BeOfType<FileContentResult>();
     }
 }

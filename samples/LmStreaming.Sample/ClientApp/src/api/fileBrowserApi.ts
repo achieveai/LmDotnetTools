@@ -338,9 +338,15 @@ const grantCache = new Map<string, CachedGrant>();
 const grantInFlight = new Map<string, Promise<string>>();
 
 /**
- * Drops any cached grant for a thread. Called on a 401 from a raw URL — the one answer that covers
- * every way a grant can stop working (expired, key rotated, signed in as someone else) — so the
- * next request mints a fresh one instead of replaying a dead token.
+ * Drops any cached grant for a thread, so the next request mints a fresh one instead of replaying a
+ * dead token.
+ *
+ * Called when a MINT fails, and when a viewer that needs a raw URL could not get one. It is NOT
+ * called on a 401 from a raw URL, because nothing here can see one: an `<iframe>` and an `<img>`
+ * report only "did not load", never a status code. A grant that dies mid-preview (expired, key
+ * rotated, signed in as someone else) therefore surfaces as a blank frame until the cached entry
+ * passes its refresh margin or the page is reloaded — accepted, because the margin is 5 minutes
+ * short of a 1-hour lifetime and re-minting per subresource would defeat the cache this exists for.
  */
 export function clearWorkspaceGrant(threadId: string): void {
   grantCache.delete(threadId);

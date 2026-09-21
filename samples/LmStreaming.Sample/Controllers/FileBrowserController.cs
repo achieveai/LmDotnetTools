@@ -284,7 +284,7 @@ public sealed class FileBrowserController(
             return context.Error!;
         }
 
-        var minted = grants.Mint(threadId, CurrentPrincipalId());
+        var minted = grants.Mint(threadId, CurrentPrincipal());
         return Ok(new WorkspaceGrantDto(minted.Token, minted.ExpiresAt));
     }
 
@@ -332,7 +332,7 @@ public sealed class FileBrowserController(
 
         // The grant is checked BEFORE the session prologue so that an unsigned URL costs no gateway work.
         // It is not the authorization — that still runs below, for every request that gets past here.
-        var grantFailure = grants.Validate(grant, threadId, CurrentPrincipalId());
+        var grantFailure = grants.Validate(grant, threadId, CurrentPrincipal());
         if (grantFailure != WorkspaceGrantFailure.None)
         {
             return GrantFailureResult(grantFailure, threadId);
@@ -1360,24 +1360,26 @@ public sealed class FileBrowserController(
     private static bool IsOverCap(SandboxException ex) => ex.IsDirectReadCapExceeded;
 
     /// <summary>
-    /// The current request's principal as the stable string a workspace grant is bound to, or null when the
-    /// request carries none (the normal state while <c>Identity:Enforce</c> is off).
+    /// The current request's principal — what a minted grant records and what a presented grant is compared
+    /// against — or null when the request carries none (the normal state while <c>Identity:Enforce</c> is
+    /// off).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Read from <see cref="HttpContext.Items"/> — exactly what <c>HttpContextPrincipalAccessor</c> does —
     /// rather than by injecting <c>IPrincipalAccessor</c>, so this controller's constructor signature is
-    /// unchanged. Kind is included because two parties of different kinds may carry the same id string, and
-    /// a grant that ignored kind would let one validate as the other.
+    /// unchanged.
+    /// </para>
+    /// <para>
+    /// On the raw route under enforcement this is the principal
+    /// <see cref="Identity.WorkspaceGrantPrincipalSource"/> reconstructed FROM the presented grant, so the
+    /// mismatch check below compares equal by construction. The check stays: with enforcement off the
+    /// middleware supplies a development principal that owes nothing to the grant, and a check that only
+    /// ever runs in the configuration where it cannot fail is one nobody notices has stopped running.
+    /// </para>
     /// </remarks>
-    private string? CurrentPrincipalId()
-    {
-        if (!HttpContext.Items.TryGetValue(IdentityHttpItems.PrincipalKey, out var value))
-        {
-            return null;
-        }
-
-        return value is Principal principal ? $"{principal.Actor.Kind}:{principal.Actor.Id}" : null;
-    }
+    private Principal? CurrentPrincipal() =>
+        HttpContext.Items.TryGetValue(IdentityHttpItems.PrincipalKey, out var value) ? value as Principal : null;
 
     /// <summary>
     /// Turns a refused grant into its response. A grant that does not read is <c>401</c> (mint a new one);
@@ -1425,6 +1427,15 @@ public sealed class FileBrowserController(
     /// the document; and the CSP sandbox gives an executable document an opaque origin even in a top-level
     /// tab. See <see cref="WorkspaceContentTypes.SandboxPolicy"/>.
     /// </summary>
+    /// <remarks>
+    /// What these headers do NOT close, and is accepted residual: the grant is in the URL, so it also
+    /// reaches the browser's own history and address bar (an "open in new tab" puts it there deliberately),
+    /// and any reverse proxy, CDN or load balancer in front of this host writes it to its own access log,
+    /// which nothing in this process can redact. This host's request log IS redacted — see
+    /// <c>Program.RedactWorkspaceGrant</c>. All of it is bounded by
+    /// <see cref="FileBrowserLimits.WorkspaceGrantLifetime"/>, and the grant reads one conversation's
+    /// workspace and nothing else.
+    /// </remarks>
     private void ApplyRawHeaders(string contentType, string fileName, bool attachment)
     {
         Response.Headers["X-Content-Type-Options"] = "nosniff";

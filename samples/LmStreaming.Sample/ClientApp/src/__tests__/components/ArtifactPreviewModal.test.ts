@@ -648,6 +648,9 @@ describe('ArtifactPreviewModal — viewers', () => {
     const sandbox = wrapper.get('[data-testid="artifact-preview-html-frame"]').attributes('sandbox');
     expect(sandbox).toBeDefined();
     expect(sandbox).not.toContain('allow-same-origin');
+    // The frame's own src carries the grant, so a popup could carry it off-origin. Open-in-new-tab is a
+    // button this app renders outside the frame instead.
+    expect(sandbox).not.toContain('allow-popups');
     expect(sandbox).toContain('allow-scripts');
     // A rendered page must not leak the grant-bearing URL to any host it loads a resource from.
     expect(wrapper.get('[data-testid="artifact-preview-html-frame"]').attributes('referrerpolicy')).toBe(

@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace LmStreaming.Sample.FileBrowser;
@@ -28,6 +31,22 @@ public enum WorkspaceGrantFailure
 }
 
 /// <summary>
+/// A grant that was opened without being compared against anyone: the outcome of checking signature,
+/// expiry and thread binding, plus the principal the grant was minted for when those passed.
+/// </summary>
+/// <param name="Failure">
+/// <see cref="WorkspaceGrantFailure.None"/>, <see cref="WorkspaceGrantFailure.Invalid"/> or
+/// <see cref="WorkspaceGrantFailure.ThreadMismatch"/>. Never <c>PrincipalMismatch</c> — opening does not
+/// know who is asking.
+/// </param>
+/// <param name="Principal">
+/// The principal recorded at mint time, or null when the grant was minted anonymously (the normal
+/// <c>Identity:Enforce=false</c> state) or when <paramref name="Failure"/> is not
+/// <see cref="WorkspaceGrantFailure.None"/>.
+/// </param>
+public readonly record struct WorkspaceGrantOpened(WorkspaceGrantFailure Failure, Principal? Principal);
+
+/// <summary>
 /// Mints and validates the short-lived, read-only grant that lets a HEADER-LESS browser fetch address the
 /// workspace (Bug#15): an <c>&lt;iframe src&gt;</c>, an <c>&lt;img src&gt;</c>, and every relative
 /// <c>&lt;link&gt;</c>/<c>&lt;script&gt;</c> inside a rendered workspace page. None of those can carry the
@@ -37,11 +56,28 @@ public enum WorkspaceGrantFailure
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is NOT an authorization decision and never replaces one. A raw request that presents a valid grant
-/// still runs the same <c>ResolveSessionAsync(AccessAction.Read)</c> prologue — the same
+/// <b>The grant IS the credential on the raw route, and the payload carries the whole principal.</b> That is
+/// the v2 shape and it is not an optimisation. <c>IdentityMiddleware</c> refuses every <c>/api</c> request
+/// without a resolvable principal BEFORE routing, and a header-less subresource fetch has no bearer to
+/// resolve — so under <c>Identity:Enforce=true</c> the grant has to be able to RECONSTRUCT the principal it
+/// was minted for, not merely to be compared against one.
+/// <see cref="Identity.WorkspaceGrantPrincipalSource"/> is what does that. Carrying a principal inside a
+/// token is safe here because Data Protection encrypts AND authenticates the payload with the host's key
+/// ring: a caller can neither read the fields nor alter them.
+/// </para>
+/// <para>
+/// This still is NOT an authorization decision and never replaces one. A raw request that presents a valid
+/// grant still runs the same <c>ResolveSessionAsync(AccessAction.Read)</c> prologue — the same
 /// <c>ConversationAuthorizer</c> — as every other file route. What the grant adds is the one thing the
 /// authorizer cannot see on a header-less subresource fetch: proof that the URL was constructed by this
-/// application for this caller, rather than typed by someone who guessed a thread id.
+/// application, for this caller, for this conversation.
+/// </para>
+/// <para>
+/// <see cref="Principal.DelegationChain"/> is deliberately NOT carried. It is audit-only by its own
+/// contract — never consulted for an access decision — so a reconstructed principal that omits it decides
+/// every question identically, and leaving it out keeps the token smaller and the payload's blast radius
+/// narrower. Everything an access decision reads (<c>TenantId</c>, <c>Actor</c>, <c>OnBehalfOf</c>,
+/// <c>AppId</c>, <c>Scopes</c>, <c>Roles</c>, and therefore <c>EffectiveUserId</c>) is carried.
 /// </para>
 /// <para>
 /// Expiry collapses into <see cref="WorkspaceGrantFailure.Invalid"/> on purpose. The time-limited protector
@@ -57,12 +93,21 @@ public sealed class WorkspaceGrantService
     /// <summary>
     /// The Data Protection purpose. Versioned, and part of the key derivation, so a token protected for any
     /// other purpose in this app cannot be replayed here — and so a future payload change can be made by
-    /// bumping this rather than by trying to parse both shapes.
+    /// bumping this rather than by trying to parse both shapes. <c>v2</c> is the principal-carrying payload;
+    /// every <c>v1</c> token ever minted is unreadable under it, which is the intended migration (a client
+    /// that presents one gets a 401 and mints a fresh grant).
     /// </summary>
-    private const string ProtectorPurpose = "LmStreaming.Sample.FileBrowser.WorkspaceGrant.v1";
+    private const string ProtectorPurpose = "LmStreaming.Sample.FileBrowser.WorkspaceGrant.v2";
 
-    /// <summary>The principal id recorded when the request carries none (the normal signed-out state).</summary>
+    /// <summary>The identity string recorded when the grant is minted for no principal at all.</summary>
     public const string AnonymousPrincipalId = "anonymous";
+
+    private const int PayloadVersion = 2;
+
+    private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
     private readonly ITimeLimitedDataProtector _protector;
     private readonly TimeProvider _timeProvider;
@@ -79,78 +124,159 @@ public sealed class WorkspaceGrantService
     }
 
     /// <summary>
-    /// Mints a grant binding <paramref name="threadId"/> and <paramref name="principalId"/> for
-    /// <see cref="FileBrowserLimits.WorkspaceGrantLifetime"/>. A null/blank principal is recorded as
-    /// <see cref="AnonymousPrincipalId"/>, which is a VALUE like any other — an anonymous grant does not
-    /// validate for a named principal.
+    /// The stable identity string a grant binds to: <c>{Kind}:{Id}</c> of the actor, or
+    /// <see cref="AnonymousPrincipalId"/> for no principal. <c>anonymous</c> is a VALUE like any other — an
+    /// anonymous grant does not validate for a named principal, and vice versa.
     /// </summary>
-    public WorkspaceGrant Mint(string threadId, string? principalId)
+    public static string IdentityOf(Principal? principal) =>
+        principal is null ? AnonymousPrincipalId : $"{principal.Actor.Kind}:{principal.Actor.Id}";
+
+    /// <summary>
+    /// Mints a grant binding <paramref name="threadId"/> and <paramref name="principal"/> for
+    /// <see cref="FileBrowserLimits.WorkspaceGrantLifetime"/>.
+    /// </summary>
+    public WorkspaceGrant Mint(string threadId, Principal? principal)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         var expiresAt = _timeProvider.GetUtcNow() + FileBrowserLimits.WorkspaceGrantLifetime;
-        return new WorkspaceGrant(_protector.Protect(Payload(threadId, principalId), expiresAt), expiresAt);
+        var payload = JsonSerializer.Serialize(
+            new GrantPayload(PayloadVersion, threadId, PrincipalPayload.From(principal)),
+            PayloadJson
+        );
+        return new WorkspaceGrant(_protector.Protect(payload, expiresAt), expiresAt);
     }
 
     /// <summary>
-    /// Validates <paramref name="token"/> against the conversation and principal now asking. Signature and
-    /// expiry are checked by the protector; thread and principal are compared ordinally against the payload.
+    /// Opens <paramref name="token"/>: checks signature, expiry and that it was minted for
+    /// <paramref name="threadId"/>, and hands back the principal it was minted for. Asks nothing about who
+    /// is presenting it — that is <see cref="Validate"/>.
     /// </summary>
-    public WorkspaceGrantFailure Validate(string? token, string threadId, string? principalId)
+    public WorkspaceGrantOpened Open(string? token, string threadId)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         if (string.IsNullOrWhiteSpace(token))
         {
-            return WorkspaceGrantFailure.Invalid;
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
         }
 
-        string payload;
+        string json;
         try
         {
-            payload = _protector.Unprotect(token);
+            json = _protector.Unprotect(token);
         }
         catch (CryptographicException)
         {
             // Tampered, truncated, foreign purpose, rotated-away key, or expired. One answer, by design.
-            return WorkspaceGrantFailure.Invalid;
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
         }
         catch (FormatException)
         {
             // Not even base64url — a token the caller invented rather than one this app minted.
-            return WorkspaceGrantFailure.Invalid;
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
         }
 
-        var fields = payload.Split('|');
-        if (fields.Length != 3 || !string.Equals(fields[0], PayloadVersion, StringComparison.Ordinal))
+        GrantPayload? payload;
+        try
         {
-            return WorkspaceGrantFailure.Invalid;
+            payload = JsonSerializer.Deserialize<GrantPayload>(json, PayloadJson);
         }
-
-        // Compared on the ESCAPED form, so the comparison never depends on unescaping being lossless.
-        if (!string.Equals(fields[1], Escape(threadId), StringComparison.Ordinal))
+        catch (JsonException)
         {
-            return WorkspaceGrantFailure.ThreadMismatch;
+            // A payload this key ring authenticated but this build cannot parse: an older or newer shape.
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
         }
 
-        if (!string.Equals(fields[2], Escape(NormalizePrincipal(principalId)), StringComparison.Ordinal))
+        if (payload is null || payload.V != PayloadVersion || payload.Thread is null)
         {
-            return WorkspaceGrantFailure.PrincipalMismatch;
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
         }
 
-        return WorkspaceGrantFailure.None;
+        if (!string.Equals(payload.Thread, threadId, StringComparison.Ordinal))
+        {
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.ThreadMismatch, null);
+        }
+
+        var principal = payload.Principal?.ToPrincipal();
+        if (payload.Principal is not null && principal is null)
+        {
+            // A principal field was present but unusable (no tenant, no actor id). Refuse rather than
+            // reconstruct a half-principal that an access decision would then read.
+            return new WorkspaceGrantOpened(WorkspaceGrantFailure.Invalid, null);
+        }
+
+        return new WorkspaceGrantOpened(WorkspaceGrantFailure.None, principal);
     }
 
-    private const string PayloadVersion = "v1";
+    /// <summary>
+    /// Validates <paramref name="token"/> against the conversation and principal now asking. Signature and
+    /// expiry are checked by the protector; thread and principal identity are compared ordinally.
+    /// </summary>
+    public WorkspaceGrantFailure Validate(string? token, string threadId, Principal? principal)
+    {
+        var opened = Open(token, threadId);
+        if (opened.Failure != WorkspaceGrantFailure.None)
+        {
+            return opened.Failure;
+        }
+
+        return string.Equals(IdentityOf(opened.Principal), IdentityOf(principal), StringComparison.Ordinal)
+            ? WorkspaceGrantFailure.None
+            : WorkspaceGrantFailure.PrincipalMismatch;
+    }
+
+    /// <summary>The protected payload. Only ever seen after the key ring has authenticated it.</summary>
+    private sealed record GrantPayload(int V, string Thread, PrincipalPayload? Principal);
 
     /// <summary>
-    /// The plaintext payload: <c>v1|{escaped thread}|{escaped principal}</c>. Both fields are percent-escaped
-    /// so neither can contain the <c>|</c> delimiter — without that, a thread id spelled
-    /// <c>t1|EndUser:someone</c> would split into a thread and a principal the caller chose.
+    /// The access-relevant fields of a <see cref="AchieveAi.LmDotnetTools.LmCore.Identity.Principal"/>, flat
+    /// enough to serialise. A DTO rather than the record itself because <c>Principal</c> carries
+    /// <c>required</c> members and <c>IReadOnlySet</c> properties that <c>System.Text.Json</c> cannot
+    /// round-trip on its own.
     /// </summary>
-    private static string Payload(string threadId, string? principalId) =>
-        $"{PayloadVersion}|{Escape(threadId)}|{Escape(NormalizePrincipal(principalId))}";
+    private sealed record PrincipalPayload(
+        string TenantId,
+        PrincipalKind ActorKind,
+        string ActorId,
+        PrincipalKind? OboKind,
+        string? OboId,
+        string? AppId,
+        string[] Scopes,
+        string[] Roles,
+        PrincipalSource Source
+    )
+    {
+        public static PrincipalPayload? From(Principal? principal) =>
+            principal is null
+                ? null
+                : new PrincipalPayload(
+                    principal.TenantId,
+                    principal.Actor.Kind,
+                    principal.Actor.Id,
+                    principal.OnBehalfOf?.Kind,
+                    principal.OnBehalfOf?.Id,
+                    principal.AppId,
+                    [.. principal.Scopes],
+                    [.. principal.Roles],
+                    principal.Source
+                );
 
-    private static string NormalizePrincipal(string? principalId) =>
-        string.IsNullOrWhiteSpace(principalId) ? AnonymousPrincipalId : principalId;
+        public Principal? ToPrincipal()
+        {
+            if (string.IsNullOrWhiteSpace(TenantId) || string.IsNullOrWhiteSpace(ActorId))
+            {
+                return null;
+            }
 
-    private static string Escape(string value) => Uri.EscapeDataString(value);
+            return new Principal
+            {
+                TenantId = TenantId,
+                Actor = new PrincipalRef(ActorKind, ActorId),
+                OnBehalfOf = OboKind is { } kind && OboId is not null ? new PrincipalRef(kind, OboId) : null,
+                AppId = AppId,
+                Scopes = new HashSet<string>(Scopes ?? [], StringComparer.Ordinal),
+                Roles = new HashSet<string>(Roles ?? [], StringComparer.Ordinal),
+                Source = Source,
+            };
+        }
+    }
 }

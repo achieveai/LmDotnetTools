@@ -469,14 +469,17 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Bug#15. The `sandbox` attribute deliberately has NO `allow-same-origin`: with it, workspace HTML
-           would run in this app's origin and could read its localStorage, cookies and bearer token. The
-           response carries the same restriction as a CSP `sandbox` DIRECTIVE, which is what protects the
-           document when it is opened in a top-level tab instead, where no attribute applies. -->
+           would run in this app's origin and could read its localStorage, cookies and bearer token. It also
+           has no `allow-popups`: the frame's own URL carries the grant, so `window.open` to an off-origin
+           URL would exfiltrate a live read credential, and no CSP directive can stop a navigation. The
+           response carries the same restrictions as a CSP `sandbox` DIRECTIVE, which is what protects the
+           document when it is opened in a top-level tab instead, where no attribute applies. The
+           "Open in new tab" control is this app's own button, rendered OUTSIDE the frame. -->
       <iframe
         v-else-if="isHtmlDocument && rawUrl && renderMode === 'rendered'"
         class="artifact-preview-frame"
         :src="rawUrl"
-        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        sandbox="allow-scripts allow-forms allow-modals"
         referrerpolicy="no-referrer"
         :title="`Rendered preview of ${fileName}`"
         data-testid="artifact-preview-html-frame"

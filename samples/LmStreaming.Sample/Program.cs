@@ -55,6 +55,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Client;
 using Serilog;
@@ -183,12 +184,20 @@ try
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
 
-    // Bug#15: the signed, time-limited READ grant that lets header-less browser fetches (an <iframe src>,
-    // an <img src>, a relative <link> inside a rendered workspace page) address the raw workspace route.
-    // AddDataProtection is called explicitly rather than relied on transitively — nothing else in this host
-    // asks for IDataProtectionProvider, so a future trim of whatever pulls it in would break grants silently.
-    _ = builder.Services.AddDataProtection();
-    _ = builder.Services.AddSingleton<LmStreaming.Sample.FileBrowser.WorkspaceGrantService>();
+    // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
+    // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
+    // workspace page) address the raw workspace route. The grant SERVICE and its principal source are
+    // registered by AddSampleIdentity above, because under Identity:Enforce the grant is a credential; what
+    // is configured here is the deployment half.
+    //
+    // SetApplicationName pins the key-ring isolation purpose, so it does not silently change with the entry
+    // assembly name and invalidate every outstanding grant. IMPORTANT for anything containerised or scaled
+    // out: with no PersistKeysTo… configured, keys live in the local profile (or in memory when there is no
+    // profile), so each replica has its own ring and every restart invalidates cached grants for up to
+    // WorkspaceGrantRefreshMargin short of the full lifetime — the client re-mints on the next open, so the
+    // symptom is a burst of 401s on subresources rather than an outage, but a real deployment should
+    // configure PersistKeysToFileSystem/AzureBlobStorage plus ProtectKeysWith….
+    _ = builder.Services.AddDataProtection().SetApplicationName("LmStreaming.Sample");
 
     // The operator secret is set through a flat env var for the same reason the S2S inbound secret
     // is: the standard env-var provider maps only `Identity__OperatorSecret` into that section key,
@@ -2476,14 +2485,24 @@ try
     );
 
     // Use Serilog request logging for HTTP requests
+    // The message template is overridden for ONE reason (Bug#15): Serilog's default logs {RequestPath}, and
+    // the raw workspace route carries its grant — a bearer credential for an hour of read access to one
+    // conversation's workspace — as a path SEGMENT. Left alone, every iframe, image and stylesheet fetch
+    // would write a live credential to the console and to logs/lmstreaming-{date}.jsonl, which are kept for
+    // seven days and are routinely copied into bug reports. {SafeRequestPath} is the same path with that one
+    // segment replaced; every other path is unchanged, character for character.
     _ = app.UseSerilogRequestLogging(options =>
+    {
+        options.MessageTemplate =
+            "HTTP {RequestMethod} {SafeRequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
         options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
         {
+            diagnosticContext.Set("SafeRequestPath", RedactWorkspaceGrant(httpContext.Request.Path.Value));
             diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value ?? string.Empty);
             diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme ?? string.Empty);
             diagnosticContext.Set("UserAgent", httpContext.Request.Headers.UserAgent.ToString() ?? string.Empty);
-        }
-    );
+        };
+    });
 
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
@@ -2791,6 +2810,57 @@ finally
 
 public partial class Program
 {
+    /// <summary>
+    /// The request path with Bug#15's workspace grant replaced by <c>[grant]</c>, for the request log.
+    /// Every other path is returned unchanged, character for character.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant is a bearer credential: anyone holding it can read that conversation's workspace for the
+    /// rest of its lifetime. It lives in a path SEGMENT because a relative reference drops the query
+    /// (RFC 3986 section 5.3), which is what makes a rendered page's own <c>img/x.png</c> resolve — so the
+    /// credential is unavoidably in the path, and the place to stop it is where the path is written down.
+    /// </para>
+    /// <para>
+    /// Matching is anchored on the whole route shape (<c>/api/conversations/{id}/workspace/{grant}/…</c>),
+    /// not on a bare <c>workspace</c> segment, so no other route that happens to contain that word has its
+    /// path rewritten. The first match wins and the rest of the path is untouched: nothing after the grant
+    /// segment is a credential, and a workspace file's own path is what makes the log line useful at all.
+    /// </para>
+    /// <para>
+    /// This closes the log channel only. The URL still reaches browser history, the address bar of an
+    /// "open in new tab", and any reverse proxy or CDN access log in front of this host - all accepted
+    /// residual, bounded by the grant's one-hour lifetime. See the note beside
+    /// <c>FileBrowserController.ApplyRawHeaders</c>.
+    /// </para>
+    /// </remarks>
+    internal static string RedactWorkspaceGrant(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path ?? string.Empty;
+        }
+
+        var segments = path.Split('/');
+
+        // "" / api / conversations / {threadId} / workspace / {grant} / {**path}
+        for (var i = 3; i + 1 < segments.Length; i++)
+        {
+            if (
+                string.Equals(segments[i], "workspace", StringComparison.Ordinal)
+                && string.Equals(segments[i - 3], "api", StringComparison.Ordinal)
+                && string.Equals(segments[i - 2], "conversations", StringComparison.Ordinal)
+                && segments[i + 1].Length > 0
+            )
+            {
+                segments[i + 1] = "[grant]";
+                return string.Join('/', segments);
+            }
+        }
+
+        return path;
+    }
+
     /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
     ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format

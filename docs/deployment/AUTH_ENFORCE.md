@@ -477,6 +477,40 @@ which is correct for the bundled same-origin SPA: the CORS middleware is still r
 cross-origin request without an `Access-Control-Allow-Origin` header, so no other site can read a
 response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to `false`.
 
+### Workspace file previews carry their own credential (Bug#15)
+
+`GET /api/conversations/{threadId}/workspace/{grant}/{**path}` serves a workspace file so a rendered
+HTML page's own relative links (`img/x.png`, `../shared/style.css`) resolve to sibling workspace
+files. The `{grant}` segment **is the credential on that route**. It exists because the fetches that
+use it — an `<iframe src>`, an `<img src>`, a stylesheet `<link>` inside the served document — cannot
+carry an `Authorization` header, so under `Identity:Enforce` the identity middleware would refuse
+every one of them before routing and the preview pane would go blank with no error the client can
+see.
+
+The grant is minted by `POST /api/conversations/{threadId}/files/grant`, which is an ordinary
+bearer-authenticated request and is authorized through the same `ConversationAuthorizer`
+(`AccessAction.Read`) as every other file route. It is an ASP.NET Core Data Protection token —
+encrypted and authenticated with this host's key ring — and it **binds**: the conversation it was
+minted for, and the full principal of the caller who minted it (tenant, actor, on-behalf-of, app id,
+scopes, roles). It lives for **one hour**; the client re-mints five minutes before that. Presenting
+it on another conversation is `403`; a forged, altered or expired one is `401`. `WorkspaceGrantPrincipalSource`
+reconstructs the principal from the grant so the raw route runs with the same identity, and the same
+authorization prologue, as any other request — the grant authenticates, it never authorizes.
+
+Operator notes:
+
+- Configure data-protection key persistence (`PersistKeysTo…` plus `ProtectKeysWith…`) for any
+  containerised or scaled-out deployment. Keys default to the local profile, so each replica has its
+  own ring and every restart invalidates outstanding grants. The symptom is a burst of `401`s on
+  preview subresources, not an outage: the client re-mints on the next open.
+- The grant is a bearer value in a URL path. This host redacts it out of its own request log
+  (`Program.RedactWorkspaceGrant` rewrites the segment to `[grant]`), and never logs it anywhere
+  else. A reverse proxy, CDN or load balancer in front of this host writes its own access log that
+  this process cannot redact — redact `/api/conversations/*/workspace/*` there too if those logs
+  leave your trust boundary. Browser history and the address bar of an "open in new tab" are
+  accepted residual, bounded by the one-hour lifetime and by the grant reading one conversation's
+  workspace and nothing else.
+
 ### Recommended flip order
 
 1. Deploy the build. Leave `Identity:Enforce` false. The schema migrates (`user_version` 4), the
