@@ -3,6 +3,7 @@ import { onMounted, onBeforeUnmount, ref, watch, nextTick, computed } from 'vue'
 import { useFileBrowser } from '@/composables/useFileBrowser';
 import type { FileEntry, UploadItem } from '@/types/fileBrowser';
 import { filesFromDirectoryInput, resolveDrop, isDirectoryPickerSupported } from '@/utils/folderUpload';
+import { clearWorkspaceGrant, requestWorkspaceGrant, workspaceFileUrl } from '@/api/fileBrowserApi';
 
 const props = defineProps<{ threadId: string | null; embedded?: boolean }>();
 
@@ -176,8 +177,45 @@ function onPreview(entry: FileEntry): void {
   emit('openFile', joinCurrent(entry.name));
 }
 
-function onDownload(entry: FileEntry): void {
-  void download(entry);
+/**
+ * Saves a file through the PATH-addressed raw endpoint (Bug#15).
+ *
+ * The browser streams that response straight to disk, so a 64 MiB file is never materialised as a
+ * `Blob` in this page's memory the way `fetchFileBlob` has to. `?download=1` is what flips the server's
+ * `Content-Disposition` to `attachment`.
+ *
+ * The grant is minted HERE rather than on mount, and that placement is deliberate: a grant fetched at
+ * mount would be a network call every consumer of this panel pays for a button most of them never
+ * press. `requestWorkspaceGrant` caches per thread, so the preview surface and this panel share one.
+ *
+ * Any failure falls back to the existing blob download, which still works — a deployment that cannot
+ * mint a grant loses the streaming, not the feature.
+ */
+async function onDownload(entry: FileEntry): Promise<void> {
+  const threadId = props.threadId;
+  if (threadId === null) return;
+  try {
+    const grant = await requestWorkspaceGrant(threadId);
+    saveViaAnchor(
+      workspaceFileUrl(threadId, grant, joinCurrent(entry.name), { download: true }),
+      entry.name
+    );
+  } catch {
+    clearWorkspaceGrant(threadId);
+    await download(entry);
+  }
+}
+
+/** Clicks a transient `<a download href>` at `url`, which is what makes the save a native one. */
+function saveViaAnchor(url: string, fileName: string): void {
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.rel = 'noopener';
+  // No object URL to revoke here (the href is a real endpoint), so the anchor is removed immediately.
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 /** Re-reads the CURRENT directory. The listing is REST, so an agent writing files while the panel is
@@ -678,7 +716,7 @@ const workspaceShort = computed(() => (workspaceId.value ?? '').slice(0, 8));
                     :data-testid="`file-entry-download-${entry.name}`"
                     :title="`Download ${entry.name}`"
                     :aria-label="`Download ${entry.name}`"
-                    @click="onDownload(entry)"
+                    @click="void onDownload(entry)"
                   >
                     <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                       <path d="M10 3.6v9.7M6.4 9.7 10 13.4l3.6-3.7" />

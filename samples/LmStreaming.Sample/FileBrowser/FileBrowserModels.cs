@@ -72,3 +72,9 @@ public sealed record CreateDirectoryRequest(string Name);
 
 /// <summary>The create-directory outcome: the resolved server path of the created (or already-existing) directory.</summary>
 public sealed record CreateDirectoryResultDto(string Path);
+
+/// <summary>
+/// A minted workspace READ grant (Bug#15): the opaque token the client puts in a raw workspace URL's PATH,
+/// and when it stops validating so the client can refresh ahead of it.
+/// </summary>
+public sealed record WorkspaceGrantDto(string Grant, DateTimeOffset ExpiresAt);

@@ -42,4 +42,21 @@ public static class FileBrowserLimits
 
     /// <summary>Maximum directory rows returned in one listing; the remainder is reported as a count.</summary>
     public const int MaxListingRows = 500;
+
+    /// <summary>
+    /// How long a minted workspace READ grant stays valid (Bug#15): one hour. Long enough that a person can
+    /// read a rendered report without the page's images dying underneath them, short enough that a grant
+    /// copied out of a URL bar is worth little by the time it is pasted anywhere. A <c>TimeSpan</c> rather
+    /// than a count of seconds because both the minting clock and the client's refresh margin do arithmetic
+    /// with it.
+    /// </summary>
+    public static readonly TimeSpan WorkspaceGrantLifetime = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// How far ahead of <see cref="WorkspaceGrantLifetime"/> the client refreshes a cached grant: five
+    /// minutes. Sized for the page, not the round trip — an <c>&lt;iframe&gt;</c> that is already open keeps
+    /// loading subresources with the grant it was given, so the margin has to cover a user reading a
+    /// rendered page for a few minutes after the app last minted one.
+    /// </summary>
+    public static readonly TimeSpan WorkspaceGrantRefreshMargin = TimeSpan.FromMinutes(5);
 }

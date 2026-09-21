@@ -72,4 +72,58 @@ public class FilePreviewPolicyTests
         FilePreviewPolicy.IsPreviewable("reviewer-7c21.jsonl").Should().BeTrue();
         FilePreviewPolicy.IsUnderDotDirectory(".conversations/reviewer-7c21.jsonl").Should().BeTrue();
     }
+
+    // -------- IsRenderable (Bug#15) --------
+
+    [Theory]
+    [InlineData("report.html")]
+    [InlineData("report.htm")]
+    [InlineData("page.xhtml")]
+    [InlineData("chart.svg")]
+    [InlineData("paper.pdf")]
+    [InlineData("dot.png")]
+    [InlineData("photo.JPG")]
+    [InlineData("anim.gif")]
+    [InlineData("shot.webp")]
+    public void IsRenderable_TrueForWhatABrowserDrawsFromTheRawUrl(string name) =>
+        FilePreviewPolicy.IsRenderable(name).Should().BeTrue();
+
+    [Theory]
+    [InlineData("notes.md")]
+    [InlineData("Program.cs")]
+    [InlineData("data.csv")]
+    [InlineData("budget.xlsx")]
+    [InlineData("archive.zip")]
+    [InlineData("noextension")]
+    [InlineData("")]
+    public void IsRenderable_FalseForEverythingElse(string name) =>
+        FilePreviewPolicy.IsRenderable(name).Should().BeFalse();
+
+    [Fact]
+    public void IsRenderable_IsADifferentQuestionFromIsPreviewable()
+    {
+        // The two sets OVERLAP rather than nest, and the overlap is the point: an HTML file is both
+        // (rendered in the iframe, readable as source through the text path), a PNG is renderable only,
+        // and a .cs file is previewable only. A change that made one imply the other would silently either
+        // stop the Source toggle working or start handing source files to the browser as documents.
+        FilePreviewPolicy.IsRenderable("report.html").Should().BeTrue();
+        FilePreviewPolicy.IsPreviewable("report.html").Should().BeTrue();
+
+        FilePreviewPolicy.IsRenderable("dot.png").Should().BeTrue();
+        FilePreviewPolicy.IsPreviewable("dot.png").Should().BeFalse();
+
+        FilePreviewPolicy.IsRenderable("Program.cs").Should().BeFalse();
+        FilePreviewPolicy.IsPreviewable("Program.cs").Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsRenderable_DoesNotDisturbTheTextAllowlistOrTheSpreadsheetSet()
+    {
+        // The regression this guards: adding a third set by EXTENDING one of the first two. `.png` must
+        // not have leaked into the text allowlist, and `.html` must not have left it.
+        FilePreviewPolicy.IsPreviewable("dot.png").Should().BeFalse();
+        FilePreviewPolicy.IsPreviewable("chart.svg").Should().BeFalse();
+        FilePreviewPolicy.IsPreviewable("report.html").Should().BeTrue();
+        FilePreviewPolicy.IsSpreadsheet("report.html").Should().BeFalse();
+    }
 }

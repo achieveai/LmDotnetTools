@@ -101,6 +101,46 @@ public static class FilePreviewPolicy
         ".xlsm",
     };
 
+    /// <summary>
+    /// Extensions the CLIENT can hand straight to the browser as a document or an image, over the
+    /// path-addressed raw workspace URL (Bug#15) — an <c>&lt;iframe&gt;</c> for HTML and PDF, an
+    /// <c>&lt;img&gt;</c> for the rest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A THIRD set, overlapping both of the others rather than replacing either. <c>.html</c> is on the text
+    /// allowlist and stays there — that is what the preview's Source view reads — and <c>.png</c> is on
+    /// neither, because it is not text and not a workbook. So this answers a different question from
+    /// <see cref="IsPreviewable"/>: not "may the server decode this into a preview payload" but "will a
+    /// browser render this URL".
+    /// </para>
+    /// <para>
+    /// It is ADVISORY, and deliberately not what gates the raw endpoint. That endpoint serves any file the
+    /// caller may already read, because a rendered page has to be able to fetch its own <c>.css</c>,
+    /// <c>.js</c> and <c>.woff2</c> — gating it on this set would break the relative links the whole feature
+    /// exists to make work.
+    /// </para>
+    /// </remarks>
+    private static readonly HashSet<string> RenderableExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".html",
+        ".htm",
+        ".xhtml",
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".avif",
+        // An SVG is a scriptable document, not just a picture. It is here because the raw endpoint serves it
+        // with the CSP sandbox header (opaque origin) exactly as it serves HTML, so rendering one is no more
+        // reach than rendering a page — and it stays readable as source through the text allowlist as well.
+        ".svg",
+    };
+
     private static readonly HashSet<string> PreviewableExactNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "dockerfile",
@@ -137,6 +177,23 @@ public static class FilePreviewPolicy
         }
 
         return PreviewableExactNames.Contains(name);
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is something a browser renders directly from the raw workspace URL
+    /// (see <see cref="RenderableExtensions"/>). Independent of <see cref="IsPreviewable"/>: an HTML file is
+    /// both (rendered, and readable as source), a PNG is only renderable, a <c>.cs</c> file is only
+    /// previewable.
+    /// </summary>
+    public static bool IsRenderable(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var ext = Path.GetExtension(name);
+        return !string.IsNullOrEmpty(ext) && RenderableExtensions.Contains(ext);
     }
 
     /// <summary>

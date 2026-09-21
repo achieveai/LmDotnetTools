@@ -183,6 +183,13 @@ try
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
 
+    // Bug#15: the signed, time-limited READ grant that lets header-less browser fetches (an <iframe src>,
+    // an <img src>, a relative <link> inside a rendered workspace page) address the raw workspace route.
+    // AddDataProtection is called explicitly rather than relied on transitively — nothing else in this host
+    // asks for IDataProtectionProvider, so a future trim of whatever pulls it in would break grants silently.
+    _ = builder.Services.AddDataProtection();
+    _ = builder.Services.AddSingleton<LmStreaming.Sample.FileBrowser.WorkspaceGrantService>();
+
     // The operator secret is set through a flat env var for the same reason the S2S inbound secret
     // is: the standard env-var provider maps only `Identity__OperatorSecret` into that section key,
     // and operators reach for the flat name.

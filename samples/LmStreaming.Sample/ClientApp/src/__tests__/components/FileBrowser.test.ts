@@ -5,10 +5,14 @@ import ConversationInspector from '@/components/ConversationInspector.vue';
 import type { FileEntry } from '@/types/fileBrowser';
 import { sampleListing, noSessionState, jsonResponse } from '../fixtures/fileBrowser';
 import { MAX_FOLDER_UPLOAD_FILES } from '@/utils/folderUpload';
+import { clearAllWorkspaceGrants } from '@/api/fileBrowserApi';
 
 afterEach(() => {
   vi.restoreAllMocks();
   document.body.replaceChildren();
+  // The grant cache is a module-level map that outlives a test; left in place it would let one test's
+  // grant silently serve the next, including a test written to exercise the fallback.
+  clearAllWorkspaceGrants();
 });
 
 /** Mounts the browser with an initial listing already loaded. Returns the wrapper + fetch spy. */
@@ -818,5 +822,65 @@ describe('FileBrowser overwrite-pending admission barrier (F5 round-2)', () => {
     const firstPost = methods.indexOf('POST');
     expect(firstPost).toBeGreaterThan(0);
     expect(methods.slice(0, firstPost)).toContain('GET');
+  });
+});
+
+describe('FileBrowser download', () => {
+  /**
+   * Bug#15. Download goes through the PATH-addressed raw endpoint with `?download=1`, so the browser
+   * streams the file straight to disk. The old path read the whole file into a `Blob` first, which is
+   * up to 64 MiB of this page's memory for a file the user only wants on disk.
+   */
+  it('saves through the raw workspace endpoint, holding no bytes in the page', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const createObjectURL = vi.fn(() => 'blob:x');
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+    const clicked: { href: string; download: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push({ href: this.getAttribute('href') ?? '', download: this.download });
+    });
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ grant: 'g-1', expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+    );
+
+    const file = sampleListing.entries.find((e) => e.type === 'file' && !e.nameLossy)!;
+    await wrapper.get(`[data-testid="file-entry-download-${file.name}"]`).trigger('click');
+    await flushPromises();
+
+    expect(fetchSpy.mock.calls[1][0]).toBe('/api/conversations/thread-1/files/grant');
+    expect(clicked[0].href).toBe(
+      `/api/conversations/thread-1/workspace/g-1/${file.name}?download=1`
+    );
+    expect(clicked[0].download).toBe(file.name);
+    // The defining assertion: the download endpoint was never called and no Blob was created.
+    expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes('/files/download'))).toBe(false);
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the blob download when no grant can be minted', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:x'), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ code: 'gateway_error' }, 502))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+
+    const file = sampleListing.entries.find((e) => e.type === 'file' && !e.nameLossy)!;
+    await wrapper.get(`[data-testid="file-entry-download-${file.name}"]`).trigger('click');
+    await flushPromises();
+
+    expect(String(fetchSpy.mock.calls[2][0])).toContain('/files/download?path=');
+  });
+
+  /**
+   * The grant is minted at CLICK time, not at mount. A mount-time fetch would be a network call every
+   * consumer of this panel pays for a button most of them never press — and it would silently shift
+   * the call counts every other test in this file asserts.
+   */
+  it('mints no grant until the button is pressed', async () => {
+    const { fetchSpy } = await mountBrowser();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('/files/grant');
   });
 });

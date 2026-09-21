@@ -6,11 +6,14 @@ import DataTablePreview from './DataTablePreview.vue';
 import {
   FileBrowserError,
   NoSessionError,
+  clearWorkspaceGrant,
   downloadFile,
   fetchFileBlob,
   listFiles,
   previewFile,
+  requestWorkspaceGrant,
   resolveWorkspaceLink,
+  workspaceFileUrl,
 } from '@/api/fileBrowserApi';
 import { isNoSession, type PreviewResult, type TablePreview } from '@/types/fileBrowser';
 import { MessageType, type TextMessage as TextMessageModel } from '@/types';
@@ -105,10 +108,36 @@ const surfaceAttributes = computed(() => props.embedded
     }
 );
 
-const imageType = computed(() => {
-  const ext = /\.([a-z0-9]+)$/i.exec(resolvedPath.value ?? '')?.[1]?.toLowerCase();
-  return ext ? (IMAGE_TYPES[ext] ?? null) : null;
-});
+const extension = computed(
+  () => /\.([a-z0-9]+)$/i.exec(resolvedPath.value ?? '')?.[1]?.toLowerCase() ?? null
+);
+
+const imageType = computed(() => (extension.value ? (IMAGE_TYPES[extension.value] ?? null) : null));
+
+/** Extensions shown as a RENDERED document rather than as source (Bug#15). */
+const HTML_EXTENSIONS = new Set(['html', 'htm', 'xhtml']);
+
+const isHtmlDocument = computed(() => extension.value !== null && HTML_EXTENSIONS.has(extension.value));
+
+const isPdf = computed(() => extension.value === 'pdf');
+
+/**
+ * The PATH-addressed raw URL for this file, once a workspace grant has been minted (Bug#15). Null when
+ * the grant could not be obtained, which is the signal for every viewer below to fall back to the
+ * query-addressed `preview`/`download` endpoints it used before.
+ */
+const rawUrl = ref<string | null>(null);
+
+/**
+ * Rendered vs Source for an HTML file. Rendered is the default because seeing the page is the point;
+ * Source is the pre-existing text path, kept so generated markup stays readable.
+ */
+const renderMode = ref<'rendered' | 'source'>('rendered');
+
+/** The toggle only appears when BOTH views are actually available. */
+const showRenderToggle = computed(
+  () => !isLoading.value && !errorText.value && isHtmlDocument.value && rawUrl.value !== null
+);
 
 const isMarkdown = computed(() => isMarkdownArtifact(resolvedPath.value ?? ''));
 
@@ -208,6 +237,17 @@ async function load(): Promise<void> {
   const path = resolvedPath.value;
   if (path === null) return;
 
+  // Bug#15. An HTML page and a PDF have no viewer WITHOUT the raw URL — the iframe IS the viewer — so
+  // the grant is minted up front for those two. An image is different: it already has a working viewer,
+  // and the checks below are what decide whether to show one at all, so its mint waits until they pass.
+  if (isHtmlDocument.value || isPdf.value) {
+    await ensureRawUrl(path);
+  }
+
+  if (isPdf.value && rawUrl.value !== null) {
+    return;
+  }
+
   if (imageType.value) {
     // Checked before any bytes move: the download endpoint would otherwise pull up to 64 MiB into the page.
     if (size === undefined) size = await sizeFromListing(path);
@@ -219,13 +259,51 @@ async function load(): Promise<void> {
       unavailableText.value = 'This image is too large to show here.';
       return;
     }
+
+    // The checks have passed; now only the TRANSPORT changes. The raw URL lets the browser fetch the
+    // image itself — nothing is held as a Blob in this page, and the server sends the real media type
+    // instead of the download endpoint's octet-stream, so nothing has to be re-typed here either. The
+    // blob path below stays as the fallback for a deployment that cannot mint a grant.
+    //
+    // The size gate deliberately SURVIVES this change even though its original reason (bytes in this
+    // page's memory) has gone: it is also what produces the "too large" and "size could not be checked"
+    // messages, and a file that is missing or in a session-less conversation is explained here rather
+    // than becoming a silently broken <img>. Removing it is a separate, user-visible decision.
+    await ensureRawUrl(path);
+    if (rawUrl.value !== null) {
+      return;
+    }
+
     const blob = await fetchFileBlob(props.threadId, path, abort.signal);
     // The download endpoint answers application/octet-stream + nosniff; an <img> needs the real type.
     imageUrl.value = URL.createObjectURL(new Blob([blob], { type: imageType.value }));
     return;
   }
 
+  // HTML still reads the text preview even when it is going to be RENDERED: that text is the Source view.
   result.value = await previewFile(props.threadId, path, abort.signal);
+}
+
+/**
+ * Mints (or reuses) the workspace grant and derives this file's raw URL from it.
+ *
+ * A failure is deliberately swallowed rather than propagated. The grant is an enhancement — without it
+ * the component falls back to exactly the `preview`/`download` behaviour it had before — so a deployment
+ * where the route is unreachable should degrade to source text and a blob image, not to an error message
+ * where a preview used to be. The cached grant is dropped first so the next open retries cleanly.
+ */
+async function ensureRawUrl(path: string): Promise<void> {
+  try {
+    const grant = await requestWorkspaceGrant(props.threadId, abort.signal);
+    rawUrl.value = workspaceFileUrl(props.threadId, grant, path);
+  } catch (e) {
+    if (abort.signal.aborted) throw e;
+    clearWorkspaceGrant(props.threadId);
+    log.debug('Workspace grant unavailable; falling back to the query endpoints', {
+      path,
+      error: e,
+    });
+  }
 }
 
 onMounted(async () => {
@@ -302,6 +380,21 @@ onBeforeUnmount(() => {
             <path v-else d="M8 3.5H3.5V8M12 16.5h4.5V12M3.5 3.5 8 8M16.5 16.5 12 12" />
           </svg>
         </button>
+        <a
+          v-if="rawUrl"
+          class="artifact-preview-action"
+          :href="rawUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          referrerpolicy="no-referrer"
+          aria-label="Open file in a new tab"
+          title="Open in new tab"
+          data-testid="artifact-preview-open-tab"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M11 4h5v5M16 4l-7 7M15 11.5V16H4V5h4.5" />
+          </svg>
+        </a>
         <button
           v-if="canDownload"
           type="button"
@@ -331,6 +424,29 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <div v-if="showRenderToggle" class="artifact-preview-modebar" data-testid="artifact-preview-modebar">
+      <button
+        type="button"
+        class="artifact-preview-mode"
+        :class="{ 'artifact-preview-mode-active': renderMode === 'rendered' }"
+        :aria-pressed="renderMode === 'rendered'"
+        data-testid="artifact-preview-mode-rendered"
+        @click="renderMode = 'rendered'"
+      >
+        Rendered
+      </button>
+      <button
+        type="button"
+        class="artifact-preview-mode"
+        :class="{ 'artifact-preview-mode-active': renderMode === 'source' }"
+        :aria-pressed="renderMode === 'source'"
+        data-testid="artifact-preview-mode-source"
+        @click="renderMode = 'source'"
+      >
+        Source
+      </button>
+    </div>
+
     <div class="artifact-preview">
       <div v-if="isLoading" class="artifact-preview-message" data-testid="artifact-preview-loading">
         Loading preview…
@@ -351,6 +467,42 @@ onBeforeUnmount(() => {
       >
         {{ unavailableText }}
       </div>
+
+      <!-- Bug#15. The `sandbox` attribute deliberately has NO `allow-same-origin`: with it, workspace HTML
+           would run in this app's origin and could read its localStorage, cookies and bearer token. The
+           response carries the same restriction as a CSP `sandbox` DIRECTIVE, which is what protects the
+           document when it is opened in a top-level tab instead, where no attribute applies. -->
+      <iframe
+        v-else-if="isHtmlDocument && rawUrl && renderMode === 'rendered'"
+        class="artifact-preview-frame"
+        :src="rawUrl"
+        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        referrerpolicy="no-referrer"
+        :title="`Rendered preview of ${fileName}`"
+        data-testid="artifact-preview-html-frame"
+      ></iframe>
+
+      <!-- A PDF is handed to the browser's own viewer. No sandbox attribute: the viewer does not run in
+           the page's script context, and sandboxing it breaks the viewer's controls in Chrome. The
+           response is `application/pdf` with nosniff, so it can never be treated as a document. -->
+      <iframe
+        v-else-if="isPdf && rawUrl"
+        class="artifact-preview-frame"
+        :src="rawUrl"
+        referrerpolicy="no-referrer"
+        :title="`Preview of ${fileName}`"
+        data-testid="artifact-preview-pdf-frame"
+      ></iframe>
+
+      <!-- Straight from the raw URL: no size ceiling, and no Blob held in this page's memory. An SVG is
+           inert here because <img> never runs its scripts, and the response sandboxes it besides. -->
+      <img
+        v-else-if="imageType && rawUrl"
+        class="artifact-preview-image"
+        :src="rawUrl"
+        :alt="displayPath"
+        data-testid="artifact-preview-image"
+      />
 
       <img
         v-else-if="imageUrl"
@@ -405,6 +557,42 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Bug#15: the rendered document fills the preview pane. `border: 0` rather than a reset shorthand so the
+   surrounding surface keeps its own frame; `background: #fff` because an untrusted page that sets no
+   background of its own must not inherit a dark app theme and become unreadable. */
+.artifact-preview-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 0;
+  background: #fff;
+}
+
+.artifact-preview-modebar {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
+}
+
+.artifact-preview-mode {
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.artifact-preview-mode-active {
+  background: var(--surface-muted, rgba(127, 127, 127, 0.16));
+  opacity: 1;
+  font-weight: 600;
+}
+
 /* #594 D6, reworked for #603 F-001: keep single-click conversation switching while the preview is
    open — by GEOMETRY, not stacking. The first cut lifted the sidebar to z-index 1001, which also
    reordered painting: below 1200px viewport width the opaque 280px sidebar painted over the

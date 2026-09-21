@@ -292,3 +292,145 @@ export async function deleteEntry(
   }
   throw await classifyFailure(response, 'delete entry');
 }
+
+// ---------------------------------------------------------------------------------------------
+// Path-addressed raw workspace access (Bug#15)
+//
+// `preview`/`download` above are QUERY-addressed (`?path=`) and go through `apiFetch`, which is
+// the only place the bearer token is attached. Neither property survives contact with a rendered
+// HTML document: an `<iframe src>` / `<img src>` / relative `<link href>` cannot send a header,
+// and a relative reference inside a document served at `…/files/download?path=a/b.html` resolves
+// against `…/files/` — dropping the query and naming a route that does not exist.
+//
+// So a second shape exists beside them (the originals are untouched, and still used as the
+// fallback whenever a grant cannot be minted): a PATH-addressed URL carrying a short-lived,
+// signed, read-only grant in a path segment, where relative resolution keeps it.
+// ---------------------------------------------------------------------------------------------
+
+/** The server's `POST …/files/grant` body. Local to this module: nothing else has a use for it. */
+interface WorkspaceGrantResponse {
+  grant: string;
+  /** ISO-8601 instant at which the grant stops validating. */
+  expiresAt: string;
+}
+
+/** A grant held for one thread, with the instant this client stops presenting it. */
+interface CachedGrant {
+  token: string;
+  /** Local-clock ms after which a fresh grant is minted — already inside the server's expiry. */
+  refreshAfter: number;
+}
+
+/**
+ * How far ahead of the server's expiry a cached grant is replaced. Mirrors
+ * `FileBrowserLimits.WorkspaceGrantRefreshMargin`. Sized for the PAGE, not the round trip: an
+ * iframe that is already open keeps fetching subresources with the grant it was handed, so the
+ * margin has to cover someone reading a rendered report for a few minutes.
+ */
+const GRANT_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+const grantCache = new Map<string, CachedGrant>();
+/**
+ * Mint requests currently in flight, keyed by thread. A preview typically asks for the URL of the
+ * document and several subresources in the same tick; without this each one would mint its own
+ * grant, so opening one page would issue a handful of tokens that all outlive it.
+ */
+const grantInFlight = new Map<string, Promise<string>>();
+
+/**
+ * Drops any cached grant for a thread. Called on a 401 from a raw URL — the one answer that covers
+ * every way a grant can stop working (expired, key rotated, signed in as someone else) — so the
+ * next request mints a fresh one instead of replaying a dead token.
+ */
+export function clearWorkspaceGrant(threadId: string): void {
+  grantCache.delete(threadId);
+  grantInFlight.delete(threadId);
+}
+
+/** Test seam: forget every cached grant. */
+export function clearAllWorkspaceGrants(): void {
+  grantCache.clear();
+  grantInFlight.clear();
+}
+
+/**
+ * Obtains a read grant for a thread's workspace, reusing the cached one until it is within
+ * {@link GRANT_REFRESH_MARGIN_MS} of expiring.
+ *
+ * The mint itself goes through {@link apiFetch}, so it is bearer-authenticated and authorized
+ * exactly like every other file-browser call — the grant is only a way to carry that already-made
+ * decision onto requests that cannot send a header.
+ *
+ * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on other non-ok statuses.
+ */
+export function requestWorkspaceGrant(threadId: string, signal?: AbortSignal): Promise<string> {
+  const cached = grantCache.get(threadId);
+  if (cached && Date.now() < cached.refreshAfter) {
+    return Promise.resolve(cached.token);
+  }
+
+  const pending = grantInFlight.get(threadId);
+  if (pending) {
+    return pending;
+  }
+
+  const attempt = mintWorkspaceGrant(threadId, signal)
+    .then((minted) => {
+      grantCache.set(threadId, minted);
+      return minted.token;
+    })
+    .finally(() => {
+      grantInFlight.delete(threadId);
+    });
+
+  grantInFlight.set(threadId, attempt);
+  return attempt;
+}
+
+/** One trip to `POST …/files/grant`, translated into a {@link CachedGrant}. */
+async function mintWorkspaceGrant(threadId: string, signal?: AbortSignal): Promise<CachedGrant> {
+  const url = `/api/conversations/${encodeURIComponent(threadId)}/files/grant`;
+  const response = await apiFetch(url, { method: 'POST', signal });
+  if (!response.ok) {
+    throw await classifyFailure(response, 'obtain a workspace grant');
+  }
+  const body = (await response.json()) as WorkspaceGrantResponse;
+  const expiresAtMs = Date.parse(body.expiresAt);
+  // An unparseable or already-past expiry must not produce a grant this client caches forever, nor
+  // one it refuses to use at all. Falling back to "now + the margin" means it is used once and
+  // re-minted next time, which is the safe reading of a server answer we do not understand.
+  const refreshAfter = Number.isFinite(expiresAtMs)
+    ? expiresAtMs - GRANT_REFRESH_MARGIN_MS
+    : Date.now() + GRANT_REFRESH_MARGIN_MS;
+  return { token: body.grant, refreshAfter };
+}
+
+/**
+ * The raw, path-addressed URL for one workspace file:
+ * `/api/conversations/{threadId}/workspace/{grant}/{path}`.
+ *
+ * Every path segment is encoded INDIVIDUALLY so that `/` keeps its meaning as a separator while a
+ * `#`, `?` or space inside a file name cannot truncate or re-parse the URL. That shape is the whole
+ * point: a document served from it has base URL `…/workspace/{grant}/<its dir>/`, so its own
+ * `img/x.png`, `./style.css` and `../shared/app.js` resolve to the sibling workspace files.
+ *
+ * `download: true` adds `?download=1`, which flips the server's `Content-Disposition` to
+ * `attachment`. It is a QUERY on purpose: a relative link inside a served document drops the query,
+ * so no subresource a page loads can be turned into a download.
+ */
+export function workspaceFileUrl(
+  threadId: string,
+  grant: string,
+  path: string,
+  options?: { download?: boolean }
+): string {
+  const segments = path
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const base = `/api/conversations/${encodeURIComponent(threadId)}/workspace/${encodeURIComponent(grant)}/${segments}`;
+  return options?.download ? `${base}?download=1` : base;
+}

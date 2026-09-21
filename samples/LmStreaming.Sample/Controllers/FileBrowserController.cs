@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.FileBrowser;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Net.Http.Headers;
 
 namespace LmStreaming.Sample.Controllers;
 
@@ -239,6 +240,173 @@ public sealed class FileBrowserController(
             Response.Headers["X-Content-Type-Options"] = "nosniff";
             var fileName = LastComponent(target.ServerPath);
             return File(bytes, "application/octet-stream", fileDownloadName: fileName);
+        }
+        catch (SandboxException ex) when (IsOverCap(ex))
+        {
+            return StatusCode(
+                StatusCodes.Status413PayloadTooLarge,
+                new
+                {
+                    error = "file_too_large",
+                    code = "file_too_large",
+                    threadId,
+                }
+            );
+        }
+        catch (SandboxException ex)
+        {
+            return MapSandbox(ex, threadId);
+        }
+    }
+
+    /// <summary>
+    /// Mints a short-lived, read-only <see cref="WorkspaceGrantDto"/> for this conversation's workspace
+    /// (Bug#15), so that header-less browser fetches — an <c>&lt;iframe src&gt;</c>, an <c>&lt;img src&gt;</c>,
+    /// and every relative link inside a rendered workspace page — can address
+    /// <see cref="RawWorkspaceFile"/>.
+    /// </summary>
+    /// <remarks>
+    /// Bearer-authenticated and authorized exactly like every other route here: the grant carries a decision
+    /// this prologue already made, it never substitutes for one. <c>isListing: false</c>, so a conversation
+    /// with no sandbox session answers 409 rather than handing out a grant that could address nothing.
+    /// </remarks>
+    [HttpPost("grant")]
+    public async Task<IActionResult> Grant(
+        string threadId,
+        [FromServices] WorkspaceGrantService grants,
+        CancellationToken ct
+    )
+    {
+        ArgumentNullException.ThrowIfNull(grants);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: false, ct);
+        if (!context.Ok)
+        {
+            return context.Error!;
+        }
+
+        var minted = grants.Mint(threadId, CurrentPrincipalId());
+        return Ok(new WorkspaceGrantDto(minted.Token, minted.ExpiresAt));
+    }
+
+    /// <summary>
+    /// Serves ONE workspace file at a PATH-addressed URL — <c>/api/conversations/{threadId}/workspace/
+    /// {grant}/{path}</c> — so that a document served from it keeps working relative links (Bug#15): its
+    /// base URL is the file's own directory under this route, so <c>img/x.png</c>, <c>./style.css</c> and
+    /// <c>../shared/app.js</c> resolve to the sibling workspace files.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Why this exists beside <see cref="Download"/> rather than replacing it. <c>Download</c> is
+    /// QUERY-addressed and answers <c>application/octet-stream</c>, so a browser never renders it; and a
+    /// document served at <c>.../files/download?path=a/b.html</c> has base URL <c>.../files/</c>, so its
+    /// relative links name routes that do not exist. Relative resolution is a property of the URL's PATH
+    /// (RFC 3986 §5.3 discards the query), which is also why the grant is a path segment: a
+    /// <c>?grant=</c> would be dropped by every relative subresource the page loads.
+    /// </para>
+    /// <para>
+    /// The grant is an ADDITIONAL gate, not a replacement for one. After it validates, the ordinary
+    /// <see cref="ResolveSessionAsync"/> read prologue and the ordinary component-wise
+    /// <see cref="ResolveTargetAsync"/> run unchanged — same authorizer, same authoritative gateway
+    /// listing, same refusal of <c>.</c>/<c>..</c>/backslash segments, same symlink and lossy-name rules.
+    /// There is no second path resolver.
+    /// </para>
+    /// <para>
+    /// Two rules here are STRICTER than <c>Download</c>'s, because this response is reachable from inside a
+    /// rendered document rather than only from a deliberate click: a file under a dot-directory is excluded
+    /// (the conversation's own <c>.conversations/*.jsonl</c> transcript, #251), and the media type comes
+    /// from a closed map rather than being flattened to octet-stream — which is what makes
+    /// <c>Content-Security-Policy: sandbox</c> necessary for the types a browser executes.
+    /// </para>
+    /// </remarks>
+    [HttpGet("/api/conversations/{threadId}/workspace/{grant}/{**path}")]
+    public async Task<IActionResult> RawWorkspaceFile(
+        string threadId,
+        string grant,
+        string? path,
+        [FromQuery(Name = "download")] string? download,
+        [FromServices] WorkspaceGrantService grants,
+        CancellationToken ct
+    )
+    {
+        ArgumentNullException.ThrowIfNull(grants);
+
+        // The grant is checked BEFORE the session prologue so that an unsigned URL costs no gateway work.
+        // It is not the authorization — that still runs below, for every request that gets past here.
+        var grantFailure = grants.Validate(grant, threadId, CurrentPrincipalId());
+        if (grantFailure != WorkspaceGrantFailure.None)
+        {
+            return GrantFailureResult(grantFailure, threadId);
+        }
+
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: false, ct);
+        if (!context.Ok)
+        {
+            return context.Error!;
+        }
+
+        var session = context.Session!;
+        try
+        {
+            var target = await ResolveTargetAsync(session.SessionId, path ?? string.Empty, ct);
+            if (!target.Success)
+            {
+                return ResolveFailureResult(target.Failure, threadId);
+            }
+
+            // A directory (or a symlink, which resolves as its own type and is never followed) is not a
+            // resource at this URL. 404 rather than a listing or an implicit index.html: an implicit index
+            // would make this endpoint a small web server with path semantics of its own.
+            if (target.Type != SandboxEntryType.File)
+            {
+                return NotFound(
+                    new
+                    {
+                        error = "not_a_file",
+                        code = "not_a_file",
+                        threadId,
+                    }
+                );
+            }
+
+            // Machine-owned bookkeeping is excluded before any read, as Preview does. A rendered page can
+            // ask this endpoint for anything, so it gets the stricter of the two existing rules.
+            if (FilePreviewPolicy.IsUnderDotDirectory(target.ServerPath))
+            {
+                return NotFound(
+                    new
+                    {
+                        error = "excluded",
+                        code = "excluded",
+                        threadId,
+                    }
+                );
+            }
+
+            // Deterministic 413 from the authoritative listed size, without reading a byte (as Download).
+            if (target.Size is > FileBrowserLimits.MaxDownloadBytes)
+            {
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    new
+                    {
+                        error = "file_too_large",
+                        code = "file_too_large",
+                        threadId,
+                    }
+                );
+            }
+
+            var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(
+                session.SessionId,
+                target.ServerPath,
+                FileBrowserLimits.MaxDownloadBytes,
+                ct
+            );
+
+            var fileName = LastComponent(target.ServerPath);
+            var contentType = WorkspaceContentTypes.ForFileName(fileName);
+            ApplyRawHeaders(contentType, fileName, attachment: string.Equals(download, "1", StringComparison.Ordinal));
+            return File(bytes, contentType);
         }
         catch (SandboxException ex) when (IsOverCap(ex))
         {
@@ -1190,6 +1358,91 @@ public sealed class FileBrowserController(
     }
 
     private static bool IsOverCap(SandboxException ex) => ex.IsDirectReadCapExceeded;
+
+    /// <summary>
+    /// The current request's principal as the stable string a workspace grant is bound to, or null when the
+    /// request carries none (the normal state while <c>Identity:Enforce</c> is off).
+    /// </summary>
+    /// <remarks>
+    /// Read from <see cref="HttpContext.Items"/> — exactly what <c>HttpContextPrincipalAccessor</c> does —
+    /// rather than by injecting <c>IPrincipalAccessor</c>, so this controller's constructor signature is
+    /// unchanged. Kind is included because two parties of different kinds may carry the same id string, and
+    /// a grant that ignored kind would let one validate as the other.
+    /// </remarks>
+    private string? CurrentPrincipalId()
+    {
+        if (!HttpContext.Items.TryGetValue(IdentityHttpItems.PrincipalKey, out var value))
+        {
+            return null;
+        }
+
+        return value is Principal principal ? $"{principal.Actor.Kind}:{principal.Actor.Id}" : null;
+    }
+
+    /// <summary>
+    /// Turns a refused grant into its response. A grant that does not read is <c>401</c> (mint a new one);
+    /// one that reads but names another conversation or another principal is <c>403</c>, because it is a
+    /// genuine token being pointed somewhere it was not issued for.
+    /// </summary>
+    private IActionResult GrantFailureResult(WorkspaceGrantFailure failure, string threadId) =>
+        failure switch
+        {
+            WorkspaceGrantFailure.ThreadMismatch => StatusCode(
+                StatusCodes.Status403Forbidden,
+                new
+                {
+                    error = "grant_thread_mismatch",
+                    code = "grant_thread_mismatch",
+                    threadId,
+                }
+            ),
+            WorkspaceGrantFailure.PrincipalMismatch => StatusCode(
+                StatusCodes.Status403Forbidden,
+                new
+                {
+                    error = "grant_principal_mismatch",
+                    code = "grant_principal_mismatch",
+                    threadId,
+                }
+            ),
+            _ => StatusCode(
+                StatusCodes.Status401Unauthorized,
+                new
+                {
+                    error = "invalid_grant",
+                    code = "invalid_grant",
+                    threadId,
+                }
+            ),
+        };
+
+    /// <summary>
+    /// Writes the fixed response headers for a raw workspace file. Every one of them is a control, not a
+    /// nicety: <c>nosniff</c> stops a <c>.txt</c> that opens with <c>&lt;html&gt;</c> being sniffed into a
+    /// document and around the type decision above; <c>no-store</c> keeps a URL that CONTAINS a credential
+    /// out of shared caches; <c>no-referrer</c> stops a rendered page leaking that same URL to any host it
+    /// loads an image from — the single widest leak channel, closed at the response rather than by trusting
+    /// the document; and the CSP sandbox gives an executable document an opaque origin even in a top-level
+    /// tab. See <see cref="WorkspaceContentTypes.SandboxPolicy"/>.
+    /// </summary>
+    private void ApplyRawHeaders(string contentType, string fileName, bool attachment)
+    {
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers.CacheControl = "private, no-store";
+        Response.Headers["Referrer-Policy"] = "no-referrer";
+
+        if (WorkspaceContentTypes.IsActiveDocument(contentType))
+        {
+            Response.Headers.ContentSecurityPolicy = WorkspaceContentTypes.SandboxPolicy;
+        }
+
+        // Set by hand rather than through File(..., fileDownloadName:), which can only produce `attachment`.
+        // SetHttpFileName writes both `filename` and the RFC 5987 `filename*`, so a non-ASCII workspace file
+        // name survives instead of being mangled or dropped.
+        var disposition = new ContentDispositionHeaderValue(attachment ? "attachment" : "inline");
+        disposition.SetHttpFileName(fileName);
+        Response.Headers.ContentDisposition = disposition.ToString();
+    }
 
     private SandboxCredential? TryBuildCallerCredential()
     {
