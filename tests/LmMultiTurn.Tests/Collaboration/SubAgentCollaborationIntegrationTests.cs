@@ -1362,6 +1362,41 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DisposingAManager_RetiresAFinishedAgentWithTheStatusItFinishedWith()
+    {
+        // Disposal used to retire every admission as `stopped`, whatever the agent had actually done,
+        // and the identity wiring flushes its roster AFTER that sweep — so the persisted status of an
+        // agent that completed was never `completed`. The word is what the next process has to say
+        // about it (a tombstone's last_status, and any future re-admission decides on it), and
+        // "stopped" is the one word that says nothing. Only an agent still in flight is stopped by
+        // disposal; a finished one keeps the word it finished with.
+        var root = CreateRegisteredRoot();
+        var (manager, _) = CreateManager(root);
+
+        _ = await manager.SpawnAsync(
+            "worker",
+            "read the design doc",
+            name: "researcher",
+            role: "worker role",
+            description: "Reads the design doc.",
+            runInBackground: false
+        );
+        await Wait.UntilAsync(
+            () => root.Directory.Resolve("researcher").Entry?.Status == AgentCollaborationStatuses.Completed,
+            "the finished sub-agent's terminal status reached the directory",
+            TimeSpan.FromSeconds(5),
+            observed: () => $"status={root.Directory.Resolve("researcher").Entry?.Status}"
+        );
+
+        await manager.DisposeAsync();
+
+        var entry = root.Directory.Resolve("researcher").Entry;
+        entry.Should().NotBeNull();
+        entry!.IsLive.Should().BeFalse("disposal is where the agent stops existing");
+        entry.Status.Should().Be(AgentCollaborationStatuses.Completed, "it finished; disposal did not stop it");
+    }
+
+    [Fact]
     public async Task GetAgents_OverTheCap_DropsTheOldestFinishedAgentsAndAnnouncesTheTruncation()
     {
         // A retired agent's row is never removed from the directory, so the listing grows without

@@ -2932,6 +2932,24 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        // What each agent had actually done, read before the registry is cleared. Retiring everything as
+        // `stopped` was wrong for the agents that had already finished: disposal stops nothing about
+        // them, and the identity wiring flushes the roster AFTER this sweep, so the word persisted for a
+        // completed agent was never `completed`. That word is what the next process has to say about
+        // the agent, and `stopped` is the one that says nothing. Only an agent still in flight — or one
+        // that never ran, which is not in _agents at all — is stopped by disposal.
+        var terminalStatuses = _agents.Values.ToDictionary(
+            state => state.AgentId,
+            state =>
+                state.Status switch
+                {
+                    SubAgentStatus.Completed => AgentCollaborationStatuses.Completed,
+                    SubAgentStatus.Error => AgentCollaborationStatuses.Error,
+                    _ => AgentCollaborationStatuses.Stopped,
+                },
+            StringComparer.Ordinal
+        );
+
         _agents.Clear();
         _namesToIds.Clear();
 
@@ -2939,7 +2957,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
         foreach (var agentId in _admissions.Keys.ToArray())
         {
-            RetireAgent(agentId, AgentCollaborationStatuses.Stopped);
+            RetireAgent(agentId, terminalStatuses.GetValueOrDefault(agentId, AgentCollaborationStatuses.Stopped));
         }
 
         // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
