@@ -904,14 +904,22 @@ public sealed class MultiTurnAgentLoop
                 // the guard and fail the run outright (bug #5). It now settles the outstanding
                 // deferrals with their tools' placeholders first, so the interrupting input can be
                 // carried to the model on a complete tool_use/tool_result pair.
+                //
+                // Which of the two endings a batch gets is the parked tool's own call (bug #6): a
+                // question wakes for anything a notification-only fold would not already absorb, while
+                // a Wait enumerates what is worth waking for and folds the rest. This is the only seam
+                // where the outstanding deferrals and the arriving batch are both visible, so it is
+                // where the policy is applied.
                 if (!_delayed.IsEmpty)
                 {
-                    if (AllMessagesAreNotifications(realInputs) && await TryAppendParkedInputsAsync(realInputs, ct))
+                    if (!ShouldWakeParkedDeferrals(realInputs))
                     {
-                        continue;
+                        if (await TryAppendParkedInputsAsync(realInputs, ct))
+                        {
+                            continue;
+                        }
                     }
-
-                    if (await TrySettleDeferralsEarlyAsync(ct))
+                    else if (await TrySettleDeferralsEarlyAsync(ct))
                     {
                         // Settling a parked deferral queues its delayed child run, and a queued cause
                         // outranks fresh input (see the dequeue at the top of this loop). So the
@@ -1741,6 +1749,62 @@ public sealed class MultiTurnAgentLoop
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether the outstanding deferrals want this batch of interrupting input badly enough to end
+    /// their park for it. False folds the batch into history under the parked run instead.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A deferral with no registered placeholder cannot be settled at all, so the only two endings
+    /// that exist for it are the notification fold and the pre-existing fail-fast - which is exactly
+    /// what asking to wake produces, since <see cref="TrySettleDeferralsEarlyAsync"/> then declines
+    /// and the caller falls through to the deferred-tool guard. One such deferral decides for the
+    /// whole set, because settling is all-or-nothing anyway.
+    /// </para>
+    /// <para>
+    /// Otherwise any one tool wanting to wake is enough: the settle closes every outstanding call, so
+    /// a batch that matters to one parked tool is delivered on a complete history for all of them.
+    /// </para>
+    /// </remarks>
+    private bool ShouldWakeParkedDeferrals(List<QueuedInput> realInputs)
+    {
+        var outstanding = _delayed.Snapshot();
+        if (outstanding.Count == 0)
+        {
+            return false;
+        }
+
+        var allNotifications = AllMessagesAreNotifications(realInputs);
+        var specs = new List<EarlySettleSpec>(outstanding.Count);
+        foreach (var entry in outstanding)
+        {
+            if (!EarlySettlePlaceholders.TryGet(entry.FunctionName, out var spec))
+            {
+                return !allNotifications;
+            }
+
+            specs.Add(spec);
+        }
+
+        List<ParkedInterruption> items =
+        [
+            .. realInputs.SelectMany(input =>
+                input.Input.Messages.Select(m => new ParkedInterruption(m, input.Trigger != null))
+            ),
+        ];
+        var batch = new ParkedInterruptionBatch(items, allNotifications);
+
+        foreach (var spec in specs)
+        {
+            if (spec.ShouldWake(batch))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -3769,12 +3833,16 @@ public sealed class MultiTurnAgentLoop
 
         var toolName = entry?.FunctionName ?? call?.FunctionName ?? string.Empty;
         var args = entry?.FunctionArgs ?? call?.FunctionArgs;
-        var request = EarlySettlePlaceholders.TryGet(toolName, out var spec)
-            ? spec.RenderRequest(args)
-            : args ?? string.Empty;
+        var hasSpec = EarlySettlePlaceholders.TryGet(toolName, out var spec);
+        var request = hasSpec ? spec.RenderRequest(args) : args ?? string.Empty;
 
+        // Named per tool: a timer firing is not an answer from the human, and an envelope claiming it
+        // is would be read as one.
+        var tag = hasSpec ? spec.InjectionTag : "user-answer";
         var text = new StringBuilder()
-            .Append("<user-answer tool=\"")
+            .Append('<')
+            .Append(tag)
+            .Append(" tool=\"")
             .Append(SecurityElement.Escape(toolName))
             .Append("\" tool-call-id=\"")
             .Append(SecurityElement.Escape(toolCallId))
@@ -3782,7 +3850,9 @@ public sealed class MultiTurnAgentLoop
             .Append(request)
             .Append("\n</request>\n<answer>\n")
             .Append(answer)
-            .Append("\n</answer>\n</user-answer>")
+            .Append("\n</answer>\n</")
+            .Append(tag)
+            .Append('>')
             .ToString();
 
         return new TextMessage { Text = text, Role = Role.User };

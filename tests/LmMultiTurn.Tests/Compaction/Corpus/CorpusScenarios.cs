@@ -181,13 +181,9 @@ public static class CorpusScenarios
             Id = "h",
             Item = "parked Wait (must skip)",
             Title =
-                "A timer Wait is parked: a run that arrives meanwhile is refused, no cut lands, the timer resumes the run (R6).",
-            Steps =
-            [
-                CorpusStep.Say("Work, then wait."),
-                CorpusStep.Say("Any progress?", expectError: true),
-                CorpusStep.AwaitRuns(1),
-            ],
+                "A timer Wait is parked: the run that arrives meanwhile settles it early with the placeholder, "
+                + "no cut lands, and the timer's result arrives afterwards as its own turn (R6).",
+            Steps = [CorpusStep.Say("Work, then wait."), CorpusStep.Say("Any progress?"), CorpusStep.AwaitRuns(1)],
             Root = new CorpusScript
             {
                 Replies =

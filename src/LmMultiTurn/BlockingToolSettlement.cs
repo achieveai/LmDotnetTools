@@ -1,5 +1,7 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
@@ -87,7 +89,47 @@ internal sealed class BlockingToolOutcome
 /// Renders the original call's arguments back into readable form, for the injected message that carries
 /// the request alongside the late answer.
 /// </param>
-internal sealed record EarlySettleSpec(string ResultJson, Func<string?, string> RenderRequest);
+/// <param name="ShouldWake">
+/// Whether this batch of interrupting input is worth ending the park for. Evaluated at the only seam
+/// where the batch's message kinds are still visible - the loop's parked branch - because the tool
+/// itself never sees them. A tool that says no is left parked and the batch is folded into history
+/// instead, which is the cheaper ending and the one that keeps a background trickle from turning
+/// every park into a turn.
+/// </param>
+/// <param name="InjectionTag">
+/// The element the late real result is injected under. Named per tool: a timer firing is not an
+/// answer from the human, and an envelope that says it is would be read as one.
+/// </param>
+internal sealed record EarlySettleSpec(
+    string ResultJson,
+    Func<string?, string> RenderRequest,
+    Func<ParkedInterruptionBatch, bool> ShouldWake,
+    string InjectionTag = "user-answer"
+);
+
+/// <summary>
+/// One message that arrived while the conversation was parked, reduced to what a wake policy may look
+/// at.
+/// </summary>
+/// <param name="Message">The message itself.</param>
+/// <param name="IsTriggerFire">
+/// Whether it is a trigger envelope a <c>Wait</c> in notify mode produced rather than something a
+/// person or a peer sent. It is a <see cref="TextMessage"/> like a human turn is, and only the queue
+/// entry it arrived on can tell the two apart - so the distinction is captured here, at the drain,
+/// while it still exists.
+/// </param>
+internal readonly record struct ParkedInterruption(IMessage Message, bool IsTriggerFire);
+
+/// <summary>
+/// The interrupting batch as a wake policy sees it.
+/// </summary>
+/// <param name="Items">Every message in the batch, in arrival order.</param>
+/// <param name="AllNotifications">
+/// The loop's own <c>AllMessagesAreNotifications</c> verdict, passed in rather than recomputed so a
+/// policy that wants "anything a notification-only fold would not already have handled" is spelled
+/// with the same predicate the fold branch is gated on.
+/// </param>
+internal sealed record ParkedInterruptionBatch(IReadOnlyList<ParkedInterruption> Items, bool AllNotifications);
 
 /// <summary>
 /// The tools the loop is allowed to settle early, and what it settles them with.
@@ -109,9 +151,72 @@ internal static class EarlySettlePlaceholders
     {
         [AskUserQuestionToolProvider.ToolName] = new EarlySettleSpec(
             AskUserQuestionToolProvider.EarlySettleResultJson,
-            AskUserQuestionToolProvider.RenderRequestForInjection
+            AskUserQuestionToolProvider.RenderRequestForInjection,
+            // A question wakes for everything a notification-only fold does not already handle. This
+            // is exactly the condition the parked branch used before wake policies existed, written
+            // out so that adding a curated policy for another tool cannot change this one.
+            static batch =>
+                !batch.AllNotifications
+        ),
+        [WaitToolProvider.WaitToolName] = new EarlySettleSpec(
+            WaitToolProvider.EarlySettleResultJson,
+            WaitToolProvider.RenderRequestForInjection,
+            WakesAParkedWait,
+            InjectionTag: WaitToolProvider.InjectionTag
         ),
     };
+
+    /// <summary>
+    /// The curated wake policy for a parked <c>Wait</c>: which interruptions are worth ending the park
+    /// for, and which are folded into history under it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A <c>Wait</c> is not a question - nobody is standing by for it, and most of what arrives while
+    /// it is parked is background chatter the run would rather absorb than be woken by. So unlike
+    /// <c>AskUserQuestion</c>, which wakes for anything that is not purely a notification, this
+    /// enumerates what wakes: a person, a peer addressing this agent, a descendant stuck on a
+    /// question, a sub-agent or workflow reaching a terminal state. Everything else - todo nudges and
+    /// digests, context-discovery injections, plain client notifications, another wait's notify-mode
+    /// fire - is folded and the run stays parked and armed.
+    /// </para>
+    /// <para>
+    /// <b>On "a sub-agent the wait is not waiting on".</b> Every kind a <c>Wait</c> can be armed on is
+    /// registered by the host, and no in-tree kind names an agent, so a
+    /// <see cref="NotifyKinds.SubAgentCompletion"/> cannot be the parked wait's own target today. If a
+    /// host ever registers an agent-completion kind, the target's own fire resolves the call through
+    /// the ordinary path and this policy is never consulted for it; the worst a race can do is wake a
+    /// wait that was about to resolve by itself.
+    /// </para>
+    /// </remarks>
+    internal static bool WakesAParkedWait(ParkedInterruptionBatch batch)
+    {
+        foreach (var item in batch.Items)
+        {
+            if (Wakes(item))
+            {
+                return true;
+            }
+        }
+
+        return false;
+
+        static bool Wakes(ParkedInterruption item) =>
+            item.Message switch
+            {
+                // A peer addressing this agent directly - a question, a delegated task, or the answer
+                // to one this agent asked for. Every one of them is somebody waiting on this run.
+                AgentMessage => true,
+                NotifyMessage notify => notify.NotifyKind
+                    is NotifyKinds.DescendantQuestion
+                        or NotifyKinds.SubAgentCompletion
+                        or NotifyKinds.WorkflowCompletion,
+                // A notify-mode wait firing is machine output, not a person, whatever its shape.
+                _ when item.IsTriggerFire => false,
+                TextMessage text => text.Role == Role.User,
+                _ => false,
+            };
+    }
 
     /// <summary>The settlement for <paramref name="toolName"/>, or false when it has none.</summary>
     public static bool TryGet(string? toolName, out EarlySettleSpec spec)

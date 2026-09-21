@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -16,6 +17,55 @@ public sealed class WaitToolProvider : IFunctionProvider
 {
     /// <summary>Tool name used for the block <c>Wait</c> — also the deferred-entry function name matched on restart.</summary>
     public const string WaitToolName = "Wait";
+
+    /// <summary>
+    /// What a blocking <c>Wait</c> returns when the loop settles the parked call early because
+    /// something arrived that has to run now. The wait itself stays armed: this is a change of
+    /// ending, not a cancellation.
+    /// </summary>
+    /// <remarks>
+    /// Lives here, next to the contract that describes it, because the model reads both: a
+    /// description promising only one ending would make this text read as a failure, and the model
+    /// would arm a second wait for an event the first one is still watching for.
+    /// </remarks>
+    public const string EarlySettlePlaceholder =
+        "Wait still armed; its result will arrive as a message when the event fires or the timeout is reached";
+
+    /// <summary>
+    /// The element the late trigger result is injected under once the call has been settled early.
+    /// Deliberately not the question tool's <c>user-answer</c>: nobody answered anything.
+    /// </summary>
+    public const string InjectionTag = "wait-result";
+
+    /// <summary>
+    /// <see cref="EarlySettlePlaceholder"/> in this tool's own envelope shape, with a named non-error
+    /// <c>status</c> - the same envelope family as the statuses a wait resolves with, so a model
+    /// branching on <c>status</c> sees a legitimate outcome instead of a string to parse.
+    /// </summary>
+    public static readonly string EarlySettleResultJson = JsonSerializer.Serialize(
+        new { status = EarlySettlePlaceholders.EarlySettleStatus, message = EarlySettlePlaceholder }
+    );
+
+    /// <summary>
+    /// Restates the wait that was armed, for the injected message that carries the trigger's result
+    /// after an early settle. Falls back to the raw arguments when they do not parse - an unreadable
+    /// request is still better context than none.
+    /// </summary>
+    internal static string RenderRequestForInjection(string? argsJson)
+    {
+        if (!WaitToolArgs.TryParse(argsJson, out var parsed))
+        {
+            return argsJson ?? string.Empty;
+        }
+
+        var sb = new StringBuilder().Append("Wait on kind '").Append(parsed.Kind).Append('\'');
+        if (!string.IsNullOrWhiteSpace(parsed.Label))
+        {
+            _ = sb.Append(" (").Append(parsed.Label).Append(')');
+        }
+
+        return sb.Append(" with args ").Append(parsed.ArgsJson).Append(", timeout ").Append(parsed.Timeout).ToString();
+    }
 
     private readonly TriggerRuntime _runtime;
 
@@ -44,8 +94,20 @@ public sealed class WaitToolProvider : IFunctionProvider
             Name = WaitToolName,
             Description =
                 "Pause and wait for a background/scheduled event, then resume with its result. "
-                + "The run parks after this call and continues automatically once the event fires "
-                + "or the timeout is reached — the result becomes this tool's return value.\n\n"
+                + "The run parks after this call. It has TWO possible endings and you must handle "
+                + "both.\n"
+                + "1. The event fires, or the timeout is reached, while you are still parked: that "
+                + "result becomes this tool's return value and you continue from it.\n"
+                + "2. Something else arrives that has to run first (a message from the human, a "
+                + "message from another agent, a sub-agent or workflow finishing). The call then "
+                + "returns {\"status\":\""
+                + EarlySettlePlaceholders.EarlySettleStatus
+                + "\"} with the message \""
+                + EarlySettlePlaceholder
+                + "\". This is NOT a failure and NOT a timeout. The wait is STILL ARMED, so do NOT "
+                + "arm it again: its result will arrive later as its own <"
+                + InjectionTag
+                + "> message. Get on with whatever arrived.\n\n"
                 + _runtime.DescribeKindsForToolContract(),
             Parameters =
             [

@@ -296,10 +296,11 @@ public class NotifyOrderingTests
     {
         // A single turn arms two waits at once: a block-mode timer (long timeout so it parks as
         // Deferred and never naturally fires during the test) and a notify-mode manual wait. Once
-        // parked, we fire the notify wait. Delivery still goes through the ordinary queue gate and
-        // drives a new run, but that run's precondition guard refuses to call the LLM at all while
-        // the block wait's placeholder is unresolved, so it errors out without touching _deferred.
-        // Assert the block wait's tool_call_id is still reported as deferred afterward.
+        // parked, we fire the notify wait. A notify-mode fire is machine output, not somebody waiting
+        // on this run, so the curated wake policy for a parked Wait (bug #6) folds it into history
+        // under the parked run and leaves the block wait parked and armed - where it used to drive a
+        // run that the deferred-tool precondition then failed outright. Assert the block wait's
+        // tool_call_id is still reported as deferred afterward, and that nothing failed.
         var manual = new ManualTriggerSource();
         var options = ManualNotifyOptions(manual);
 
@@ -369,7 +370,19 @@ public class NotifyOrderingTests
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await manual.Sinks["tc_notify"].FireAsync(new TriggerFireEvent("fire-1"), cts.Token);
-        await runsCompleted.WaitAsync(1);
+
+        // The fold's own side effect: the envelope lands in history under the parked run without a
+        // turn running for it. Also completes on the regression (a second run) so a broken loop fails
+        // fast instead of burning the whole wait.
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            () =>
+                loop.GetHistorySnapshot()
+                    .OfType<TextMessage>()
+                    .Any(t => t.Text.Contains("fire-1", StringComparison.Ordinal))
+                || runsCompleted.Completed > 1,
+            because: "the parked loop folded the notify-mode fire into history"
+        );
+        runsCompleted.Completed.Should().Be(1, "a folded fire does not run a turn of its own");
 
         await cts.CancelAsync();
 
