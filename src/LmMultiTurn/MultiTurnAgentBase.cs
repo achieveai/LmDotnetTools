@@ -87,6 +87,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // what re-arms it in TryDrainInputs. See WaitForRealInputAsync.
     private TaskCompletionSource _realInputSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    // The real input that is queued and not yet drained, oldest first, and an EDGE signal that fires
+    // once per arrival. _realInputSignal above is LEVEL-triggered: it stays set until the next drain,
+    // which is exactly right for "should the loop stop idling" and exactly wrong for a waiter that
+    // must ignore some arrivals — it would observe the same completed task forever and spin. These two
+    // answer the other question: WHAT arrived, and HAS ANYTHING arrived SINCE I last looked. Both are
+    // guarded by _stateLock, and the arrival source is swapped before the old one is completed, so a
+    // waiter that captured it under the same lock as its scan cannot miss the next write.
+    private readonly List<QueuedInput> _pendingRealInputs = [];
+    private TaskCompletionSource _inputArrival = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
@@ -1371,12 +1381,79 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         }
 
         TaskCompletionSource signal;
+        TaskCompletionSource arrival;
         lock (_stateLock)
         {
             signal = _realInputSignal;
+            _pendingRealInputs.Add(queued);
+
+            // Swap first, complete second. A waiter captured the OLD source under the lock together
+            // with its scan of the list, so completing it after the swap wakes exactly the waiters
+            // that have not yet seen this entry, and the next write already has a fresh source to
+            // wake the ones that are about to look again.
+            arrival = _inputArrival;
+            _inputArrival = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         _ = signal.TrySetResult();
+        _ = arrival.TrySetResult();
+    }
+
+    /// <summary>
+    /// Completes with the first queued input <paramref name="wakes"/> accepts — including one that was
+    /// already waiting when the call was made — and keeps waiting through every input it does not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is a PEEK. The input is left on the channel for the run loop to drain and act on, which is
+    /// what makes it safe for a blocking tool to end its wait on: the tool reports that it stopped,
+    /// the turn ends, and the loop then processes the very input that stopped it. Consuming it here
+    /// would make the tool responsible for delivering it, and a tool that returns an error would lose
+    /// it outright.
+    /// </para>
+    /// <para>
+    /// The already-queued case is not an optimization. A tool handler runs INSIDE a turn, so anything
+    /// that arrived between the turn starting and the handler blocking is sitting on the channel with
+    /// its arrival signal long since fired; a waiter that only listened for the NEXT arrival would
+    /// block on input the agent is already holding.
+    /// </para>
+    /// <para>
+    /// <paramref name="wakes"/> is evaluated outside the lock, over a snapshot: it is caller-supplied
+    /// and may do anything, and the write path takes the same lock. Re-scanning the whole list each
+    /// time rather than tracking a cursor is deliberate — the list is short (it is the undrained tail
+    /// of a bounded channel) and a cursor would have to be rebased every time a drain removed entries.
+    /// </para>
+    /// </remarks>
+    /// <param name="wakes">Decides whether an input is one this caller stops for.</param>
+    /// <param name="ct">Cancels the waiting, not the input.</param>
+    /// <returns>The matching input, left queued.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> fired first.</exception>
+    internal async Task<QueuedInput> WaitForMatchingInputAsync(Func<QueuedInput, bool> wakes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(wakes);
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            QueuedInput[] pending;
+            Task arrival;
+            lock (_stateLock)
+            {
+                pending = [.. _pendingRealInputs];
+                arrival = _inputArrival.Task;
+            }
+
+            foreach (var queued in pending)
+            {
+                if (wakes(queued))
+                {
+                    return queued;
+                }
+            }
+
+            await arrival.WaitAsync(ct);
+        }
     }
 
     /// <summary>
@@ -1463,6 +1540,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         while (_inputChannel.Reader.TryRead(out var item))
         {
             inputs.Add(item);
+        }
+
+        // Retire exactly what this drain took, by reference. Clearing the list wholesale would also
+        // discard an input written between the re-arm above and the loop below — one this drain did
+        // NOT take — and a waiter would then never be told about it. Reference identity, not record
+        // equality: two inputs carrying the same messages are still two inputs.
+        if (inputs.Count > 0)
+        {
+            lock (_stateLock)
+            {
+                foreach (var taken in inputs)
+                {
+                    for (var i = 0; i < _pendingRealInputs.Count; i++)
+                    {
+                        if (ReferenceEquals(_pendingRealInputs[i], taken))
+                        {
+                            _pendingRealInputs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if (inputs.Count > 1)

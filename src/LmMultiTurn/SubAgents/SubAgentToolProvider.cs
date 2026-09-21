@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -795,6 +796,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
                 + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
                 + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
+                + "The wait also ends as soon as something is sent to YOU that you would want to act "
+                + "on — a message from the person you work for, a peer agent, a descendant stuck on a "
+                + "question, or a DIFFERENT agent finishing — because nothing you are sent can be "
+                + "read while this call blocks. That returns status 'interrupted_by_input' with "
+                + "`input` naming what arrived: the agent you were waiting on is still running and "
+                + "nothing was cancelled, so deal with the message and call WaitAgent again. "
+                + "Background chatter — todo nudges and digests, context injections, plain "
+                + "notifications — does not end the wait.\n\n"
                 + "Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
@@ -889,9 +898,16 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "which it was, so answer it with SendMessage and then wait again. Each such message "
                 + "ends at most one wait, so one you have chosen not to answer will not keep "
                 + "interrupting.\n\n"
+                + "It also ends as soon as anything else you would want to act on is sent to YOU — a "
+                + "message from the person you work for, a descendant stuck on a question, or an "
+                + "agent you are NOT waiting on finishing — because nothing you are sent can be read "
+                + "while this call blocks. Background chatter (todo nudges and digests, context "
+                + "injections, plain notifications) does not end the wait.\n\n"
                 + "RESULT `status` is one of: 'completed' (the agents finished), 'timeout' (the cap "
                 + "expired; nothing was cancelled), 'question_received' or 'interrupted' (a question "
                 + "or a delegated task addressed to you ended the wait — see `interrupt`), "
+                + "'interrupted_by_input' (something else was sent to you — see `input`; the agents "
+                + "are all still running and nothing was cancelled, so handle it and wait again), "
                 + "'wait_cycle' (an agent you named is itself blocked on an answer from you, so this "
                 + "wait could only time out — answer the messages in `blocking` first), or "
                 + "'not_waitable' (every agent you named is real but none of them is one of your own "
@@ -2394,11 +2410,25 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
         var watcher = WatchForInterruptAsync(linked.Token);
+
+        // The agents this wait is already blocked on. Their completions are this wait's own result and
+        // reach it through `completion`; every other agent's is news the owner is holding.
+        var blockedOn = waitable.Select(e => e.AgentId).Where(id => id is not null).ToHashSet(StringComparer.Ordinal);
+        bool IsBlockedOn(string? agentId) => agentId is not null && blockedOn.Contains(agentId);
+
+        var inputWatcher = WatchForWakingInputAsync(IsBlockedOn, linked.Token);
         var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        Task[] races = timeout is null ? [completion, watcher] : [completion, watcher, timeout];
+        Task[] races = timeout is null
+            ? [completion, watcher, inputWatcher]
+            : [completion, watcher, inputWatcher, timeout];
 
         var winner = await Task.WhenAny(races);
+
+        // Read BEFORE the teardown below. Every racer completes rather than faults when cancelled, so
+        // after the cancel `completion` reports as finished whether or not the agents actually did -
+        // and "the children finished" has to outrank "somebody wrote to you" when both are true.
+        var completionSettled = completion.IsCompleted;
 
         // Stop the losing races before reporting. The waits are non-destructive, so cancelling them
         // abandons the observation only — every agent listed keeps running either way.
@@ -2419,10 +2449,22 @@ public class SubAgentToolProvider : IFunctionProvider
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var status =
-            interrupted is null ? (winner == completion ? WaitStatus.Completed : WaitStatus.Timeout)
-            : interrupted.Kind == AgentMessageType.Question ? WaitStatus.QuestionReceived
-            : WaitStatus.Interrupted;
+        // Only consulted when nothing better won, so an input that arrived alongside a completion is
+        // not reported instead of it.
+        var wokenBy =
+            interrupted is null && !completionSettled && await inputWatcher is { } queued
+                ? DescribeWakingInput(queued, IsBlockedOn)
+                : null;
+
+        var status = interrupted is not null
+            ? interrupted.Kind == AgentMessageType.Question
+                ? WaitStatus.QuestionReceived
+                : WaitStatus.Interrupted
+            : completionSettled
+                ? WaitStatus.Completed
+                : wokenBy is not null
+                    ? WaitStatus.InterruptedByInput
+                    : WaitStatus.Timeout;
 
         return ToolHandlerResult.FromText(
             JsonSerializer.Serialize(
@@ -2434,6 +2476,8 @@ public class SubAgentToolProvider : IFunctionProvider
                     // The pre-rename name, kept filled for one release so a caller written against
                     // the question-only wait keeps reading the field it knows.
                     question = interrupted,
+                    input = wokenBy,
+                    next_action = wokenBy is null ? null : InputInterruptNextAction,
                     not_waited = notWaited.Count == 0 ? null : notWaited,
                     agents = BuildObservationPayload(_manager.CheckAgents(waitTargets)),
                 }
@@ -2460,6 +2504,12 @@ public class SubAgentToolProvider : IFunctionProvider
 
         /// <summary>A delegated task addressed to the waiter ended the wait.</summary>
         public const string Interrupted = "interrupted";
+
+        /// <summary>
+        /// Input the owning agent is holding, and cannot look at while this wait blocks, ended the
+        /// wait. Nothing was cancelled and no result was consumed.
+        /// </summary>
+        public const string InterruptedByInput = "interrupted_by_input";
 
         /// <summary>An agent named as a target is itself blocked on an answer from the waiter.</summary>
         public const string WaitCycle = "wait_cycle";
@@ -2627,6 +2677,104 @@ public class SubAgentToolProvider : IFunctionProvider
             // Intentionally swallowed: the outcome is reported from a fresh observation.
         }
     }
+
+    /// <summary>
+    /// Waits, quietly, for input the owning agent is holding that is worth ending a wait for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The third racer, and the one bug 6 is about. While a wait blocks, the agent that owns it cannot
+    /// start another turn, so everything sent to it queues behind a call that may have no timeout at
+    /// all: a person typing "stop, do this instead" was heard only once the children finished, which
+    /// for a wedged child is never. The completion tasks answer "did my children finish" and the
+    /// ledger watcher answers "did a peer address me"; neither answers "is the person I work for
+    /// trying to reach me".
+    /// </para>
+    /// <para>
+    /// A PEEK, not a read. The input stays queued: this call reports that the wait stopped, the turn
+    /// ends, and the run loop then drains and acts on the very input that stopped it. The waited-on
+    /// agents are untouched - nothing is cancelled, no completion is consumed, and the caller is told
+    /// to wait again.
+    /// </para>
+    /// <para>
+    /// Which inputs count is <see cref="EarlySettlePlaceholders.WakesABlockedWait"/>, shared with the
+    /// run loop's parked-<c>Wait</c> branch so the two cannot drift into two answers. The one thing
+    /// this caller adds is <paramref name="isAlreadyWaitedOn"/>: a completion notice from an agent
+    /// this wait is blocked on is the wait's own result and arrives through the completion task, so
+    /// racing it here would end the wait a beat early, with the wrong status and nothing to show.
+    /// </para>
+    /// </remarks>
+    private async Task<QueuedInput?> WatchForWakingInputAsync(
+        Func<string?, bool> isAlreadyWaitedOn,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            return await _manager.WaitForOwnerInputAsync(
+                queued => WakesAWait(queued, isAlreadyWaitedOn),
+                cancellationToken
+            );
+        }
+        catch (Exception)
+        {
+            // Another racer won, or this agent has no peekable input queue. Either way the wait's
+            // outcome is decided by the racer that did resolve.
+            return null;
+        }
+    }
+
+    /// <summary>True when any message in <paramref name="queued"/> is worth ending a wait for.</summary>
+    private static bool WakesAWait(QueuedInput queued, Func<string?, bool> isAlreadyWaitedOn) =>
+        queued.Input.Messages.Any(message =>
+            EarlySettlePlaceholders.WakesABlockedWait(
+                new ParkedInterruption(message, queued.Trigger != null),
+                isAlreadyWaitedOn
+            )
+        );
+
+    /// <summary>What the model is told about the input that ended its wait.</summary>
+    /// <remarks>
+    /// Deliberately a description and not the content. The input is still queued and arrives in full
+    /// on the next turn, so repeating it here would put the same message in the transcript twice -
+    /// once as a tool result the model may answer, and once as the message itself. What the model
+    /// needs from the wait is only enough to know an answer is coming and who it is from.
+    /// </remarks>
+    private sealed record WakingInput(
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("from")] string? From
+    );
+
+    /// <summary>Describes the first message in <paramref name="queued"/> that ends a wait.</summary>
+    private static WakingInput? DescribeWakingInput(QueuedInput queued, Func<string?, bool> isAlreadyWaitedOn)
+    {
+        foreach (var message in queued.Input.Messages)
+        {
+            if (
+                !EarlySettlePlaceholders.WakesABlockedWait(
+                    new ParkedInterruption(message, queued.Trigger != null),
+                    isAlreadyWaitedOn
+                )
+            )
+            {
+                continue;
+            }
+
+            return message switch
+            {
+                AgentMessage agent => new WakingInput("agent_message", agent.FromName),
+                NotifyMessage notify => new WakingInput(notify.NotifyKind, notify.Label),
+                _ => new WakingInput("user_message", null),
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>The sentence every input-interrupted wait ends with.</summary>
+    private const string InputInterruptNextAction =
+        "Nothing was cancelled and no result was lost: every agent listed is still running, and this "
+        + "wait consumed none of them. Read the message you were sent, do what it asks, then wait again.";
 
     /// <summary>A delay that ends quietly when the race that owns it is torn down.</summary>
     private static async Task DelayQuietlyAsync(TimeSpan delay, CancellationToken cancellationToken)
@@ -2874,12 +3022,28 @@ public class SubAgentToolProvider : IFunctionProvider
         // Quiet racer: the loser is never awaited, so a cancellation fault would surface as an
         // unobserved task exception long after this tool call is gone.
         var completion = AwaitQuietlyAsync(_manager.ObserveTargetCompletionAsync(agentId, linked.Token));
+
+        // The same third racer WaitForAgents gets, for the same reason: this call blocks the turn, so
+        // while it runs the owning agent cannot look at anything it has been sent. This one agent's
+        // own completion is the wait's result and arrives through `completion`.
+        bool IsBlockedOn(string? completed) => string.Equals(completed, agentId, StringComparison.Ordinal);
+
+        var inputWatcher = WatchForWakingInputAsync(IsBlockedOn, linked.Token);
         var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        var winner = timeout is null ? await Task.WhenAny(completion) : await Task.WhenAny(completion, timeout);
+        Task[] races = timeout is null ? [completion, inputWatcher] : [completion, inputWatcher, timeout];
+
+        var winner = await Task.WhenAny(races);
+
+        // Read before the teardown: the quiet completion racer also finishes when cancelled, and a
+        // finished child has to outrank an arriving message when both are true.
+        var completionSettled = completion.IsCompleted;
 
         await linked.CancelAsync();
         cancellationToken.ThrowIfCancellationRequested();
+
+        var wokenBy =
+            !completionSettled && await inputWatcher is { } queued ? DescribeWakingInput(queued, IsBlockedOn) : null;
 
         // Re-read rather than reuse the pre-wait snapshot: the whole point of the wait is the status and
         // result the agent reached while it was blocked. A MISS here is not a mistyped id — that was
@@ -2897,13 +3061,16 @@ public class SubAgentToolProvider : IFunctionProvider
                 new
                 {
                     status = agent is null ? WaitStatus.Unavailable
-                    : winner == completion ? WaitStatus.Completed
+                    : completionSettled ? WaitStatus.Completed
+                    : wokenBy is not null ? WaitStatus.InterruptedByInput
                     : WaitStatus.Timeout,
                     detail = agent is not null
                         ? null
                         : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
                             + "being tracked before it could produce a result — its start failed, or the sub-agent "
                             + "system shut down. There is nothing to collect. Spawn it again if you still need the work.",
+                    input = wokenBy,
+                    next_action = wokenBy is null ? null : InputInterruptNextAction,
                     agent,
                 }
             )

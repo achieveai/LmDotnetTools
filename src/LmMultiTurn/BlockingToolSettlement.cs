@@ -193,30 +193,55 @@ internal static class EarlySettlePlaceholders
     {
         foreach (var item in batch.Items)
         {
-            if (Wakes(item))
+            // Nothing a parked Wait can be armed on names an agent, so no completion reaching this
+            // seam can be its own target - see the remark above. The handler-side waits, which CAN
+            // name their targets, pass a real predicate.
+            if (WakesABlockedWait(item, static _ => false))
             {
                 return true;
             }
         }
 
         return false;
-
-        static bool Wakes(ParkedInterruption item) =>
-            item.Message switch
-            {
-                // A peer addressing this agent directly - a question, a delegated task, or the answer
-                // to one this agent asked for. Every one of them is somebody waiting on this run.
-                AgentMessage => true,
-                NotifyMessage notify => notify.NotifyKind
-                    is NotifyKinds.DescendantQuestion
-                        or NotifyKinds.SubAgentCompletion
-                        or NotifyKinds.WorkflowCompletion,
-                // A notify-mode wait firing is machine output, not a person, whatever its shape.
-                _ when item.IsTriggerFire => false,
-                TextMessage text => text.Role == Role.User,
-                _ => false,
-            };
     }
+
+    /// <summary>
+    /// Whether <paramref name="item"/> is worth ending a blocking wait for, given which agents that
+    /// wait is already blocked on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One vocabulary for both places a wait can be interrupted: the run loop's parked branch (a
+    /// deferred <c>Wait</c>) and the sub-agent wait handlers (<c>WaitAgent</c>, <c>WaitForAgents</c>),
+    /// which block inside a turn and race this against their completion tasks. They are different
+    /// mechanisms - one settles a deferral, the other returns a status - but "is this worth
+    /// interrupting for" must not be two answers, or the same todo nudge would wake one and not the
+    /// other.
+    /// </para>
+    /// <para>
+    /// <paramref name="isAlreadyWaitedOn"/> is the single difference between the two callers. A
+    /// completion the wait is ALREADY blocked on is not an interruption - it is the wait's own
+    /// result, and it arrives through the completion task, which reports it as <c>completed</c>.
+    /// Waking on it as well would end the wait a beat early with the wrong status and no result.
+    /// </para>
+    /// </remarks>
+    internal static bool WakesABlockedWait(ParkedInterruption item, Func<string?, bool> isAlreadyWaitedOn) =>
+        item.Message switch
+        {
+            // A peer addressing this agent directly - a question, a delegated task, or the answer
+            // to one this agent asked for. Every one of them is somebody waiting on this run.
+            AgentMessage => true,
+            NotifyMessage notify => notify.NotifyKind switch
+            {
+                NotifyKinds.SubAgentCompletion => !isAlreadyWaitedOn(notify.SourceToolCallId),
+                NotifyKinds.DescendantQuestion or NotifyKinds.WorkflowCompletion => true,
+                _ => false,
+            },
+            // A notify-mode wait firing is machine output, not a person, whatever its shape.
+            _ when item.IsTriggerFire => false,
+            TextMessage text => text.Role == Role.User,
+            _ => false,
+        };
 
     /// <summary>The settlement for <paramref name="toolName"/>, or false when it has none.</summary>
     public static bool TryGet(string? toolName, out EarlySettleSpec spec)

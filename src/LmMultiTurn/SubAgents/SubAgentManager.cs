@@ -5349,6 +5349,41 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Completes with the first input queued on the OWNING agent that <paramref name="wakes"/> accepts,
+    /// leaving it queued for the run loop to act on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wait tools block inside a turn, so while one is blocked the owning agent cannot start the
+    /// next turn and nothing it has been sent is looked at. That is the whole of bug 6 on this side:
+    /// a person typing while <c>WaitForAgents</c> was blocked was queued behind a wait that could run
+    /// for minutes, or forever when no timeout was passed. The wait needs a third racer beside the
+    /// completion tasks and the collaboration ledger, and it is this - the input the agent is already
+    /// holding.
+    /// </para>
+    /// <para>
+    /// Exposed here rather than reached for directly because a provider holds this manager and nothing
+    /// else; the parent is this class's own collaborator. An agent that is not a
+    /// <see cref="MultiTurnAgentBase"/> has no input queue to peek, so the race simply never resolves
+    /// from this side and the wait behaves exactly as it did before.
+    /// </para>
+    /// </remarks>
+    /// <param name="wakes">Decides which queued input is worth ending a wait for.</param>
+    /// <param name="ct">Cancels the waiting, not the input.</param>
+    internal Task<QueuedInput> WaitForOwnerInputAsync(Func<QueuedInput, bool> wakes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(wakes);
+
+        return _parentAgent is MultiTurnAgentBase owner ? owner.WaitForMatchingInputAsync(wakes, ct) : NeverAsync(ct);
+
+        static async Task<QueuedInput> NeverAsync(CancellationToken ct)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new OperationCanceledException(ct);
+        }
+    }
+
     private async Task SendToParentAsync(SubAgentState state, string text)
     {
         try
