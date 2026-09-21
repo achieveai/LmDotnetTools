@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
+import { delimitedTablePreview, delimiterForPath, parseDelimitedText } from '@/utils/delimitedText';
 
 describe('delimiterForPath', () => {
   it.each([
@@ -68,5 +68,44 @@ describe('parseDelimitedText', () => {
 
   it('returns no rows for empty text', () => {
     expect(parseDelimitedText('', ',').rows).toEqual([]);
+  });
+});
+
+describe('delimitedTablePreview', () => {
+  it('returns null for a path that is not delimited', () => {
+    expect(delimitedTablePreview('notes.md', 'a,b')).toBeNull();
+  });
+
+  it('wraps a CSV as a single-sheet table named after the file', () => {
+    const preview = delimitedTablePreview('data/items.csv', 'name,qty\npear,2');
+
+    expect(preview).toEqual({
+      sheets: [
+        {
+          name: 'items.csv',
+          rows: [
+            ['name', 'qty'],
+            ['pear', '2'],
+          ],
+          truncated: false,
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('carries the row cap through as the sheet truncation flag', () => {
+    const text = Array.from({ length: 10 }, (_, i) => `r${i}`).join('\n');
+
+    const preview = delimitedTablePreview('a.csv', text, 4);
+
+    expect(preview!.sheets[0].rows).toHaveLength(4);
+    expect(preview!.sheets[0].truncated).toBe(true);
+    // A delimited file is always ONE sheet, so nothing can be dropped at the workbook level.
+    expect(preview!.truncated).toBe(false);
+  });
+
+  it('uses a tab for TSV', () => {
+    expect(delimitedTablePreview('out.tsv', 'a\tb')!.sheets[0].rows).toEqual([['a', 'b']]);
   });
 });

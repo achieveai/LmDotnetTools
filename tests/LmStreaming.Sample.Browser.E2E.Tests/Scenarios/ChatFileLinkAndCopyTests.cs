@@ -231,7 +231,7 @@ public sealed class ChatFileLinkAndCopyTests
         // --- CSV file link: a table. ---
         await bubble.GetByRole(AriaRole.Link, new() { Name = "data" }).ClickAsync();
         var table = page.GetByTestId("artifact-preview-table");
-        await Assertions.Expect(table.Locator("th")).ToHaveTextAsync(["name", "qty"]);
+        await Assertions.Expect(table.Locator("th")).ToHaveTextAsync(["Row", "name", "qty"]);
         await Assertions.Expect(table.Locator("tbody tr")).ToHaveCountAsync(2);
         await session.SaveSuccessScreenshotAsync("ChatFileLink.Csv_preview");
 

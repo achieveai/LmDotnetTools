@@ -155,12 +155,21 @@ describe('TextMessage workspace links', () => {
 
   const mountWith = (
     text: string,
-    options: { workspaceLinks?: boolean; threadId?: string | null; provide?: boolean } = {}
+    options: {
+      workspaceLinks?: boolean;
+      workspaceLinkBaseDir?: string;
+      threadId?: string | null;
+      provide?: boolean;
+    } = {}
   ) => {
     const open = vi.fn();
     const threadId = ref<string | null>(options.threadId === undefined ? 'thread-9' : options.threadId);
     const wrapper = mount(TextMessage, {
-      props: { message: assistant(text), workspaceLinks: options.workspaceLinks ?? true },
+      props: {
+        message: assistant(text),
+        workspaceLinks: options.workspaceLinks ?? true,
+        workspaceLinkBaseDir: options.workspaceLinkBaseDir,
+      },
       global: {
         provide: options.provide === false ? {} : { [WORKSPACE_FILE_LINKS]: { threadId, open } },
       },
@@ -178,6 +187,21 @@ describe('TextMessage workspace links', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(open).toHaveBeenCalledWith({ threadId: 'thread-9', target: 'docs/report.md' });
+  });
+
+  it('opens a relative link against the base directory it was written in', async () => {
+    const { wrapper, open } = mountWith('See [evidence](evidence/storage-source-fit.md).', {
+      workspaceLinkBaseDir: 'docs/rdb-embedded-database',
+    });
+
+    wrapper
+      .get('a.workspace-link')
+      .element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(open).toHaveBeenCalledWith({
+      threadId: 'thread-9',
+      target: 'docs/rdb-embedded-database/evidence/storage-source-fit.md',
+    });
   });
 
   it('opens for a click on an element nested inside the link', async () => {
@@ -202,6 +226,43 @@ describe('TextMessage workspace links', () => {
       const { wrapper } = mountWith('[report](docs/report.md)', opts);
       expect(wrapper.find('a.workspace-link').exists()).toBe(false);
     }
+  });
+
+  // Bug #5: the server redirects a late answer into the conversation as a user text message wrapped
+  // in `<user-answer …>`. It must render as a compact card, never as raw markup or escaped tags.
+  describe('redirected user answer', () => {
+    const createMessage = (overrides: Partial<TextMessageType>): TextMessageType => ({
+      $type: MessageType.Text,
+      text: '',
+      role: 'user',
+      ...overrides,
+    });
+    const envelope =
+      '<user-answer tool="AskUserQuestion" tool-call-id="call-9">\n<request>\nWhich?\n- (q1) Pick one\n  options: A | B\n</request>\n<answer>\n{"answers":[{"questionId":"q1","selectedValues":["A"],"comment":"go"}]}\n</answer>\n</user-answer>';
+
+    it('renders an Answer delivered card with the request and the decoded answers', () => {
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ role: 'user', text: envelope }) } });
+      const card = wrapper.find('[data-testid="user-answer-card"]');
+      expect(card.exists()).toBe(true);
+      expect(card.text()).toContain('Answer delivered');
+      expect(wrapper.find('[data-testid="user-answer-request"]').text()).toContain('Pick one');
+      expect(wrapper.find('[data-testid="user-answer-answers"]').text()).toContain('q1: A — go');
+      expect(wrapper.find('.markdown-content').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain('<user-answer');
+      expect(wrapper.text()).not.toContain('</answer>');
+    });
+
+    it('falls back to the raw answer body when it is not answer-shaped', () => {
+      const text = envelope.replace(/<answer>\n[\s\S]*\n<\/answer>/, '<answer>\nfree text\n</answer>');
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ role: 'user', text }) } });
+      expect(wrapper.find('[data-testid="user-answer-answers"]').text()).toBe('free text');
+    });
+
+    it('leaves an ordinary message that merely mentions the tag on the markdown path', () => {
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ text: 'about <user-answer> tags' }) } });
+      expect(wrapper.find('[data-testid="user-answer-card"]').exists()).toBe(false);
+      expect(wrapper.find('.markdown-content').exists()).toBe(true);
+    });
   });
 
   it('re-renders links when the conversation id arrives', async () => {

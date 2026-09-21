@@ -55,6 +55,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Client;
 using Serilog;
@@ -182,6 +183,21 @@ try
     // false every request resolves to the development principal, which is what keeps the existing
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
+
+    // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
+    // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
+    // workspace page) address the raw workspace route. The grant SERVICE and its principal source are
+    // registered by AddSampleIdentity above, because under Identity:Enforce the grant is a credential; what
+    // is configured here is the deployment half.
+    //
+    // SetApplicationName pins the key-ring isolation purpose, so it does not silently change with the entry
+    // assembly name and invalidate every outstanding grant. IMPORTANT for anything containerised or scaled
+    // out: with no PersistKeysTo… configured, keys live in the local profile (or in memory when there is no
+    // profile), so each replica has its own ring and every restart invalidates cached grants for up to
+    // WorkspaceGrantRefreshMargin short of the full lifetime — the client re-mints on the next open, so the
+    // symptom is a burst of 401s on subresources rather than an outage, but a real deployment should
+    // configure PersistKeysToFileSystem/AzureBlobStorage plus ProtectKeysWith….
+    _ = builder.Services.AddDataProtection().SetApplicationName("LmStreaming.Sample");
 
     // The operator secret is set through a flat env var for the same reason the S2S inbound secret
     // is: the standard env-var provider maps only `Identity__OperatorSecret` into that section key,
@@ -784,7 +800,7 @@ try
         // while any model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddConfiguredPricing registers this
-        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 156K, which is also the window
+        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 196K, which is also the window
         // of any model the catalog does not list). Null only for a container that never registered it.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
         // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see
@@ -2196,7 +2212,15 @@ try
                         // the turn loop exactly as before. ConversationsController.GetMessages hides the
                         // persisted notice rows from the browser on reload.
                         elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
-                    );
+                    )
+                    {
+                        // Push a parked AskUserQuestion to every open tab over /ws/events, from this
+                        // root and from every sub-agent it spawns at any depth. Supplied here rather
+                        // than to the pool because the loop is what this host constructs; an init
+                        // property rather than a constructor argument because LmMultiTurn ships as a
+                        // package whose constructor shape is pinned.
+                        PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                    };
 
                     // #676: whatever the LAST process wrote about this root's agents is reconciled into
                     // this collaboration, and the roster plus its open reply-bearing obligations are then
@@ -2277,6 +2301,37 @@ try
                     {
                         todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
                         todoBoardWriter.Schedule();
+                    };
+
+                    // Bug 19: a bulk-initialize clear used to be total and unrecoverable — completed
+                    // rows, notes and artifacts included. The board hands over what it is about to drop
+                    // and this is where it becomes durable, under its OWN metadata key so the very next
+                    // board write (scheduled by the OnChanged above, for the cleared board) cannot
+                    // overwrite it. Fire-and-forget rather than through the coalescing writer: a clear
+                    // is a one-off event with its own payload, while that writer re-captures the LIVE
+                    // board at write time and would persist the cleared one. Failures are logged and
+                    // never surfaced as a tool error — the rows are already gone, and failing the call
+                    // would only send the model round again.
+                    var todoArchiveLogger = loggerFactory.CreateLogger("TodoBoardArchive");
+                    taskManager.OnCleared += cleared =>
+                    {
+                        var entry = cleared with { ThreadId = threadId };
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await ConversationTodoArchiveProjection.AppendAsync(conversationStore, entry);
+                            }
+                            catch (Exception ex)
+                            {
+                                todoArchiveLogger.LogWarning(
+                                    ex,
+                                    "Failed to archive the cleared todo board for thread {ThreadId}; {RowCount} root rows are not recoverable",
+                                    threadId,
+                                    entry.Tasks.Count
+                                );
+                            }
+                        });
                     };
 
                     // PR 6 of the todo-board plan (#583): the board talks back. Assignment notices
@@ -2459,6 +2514,13 @@ try
     _ = builder.Services.AddSingleton<WebSocketConnectionRegistry>();
     _ = builder.Services.AddSingleton<ChatWebSocketManager>();
 
+    // The app-wide pending-question channel behind /ws/events. Registered unconditionally: it is
+    // inert until an agent loop reports a parked AskUserQuestion, and a client that never opens the
+    // socket costs it one idle pump. Conversation sockets are per-thread, so a question raised in a
+    // conversation the user is not looking at has no socket of its own to arrive on — this is that
+    // socket. See PendingQuestionHub for why polling could not close the same gap.
+    _ = builder.Services.AddSingleton<PendingQuestionHub>();
+
     var app = builder.Build();
 
     // Log startup information
@@ -2469,14 +2531,24 @@ try
     );
 
     // Use Serilog request logging for HTTP requests
+    // The message template is overridden for ONE reason (Bug#15): Serilog's default logs {RequestPath}, and
+    // the raw workspace route carries its grant — a bearer credential for an hour of read access to one
+    // conversation's workspace — as a path SEGMENT. Left alone, every iframe, image and stylesheet fetch
+    // would write a live credential to the console and to logs/lmstreaming-{date}.jsonl, which are kept for
+    // seven days and are routinely copied into bug reports. {SafeRequestPath} is the same path with that one
+    // segment replaced; every other path is unchanged, character for character.
     _ = app.UseSerilogRequestLogging(options =>
+    {
+        options.MessageTemplate =
+            "HTTP {RequestMethod} {SafeRequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
         options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
         {
+            diagnosticContext.Set("SafeRequestPath", RedactWorkspaceGrant(httpContext.Request.Path.Value));
             diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value ?? string.Empty);
             diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme ?? string.Empty);
             diagnosticContext.Set("UserAgent", httpContext.Request.Headers.UserAgent.ToString() ?? string.Empty);
-        }
-    );
+        };
+    });
 
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
@@ -2750,6 +2822,81 @@ try
         }
     );
 
+    // An APP-WIDE event socket, deliberately not attached to any one conversation. It carries only
+    // pending-question events today:
+    //
+    //   {"$type":"snapshot","questions":[ <pending>, ... ]}     on connect
+    //   {"$type":"question_pending", rootThreadId, agentId, childThreadId, toolCallId, prompt,
+    //                                conversationTitle, agentName, raisedAtUtc}
+    //   {"$type":"question_settled", rootThreadId, toolCallId}
+    //
+    // Why a separate route: "/ws" and "/ws/subagent" each bind ONE thread, so a question raised in a
+    // conversation the user is not looking at has no open socket to arrive on. The client used to
+    // find those by re-reading transcripts on a 30s/5m timer, which is as good as polling can get —
+    // `lastUpdated` moves when a run COMPLETES, and a run parked on a question has not completed.
+    //
+    // Authorization: this route sits under the "/ws" segment, so IdentityMiddleware already demands a
+    // principal exactly as it does for the other two. What it CANNOT do is gate the socket on one
+    // conversation, because the socket names none — so the principal is captured at the handshake and
+    // every event is filtered against it per subscriber (PendingQuestionHub.MayReadAsync) using the
+    // same ConversationAuthorizer the REST routes use. Read, not Write: this channel says a question
+    // exists and where to answer it; answering still goes through "/ws", which demands Write.
+    _ = app.Map(
+        "/ws/events",
+        async (HttpContext context, PendingQuestionHub hub, ILogger<Program> wsLogger, CancellationToken ct) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", ct);
+                return;
+            }
+
+            var principal =
+                context.Items[IdentityHttpItems.PrincipalKey] as AchieveAi.LmDotnetTools.LmCore.Identity.Principal;
+
+            var webSocket = await AcceptNegotiatedWebSocketAsync(context);
+            var subscriber = await hub.SubscribeAsync(webSocket, principal, ct);
+            wsLogger.LogInformation(
+                "Event WebSocket connection established ({ConnectionId}).",
+                subscriber.ConnectionId
+            );
+
+            try
+            {
+                // Read-only channel. Draining inbound frames is how the socket learns it was closed:
+                // without a receive in flight a client close is never observed and the subscriber
+                // would be held until the host shuts down.
+                var buffer = new byte[1024];
+                while (webSocket.State == System.Net.WebSockets.WebSocketState.Open && !ct.IsCancellationRequested)
+                {
+                    var received = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    if (received.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (System.Net.WebSockets.WebSocketException) { }
+            finally
+            {
+                hub.Unsubscribe(subscriber);
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation("Event WebSocket connection closed ({ConnectionId}).", subscriber.ConnectionId);
+            }
+        }
+    );
+
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
 
@@ -2784,6 +2931,57 @@ finally
 
 public partial class Program
 {
+    /// <summary>
+    /// The request path with Bug#15's workspace grant replaced by <c>[grant]</c>, for the request log.
+    /// Every other path is returned unchanged, character for character.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant is a bearer credential: anyone holding it can read that conversation's workspace for the
+    /// rest of its lifetime. It lives in a path SEGMENT because a relative reference drops the query
+    /// (RFC 3986 section 5.3), which is what makes a rendered page's own <c>img/x.png</c> resolve — so the
+    /// credential is unavoidably in the path, and the place to stop it is where the path is written down.
+    /// </para>
+    /// <para>
+    /// Matching is anchored on the whole route shape (<c>/api/conversations/{id}/workspace/{grant}/…</c>),
+    /// not on a bare <c>workspace</c> segment, so no other route that happens to contain that word has its
+    /// path rewritten. The first match wins and the rest of the path is untouched: nothing after the grant
+    /// segment is a credential, and a workspace file's own path is what makes the log line useful at all.
+    /// </para>
+    /// <para>
+    /// This closes the log channel only. The URL still reaches browser history, the address bar of an
+    /// "open in new tab", and any reverse proxy or CDN access log in front of this host - all accepted
+    /// residual, bounded by the grant's one-hour lifetime. See the note beside
+    /// <c>FileBrowserController.ApplyRawHeaders</c>.
+    /// </para>
+    /// </remarks>
+    internal static string RedactWorkspaceGrant(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path ?? string.Empty;
+        }
+
+        var segments = path.Split('/');
+
+        // "" / api / conversations / {threadId} / workspace / {grant} / {**path}
+        for (var i = 3; i + 1 < segments.Length; i++)
+        {
+            if (
+                string.Equals(segments[i], "workspace", StringComparison.Ordinal)
+                && string.Equals(segments[i - 3], "api", StringComparison.Ordinal)
+                && string.Equals(segments[i - 2], "conversations", StringComparison.Ordinal)
+                && segments[i + 1].Length > 0
+            )
+            {
+                segments[i + 1] = "[grant]";
+                return string.Join('/', segments);
+            }
+        }
+
+        return path;
+    }
+
     /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
     ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format

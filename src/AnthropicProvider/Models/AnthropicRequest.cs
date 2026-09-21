@@ -780,8 +780,14 @@ public record AnthropicRequest
     /// text/thinking block appearing AFTER a tool_use makes the API reject the whole turn with
     /// "tool_use ids were found without tool_result blocks immediately after". History reconstruction
     /// can interleave demoted-thinking / trailing text after the tool calls (the streaming + merge
-    /// order is not the wire order Anthropic mandates), so stably reorder each assistant turn that has
-    /// tool calls into thinking → text → tool_use.
+    /// order is not the wire order Anthropic mandates), so stably move the tool calls of each
+    /// assistant turn behind everything else.
+    ///
+    /// Only the tool_use blocks move. The thinking and text blocks keep the relative order the model
+    /// emitted them in — a turn can legitimately contain several thinking/text pairs, and hoisting
+    /// all thinking ahead of all text re-places the thinking blocks of the latest assistant message,
+    /// which Anthropic rejects with 400 "thinking blocks in the latest assistant message cannot be
+    /// modified".
     /// </summary>
     private static void OrderAssistantToolUseLast(AnthropicMessage message)
     {
@@ -796,17 +802,11 @@ public record AnthropicRequest
             return;
         }
 
-        static int Rank(AnthropicContent block) =>
-            block.Type switch
-            {
-                "thinking" => 0,
-                "tool_use" or "server_tool_use" => 2,
-                _ => 1,
-            };
+        static int Rank(AnthropicContent block) => block.Type is "tool_use" or "server_tool_use" ? 1 : 0;
 
-        // OrderBy performs a stable sort, so the relative order within each group is preserved — in
-        // particular the tool_use blocks keep their order, which Anthropic pairs to tool_result blocks
-        // by id (not position) in the next message.
+        // OrderBy performs a stable sort, so the relative order within each group is preserved — the
+        // thinking/text interleave is untouched, and the tool_use blocks keep their order, which
+        // Anthropic pairs to tool_result blocks by id (not position) in the next message.
         var ordered = content.OrderBy(Rank).ToList();
         content.Clear();
         content.AddRange(ordered);
@@ -842,7 +842,9 @@ public record AnthropicRequest
 
     /// <summary>
     /// Merges adjacent "thinking" content blocks: a block with thinking text but no signature
-    /// followed by a block with signature but no thinking text get combined into one block.
+    /// followed by a block with signature but no thinking text get combined into one block, then
+    /// normalises whatever could not be paired — dropping verbatim duplicates of an already-signed
+    /// block, demoting a genuinely unsigned block to text, and dropping signature-only orphans.
     /// </summary>
     private static void MergeAdjacentThinkingBlocks(List<AnthropicContent> content)
     {
@@ -866,6 +868,43 @@ public record AnthropicRequest
             {
                 content[i] = curr with { ThinkingSignature = next.ThinkingSignature };
                 content.RemoveAt(i + 1);
+            }
+        }
+
+        // Persisted history carries each thinking segment as THREE reasoning rows — the plain text, the
+        // encrypted signature, and a verbatim REPEAT of the plain text. The merge above signs the first
+        // copy; the repeat stays unsigned and the normalisation below would demote it to a `text` block
+        // the model never emitted, which Anthropic rejects with 400 "thinking blocks in the latest
+        // assistant message cannot be modified". Drop any unsigned thinking block whose text duplicates
+        // an already-signed thinking block in the same turn; a non-duplicate unsigned block is left for
+        // the demote pass, which preserves its reasoning as text.
+        var signedThinking = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var block in content)
+        {
+            if (
+                block.Type == "thinking"
+                && !string.IsNullOrEmpty(block.Thinking)
+                && !string.IsNullOrEmpty(block.ThinkingSignature)
+            )
+            {
+                _ = signedThinking.Add(block.Thinking);
+            }
+        }
+
+        if (signedThinking.Count > 0)
+        {
+            for (var i = content.Count - 1; i >= 0; i--)
+            {
+                var block = content[i];
+                if (
+                    block.Type == "thinking"
+                    && string.IsNullOrEmpty(block.ThinkingSignature)
+                    && !string.IsNullOrEmpty(block.Thinking)
+                    && signedThinking.Contains(block.Thinking)
+                )
+                {
+                    content.RemoveAt(i);
+                }
             }
         }
 

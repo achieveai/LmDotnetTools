@@ -26,11 +26,11 @@ public sealed record ConversationAccessResult(bool Allowed, string Reason, bool 
 /// <c>ConversationsController</c> gains one constructor parameter instead of four - and, more
 /// importantly, so no route can assemble its own variation of the decision. Every conversation
 /// REST route - <c>ConversationsController</c>'s and <c>FileBrowserController</c>'s alike -
-/// resolves through <see cref="AuthorizeAsync"/> or <see cref="CreateListScopeAsync"/>.
+/// resolves through <c>AuthorizeAsync</c> or <see cref="CreateListScopeAsync"/>.
 /// </para>
 /// <para>
 /// The WebSocket transports <c>/ws</c> and <c>/ws/subagent</c> reach the same decision through
-/// <see cref="WebSocketConversationGate"/> (#419), which calls <see cref="AuthorizeAsync"/> before the
+/// <see cref="WebSocketConversationGate"/> (#419), which calls <c>AuthorizeAsync</c> before the
 /// handshake is accepted rather than reimplementing anything. They used to be AUTHENTICATED and
 /// nothing more - inside <c>IdentityMiddleware</c>'s boundary, with the pooled agent owned by the
 /// connecting user (#342, #399), but with no per-conversation check at all - so "the single seam"
@@ -132,7 +132,32 @@ public sealed class ConversationAuthorizer
     /// </param>
     /// <param name="action">The action being attempted.</param>
     /// <param name="ct">Cancellation token.</param>
+    public Task<ConversationAccessResult> AuthorizeAsync(
+        string threadId,
+        ThreadMetadata? metadata,
+        AccessAction action,
+        CancellationToken ct = default
+    ) => AuthorizeAsync(_principalAccessor.Current, threadId, metadata, action, ct);
+
+    /// <summary>
+    /// Decides one action on one conversation for a principal the caller already holds, rather than
+    /// the current request's.
+    /// </summary>
+    /// <remarks>
+    /// For long-lived state that OUTLIVES the request that created it — the <c>/ws/events</c> channel
+    /// is the case in hand, whose broadcasts run on a background pump where
+    /// <see cref="IPrincipalAccessor.Current"/> is null. Such a caller captures the principal at the
+    /// handshake and hands it back here, which keeps the decision in this one place instead of
+    /// growing a second copy of the policy for background work. Everything below
+    /// <see cref="IsEnforced"/> is unchanged, the equalising grant lookup included.
+    /// </remarks>
+    /// <param name="principal">The principal to decide for, or null for none.</param>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="metadata">The stored row, or null when there is none.</param>
+    /// <param name="action">The action being attempted.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<ConversationAccessResult> AuthorizeAsync(
+        Principal? principal,
         string threadId,
         ThreadMetadata? metadata,
         AccessAction action,
@@ -150,7 +175,6 @@ public sealed class ConversationAuthorizer
             return new ConversationAccessResult(true, AccessDecision.AllowDisabled.Reason, false);
         }
 
-        var principal = _principalAccessor.Current;
         if (principal is null)
         {
             // IdentityMiddleware answers 401 before a route runs, so this is unreachable through

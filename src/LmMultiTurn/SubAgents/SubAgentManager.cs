@@ -164,7 +164,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static readonly TimeSpan PerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromSeconds(10);
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
-    private readonly ConcurrentDictionary<string, string> _namesToIds = new();
+
+    // OrdinalIgnoreCase, deliberately the same rule as AgentCollaborationDirectory's _byName. The
+    // two grant paths agree by design (see GrantLegacyName), and applying the comparer to only one
+    // of them would make the name an agent is given depend on whether collaboration is switched on.
+    private readonly ConcurrentDictionary<string, string> _namesToIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
 
@@ -256,6 +260,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <c>SubAgentManagerPublicSurfaceTests</c> pins the published constructor shape.
     /// </remarks>
     public PromptCachingMode ParentPromptCaching { get; init; }
+
+    /// <summary>
+    /// Host hook told when a descendant's <c>AskUserQuestion</c> parks or settles, or null when the
+    /// host wired none. Already scoped to the parent loop's thread by whoever set it; this level only
+    /// adds the child's display name at spawn time, so the host learns WHICH agent is asking without
+    /// the child loop having to know the name it was given.
+    /// </summary>
+    /// <remarks>
+    /// Internal and settable rather than a public init property, because the only thing that sets it is
+    /// <see cref="MultiTurnAgentLoop.PendingQuestionObserver"/>, and a loop builds its manager inside
+    /// its own constructor — before any of its init accessors have run. Not a constructor parameter for
+    /// the reason <see cref="ParentPromptCaching"/> documents. Read at spawn time, so assigning it
+    /// after construction is what the design expects rather than a race.
+    /// </remarks>
+    internal IPendingQuestionObserver? PendingQuestionObserver { get; set; }
 
     /// <summary>
     /// Per-agent admission bookkeeping, keyed by agent id.
@@ -1031,7 +1050,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             ConfigureRunAdmission(state, gateGuard);
             SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
-            state.RunTask = agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(agent, agentId, effectiveName, cts.Token);
 
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
@@ -1090,6 +1109,37 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="QueuedSpawn.StateReady"/>. The pump holds no permit while parked, so it can never
     /// deadlock a permit-holder.
     /// </summary>
+    /// <summary>
+    ///     Runs a sub-agent's loop with <see cref="AgentActorScope" /> set to that agent, so tools this
+    ///     child shares with the rest of the conversation can tell who is calling them.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The conversation's todo board is the reason this exists (bug 19): one
+    ///         <c>TaskManager</c> instance serves the root and every sub-agent, its tool methods are the
+    ///         model-facing surface and cannot carry a caller argument, and a sub-agent's
+    ///         <c>bulk-initialize(clearExisting: true)</c> wiped the root's board. The scope is what lets
+    ///         the board refuse that clear without refusing the root's.
+    ///     </para>
+    ///     <para>
+    ///         A dedicated <c>async</c> method rather than a <c>using</c> around the bare
+    ///         <c>RunAsync</c> call: both read the same on the page, but only this one keeps the scope
+    ///         open for the run's whole lifetime instead of relying on the execution context captured at
+    ///         the loop's first await. The scope covers the run loop, which is where every tool call for
+    ///         this agent is dispatched from — <c>SendAsync</c> only enqueues.
+    ///     </para>
+    /// </remarks>
+    private static async Task RunUnderActorScopeAsync(
+        IMultiTurnAgent agent,
+        string agentId,
+        string? displayName,
+        CancellationToken ct
+    )
+    {
+        using var scope = AgentActorScope.Begin(agentId, displayName);
+        await agent.RunAsync(ct);
+    }
+
     private async Task RunSpawnPumpAsync(CancellationToken pumpCt)
     {
         while (!pumpCt.IsCancellationRequested)
@@ -2104,7 +2154,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             var runGeneration = state.BeginRunGeneration();
             ConfigureRunAdmission(state, gateGuard);
 
-            state.RunTask = state.Agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(state.Agent, state.AgentId, state.Name, cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
@@ -2932,6 +2982,24 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        // What each agent had actually done, read before the registry is cleared. Retiring everything as
+        // `stopped` was wrong for the agents that had already finished: disposal stops nothing about
+        // them, and the identity wiring flushes the roster AFTER this sweep, so the word persisted for a
+        // completed agent was never `completed`. That word is what the next process has to say about
+        // the agent, and `stopped` is the one that says nothing. Only an agent still in flight — or one
+        // that never ran, which is not in _agents at all — is stopped by disposal.
+        var terminalStatuses = _agents.Values.ToDictionary(
+            state => state.AgentId,
+            state =>
+                state.Status switch
+                {
+                    SubAgentStatus.Completed => AgentCollaborationStatuses.Completed,
+                    SubAgentStatus.Error => AgentCollaborationStatuses.Error,
+                    _ => AgentCollaborationStatuses.Stopped,
+                },
+            StringComparer.Ordinal
+        );
+
         _agents.Clear();
         _namesToIds.Clear();
 
@@ -2939,7 +3007,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
         foreach (var agentId in _admissions.Keys.ToArray())
         {
-            RetireAgent(agentId, AgentCollaborationStatuses.Stopped);
+            RetireAgent(agentId, terminalStatuses.GetValueOrDefault(agentId, AgentCollaborationStatuses.Stopped));
         }
 
         // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
@@ -3699,7 +3767,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                 collaboration: childCollaboration,
                 descendantQuestionSink: _descendantQuestionSink,
                 compaction: ChildOptions.Compaction
-            );
+            )
+            {
+                // The child's own name, filled in only when the notice carries none — so a
+                // GRANDCHILD's name, already stamped one level down, survives this hop. Set here
+                // rather than as a constructor argument to keep the published constructor's CLR
+                // signature intact for already-compiled package consumers.
+                PendingQuestionObserver = PendingQuestionObserver is null
+                    ? null
+                    : new ScopedPendingQuestionObserver(PendingQuestionObserver, agentName: spawnName ?? template.Name),
+            };
 
             // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
             // withheld nothing or that the child holds anyway, or a filter that resolved the whole
@@ -5328,6 +5405,41 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Completes with the first input queued on the OWNING agent that <paramref name="wakes"/> accepts,
+    /// leaving it queued for the run loop to act on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wait tools block inside a turn, so while one is blocked the owning agent cannot start the
+    /// next turn and nothing it has been sent is looked at. That is the whole of bug 6 on this side:
+    /// a person typing while <c>WaitForAgents</c> was blocked was queued behind a wait that could run
+    /// for minutes, or forever when no timeout was passed. The wait needs a third racer beside the
+    /// completion tasks and the collaboration ledger, and it is this - the input the agent is already
+    /// holding.
+    /// </para>
+    /// <para>
+    /// Exposed here rather than reached for directly because a provider holds this manager and nothing
+    /// else; the parent is this class's own collaborator. An agent that is not a
+    /// <see cref="MultiTurnAgentBase"/> has no input queue to peek, so the race simply never resolves
+    /// from this side and the wait behaves exactly as it did before.
+    /// </para>
+    /// </remarks>
+    /// <param name="wakes">Decides which queued input is worth ending a wait for.</param>
+    /// <param name="ct">Cancels the waiting, not the input.</param>
+    internal Task<QueuedInput> WaitForOwnerInputAsync(Func<QueuedInput, bool> wakes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(wakes);
+
+        return _parentAgent is MultiTurnAgentBase owner ? owner.WaitForMatchingInputAsync(wakes, ct) : NeverAsync(ct);
+
+        static async Task<QueuedInput> NeverAsync(CancellationToken ct)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new OperationCanceledException(ct);
         }
     }
 

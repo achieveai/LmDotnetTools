@@ -4,6 +4,7 @@ import type { DisplayItem, ToolCall } from '@/types';
 import { isToolsCallMessage } from '@/types';
 import { deriveToolPillState } from '@/utils/toolPillState';
 import { useToolResult } from '@/composables/useToolResult';
+import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import MetadataPill from './MetadataPill.vue';
 import NotificationPill from './NotificationPill.vue';
 import TextMessage from './TextMessage.vue';
@@ -15,7 +16,7 @@ const props = defineProps<{
 
 const expanded = ref(false);
 const detailsId = `turn-activity-${useId()}`;
-const { getResult } = useToolResult();
+const { getResult, isQuestionAnswered } = useToolResult();
 
 const toolCalls = computed<ToolCall[]>(() =>
   props.items.flatMap((item) =>
@@ -33,7 +34,7 @@ const toolStates = computed(() =>
       result: result?.result ?? null,
       hasResult: result !== null,
       isErrorFlag: result?.is_error ?? null,
-      isDeferred: result?.is_deferred ?? false,
+      isDeferred: isQuestionAwaitingAnswer(result, isQuestionAnswered),
     });
   })
 );

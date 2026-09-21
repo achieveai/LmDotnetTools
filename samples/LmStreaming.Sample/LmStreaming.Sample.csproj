@@ -29,6 +29,16 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <!-- Workspace file-preview of .xlsx/.xlsm. MIT, no transitive dependencies on the net8.0 asset,
+         no advisory on the NuGet vulnerability feed. Chosen over ClosedXML because it is a forward-only
+         reader that never models external links and never evaluates a formula: it hands back the cached
+         <v> value. The workbook is untrusted input, so the smaller parse surface is the point. -->
+    <PackageReference Include="ExcelDataReader" Version="3.9.0" />
+    <!-- ExcelDataReader's ExcelReaderConfiguration constructor initialises FallbackEncoding to codepage
+         1252, which .NET Core does not carry, so merely opening a reader throws without this provider.
+         The fallback encoding is used only by the legacy BIFF path we never take, but the constructor
+         runs regardless. -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.5" />
     <!-- Compaction:TextTokenizer=o200k sizes the policy's view with the real tokenizer instead of length / 4. -->
     <PackageReference Include="Tiktoken.Core" Version="2.2.0" />
     <PackageReference Include="Tiktoken.Encodings.o200k" Version="2.2.0" />

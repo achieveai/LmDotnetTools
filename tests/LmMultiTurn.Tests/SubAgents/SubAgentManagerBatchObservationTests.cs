@@ -68,14 +68,19 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CheckAgents_NameResolutionIsOrdinalCaseSensitive()
+    public async Task CheckAgents_ResolvesANameWhateverCaseItIsAskedFor()
     {
+        // A name is written by a model in prose, so "ReviewOne" and "reviewone" are the same word to
+        // whoever typed them. Answering not_found for one spelling made the model believe the agent
+        // it had just spawned did not exist. The grant side collides the two names for the same
+        // reason (SubAgentManagerTests.SpawnAsync_WithANameThatDiffersOnlyInCase_...), so a name that
+        // resolves here is unambiguous by construction.
         var manager = CreateManager();
-        await SpawnBackgroundAsync(manager, name: "ReviewOne");
+        var agentId = await SpawnBackgroundAsync(manager, name: "ReviewOne");
 
         var batch = manager.CheckAgents(["reviewone"]);
 
-        batch.Entries.Should().ContainSingle(x => x.Status == "not_found");
+        batch.Entries.Should().ContainSingle().Which.AgentId.Should().Be(agentId);
     }
 
     [Fact]

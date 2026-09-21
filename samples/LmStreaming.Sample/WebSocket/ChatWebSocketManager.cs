@@ -72,7 +72,8 @@ public sealed class ChatWebSocketManager
     /// hold a consumer still and reproduce the slow-consumer eviction
     /// (<c>MultiTurnAgentBase.PublishToSubscriber</c>) as a counting argument rather than a race — a
     /// frozen pump plus a bounded output channel overflows after exactly <c>capacity + 1</c> publishes,
-    /// with no timing sleeps anywhere. Receives the stream's thread id (<c>subagent-{agentId}</c> for
+    /// with no timing sleeps anywhere. Receives the stream's thread id (<c>subagent-{scope}-{agentId}</c>
+    /// for
     /// the focus view) so a test can gate one stream and leave the others running. Because both the
     /// primary <c>/ws</c> stream and the sub-agent focus view pump through this one method, a gate here
     /// applies identically to both.
@@ -462,7 +463,8 @@ public sealed class ChatWebSocketManager
             {
                 // No LIVE stream: the parent loop was evicted (app restart, or the parent conversation
                 // was disposed/aged out of the pool). A COMPLETED sub-agent's transcript still persists
-                // under "subagent-{agentId}", and the client already renders that history from REST. So
+                // under "subagent-{scope}-{agentId}", and the client already renders that history from
+                // REST. So
                 // instead of a scary "unavailable" error, settle the client with the done sentinel and
                 // hold the socket open read-only (drain client frames to detect disconnect) so the
                 // persisted transcript replays. Only a genuinely missing agent (no persisted history)

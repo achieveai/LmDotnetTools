@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -79,6 +80,20 @@ public class SubAgentToolProvider : IFunctionProvider
     internal const int MaxListedAgentIds = 20;
 
     /// <summary>
+    /// How many of the agents that have left <c>GetAgents</c> still lists even when the live agents
+    /// have already spent the whole capacity permit. See <see cref="SelectListedAgents"/> for why a
+    /// floor is needed at all; the number is a budget, not a guarantee that this many rows exist.
+    /// </summary>
+    /// <remarks>
+    /// Small on purpose. A row is roughly 340 bytes, so the floor costs under 3 KB at its worst, which
+    /// is the price of answering "what happened to the agent I was about to message?" rather than
+    /// leaving that name looking like one that never existed. It is a recent-departures window rather
+    /// than a history: a caller asks after the agent that left a moment ago, not the twentieth one
+    /// back.
+    /// </remarks>
+    internal const int MinListedRetainedAgents = 8;
+
+    /// <summary>
     /// The sentence that redirects a workflow id to the tool that accepts it, appended verbatim to
     /// BOTH wait descriptors.
     /// </summary>
@@ -141,9 +156,59 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         ArgumentNullException.ThrowIfNull(manager);
         ArgumentNullException.ThrowIfNull(source);
+        ValidateExposedToolNames(exposedToolNames);
         _manager = manager;
         _source = source;
         _exposedToolNames = exposedToolNames;
+    }
+
+    /// <summary>
+    /// Refuses an allow-list entry that can never grant anything, naming it and the vocabulary it
+    /// missed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The filter in <see cref="GetFunctions"/> is a set membership test, so a misspelled entry is not
+    /// an error there - it is simply a name no descriptor has, and the surface comes back one tool
+    /// smaller. A whole list of misspellings comes back EMPTY, and an agent with no sub-agent tools is
+    /// indistinguishable from one configured to have none: the model is told nothing, the host is told
+    /// nothing, and the delegation the operator thought they enabled just never happens. Composition
+    /// is the last moment the typo is still attached to the thing that produced it.
+    /// </para>
+    /// <para>
+    /// An entry is judged by what it SELECTS, not by string equality with a constant, because the
+    /// caller owns the set's comparer: a case-insensitive set really does grant <c>agent</c>, and an
+    /// ordinal one really does not. Asking which known names this set admits answers both without
+    /// guessing which comparer was used.
+    /// </para>
+    /// <para>
+    /// An EMPTY list is left alone. "Expose nothing" is a coherent thing to ask for - it is how a host
+    /// turns delegation off for one agent - and it is the one list with no entry to be wrong about.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">An entry matches no tool this provider can emit.</exception>
+    private static void ValidateExposedToolNames(IReadOnlySet<string>? exposedToolNames)
+    {
+        if (exposedToolNames is null || exposedToolNames.Count == 0)
+        {
+            return;
+        }
+
+        var granted = AllToolNames.Where(exposedToolNames.Contains).ToArray();
+        var inert = exposedToolNames
+            .Where(name => !granted.Any(g => string.Equals(g, name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        if (inert.Length == 0)
+        {
+            return;
+        }
+
+        throw new ArgumentException(
+            $"These exposed tool names match no sub-agent tool: {string.Join(", ", inert.Order(StringComparer.Ordinal))}. "
+                + $"The names this provider can expose are: {string.Join(", ", AllToolNames)}.",
+            nameof(exposedToolNames)
+        );
     }
 
     public string ProviderName => "SubAgentTools";
@@ -669,7 +734,7 @@ public class SubAgentToolProvider : IFunctionProvider
                         "REQUIRED when msg_type is 'response' or 'task_update': the message_id you "
                         + "are answering or reporting progress on, taken from the message you "
                         + "received. For 'task_update' it is the message-id attribute of the "
-                        + "<agent-message ... type=\"DelegateTask\" message-id=\"...\"> envelope that "
+                        + "<agent-message ... type=\"delegate_task\" message-id=\"...\"> envelope that "
                         + "delegated the task to you; if you never received one, you cannot send a "
                         + "task_update — do not guess an id. Omit otherwise.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
@@ -731,6 +796,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
                 + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
                 + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
+                + "The wait also ends as soon as something is sent to YOU that you would want to act "
+                + "on — a message from the person you work for, a peer agent, a descendant stuck on a "
+                + "question, or a DIFFERENT agent finishing — because nothing you are sent can be "
+                + "read while this call blocks. That returns status 'interrupted_by_input' with "
+                + "`input` naming what arrived: the agent you were waiting on is still running and "
+                + "nothing was cancelled, so deal with the message and call WaitAgent again. "
+                + "Background chatter — todo nudges and digests, context injections, plain "
+                + "notifications — does not end the wait.\n\n"
                 + "Name the agent you spawned, or pass the `agent_id` `Agent` returned; do not pass "
                 + "workflow IDs."
                 + WorkflowIdRedirect,
@@ -825,9 +898,16 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "which it was, so answer it with SendMessage and then wait again. Each such message "
                 + "ends at most one wait, so one you have chosen not to answer will not keep "
                 + "interrupting.\n\n"
+                + "It also ends as soon as anything else you would want to act on is sent to YOU — a "
+                + "message from the person you work for, a descendant stuck on a question, or an "
+                + "agent you are NOT waiting on finishing — because nothing you are sent can be read "
+                + "while this call blocks. Background chatter (todo nudges and digests, context "
+                + "injections, plain notifications) does not end the wait.\n\n"
                 + "RESULT `status` is one of: 'completed' (the agents finished), 'timeout' (the cap "
                 + "expired; nothing was cancelled), 'question_received' or 'interrupted' (a question "
                 + "or a delegated task addressed to you ended the wait — see `interrupt`), "
+                + "'interrupted_by_input' (something else was sent to you — see `input`; the agents "
+                + "are all still running and nothing was cancelled, so handle it and wait again), "
                 + "'wait_cycle' (an agent you named is itself blocked on an answer from you, so this "
                 + "wait could only time out — answer the messages in `blocking` first), or "
                 + "'not_waitable' (every agent you named is real but none of them is one of your own "
@@ -884,9 +964,14 @@ public class SubAgentToolProvider : IFunctionProvider
             Name = GetAgentsToolName,
             Description =
                 "List every agent in this collaboration — not just your own sub-agents — by NAME, with "
-                + "what each one is for, who it reports to, and whether it is still running. Use it to "
-                + "find who already owns a piece of work BEFORE spawning someone new to do it, and to get "
-                + "the name to address with SendMessage. Pass detail='detailed' when you need more: the "
+                + "what each one is for, who it reports to, and its status. Use it to find who already "
+                + "owns, or has already done, a piece of work BEFORE spawning someone new to do it, and "
+                + "to get the name to address with SendMessage. An agent whose status is 'completed' is "
+                + "still a resource: it keeps the context it loaded and a message restarts it, so prefer "
+                + "one of those over a fresh agent. Only a row marked dead can never be reached again; a "
+                + "row whose status is 'dead' is an agent lost when the conversation was recreated, and "
+                + "its name is taken rather than free — spawn a replacement to continue its work. "
+                + "Pass detail='detailed' when you need more: the "
                 + "agent_id and aliases (both also work as addresses), hierarchy depths, whether you may "
                 + "read its transcript, and the tokens it has spent per model. 'primary' names the "
                 + "top-level conversation at every hierarchy depth unless that address collides. "
@@ -1265,8 +1350,14 @@ public class SubAgentToolProvider : IFunctionProvider
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var target =
-            GetOptionalString(root, "target") ?? throw new ArgumentException("The 'target' parameter is required.");
+        // Trimmed, because a target is a handle a model copied out of prose - a roster line, an
+        // envelope attribute, its own earlier tool call - and a copied handle arrives with the
+        // whitespace that surrounded it there. Every lookup behind this is an exact dictionary match,
+        // so an untrimmed " helper" resolves nowhere and is answered "no agent matches", which sends
+        // the model to correct a name that was already right. Whitespace-only is absence, not a name.
+        var target = GetOptionalString(root, "target")?.Trim() is { Length: > 0 } trimmed
+            ? trimmed
+            : throw new ArgumentException("The 'target' parameter is required.");
 
         if (_manager.Collaboration is { } collaboration)
         {
@@ -1422,8 +1513,22 @@ public class SubAgentToolProvider : IFunctionProvider
             }
         );
 
-    /// <summary>Maps the tool's snake_case wire vocabulary onto the closed message-type set.</summary>
-    private static bool TryParseMessageType(string raw, out AgentMessageType messageType)
+    /// <summary>Maps the tool's wire vocabulary onto the closed message-type set.</summary>
+    /// <remarks>
+    /// <para>
+    /// Both spellings are accepted, permanently. The snake_case names are what the contract
+    /// advertises; the PascalCase member names are what the envelope carried before it was corrected
+    /// to state the wire vocabulary, and a model replying with the type it was sent must not have its
+    /// reply refused because it read an older message. The two multi-word types are the ones this
+    /// matters for - <c>Question</c>, <c>Steer</c> and <c>Response</c> always survived lower-casing,
+    /// which is what made the refusal look intermittent rather than systematic.
+    /// </para>
+    /// <para>
+    /// <see cref="AgentMessageType.DeliveryFailure"/> is deliberately absent under either spelling: it
+    /// is minted by the collaboration, and an agent may not send one.
+    /// </para>
+    /// </remarks>
+    internal static bool TryParseMessageType(string raw, out AgentMessageType messageType)
     {
         switch (raw.Trim().ToLowerInvariant())
         {
@@ -1431,9 +1536,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 messageType = AgentMessageType.Question;
                 return true;
             case "delegate_task":
+            case "delegatetask":
                 messageType = AgentMessageType.DelegateTask;
                 return true;
             case "task_update":
+            case "taskupdate":
                 messageType = AgentMessageType.TaskUpdate;
                 return true;
             case "steer":
@@ -1769,6 +1876,18 @@ public class SubAgentToolProvider : IFunctionProvider
         var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
         var truncated = listed.Count < snapshot.Count;
 
+        // The agents a restart took away (#676). Read separately because they are in no snapshot —
+        // deliberately, so that nothing charges them to the permit or persists them again — and
+        // listed OUTSIDE the cap above, because the cap is a bound on the retained tail's growth and
+        // this set cannot grow the same way: it is rebuilt from the previous process's live roster at
+        // every loop recreation and never re-persisted, so it is bounded by that roster's permit. It
+        // is listed at all because its absence was the production shape of a spawn storm: the roster
+        // showed no trace of the agent the caller had been working with, the name read as free, and
+        // the caller spawned a duplicate of an agent whose transcript is still on disk.
+        var dead = collaboration.Directory.InvalidatedRecords();
+        var returned = listed.Count + dead.Count;
+        var total = snapshot.Count + dead.Count;
+
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
         // A dictionary rather than an anonymous type because the truncation note is present only when
@@ -1778,21 +1897,44 @@ public class SubAgentToolProvider : IFunctionProvider
             ["collaboration_id"] = collaboration.Bundle.CollaborationId,
             ["your_agent_id"] = collaboration.AgentId,
             // Unconditional, so completeness is stated rather than inferred from the array length.
-            ["returned"] = listed.Count,
-            ["total"] = snapshot.Count,
+            ["returned"] = returned,
+            ["total"] = total,
             ["truncated"] = truncated,
         };
 
+        if (dead.Count > 0)
+        {
+            // Only when there is something to count, like the truncation note: a conversation that
+            // never lost an agent — the common case — should not learn the vocabulary for one.
+            payload["dead"] = dead.Count;
+        }
+
         if (truncated)
         {
+            // Names what was dropped and what its absence means. The previous wording — "nothing you
+            // can still address is missing" — is true and was still the wrong thing to say: it invited
+            // the reader to treat the whole tail as noise, and the tail is where the answer to "why did
+            // that name stop working?" lives. An omitted row is an agent that LEFT, which is a
+            // different fact from a name nobody ever held and leads to a different next action. The
+            // omitted rows are the ones that left longest ago — a claim SelectListedAgents' ordering
+            // keeps. Nothing here says a listed departed agent can be reused: it cannot, and the row's
+            // own `dead` member says so.
             payload["truncation_note"] =
-                $"Showing {listed.Count} of {snapshot.Count} agents. Every LIVE agent is listed; the "
-                + "omitted ones are finished agents kept only for history, so nothing you can still "
-                + "address is missing from this list.";
+                $"Showing {returned} of {total} agents. Every agent you can still reach is "
+                + "listed, plus the ones that left most recently; only agents that left longer ago are "
+                + "omitted. An omitted name is gone rather than unknown, so if you were about to send it "
+                + "work, spawn a replacement instead of retrying the name.";
         }
 
         var usageByAgent = detailed ? UsageByAgent(_manager.UsageLedger) : null;
-        payload["agents"] = listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)).ToList();
+        // Dead rows last: the reader takes the head of the list, and every row before them is one it
+        // can still act on.
+        payload["agents"] =
+            (List<Dictionary<string, object?>>)
+                [
+                    .. listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)),
+                    .. dead.Select(record => DescribeDeadAgent(collaboration, record, detailed, usageByAgent)),
+                ];
 
         var json = JsonSerializer.Serialize(payload);
 
@@ -1801,7 +1943,7 @@ public class SubAgentToolProvider : IFunctionProvider
         // the LISTED rows, not the directory, so the pair always describes the same payload — once the
         // retained tail is capped those two diverge, and recording the directory size against the
         // capped payload's bytes would make bytes-per-agent fall as a conversation grows.
-        _manager.Instrumentation?.RecordDirectoryListing(listed.Count, Encoding.UTF8.GetByteCount(json));
+        _manager.Instrumentation?.RecordDirectoryListing(returned, Encoding.UTF8.GetByteCount(json));
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(json));
     }
@@ -1816,7 +1958,8 @@ public class SubAgentToolProvider : IFunctionProvider
     /// <para>
     /// A dictionary rather than an anonymous type because members are conditional: <c>parent_name</c>
     /// is omitted when the agent has no parent or the parent is no longer in the directory, rather
-    /// than written as null, and <c>usage</c> is omitted when nothing was recorded for the agent.
+    /// than written as null, <c>dead</c> appears only for an agent nothing can be delivered to, and
+    /// <c>usage</c> is omitted when nothing was recorded for the agent.
     /// A zero would claim the agent spent nothing; an absent member says nothing was recorded, which
     /// is the only claim this listing can stand behind for an agent that has not run yet or whose
     /// spend went to a ledger this loop cannot see.
@@ -1871,6 +2014,21 @@ public class SubAgentToolProvider : IFunctionProvider
 
         row["status"] = e.Status;
 
+        // Blunt, and present in BOTH shapes, because it is the one thing about an agent that the
+        // reader cannot recover from anything else here. `status` says what the agent DID —
+        // `completed`, `error`, `stopped` — and a completed agent is still perfectly usable: its
+        // loop and provider stay warm and the next message restarts it. `dead` says the opposite,
+        // and only that: nothing can be delivered to this agent again. Written only when true, so a
+        // reader that skips the member sees a usable agent, which is the safe reading and the
+        // common one. A boolean beside `status` rather than a replacement for it, because for a
+        // RETAINED row the status is still true and still useful — the agent did complete, or did
+        // error — and the observation surface publishes the same word. The one row whose status
+        // cannot be trusted, an agent lost to a restart, is described by DescribeDeadAgent instead.
+        if (!e.IsLive)
+        {
+            row["dead"] = true;
+        }
+
         if (detailed)
         {
             row["is_live"] = e.IsLive;
@@ -1910,6 +2068,60 @@ public class SubAgentToolProvider : IFunctionProvider
                         .ToList(),
                 };
             }
+        }
+
+        return row;
+    }
+
+    /// <summary>
+    /// The sentence a dead row carries in its <c>reason</c> member: why the agent is gone and what to
+    /// do instead. One sentence for every tombstone, because the directory has exactly one way to
+    /// make one — the restart reconciler, run when the conversation loop is rebuilt — and the row
+    /// does not record which of the rebuild's triggers it was.
+    /// </summary>
+    internal const string DeadAgentReason =
+        "torn down when the conversation was recreated (provider or mode switch, idle eviction, or a "
+        + "restart); its transcript is kept but nothing can be delivered to it, so spawn a replacement "
+        + "to continue its work";
+
+    /// <summary>
+    /// One <c>GetAgents</c> row for an agent a restart took away (#676): the same shape as
+    /// <see cref="DescribeAgent"/>, with the two members that shape cannot say on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Built THROUGH <see cref="DescribeAgent"/> from the persisted row, rather than by hand, so the
+    /// two shapes cannot drift: the rehydrated entry is never live, which already yields the
+    /// <c>dead</c> marker and <c>is_live</c>, and the parent, depths, and identifiers come out the same
+    /// way for a ghost as for anyone else.
+    /// </para>
+    /// <para>
+    /// <c>status</c> is then overwritten with <see cref="AgentCollaborationStatuses.Dead"/>, and that
+    /// is the one place the listing departs from "status says what the agent did". The persisted
+    /// status is what the agent was doing when its process ENDED — <c>stopped</c> after an orderly
+    /// teardown, because the manager's disposal sweep retires every admission with that word before
+    /// the roster is flushed, and <c>running</c> after a crash — and publishing either as the row's
+    /// status would describe an agent nothing can reach as one still worth waiting on, or as one that
+    /// merely paused. The word it was doing is kept, as history, under
+    /// <c>last_status</c> in the detailed shape. <c>reason</c> says why it is gone and what to do
+    /// instead, because "gone" alone was already available — as a refusal, after the caller had
+    /// tried the name — and what the caller does next depends on the why.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, object?> DescribeDeadAgent(
+        AgentCollaborationSetup collaboration,
+        CollaborationNodeRecord record,
+        bool detailed,
+        UsageByAgentIndex? usageByAgent
+    )
+    {
+        var row = DescribeAgent(collaboration, record.ToEntry(), detailed, usageByAgent);
+        row["status"] = AgentCollaborationStatuses.Dead;
+        row["reason"] = DeadAgentReason;
+
+        if (detailed)
+        {
+            row["last_status"] = record.Status;
         }
 
         return row;
@@ -2043,20 +2255,24 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// The rows a <c>GetAgents</c> result carries: every live agent, then as much of the retained tail
-    /// as <paramref name="maxTotalAgents"/> leaves room for.
+    /// The rows a <c>GetAgents</c> result carries from the directory: every live agent, then the
+    /// agents that left most recently — as many as <paramref name="maxTotalAgents"/> leaves room for,
+    /// never fewer than <see cref="MinListedRetainedAgents"/>. Agents lost to a restart are not in the
+    /// snapshot and are appended by the caller, outside this budget.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The directory never removes an entry — a finished agent is marked retained so a sender holding
-    /// an open question can still learn its target is gone — so the listing grows for the whole life of
+    /// The directory never removes an entry — an agent that leaves is marked retained so a sender
+    /// holding an open question can still learn its target is gone rather than be told the name is
+    /// unknown — so the listing grows for the whole life of
     /// a conversation and every turn that calls this tool pays for the entire history in input tokens.
     /// The live half cannot grow: it is bounded by the root-wide capacity permit
     /// (<see cref="AgentCollaborationOptions.MaxTotalAgents"/>), which is why that same bound is the
     /// cap here rather than a second number to keep in step with it. It is a bound on the tail, not a
     /// routine saving: a row is roughly 340 bytes, so at the default permit of 32 the cap starts
-    /// trimming only past 32 total agents and holds the result near 11 KB from there on, while a
-    /// conversation that never exceeds 32 pays about 40 bytes MORE for the three count fields.
+    /// trimming only past 40 total agents (32 plus the retained floor) and holds the result near 14 KB
+    /// from there on, while a conversation that never exceeds that pays about 40 bytes MORE for the
+    /// three count fields.
     /// </para>
     /// <para>
     /// The cap trims the RETAINED tail only. Dropping a live agent would be the one failure mode worth
@@ -2065,14 +2281,24 @@ public class SubAgentToolProvider : IFunctionProvider
     /// the overrun honestly rather than silently hiding one.
     /// </para>
     /// <para>
-    /// Both halves keep the order <see cref="AgentCollaborationDirectory.Snapshot"/> already imposes:
-    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. That is LEXICOGRAPHIC, not numeric —
-    /// <c>agent-10</c> sorts before <c>agent-9</c> — so which retained rows survive the cap is stable
-    /// but unrelated to recency. Determinism is the property being relied on here (repeated calls at an
-    /// unchanged directory read identically instead of shuffling), and it is enough, because the
-    /// omitted rows are finished agents the caller cannot address either way. Preferring the most
-    /// recently retired rows would be a better listing; it needs a retirement order the directory does
-    /// not currently carry.
+    /// The live half keeps the order <see cref="AgentCollaborationDirectory.Snapshot"/> imposes:
+    /// <c>agent_id</c> under <see cref="StringComparer.Ordinal"/>. The retained tail does NOT, because
+    /// that order is LEXICOGRAPHIC, not numeric — <c>agent-10</c> sorts before <c>agent-9</c> — so
+    /// trimming by it drops whichever departed agent happens to sort late, which is as likely as not
+    /// the one that left a moment ago and the one the caller is about to ask about. The tail is
+    /// ordered by <see cref="AgentDirectoryEntry.RetirementSequence"/>, most recent first, with the
+    /// identifier breaking a tie the sequence cannot produce but a hand-built entry could. Determinism
+    /// is preserved — repeated calls at an unchanged directory read identically — and recency is now
+    /// the axis the cap trims along, so what survives is what a caller is most likely to ask after.
+    /// </para>
+    /// <para>
+    /// <see cref="MinListedRetainedAgents"/> rows of that tail are listed whatever the live count is.
+    /// Subtracting the live count alone yielded ZERO retained rows the moment the collaboration ran at
+    /// its permit — exactly the busy conversation that has produced departures worth explaining, and
+    /// exactly where a name that answers as "unknown" rather than "gone" is most likely to be a name
+    /// the caller genuinely used a moment ago. The floor is small enough to stay inside the noise of a
+    /// single live row's own cost and is paid only by a conversation that has actually retired that
+    /// many agents.
     /// </para>
     /// </remarks>
     private static List<AgentDirectoryEntry> SelectListedAgents(
@@ -2081,11 +2307,17 @@ public class SubAgentToolProvider : IFunctionProvider
     )
     {
         var listed = snapshot.Where(e => e.IsLive).ToList();
-        var retainedBudget = Math.Max(0, maxTotalAgents - listed.Count);
-        if (retainedBudget > 0)
-        {
-            listed.AddRange(snapshot.Where(e => !e.IsLive).Take(retainedBudget));
-        }
+        var retainedBudget = Math.Max(MinListedRetainedAgents, maxTotalAgents - listed.Count);
+
+        listed.AddRange(
+            snapshot
+                .Where(e => !e.IsLive)
+                // A retained entry always carries a sequence; the coalesce covers an entry built by
+                // hand rather than by TryMarkRetained, and sorts it oldest, which is the safe end.
+                .OrderByDescending(e => e.RetirementSequence ?? 0L)
+                .ThenBy(e => e.AgentId, StringComparer.Ordinal)
+                .Take(retainedBudget)
+        );
 
         return listed;
     }
@@ -2178,11 +2410,25 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
         var watcher = WatchForInterruptAsync(linked.Token);
+
+        // The agents this wait is already blocked on. Their completions are this wait's own result and
+        // reach it through `completion`; every other agent's is news the owner is holding.
+        var blockedOn = waitable.Select(e => e.AgentId).Where(id => id is not null).ToHashSet(StringComparer.Ordinal);
+        bool IsBlockedOn(string? agentId) => agentId is not null && blockedOn.Contains(agentId);
+
+        var inputWatcher = WatchForWakingInputAsync(IsBlockedOn, linked.Token);
         var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        Task[] races = timeout is null ? [completion, watcher] : [completion, watcher, timeout];
+        Task[] races = timeout is null
+            ? [completion, watcher, inputWatcher]
+            : [completion, watcher, inputWatcher, timeout];
 
         var winner = await Task.WhenAny(races);
+
+        // Read BEFORE the teardown below. Every racer completes rather than faults when cancelled, so
+        // after the cancel `completion` reports as finished whether or not the agents actually did -
+        // and "the children finished" has to outrank "somebody wrote to you" when both are true.
+        var completionSettled = completion.IsCompleted;
 
         // Stop the losing races before reporting. The waits are non-destructive, so cancelling them
         // abandons the observation only — every agent listed keeps running either way.
@@ -2203,10 +2449,22 @@ public class SubAgentToolProvider : IFunctionProvider
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var status =
-            interrupted is null ? (winner == completion ? WaitStatus.Completed : WaitStatus.Timeout)
-            : interrupted.Kind == AgentMessageType.Question ? WaitStatus.QuestionReceived
-            : WaitStatus.Interrupted;
+        // Only consulted when nothing better won, so an input that arrived alongside a completion is
+        // not reported instead of it.
+        var wokenBy =
+            interrupted is null && !completionSettled && await inputWatcher is { } queued
+                ? DescribeWakingInput(queued, IsBlockedOn)
+                : null;
+
+        var status = interrupted is not null
+            ? interrupted.Kind == AgentMessageType.Question
+                ? WaitStatus.QuestionReceived
+                : WaitStatus.Interrupted
+            : completionSettled
+                ? WaitStatus.Completed
+                : wokenBy is not null
+                    ? WaitStatus.InterruptedByInput
+                    : WaitStatus.Timeout;
 
         return ToolHandlerResult.FromText(
             JsonSerializer.Serialize(
@@ -2218,6 +2476,8 @@ public class SubAgentToolProvider : IFunctionProvider
                     // The pre-rename name, kept filled for one release so a caller written against
                     // the question-only wait keeps reading the field it knows.
                     question = interrupted,
+                    input = wokenBy,
+                    next_action = wokenBy is null ? null : InputInterruptNextAction,
                     not_waited = notWaited.Count == 0 ? null : notWaited,
                     agents = BuildObservationPayload(_manager.CheckAgents(waitTargets)),
                 }
@@ -2245,6 +2505,12 @@ public class SubAgentToolProvider : IFunctionProvider
         /// <summary>A delegated task addressed to the waiter ended the wait.</summary>
         public const string Interrupted = "interrupted";
 
+        /// <summary>
+        /// Input the owning agent is holding, and cannot look at while this wait blocks, ended the
+        /// wait. Nothing was cancelled and no result was consumed.
+        /// </summary>
+        public const string InterruptedByInput = "interrupted_by_input";
+
         /// <summary>An agent named as a target is itself blocked on an answer from the waiter.</summary>
         public const string WaitCycle = "wait_cycle";
 
@@ -2262,9 +2528,16 @@ public class SubAgentToolProvider : IFunctionProvider
     private const string PeerNotChildReason = "peer_not_child";
 
     /// <summary>A named target that is a real agent this one cannot block on, and what to do instead.</summary>
+    /// <remarks>
+    /// Carries the name as well as the id because <c>target</c> is whatever the model typed, which is
+    /// often the id: a row reading only <c>agent-7</c> named the agent twice and identified it never,
+    /// so the next action - message it, check it - had nothing readable to name. Every other surface
+    /// that reports an agent to a model leads with its name.
+    /// </remarks>
     private sealed record UnwaitableTarget(
         [property: JsonPropertyName("target")] string Target,
         [property: JsonPropertyName("agent_id")] string AgentId,
+        [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("reason")] string Reason,
         [property: JsonPropertyName("next_action")] string NextAction
     );
@@ -2312,6 +2585,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     new UnwaitableTarget(
                         entry.Target,
                         peer.AgentId,
+                        peer.Name,
                         PeerNotChildReason,
                         $"'{entry.Target}' is not one of your sub-agents, so you cannot block on it. Check "
                             + "it with CheckAgents, or send it a message and carry on with your own work."
@@ -2403,6 +2677,104 @@ public class SubAgentToolProvider : IFunctionProvider
             // Intentionally swallowed: the outcome is reported from a fresh observation.
         }
     }
+
+    /// <summary>
+    /// Waits, quietly, for input the owning agent is holding that is worth ending a wait for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The third racer, and the one bug 6 is about. While a wait blocks, the agent that owns it cannot
+    /// start another turn, so everything sent to it queues behind a call that may have no timeout at
+    /// all: a person typing "stop, do this instead" was heard only once the children finished, which
+    /// for a wedged child is never. The completion tasks answer "did my children finish" and the
+    /// ledger watcher answers "did a peer address me"; neither answers "is the person I work for
+    /// trying to reach me".
+    /// </para>
+    /// <para>
+    /// A PEEK, not a read. The input stays queued: this call reports that the wait stopped, the turn
+    /// ends, and the run loop then drains and acts on the very input that stopped it. The waited-on
+    /// agents are untouched - nothing is cancelled, no completion is consumed, and the caller is told
+    /// to wait again.
+    /// </para>
+    /// <para>
+    /// Which inputs count is <see cref="EarlySettlePlaceholders.WakesABlockedWait"/>, shared with the
+    /// run loop's parked-<c>Wait</c> branch so the two cannot drift into two answers. The one thing
+    /// this caller adds is <paramref name="isAlreadyWaitedOn"/>: a completion notice from an agent
+    /// this wait is blocked on is the wait's own result and arrives through the completion task, so
+    /// racing it here would end the wait a beat early, with the wrong status and nothing to show.
+    /// </para>
+    /// </remarks>
+    private async Task<QueuedInput?> WatchForWakingInputAsync(
+        Func<string?, bool> isAlreadyWaitedOn,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            return await _manager.WaitForOwnerInputAsync(
+                queued => WakesAWait(queued, isAlreadyWaitedOn),
+                cancellationToken
+            );
+        }
+        catch (Exception)
+        {
+            // Another racer won, or this agent has no peekable input queue. Either way the wait's
+            // outcome is decided by the racer that did resolve.
+            return null;
+        }
+    }
+
+    /// <summary>True when any message in <paramref name="queued"/> is worth ending a wait for.</summary>
+    private static bool WakesAWait(QueuedInput queued, Func<string?, bool> isAlreadyWaitedOn) =>
+        queued.Input.Messages.Any(message =>
+            EarlySettlePlaceholders.WakesABlockedWait(
+                new ParkedInterruption(message, queued.Trigger != null),
+                isAlreadyWaitedOn
+            )
+        );
+
+    /// <summary>What the model is told about the input that ended its wait.</summary>
+    /// <remarks>
+    /// Deliberately a description and not the content. The input is still queued and arrives in full
+    /// on the next turn, so repeating it here would put the same message in the transcript twice -
+    /// once as a tool result the model may answer, and once as the message itself. What the model
+    /// needs from the wait is only enough to know an answer is coming and who it is from.
+    /// </remarks>
+    private sealed record WakingInput(
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("from")] string? From
+    );
+
+    /// <summary>Describes the first message in <paramref name="queued"/> that ends a wait.</summary>
+    private static WakingInput? DescribeWakingInput(QueuedInput queued, Func<string?, bool> isAlreadyWaitedOn)
+    {
+        foreach (var message in queued.Input.Messages)
+        {
+            if (
+                !EarlySettlePlaceholders.WakesABlockedWait(
+                    new ParkedInterruption(message, queued.Trigger != null),
+                    isAlreadyWaitedOn
+                )
+            )
+            {
+                continue;
+            }
+
+            return message switch
+            {
+                AgentMessage agent => new WakingInput("agent_message", agent.FromName),
+                NotifyMessage notify => new WakingInput(notify.NotifyKind, notify.Label),
+                _ => new WakingInput("user_message", null),
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>The sentence every input-interrupted wait ends with.</summary>
+    private const string InputInterruptNextAction =
+        "Nothing was cancelled and no result was lost: every agent listed is still running, and this "
+        + "wait consumed none of them. Read the message you were sent, do what it asks, then wait again.";
 
     /// <summary>A delay that ends quietly when the race that owns it is torn down.</summary>
     private static async Task DelayQuietlyAsync(TimeSpan delay, CancellationToken cancellationToken)
@@ -2650,12 +3022,28 @@ public class SubAgentToolProvider : IFunctionProvider
         // Quiet racer: the loser is never awaited, so a cancellation fault would surface as an
         // unobserved task exception long after this tool call is gone.
         var completion = AwaitQuietlyAsync(_manager.ObserveTargetCompletionAsync(agentId, linked.Token));
+
+        // The same third racer WaitForAgents gets, for the same reason: this call blocks the turn, so
+        // while it runs the owning agent cannot look at anything it has been sent. This one agent's
+        // own completion is the wait's result and arrives through `completion`.
+        bool IsBlockedOn(string? completed) => string.Equals(completed, agentId, StringComparison.Ordinal);
+
+        var inputWatcher = WatchForWakingInputAsync(IsBlockedOn, linked.Token);
         var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        var winner = timeout is null ? await Task.WhenAny(completion) : await Task.WhenAny(completion, timeout);
+        Task[] races = timeout is null ? [completion, inputWatcher] : [completion, inputWatcher, timeout];
+
+        var winner = await Task.WhenAny(races);
+
+        // Read before the teardown: the quiet completion racer also finishes when cancelled, and a
+        // finished child has to outrank an arriving message when both are true.
+        var completionSettled = completion.IsCompleted;
 
         await linked.CancelAsync();
         cancellationToken.ThrowIfCancellationRequested();
+
+        var wokenBy =
+            !completionSettled && await inputWatcher is { } queued ? DescribeWakingInput(queued, IsBlockedOn) : null;
 
         // Re-read rather than reuse the pre-wait snapshot: the whole point of the wait is the status and
         // result the agent reached while it was blocked. A MISS here is not a mistyped id — that was
@@ -2673,13 +3061,16 @@ public class SubAgentToolProvider : IFunctionProvider
                 new
                 {
                     status = agent is null ? WaitStatus.Unavailable
-                    : winner == completion ? WaitStatus.Completed
+                    : completionSettled ? WaitStatus.Completed
+                    : wokenBy is not null ? WaitStatus.InterruptedByInput
                     : WaitStatus.Timeout,
                     detail = agent is not null
                         ? null
                         : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
                             + "being tracked before it could produce a result — its start failed, or the sub-agent "
                             + "system shut down. There is nothing to collect. Spawn it again if you still need the work.",
+                    input = wokenBy,
+                    next_action = wokenBy is null ? null : InputInterruptNextAction,
                     agent,
                 }
             )

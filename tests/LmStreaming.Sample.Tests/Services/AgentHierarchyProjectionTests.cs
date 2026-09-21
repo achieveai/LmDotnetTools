@@ -331,4 +331,50 @@ public sealed class AgentHierarchyProjectionTests
         AgentHierarchyProjection.Find(rows, WorkflowCollaboration.ComposeControllerAgentId("w1")).Should().NotBeNull();
         AgentHierarchyProjection.Find(rows, "nobody").Should().BeNull();
     }
+
+    [Fact]
+    public void Find_AlsoAcceptsTheNameTheRowPublishes()
+    {
+        // The retained-transcript read has no directory to canonicalize through: it runs entirely off
+        // persisted rows. Matching identifiers only meant it answered "no such agent" for the very
+        // name every roster had just published for that row.
+        var rows = Project([Tab("agent-1") with { Name = "reviewer" }], [RootNode(), Node("agent-1")]);
+
+        AgentHierarchyProjection.Find(rows, "reviewer")!.AgentId.Should().Be("agent-1");
+        AgentHierarchyProjection.Find(rows, "REVIEWER")!.AgentId.Should().Be("agent-1", "names are case-insensitive");
+        AgentHierarchyProjection.Find(rows, "agent-1")!.AgentId.Should().Be("agent-1");
+    }
+
+    [Fact]
+    public void Find_PrefersEveryRowsIdentifierOverAnyRowsName()
+    {
+        // The hazard of accepting names at all. A row NAMED agent-2 sitting ahead of the row whose ID
+        // is agent-2 must not win: a caller asking for an id is asking for that agent and no other,
+        // and handing back the neighbour would show a reader somebody else's transcript.
+        var rows = Project(
+            [Tab("agent-1") with { Name = "agent-2" }, Tab("agent-2") with { Name = "writer" }],
+            [RootNode(), Node("agent-1"), Node("agent-2")]
+        );
+
+        AgentHierarchyProjection.Find(rows, "agent-2")!.Name.Should().Be("writer");
+    }
+
+    [Fact]
+    public void Find_OnANameTwoRowsClaim_ResolvesToNothingRatherThanTheFirst()
+    {
+        // The same answer the collaboration directory gives an ambiguous name, for the same reason.
+        // Names are granted uniquely per collaboration, so a duplicate here comes from another
+        // process or another roster - exactly where guessing picks the wrong agent.
+        var rows = Project(
+            [Tab("agent-1") with { Name = "reviewer" }, Tab("agent-2") with { Name = "reviewer" }],
+            [RootNode(), Node("agent-1"), Node("agent-2")]
+        );
+
+        AgentHierarchyProjection.Find(rows, "reviewer").Should().BeNull();
+
+        // Both stay reachable by the identifier they each publish, so refusing the name costs nothing
+        // a caller could not recover.
+        AgentHierarchyProjection.Find(rows, "agent-1").Should().NotBeNull();
+        AgentHierarchyProjection.Find(rows, "agent-2").Should().NotBeNull();
+    }
 }

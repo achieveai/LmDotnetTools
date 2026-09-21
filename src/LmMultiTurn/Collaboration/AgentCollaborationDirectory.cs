@@ -186,7 +186,12 @@ public sealed class AgentCollaborationDirectory
     // Name is not an identity. A name maps to one agent or, once two agents have claimed it, to
     // permanent ambiguity — never to "the most recent one", because silently retargeting an alias
     // would send a reply to a different agent than the one the sender was talking to.
-    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.Ordinal);
+    //
+    // Case-insensitive, because a name is addressed by a model writing prose. "Reviewer" and
+    // "reviewer" are the same word to whoever typed them, so treating them as two agents makes the
+    // spelling of a message decide which agent hears it. Collision is the honest answer: the second
+    // claimant is suffixed and both remain addressable.
+    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.OrdinalIgnoreCase);
 
     // Agents a previous process registered and this one cannot reach. Kept apart from the live maps
     // rather than registered as not-live entries, so nothing that walks the collaboration — a listing,
@@ -196,10 +201,20 @@ public sealed class AgentCollaborationDirectory
         StringComparer.Ordinal
     );
 
-    private readonly ConcurrentDictionary<string, NameBinding> _invalidatedByName = new(StringComparer.Ordinal);
+    // Same comparer as _byName: a name looked up here is one a live lookup already missed, and
+    // answering "no such agent" for a spelling the live map would have matched would make the two
+    // halves of resolution disagree.
+    private readonly ConcurrentDictionary<string, NameBinding> _invalidatedByName = new(
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private readonly AgentCollaborationOptions _options;
     private readonly TimeProvider _clock;
+
+    // Issues AgentDirectoryEntry.RetirementSequence. Held here rather than derived from the entries,
+    // because "one past the highest" would renumber from scratch after nothing and would tie whenever
+    // two agents retired concurrently — and the whole value of the field is that it never ties.
+    private long _retirementSequence;
 
     /// <summary>Creates an empty directory for one collaboration.</summary>
     /// <param name="collaborationId">The collaboration this directory describes.</param>
@@ -386,14 +401,30 @@ public sealed class AgentCollaborationDirectory
     /// Marks an agent as no longer addressable while keeping it visible.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A stopped agent's entry has to outlive it: a sender holding an open Question needs to learn that
     /// its target is gone, and an entry that vanished would be indistinguishable from one that never
-    /// existed.
+    /// existed. The entry stays addressable enough to answer that question: a listing shows it, marked,
+    /// and the todo board still records what it owns rather than losing the claim with the agent.
+    /// </para>
+    /// <para>
+    /// Stamps <see cref="AgentDirectoryEntry.RetirementSequence"/> on the first call only. Retirement is
+    /// idempotent and genuinely called twice — <c>SubAgentManager.DisposeAsync</c> retires every
+    /// admission again at teardown — so renumbering on a repeat would report the whole conversation's
+    /// history as having finished at shutdown, in reverse of the order it actually did.
+    /// </para>
     /// </remarks>
     /// <returns>False when no such agent is registered.</returns>
     public bool TryMarkRetained(string agentId)
     {
-        return TryMutate(agentId, entry => entry with { IsLive = false });
+        // Taken before the mutation because TryMutate re-runs its lambda on a lost CAS, and a sequence
+        // minted per attempt would advance with contention rather than with retirements.
+        var sequence = Interlocked.Increment(ref _retirementSequence);
+
+        return TryMutate(
+            agentId,
+            entry => entry.IsLive ? entry with { IsLive = false, RetirementSequence = sequence } : entry
+        );
     }
 
     /// <summary>
@@ -631,6 +662,31 @@ public sealed class AgentCollaborationDirectory
                 )
                 .OrderBy(record => record.AgentId, StringComparer.Ordinal),
         ];
+    }
+
+    /// <summary>
+    /// Every agent tombstoned by a restart (#676), ordered by canonical identifier — the rows
+    /// <see cref="MarkInvalidated"/> accepted, exactly as they were persisted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A separate accessor rather than a flag on <see cref="Snapshot"/>, because the two lists serve
+    /// opposite purposes and every existing reader of the snapshot relies on the tombstones being
+    /// absent from it: capacity is counted off it, listings are capped against it, and
+    /// <see cref="SnapshotRecords"/> is what the next process inherits, which is why a tombstone must
+    /// never reach it (see that method's remarks). This list is for the one reader that wants to SAY
+    /// an agent is gone — a roster that omits the name entirely leaves it looking free, and the
+    /// caller spawns a duplicate of an agent whose transcript is still on disk.
+    /// </para>
+    /// <para>
+    /// The row's <see cref="CollaborationNodeRecord.Status"/> is what the agent was doing when its
+    /// process ended, not what it is doing now; a reader that publishes it should publish it as
+    /// history, not as state.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<CollaborationNodeRecord> InvalidatedRecords()
+    {
+        return [.. _invalidatedById.Values.OrderBy(record => record.AgentId, StringComparer.Ordinal)];
     }
 
     /// <summary>The bounded queue of message identifiers awaiting delivery to an agent.</summary>

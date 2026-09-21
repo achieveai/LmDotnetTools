@@ -4,6 +4,8 @@
  * newlines, CRLF) is all a table preview needs.
  */
 
+import type { TablePreview } from '@/types/fileBrowser';
+
 export type Delimiter = ',' | '\t';
 
 export interface DelimitedTable {
@@ -75,4 +77,21 @@ export function parseDelimitedText(text: string, delimiter: Delimiter, maxRows =
 
   const truncated = rows.length > maxRows;
   return { rows: truncated ? rows.slice(0, maxRows) : rows, truncated };
+}
+
+/**
+ * Parses `text` as the delimited file at `path` and wraps it in the {@link TablePreview} shape the
+ * shared table viewer renders — a workbook of exactly one sheet, named after the file. Returns null
+ * when `path` is not a delimited file. A spreadsheet arrives in the same shape from the server, so
+ * the viewer does not need to know which source it is looking at.
+ */
+export function delimitedTablePreview(path: string, text: string, maxRows = 1000): TablePreview | null {
+  const delimiter = delimiterForPath(path);
+  if (!delimiter) return null;
+
+  const { rows, truncated } = parseDelimitedText(text, delimiter, maxRows);
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  // `truncated` is per-SHEET here. The workbook-level flag means "whole sheets were dropped", which
+  // cannot happen for a delimited file: there is only ever the one.
+  return { sheets: [{ name, rows, truncated }], truncated: false };
 }

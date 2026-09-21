@@ -165,6 +165,39 @@ describe('useChat AgentMessage (agent-to-agent pill)', () => {
     expect(data.agentMessageType).toBe('Question');
   });
 
+  // A conversation persisted before the envelope was corrected keeps the old spelling forever:
+  // the server used to write the C# member name (`type="Question"`) where it now writes the wire
+  // name it also accepts. The pill must not notice, because what it reads is `agent_message_type`,
+  // and the envelope text is body rather than protocol - so a reloaded old conversation renders
+  // exactly like a new one.
+  it('renders a pre-correction envelope spelling exactly like the current one', async () => {
+    const legacy = {
+      ...persistedAgentFx,
+      messageJson: persistedAgentFx.messageJson
+        .replace('type=\\"question\\"', 'type=\\"Question\\"')
+        .replace('reply-msg-type=\\"response\\"', 'reply-msg-type=\\"Response\\"'),
+    };
+    // Non-vacuity: if the fixture ever stops carrying the new spelling, this case is testing nothing.
+    expect(legacy.messageJson).toContain('type=\\"Question\\"');
+    expect(legacy.messageJson).not.toBe(persistedAgentFx.messageJson);
+
+    conversationsMocks.loadConversationMessages.mockResolvedValue([legacy]);
+
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    await chat.loadMessagesFromBackend('thread-root');
+
+    const notifications = chat.displayItems.value.filter((i) => i.type === 'notification');
+    expect(notifications, 'the reloaded agent message renders').toHaveLength(1);
+    expect(chat.displayItems.value.filter((i) => i.type === 'user-message')).toHaveLength(0);
+
+    const data = (notifications[0] as {
+      notification: { notifyKind: string; label?: string | null; agentMessageType?: string | null };
+    }).notification;
+    expect(data.notifyKind).toBe('agent-message');
+    expect(data.label).toBe('reviewer');
+    expect(data.agentMessageType).toBe('Question');
+  });
+
   // A conversation persisted BEFORE #244 has no agent messages at all, and must reload byte-for-byte
   // as it always did — the new branch may not claim anything that isn't an AgentMessage.
   it('leaves a pre-#244 transcript rendering exactly as before', async () => {

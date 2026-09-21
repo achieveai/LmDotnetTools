@@ -221,6 +221,44 @@ public class ConversationAgentBindingProjectionTests
     }
 
     [Fact]
+    public async Task SaveAsync_DropsACaptureFromAnEarlierSession_EvenWhenItWasTakenLater()
+    {
+        // Session order beats capture time. A replaced session's final flush is the LATEST capture and
+        // still describes a roster that has already been reconciled and rewritten by its replacement.
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, RootA);
+        await ConversationAgentBindingProjection.SaveAsync(store, Binding(capturedAt: Noon) with { Session = 2 });
+
+        await ConversationAgentBindingProjection.SaveAsync(
+            store,
+            Binding(name: "stale", capturedAt: Noon.AddMinutes(10)) with
+            {
+                Session = 1,
+            }
+        );
+
+        var loaded = await ConversationAgentBindingProjection.LoadAsync(store, RootA);
+        loaded!.Agents.Should().ContainSingle().Which.Name.Should().Be("researcher");
+        loaded.Session.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task SaveAsync_AcceptsAnUnnumberedCaptureOverANumberedOne()
+    {
+        // A build from before sessions were numbered writes 0. Refusing it would freeze the document
+        // for the whole of a rollback: every restart under the older build would reconcile the same
+        // roster and report the same casualties, and nothing it wrote would ever land.
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, RootA);
+        await ConversationAgentBindingProjection.SaveAsync(store, Binding() with { Session = 7 });
+
+        await ConversationAgentBindingProjection.SaveAsync(store, Binding(name: "rolled-back"));
+
+        var loaded = await ConversationAgentBindingProjection.LoadAsync(store, RootA);
+        loaded!.Agents.Should().ContainSingle().Which.Name.Should().Be("rolled-back");
+    }
+
+    [Fact]
     public async Task LoadAsync_IgnoresASetThatBelongsToADifferentRoot()
     {
         // #705 made agent ids ordinals minted per ROOT conversation, so EVERY conversation has an

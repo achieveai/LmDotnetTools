@@ -239,6 +239,21 @@ describe('QuestionRich — Cancel (explicit pending-question cancellation)', () 
     expect((w.get('[data-testid="question-cancel"]').element as HTMLButtonElement).disabled).toBe(false);
   });
 
+  // Bug #5: the server settled the call early with a placeholder and the answer went to the agent
+  // as a message. Once the pill reports it answered (isDeferred false), the card must read as
+  // answered — not as cancelled — and while it is still open (isDeferred true) the form must show.
+  it('an early-settled placeholder reads as answered elsewhere once its answer was delivered, and stays a form until then', () => {
+    const resultText = JSON.stringify({ status: 'deferred_to_notification', message: 'Question sent to user' });
+    const closed = mountQuestion(singleArgs, { result: resultText, hasResult: true, isDeferred: false });
+    expect(closed.w.find('[data-testid="question-form"]').exists()).toBe(false);
+    expect(closed.w.find('[data-testid="question-cancelled-resolved"]').exists()).toBe(false);
+    expect(closed.w.get('[data-testid="question-answered-elsewhere"]').text()).toMatch(/answered/i);
+
+    const open = mountQuestion(singleArgs, { result: resultText, hasResult: true, isDeferred: true });
+    expect(open.w.find('[data-testid="question-form"]').exists()).toBe(true);
+    expect(open.w.find('[data-testid="question-answered-elsewhere"]').exists()).toBe(false);
+  });
+
   it('once the canonical (server-resolved) result is a non-answer body, the interactive form does not reopen', () => {
     const resultText = JSON.stringify({ error: 'Question cancelled by user.', cancelled: true });
     const { w } = mountQuestion(singleArgs, {
@@ -436,5 +451,143 @@ describe('QuestionRich — resolved (read-only canonical result)', () => {
     });
     const { w } = mountQuestion(singleArgs, { result: resultText, hasResult: true, isDeferred: false });
     expect(w.get('[data-testid="question-resolved"]').text()).toContain('Skipped');
+  });
+});
+
+/**
+ * BUG 8 (second half): the user must be able to write commentary alongside whatever they picked.
+ * "Other" could not do this — it is an option in its own right, and in single-select choosing it
+ * CLEARS the selection, so an answer was either a choice or prose, never both. The comment is a
+ * separate always-present field. The server never parses this payload (`result` is an opaque string
+ * to ChatWebSocketManager / MultiTurnAgentLoop), so the field is a client-only convention like the
+ * Cancel body above — no server contract change.
+ */
+describe('QuestionRich — comment alongside any choice', () => {
+  const multiArgs = JSON.stringify({
+    context: 'ctx',
+    questions: [{ prompt: 'Which ones?', allowMultiple: true, options: [{ label: 'A' }, { label: 'B' }] }],
+  });
+
+  it('offers the comment box without the user opting into anything', () => {
+    const { w } = mountQuestion(singleArgs, { isDeferred: true });
+    const field = w.get('[data-testid="question-comment"]');
+    expect(field.element.tagName).toBe('TEXTAREA');
+  });
+
+  it('sends the comment ALONGSIDE the chosen option, leaving the choice untouched', async () => {
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-option-blue-val"] input').setValue(true);
+    await w.get('[data-testid="question-comment"]').setValue('  Blue, but only for the header  ');
+    await w.get('[data-testid="question-submit"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(JSON.parse(submit.mock.calls[0][1]).answers).toEqual([
+      {
+        questionId: 'q0',
+        selectedValues: ['blue-val'],
+        otherText: '',
+        skipped: false,
+        comment: 'Blue, but only for the header',
+      },
+    ]);
+  });
+
+  it('keeps the choice when a comment is typed (the bug that made Other unusable for this)', async () => {
+    const { w } = mountQuestion(singleArgs, { isDeferred: true });
+    await w.get('[data-testid="question-option-Red"] input').setValue(true);
+    await w.get('[data-testid="question-comment"]').setValue('as long as it is not scarlet');
+    expect((w.get('[data-testid="question-option-Red"] input').element as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('sends the comment alongside a multi-select answer too', async () => {
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
+    const { w } = mountQuestion(multiArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-option-A"] input').setValue(true);
+    await w.get('[data-testid="question-option-B"] input').setValue(true);
+    await w.get('[data-testid="question-comment"]').setValue('both, in that order');
+    await w.get('[data-testid="question-submit"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const answer = JSON.parse(submit.mock.calls[0][1]).answers[0];
+    expect(answer.selectedValues).toEqual(['A', 'B']);
+    expect(answer.comment).toBe('both, in that order');
+  });
+
+  it('sends the comment with a Skip, so "not this, because…" survives', async () => {
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-comment"]').setValue('none of these fit');
+    await w.get('[data-testid="question-skip"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(JSON.parse(submit.mock.calls[0][1]).answers).toEqual([
+      { questionId: 'q0', selectedValues: [], otherText: '', skipped: true, comment: 'none of these fit' },
+    ]);
+  });
+
+  it('omits the field entirely when nothing was written, so the payload is unchanged', async () => {
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-option-Red"] input').setValue(true);
+    await w.get('[data-testid="question-comment"]').setValue('   ');
+    await w.get('[data-testid="question-submit"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(JSON.parse(submit.mock.calls[0][1]).answers[0]).not.toHaveProperty('comment');
+  });
+
+  it('a comment on its own is an answer — submit is enabled with no option chosen', async () => {
+    const { w } = mountQuestion(singleArgs, { isDeferred: true });
+    expect((w.get('[data-testid="question-submit"]').element as HTMLButtonElement).disabled).toBe(true);
+    await w.get('[data-testid="question-comment"]').setValue('I want something else entirely');
+    expect((w.get('[data-testid="question-submit"]').element as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('carries a per-question comment through the stepper and restores it after a remount', async () => {
+    const twoArgs = JSON.stringify({
+      context: 'ctx',
+      questions: [
+        { prompt: 'First?', options: [{ label: 'A' }] },
+        { prompt: 'Second?', options: [{ label: 'B' }] },
+      ],
+    });
+    const draftKey = 'thread-7:root:q-comment';
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
+    const first = mountQuestion(twoArgs, { isDeferred: true, draftKey }).w;
+    await first.get('[data-testid="question-option-A"] input').setValue(true);
+    await first.get('[data-testid="question-comment"]').setValue('about the first');
+    await first.get('[data-testid="question-next"]').trigger('click');
+    first.unmount();
+
+    const restored = mountQuestion(twoArgs, { isDeferred: true, draftKey, submit }).w;
+    expect((restored.get('[data-testid="question-comment"]').element as HTMLTextAreaElement).value).toBe('');
+    await restored.get('[data-testid="question-back"]').trigger('click');
+    expect((restored.get('[data-testid="question-comment"]').element as HTMLTextAreaElement).value)
+      .toBe('about the first');
+
+    await restored.get('[data-testid="question-next"]').trigger('click');
+    await restored.get('[data-testid="question-option-B"] input').setValue(true);
+    await restored.get('[data-testid="question-comment"]').setValue('about the second');
+    await restored.get('[data-testid="question-submit"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const answers = JSON.parse(submit.mock.calls[0][1]).answers;
+    expect(answers.map((a: { comment?: string }) => a.comment)).toEqual(['about the first', 'about the second']);
+  });
+
+  it('shows the comment back in the resolved, read-only result', () => {
+    const { w } = mountQuestion(singleArgs, {
+      hasResult: true,
+      result: JSON.stringify({
+        answers: [{ questionId: 'q0', selectedValues: ['blue-val'], otherText: '', skipped: false, comment: 'for the header only' }],
+      }),
+    });
+    expect(w.get('[data-testid="question-resolved"]').text()).toContain('for the header only');
   });
 });

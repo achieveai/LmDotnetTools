@@ -204,6 +204,11 @@ public sealed class SubAgentTabsTests
         dotColors.Should().HaveCount(2);
         dotColors.Distinct().Should().HaveCount(2, "each sub-agent tab gets a distinct color");
 
+        // The right-aligned picker popover floats over the transcript; close it before the tool pills
+        // below are clicked, or the popover intercepts the pointer and the click never lands.
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("agent-picker-popover")).ToBeHiddenAsync();
+
         // The flat developer activity stream keeps both calls identifiable and inspectable. Its rows
         // intentionally use neutral borders; assigned color belongs to the tab identity above.
         var agentRows = page.GetByTestId("main-view").Locator("[data-testid='tool-call-pill'][data-tool-name='Agent']");

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectScope } from 'vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
-import { LIVE_BUFFER_MAX } from '@/composables/useSubAgentPanel';
+import { LIVE_BUFFER_MAX, OPTIMISTIC_SEND_KEY_PREFIX } from '@/composables/useSubAgentPanel';
+import { getMergeKey } from '@/composables/messageMergeKey';
 // Import the composable's own source text to assert it never couples to useChat.
 import panelSource from '@/composables/useSubAgentPanel.ts?raw';
 import { MessageType } from '@/types';
@@ -1690,5 +1691,138 @@ describe("useSubAgentPanel — generation_abandoned retires the focused child's 
     expect(textsOf(panel), 'the buffer drain must not resurrect the retired partial').toEqual([
       'The retried answer.',
     ]);
+  });
+});
+
+/**
+ * BUG 7 (first half): a reply typed into a sub-agent tab used to vanish. `sendToFocusedChild` wrote
+ * it to the socket and recorded nothing, and unlike the parent chat there is no pending queue and no
+ * `run_assignment` activation to bring it back — so the user saw their own message only after a
+ * refocus reloaded the child's persisted history.
+ */
+describe('useSubAgentPanel — the user own reply to a child (BUG 7)', () => {
+  async function focusFirst(panel: ReturnType<typeof useSubAgentPanel>, agentId = 'a1') {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary(agentId)]);
+    await panel.refreshChildren();
+    await panel.focusChild(agentId);
+  }
+
+  const userBubbles = (panel: ReturnType<typeof useSubAgentPanel>) =>
+    panel.focusedDisplayItems.value
+      .filter((i) => i.type === 'user-message')
+      .map((i) => (i as { content?: { text?: string } }).content?.text);
+
+  const persistedReply = (text: string) => ({
+    id: 'p-reply', threadId: 'subagent-a1', runId: 'run-child-2', generationId: 'gen-child-2',
+    messageOrderIdx: 0, timestamp: 2000, messageType: 'text', role: 'user',
+    messageJson: JSON.stringify({ $type: MessageType.Text, role: 'user', text }),
+  });
+
+  it('shows the reply in the child transcript as soon as it goes out', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    panel.sendToFocusedChild('please use the other file');
+
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[0].connection, 'please use the other file');
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+  });
+
+  it('records nothing when there is no open connection to send on', () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    panel.sendToFocusedChild('nobody home');
+    expect(panel.focusedDisplayItems.value).toEqual([]);
+  });
+
+  it('keeps the reply after the child answers it', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    panel.sendToFocusedChild('please use the other file');
+    captured[0].callbacks.onMessage(runAssignment());
+    captured[0].callbacks.onMessage(textUpdate('on it'));
+
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+    expect(assistantText(panel.focusedDisplayItems.value)).toContain('on it');
+  });
+
+  it('does not duplicate the reply when the AUTO-RESUME refocus reloads it from history', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+    panel.sendToFocusedChild('please use the other file');
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+
+    // A clean close is the backpressure-drop case: the panel refocuses ITSELF once, and by then the
+    // child has persisted the reply. The optimistic copy and its twin must not both render.
+    convMocks.loadConversationMessages.mockResolvedValue([persistedReply('please use the other file')]);
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    await vi.waitFor(() => expect(captured.length).toBe(2));
+    await vi.waitFor(() => expect(userBubbles(panel).length).toBe(1));
+
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+  });
+
+  it('does not duplicate the reply when a user-initiated refocus reloads it from history', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+    panel.sendToFocusedChild('please use the other file');
+
+    convMocks.loadConversationMessages.mockResolvedValue([persistedReply('please use the other file')]);
+    await panel.focusChild('a1');
+
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+  });
+
+  it('does not duplicate the reply when an overflow reconcile reloads it from history', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    await panel.refreshChildren();
+
+    // Park the history load so the send lands mid-focus, then overflow the live buffer so the focus
+    // reconciles by RELOADING history — the one path that rehydrates without a `resetFocusState`.
+    let releaseHistory: (rows: unknown[]) => void = () => {};
+    convMocks.loadConversationMessages.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseHistory = resolve as (rows: unknown[]) => void; })
+    );
+    convMocks.loadConversationMessages.mockResolvedValue([persistedReply('please use the other file')]);
+
+    const focusing = panel.focusChild('a1');
+    await vi.waitFor(() => expect(captured.length).toBe(1));
+    panel.sendToFocusedChild('please use the other file');
+    for (let i = 0; i <= LIVE_BUFFER_MAX; i++) captured[0].callbacks.onMessage(textUpdate(`delta ${i}`));
+    releaseHistory([]);
+    await focusing;
+
+    expect(userBubbles(panel)).toEqual(['please use the other file']);
+  });
+
+  it('keys the optimistic reply outside everything getMergeKey can mint', () => {
+    const everyKind = [
+      { $type: MessageType.Text, role: 'user', text: 'x' },
+      { $type: MessageType.TextUpdate, role: 'assistant', text: 'x' },
+      { $type: MessageType.Reasoning, role: 'assistant', reasoning: 'x' },
+      { $type: MessageType.ReasoningUpdate, role: 'assistant', reasoning: 'x' },
+      { $type: MessageType.ToolsCall, role: 'assistant', tool_calls: [{ tool_call_id: OPTIMISTIC_SEND_KEY_PREFIX }] },
+      { $type: MessageType.ToolsCallUpdate, role: 'assistant', tool_calls: [] },
+      { $type: MessageType.ToolCall, role: 'assistant', tool_call_id: OPTIMISTIC_SEND_KEY_PREFIX },
+      { $type: MessageType.ToolCallUpdate, role: 'assistant', tool_call_id: OPTIMISTIC_SEND_KEY_PREFIX },
+      { $type: MessageType.Notify, role: 'assistant', notify_kind: 'x' },
+      { $type: MessageType.Agent, role: 'assistant', message_id: OPTIMISTIC_SEND_KEY_PREFIX },
+      { $type: MessageType.CompactionCheckpoint, role: 'assistant', checkpoint_id: OPTIMISTIC_SEND_KEY_PREFIX },
+      { $type: 'something_unmapped', role: 'assistant' },
+    ];
+
+    for (const msg of everyKind) {
+      // Hostile identity: every field the key is built from is set to the optimistic prefix, so what
+      // is under test is the LEADING merge-kind segment, not the absence of a collision by luck.
+      // `getMergeKey` always leads with one of its eight kind names, and none of them is 'local'.
+      const hostile = {
+        ...msg,
+        runId: OPTIMISTIC_SEND_KEY_PREFIX,
+        generationId: OPTIMISTIC_SEND_KEY_PREFIX,
+        messageOrderIdx: 1,
+      } as never;
+      expect(getMergeKey(hostile, 1).startsWith(OPTIMISTIC_SEND_KEY_PREFIX)).toBe(false);
+    }
   });
 });

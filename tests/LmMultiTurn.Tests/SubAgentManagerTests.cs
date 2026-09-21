@@ -723,6 +723,30 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_WithANameThatDiffersOnlyInCase_CollidesLikeAnyOtherRepeat()
+    {
+        // Deliberately the same answer AgentCollaborationDirectory gives, and asserted separately on
+        // each path: the two grant rules agree by design, so applying the comparer to only one of
+        // them would make the name an agent is given depend on whether collaboration is switched on.
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager();
+
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true, name: "reviewer");
+        var secondJson = await _manager.SpawnAsync("test-agent", "second", runInBackground: true, name: "Reviewer");
+
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("name").GetString().Should().Be("Reviewer-2");
+
+        // Either spelling reaches the first agent; the newcomer has its own address.
+        _manager.TryGetAgent("REVIEWER", out var first).Should().BeTrue();
+        _manager.TryGetAgent("reviewer-2", out var second).Should().BeTrue();
+        first.Should().NotBeSameAs(second);
+
+        release.SetResult(true);
+    }
+
+    [Fact]
     public async Task SpawnAsync_WhenTheSuffixedNameIsAlsoTaken_KeepsLookingForAFreeOne()
     {
         // The pathological case the suffix loop exists for: a caller literally named an earlier agent

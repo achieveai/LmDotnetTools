@@ -72,12 +72,25 @@ public static class CollaborationIdentityWiring
             );
         }
 
+        // This attachment's place in the conversation's sequence of loops: one past the document it
+        // reconciled from. Stamped on every capture so a loop this one REPLACED — still alive, and
+        // about to flush its own roster when the host tears it down — cannot overwrite what was
+        // reconciled here (see AgentIdentityBindingSet.Session).
+        var session = (persisted?.Session ?? 0) + 1;
+
         var writer = new UsagePersistenceWriter(
             // The capture is taken HERE, on the writer's own drain task, rather than at schedule time:
             // the writer coalesces a burst into one write, and taking the snapshot at write time is what
             // makes the surviving write the latest state instead of the first one that asked.
             ct =>
-                ConversationAgentBindingProjection.SaveAsync(store, bundle.CaptureIdentityBinding(rootAgentId), ct),
+                ConversationAgentBindingProjection.SaveAsync(
+                    store,
+                    bundle.CaptureIdentityBinding(rootAgentId) with
+                    {
+                        Session = session,
+                    },
+                    ct
+                ),
             ex =>
                 logger?.LogError(
                     ex,

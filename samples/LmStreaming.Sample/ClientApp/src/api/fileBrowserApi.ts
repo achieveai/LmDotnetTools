@@ -292,3 +292,198 @@ export async function deleteEntry(
   }
   throw await classifyFailure(response, 'delete entry');
 }
+
+// ---------------------------------------------------------------------------------------------
+// Path-addressed raw workspace access (Bug#15)
+//
+// `preview`/`download` above are QUERY-addressed (`?path=`) and go through `apiFetch`, which is
+// the only place the bearer token is attached. Neither property survives contact with a rendered
+// HTML document: an `<iframe src>` / `<img src>` / relative `<link href>` cannot send a header,
+// and a relative reference inside a document served at `…/files/download?path=a/b.html` resolves
+// against `…/files/` — dropping the query and naming a route that does not exist.
+//
+// So a second shape exists beside them (the originals are untouched, and still used as the
+// fallback whenever a grant cannot be minted): a PATH-addressed URL whose grant SEGMENT addresses
+// a short-lived, signed, read-only grant, where relative resolution keeps it.
+//
+// The credential itself is NOT in that segment where it can be avoided. The document is sandboxed
+// with `allow-scripts`, and a script inside it can read `location` and navigate the frame anywhere
+// — no CSP directive stops a frame navigating itself — so anything in the URL is exfiltrable. So
+// the mint asks for the COOKIE transport, the server answers `Set-Cookie: lm_ws_grant=…; HttpOnly;
+// Secure; SameSite=None; Partitioned` scoped to this conversation's raw path, and the segment
+// carries only the public marker `cookie`.
+//
+// That is possible only where a `Secure` cookie is accepted, which is https and localhost —
+// exactly what `window.isSecureContext` reports. This CLIENT is what decides, because the server
+// sits behind an https front that does not forward its scheme and so cannot tell. Everywhere else
+// the segment is the token, as it always was.
+// ---------------------------------------------------------------------------------------------
+
+/** The server's `POST …/files/grant` body. Local to this module: nothing else has a use for it. */
+interface WorkspaceGrantResponse {
+  /** The URL path SEGMENT to address the grant with: the token, or the marker `cookie`. */
+  grant: string;
+  /** ISO-8601 instant at which the grant stops validating. */
+  expiresAt: string;
+  /** Which transport the server used. Echoed by the server; not consulted here (see below). */
+  transport?: string;
+}
+
+/** A grant held for one thread, with the instant this client stops presenting it. */
+interface CachedGrant {
+  /**
+   * The URL segment, which is the token only under the URL transport. Whatever the server returned
+   * is what is cached and what goes in the URL: this module never decides the segment itself, so a
+   * server that ignored the requested transport still produces working URLs.
+   */
+  token: string;
+  /** Local-clock ms after which a fresh grant is minted — already inside the server's expiry. */
+  refreshAfter: number;
+}
+
+/**
+ * How far ahead of the server's expiry a cached grant is replaced. Mirrors
+ * `FileBrowserLimits.WorkspaceGrantRefreshMargin`. Sized for the PAGE, not the round trip: an
+ * iframe that is already open keeps fetching subresources with the grant it was handed, so the
+ * margin has to cover someone reading a rendered report for a few minutes.
+ */
+const GRANT_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+const grantCache = new Map<string, CachedGrant>();
+/**
+ * Mint requests currently in flight, keyed by thread. A preview typically asks for the URL of the
+ * document and several subresources in the same tick; without this each one would mint its own
+ * grant, so opening one page would issue a handful of tokens that all outlive it.
+ */
+const grantInFlight = new Map<string, Promise<string>>();
+
+/**
+ * Drops any cached grant for a thread, so the next request mints a fresh one instead of replaying a
+ * dead token.
+ *
+ * Called when a MINT fails, and when a viewer that needs a raw URL could not get one. It is NOT
+ * called on a 401 from a raw URL, because nothing here can see one: an `<iframe>` and an `<img>`
+ * report only "did not load", never a status code. A grant that dies mid-preview (expired, key
+ * rotated, signed in as someone else) therefore surfaces as a blank frame until the cached entry
+ * passes its refresh margin or the page is reloaded — accepted, because the margin is 5 minutes
+ * short of a 1-hour lifetime and re-minting per subresource would defeat the cache this exists for.
+ */
+export function clearWorkspaceGrant(threadId: string): void {
+  grantCache.delete(threadId);
+  grantInFlight.delete(threadId);
+}
+
+/** Test seam: forget every cached grant. */
+export function clearAllWorkspaceGrants(): void {
+  grantCache.clear();
+  grantInFlight.clear();
+}
+
+/**
+ * Obtains a read grant for a thread's workspace, reusing the cached one until it is within
+ * {@link GRANT_REFRESH_MARGIN_MS} of expiring.
+ *
+ * The mint itself goes through {@link apiFetch}, so it is bearer-authenticated and authorized
+ * exactly like every other file-browser call — the grant is only a way to carry that already-made
+ * decision onto requests that cannot send a header.
+ *
+ * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on other non-ok statuses.
+ */
+export function requestWorkspaceGrant(threadId: string, signal?: AbortSignal): Promise<string> {
+  const cached = grantCache.get(threadId);
+  if (cached && Date.now() < cached.refreshAfter) {
+    return Promise.resolve(cached.token);
+  }
+
+  const pending = grantInFlight.get(threadId);
+  if (pending) {
+    return pending;
+  }
+
+  const attempt = mintWorkspaceGrant(threadId, signal)
+    .then((minted) => {
+      grantCache.set(threadId, minted);
+      return minted.token;
+    })
+    .finally(() => {
+      grantInFlight.delete(threadId);
+    });
+
+  grantInFlight.set(threadId, attempt);
+  return attempt;
+}
+
+/**
+ * Which transport to ask for. `isSecureContext` is true on https and on localhost, which is exactly
+ * where a browser accepts the `Secure` cookie the server would set — so asking for the cookie
+ * anywhere else would get a `Set-Cookie` the browser drops and a URL that then addresses nothing.
+ *
+ * Read through `globalThis` rather than `window` so this module keeps working in a non-DOM runtime,
+ * where the absent flag reads as `undefined` and the fallback transport is chosen.
+ */
+function preferredGrantTransport(): 'cookie' | 'url' {
+  return globalThis.isSecureContext === true ? 'cookie' : 'url';
+}
+
+/**
+ * One trip to `POST …/files/grant`, translated into a {@link CachedGrant}.
+ *
+ * The request body is what carries the transport choice. `apiFetch` leaves `credentials` at the
+ * default, which is `same-origin`, so the browser stores the `Set-Cookie` this response may carry
+ * and sends it back on the raw requests the rendered document makes.
+ */
+async function mintWorkspaceGrant(threadId: string, signal?: AbortSignal): Promise<CachedGrant> {
+  const url = `/api/conversations/${encodeURIComponent(threadId)}/files/grant`;
+  const response = await apiFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transport: preferredGrantTransport() }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await classifyFailure(response, 'obtain a workspace grant');
+  }
+  const body = (await response.json()) as WorkspaceGrantResponse;
+  const expiresAtMs = Date.parse(body.expiresAt);
+  // An unparseable or already-past expiry must not produce a grant this client caches forever, nor
+  // one it refuses to use at all. Falling back to "now + the margin" means it is used once and
+  // re-minted next time, which is the safe reading of a server answer we do not understand.
+  const refreshAfter = Number.isFinite(expiresAtMs)
+    ? expiresAtMs - GRANT_REFRESH_MARGIN_MS
+    : Date.now() + GRANT_REFRESH_MARGIN_MS;
+  return { token: body.grant, refreshAfter };
+}
+
+/**
+ * The raw, path-addressed URL for one workspace file:
+ * `/api/conversations/{threadId}/workspace/{grant}/{path}`.
+ *
+ * `grant` is whatever {@link requestWorkspaceGrant} returned — the token under the URL transport,
+ * the public marker `cookie` under the cookie transport. This function does not know or care which,
+ * which is why moving the credential into a cookie changed nothing here.
+ *
+ * Every path segment is encoded INDIVIDUALLY so that `/` keeps its meaning as a separator while a
+ * `#`, `?` or space inside a file name cannot truncate or re-parse the URL. That shape is the whole
+ * point: a document served from it has base URL `…/workspace/{grant}/<its dir>/`, so its own
+ * `img/x.png`, `./style.css` and `../shared/app.js` resolve to the sibling workspace files.
+ *
+ * `download: true` adds `?download=1`, which flips the server's `Content-Disposition` to
+ * `attachment`. It is a QUERY on purpose: a relative link inside a served document drops the query,
+ * so no subresource a page loads can be turned into a download.
+ */
+export function workspaceFileUrl(
+  threadId: string,
+  grant: string,
+  path: string,
+  options?: { download?: boolean }
+): string {
+  const segments = path
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const base = `/api/conversations/${encodeURIComponent(threadId)}/workspace/${encodeURIComponent(grant)}/${segments}`;
+  return options?.download ? `${base}?download=1` : base;
+}

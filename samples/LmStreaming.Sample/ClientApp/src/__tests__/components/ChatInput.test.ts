@@ -26,6 +26,22 @@ describe('ChatInput button states', () => {
     expect(wrapper.get(HINT).text()).toBe('Enter to queue · Shift+Enter for a new line');
   });
 
+  it('hides the hint (without removing it) once text is typed, and shows it again when cleared', async () => {
+    const wrapper = mount(ChatInput, { props: { streaming: false } });
+    const textarea = wrapper.get(TEXTAREA);
+    const hint = wrapper.get(HINT);
+
+    expect(hint.classes()).not.toContain('is-hidden');
+
+    await textarea.setValue('hello');
+    expect(wrapper.get(HINT).classes()).toContain('is-hidden');
+    expect(wrapper.get(HINT).text()).toBe('Enter to send · Shift+Enter for a new line');
+    expect(textarea.attributes('aria-describedby')).toBe('chat-input-hint');
+
+    await textarea.setValue('');
+    expect(wrapper.get(HINT).classes()).not.toContain('is-hidden');
+  });
+
   it('keeps Shift+Enter available for a new line instead of sending', async () => {
     const wrapper = mount(ChatInput, { props: { streaming: false } });
     const textarea = wrapper.get(TEXTAREA);
@@ -50,7 +66,7 @@ describe('ChatInput button states', () => {
     const send = actions.get(SEND);
 
     expect(wrapper.get(HINT).text()).toContain('Enter to send');
-    expect(footer.find(HINT).exists()).toBe(false);
+    expect(footer.find(HINT).exists()).toBe(true);
     expect(contextControl.element.nextElementSibling).toBe(send.element);
     expect(wrapper.get(TEXTAREA).element.compareDocumentPosition(footer.element)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
@@ -68,9 +84,11 @@ describe('ChatInput button states', () => {
 
     const footer = wrapper.get(FOOTER);
     const mode = footer.get(MODE);
+    const hint = footer.get(HINT);
     const actions = footer.get(ACTIONS);
     expect(mode.get('[data-testid="mode-picker"]').text()).toBe('Full access');
-    expect(mode.element.nextElementSibling).toBe(actions.element);
+    expect(mode.element.nextElementSibling).toBe(hint.element);
+    expect(hint.element.nextElementSibling).toBe(actions.element);
     expect(actions.find('[data-testid="mode-picker"]').exists()).toBe(false);
     expect(actions.get('[data-testid="context-control"]').element.nextElementSibling).toBe(
       actions.get(SEND).element

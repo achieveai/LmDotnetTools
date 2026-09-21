@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.FileBrowser;
+using LmStreaming.Sample.Tests.FileBrowser;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
 
@@ -424,6 +425,48 @@ public class FileBrowserControllerTests
     }
 
     [Fact]
+    public async Task ResolveLink_SandboxSchemeContainerPath_Returns200WithRelativePath()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [File("design-specification.md", size: 42)];
+
+        // The session mounts at host "/host/ws", but a `sandbox:` link is written against the CONTAINER
+        // mount, so it must resolve without ever being compared to the host path.
+        var result = await controller.Resolve(
+            ThreadId,
+            "sandbox:/workspace/docs/design-specification.md",
+            CancellationToken.None
+        );
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/design-specification.md", "file", 42));
+    }
+
+    [Fact]
+    public async Task ResolveLink_BaseDirJoinedPathWithDotDot_ResolvesToTheSibling()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("docs")];
+        browser.Listings["docs"] = [Dir("rdb"), Dir("siblings")];
+        browser.Listings["docs/siblings"] = [File("x.md", size: 7)];
+
+        // What the renderer sends for `../siblings/x.md` written inside docs/rdb/design-specification.md:
+        // the previewed file's directory joined onto the href, with the dot segments left for the resolver.
+        // The controller's own component-wise pass refuses a `..`, so this only reaches it normalised.
+        var result = await controller.Resolve(ThreadId, "docs/rdb/../siblings/x.md", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeEquivalentTo(new ResolvedLinkDto("docs/siblings/x.md", "file", 7));
+    }
+
+    [Fact]
     public async Task ResolveLink_WindowsHostPath_StripsPrefixCaseInsensitively()
     {
         var (controller, browser) = Build();
@@ -651,6 +694,131 @@ public class FileBrowserControllerTests
         preview.Previewable.Should().BeTrue();
         preview.Text.Should().Be(text);
         preview.LineCount.Should().Be(expectedLines);
+    }
+
+    [Fact]
+    public async Task Preview_Xlsx_ReturnsTheServerParsedTableAndNoText()
+    {
+        var (controller, browser) = Build();
+        var bytes = SpreadsheetPreviewReaderTests.XlsxBuilder.Build(
+            (
+                "Summary",
+                """
+                <row r="1"><c r="A1" t="inlineStr"><is><t>region</t></is></c></row>
+                <row r="2"><c r="A2" t="inlineStr"><is><t>north</t></is></c></row>
+                """
+            )
+        );
+        browser.Listings[""] = [File("q3.xlsx", size: bytes.Length)];
+        browser.FileBytes = bytes;
+
+        var result = await controller.Preview(ThreadId, "q3.xlsx", CancellationToken.None);
+
+        var preview = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which;
+        preview.Previewable.Should().BeTrue();
+        preview.Text.Should().BeNull("a workbook is never decoded as UTF-8 text");
+        preview.LineCount.Should().BeNull();
+        var sheet = preview
+            .Table.Should()
+            .NotBeNull()
+            .And.Subject.As<TablePreviewDto>()
+            .Sheets.Should()
+            .ContainSingle()
+            .Subject;
+        sheet.Name.Should().Be("Summary");
+        sheet.Rows.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Preview_CorruptXlsx_ReturnsAReason_NotAnError()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [File("broken.xlsx", size: 5)];
+        browser.FileBytes = Encoding.UTF8.GetBytes("nope!");
+
+        var result = await controller.Preview(ThreadId, "broken.xlsx", CancellationToken.None);
+
+        var preview = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which;
+        preview.Previewable.Should().BeFalse();
+        preview.Reason.Should().Be(SpreadsheetPreviewReader.CorruptReason);
+        preview.Table.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Preview_XlsxOverTheSpreadsheetByteCap_ReturnsTooLarge_WithoutReading()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [File("huge.xlsx", size: FileBrowserLimits.SpreadsheetPreviewByteCap + 1)];
+
+        var result = await controller.Preview(ThreadId, "huge.xlsx", CancellationToken.None);
+
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("too_large");
+        browser.ReadCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Preview_XlsxBetweenTheTextCapAndTheSpreadsheetCap_IsStillRead()
+    {
+        // The distinguishing case for the two caps existing separately: at this listed size a .txt is
+        // refused unread, so if the spreadsheet path shared the text cap this would never reach the reader.
+        var (controller, browser) = Build();
+        var size = FileBrowserLimits.PreviewByteCap + 1;
+        size.Should().BeLessThan(FileBrowserLimits.SpreadsheetPreviewByteCap);
+        browser.Listings[""] = [File("mid.xlsx", size: size), File("mid.txt", size: size)];
+        browser.FileBytes = Encoding.UTF8.GetBytes("not a workbook, but it WAS read");
+
+        var xlsx = await controller.Preview(ThreadId, "mid.xlsx", CancellationToken.None);
+        browser.ReadCalls.Should().Be(1);
+        xlsx.Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be(SpreadsheetPreviewReader.CorruptReason);
+
+        var txt = await controller.Preview(ThreadId, "mid.txt", CancellationToken.None);
+        browser.ReadCalls.Should().Be(1, "the text path still refuses this size by listed size alone");
+        txt.Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("too_large");
+    }
+
+    [Fact]
+    public async Task Preview_Text_OmitsTheTableMemberFromTheJsonEntirely()
+    {
+        // The new member must not change a text preview's response body. `"table": null` would be a
+        // different body — and every existing client parses this shape.
+        var (controller, browser) = Build();
+        browser.Listings[""] = [File("a.txt", size: 2)];
+        browser.FileBytes = Encoding.UTF8.GetBytes("hi");
+
+        var result = await controller.Preview(ThreadId, "a.txt", CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(
+            (PreviewResultDto)((OkObjectResult)result).Value!,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        );
+        json.Should().NotContain("table");
+        json.Should().Contain("\"text\":\"hi\"");
     }
 
     // -------- Upload --------

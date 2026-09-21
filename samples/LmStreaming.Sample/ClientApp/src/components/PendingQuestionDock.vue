@@ -29,9 +29,9 @@ const emit = defineEmits<{
   opened: [questionId: string];
 }>();
 
-const { getResultForToolCall } = useToolResult();
+const { getResultForToolCall, isQuestionAnswered } = useToolResult();
 const pending = computed(() =>
-  findPendingQuestions(props.displayItems, getResultForToolCall),
+  findPendingQuestions(props.displayItems, getResultForToolCall, isQuestionAnswered),
 );
 const cards = computed(() =>
   pending.value.map((question) => ({

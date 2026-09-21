@@ -22,8 +22,17 @@ describe('diagramRenderer', () => {
     const svg = await renderDiagram('flowchart LR\nA-->B', 'mermaid');
     expect(mermaid.initialize).toHaveBeenCalledWith(expect.objectContaining({
       securityLevel: 'strict', htmlLabels: false, startOnLoad: false, theme: 'base',
-      secure: ['securityLevel', 'htmlLabels', 'flowchart'],
+      // themeCSS is secured too: it is the one config key that reaches the emitted stylesheet, and
+      // it now carries the edge-label repair below.
+      secure: ['securityLevel', 'htmlLabels', 'flowchart', 'themeCSS'],
     }));
+    // With htmlLabels off a label is <g class="label"><rect class="background"/><text/></g>, so the
+    // single `fill` several diagram stylesheets set on .label paints the text in its own background
+    // colour. Pin the override that gives the box and the glyphs separate colours.
+    const { themeCSS } = mermaid.initialize.mock.calls[0][0] as { themeCSS: string };
+    expect(themeCSS).toMatch(/rect\.background \{ fill: #ffffff; \}/);
+    expect(themeCSS).toMatch(/\.edgeLabel \.label text[^\n]*fill: #34404d/);
+    expect(themeCSS).toMatch(/\.relationshipLabel, \.reqLabel \{ fill: #34404d; \}/);
     expect(svg).toContain('<text>Safe</text>');
   });
 
@@ -111,6 +120,80 @@ describe('diagramRenderer', () => {
     await expect(renderDiagram(source, language)).rejects.toBeInstanceOf(DiagramRenderError);
     expect(mermaid.render).not.toHaveBeenCalled();
     expect(plantUml.renderToString).not.toHaveBeenCalled();
+  });
+
+  it('allows an http(s) URL inside quoted Mermaid label and click text', async () => {
+    const source = [
+      'flowchart LR',
+      '    A["See https://example.com/docs"] --> B["Mirror at //cdn.example.com"]',
+      '    click A href "https://example.com" "Open" _blank',
+    ].join('\n');
+    await expect(renderDiagram(source, 'mermaid')).resolves.toBeTypeOf('string');
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a bare // inside a quoted attribute of a non-flowchart diagram', async () => {
+    const source = ['erDiagram', '  CUSTOMER {', '    string path "src//legacy"', '  }'].join('\n');
+    await expect(renderDiagram(source, 'mermaid')).resolves.toBeTypeOf('string');
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'an init directive',
+      ['%%{init: {"themeCSS": "@import url(https://evil.test/x.css)"} }%%', 'flowchart LR', 'A-->B'],
+    ],
+    [
+      'YAML frontmatter',
+      ['---', 'config:', '  themeCSS: "@import url(https://evil.test/x.css)"', '---', 'flowchart LR', 'A-->B'],
+    ],
+    ['an unquoted node label', ['flowchart LR', 'A[https://evil.test/a.png]']],
+  ])('rejects a URL reaching Mermaid through %s', async (_label, lines) => {
+    await expect(renderDiagram(lines.join('\n'), 'mermaid')).rejects.toBeInstanceOf(DiagramRenderError);
+    expect(mermaid.render).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['data', 'A["data:text/html;base64,PHN2Zz4="]'],
+    ['blob', 'A["blob:https://evil.test/1234"]'],
+    ['file', 'A["file:///etc/passwd"]'],
+    ['ftp', 'A["ftp://evil.test/a"]'],
+  ])('rejects the %s: resource scheme even inside quotes', async (_label, node) => {
+    await expect(renderDiagram(['flowchart LR', node].join('\n'), 'mermaid')).rejects.toBeInstanceOf(
+      DiagramRenderError
+    );
+    expect(mermaid.render).not.toHaveBeenCalled();
+  });
+
+  it('keeps an xlink-prefixed diagram parseable and still strips its external reference', () => {
+    // Mermaid's C4 renderer emits <image xlink:href="data:..."> and DOMPurify serializes it without
+    // the xmlns:xlink declaration, which made the strict XML re-parse below fail and lost the whole
+    // C4Context/C4Container family.
+    const svg = sanitizeDiagramSvg(
+      // No xmlns:xlink declaration: this is what DOMPurify hands back for C4 output.
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        '<image xlink:href="data:image/png;base64,iVBORw0KGgo="/><text>C4</text></svg>'
+    );
+    expect(svg).toContain('<text>C4</text>');
+    expect(svg).not.toMatch(/data:image/i);
+  });
+
+  it('gives the sanitized SVG an intrinsic size taken from its viewBox', () => {
+    // Mermaid emits width="100%" and no height, so inside an <img> the SVG has no intrinsic size
+    // and the browser falls back to the 300x150 default object size, upscaling small diagrams.
+    const svg = sanitizeDiagramSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 326.5 68.25"><text>x</text></svg>'
+    );
+    expect(svg).toMatch(/width="326\.5"/);
+    expect(svg).toMatch(/height="68\.25"/);
+  });
+
+  it('leaves an explicit SVG size alone', () => {
+    const svg = sanitizeDiagramSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40" viewBox="0 0 326 68"><text>x</text></svg>'
+    );
+    expect(svg).toMatch(/width="120"/);
+    expect(svg).toMatch(/height="40"/);
   });
 
   it('renders PlantUML through the callback API and reports engine errors readably', async () => {

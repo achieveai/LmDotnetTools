@@ -155,11 +155,14 @@ public class NotifyMessageLoopTests
         await collector.WaitForCompletionsAsync(1);
         (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_host");
 
-        // A background sub-agent completes while the parent is parked → notify arrives.
+        // A todo nudge arrives while the parent is parked. The kind matters: under the curated wake
+        // policy for a parked Wait (bug #6) a nudge is background chatter and is folded, while a
+        // sub-agent completing is somebody waiting on this run and ends the park instead - that half
+        // is pinned by ParkedWaitEarlySettleTests.
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion,
+            NotifyKinds.TodoNudge,
             detail: "bg done",
-            sourceToolName: "Agent",
+            sourceToolName: "TodoBoard",
             sourceToolCallId: "call-x"
         );
         await loop.SendAsync([notify]);

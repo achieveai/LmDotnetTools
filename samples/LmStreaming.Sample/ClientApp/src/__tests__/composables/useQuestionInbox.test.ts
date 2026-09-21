@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useQuestionInbox, type QuestionInboxDependencies } from '@/composables/useQuestionInbox';
 import type { PersistedMessage } from '@/api/conversationsApi';
 import type { ConversationSummary } from '@/types/conversations';
+import type {
+  PendingQuestionEvent,
+  QuestionEventHandlers,
+  connectQuestionEvents,
+} from '@/api/eventsWsClient';
 
 function conversation(threadId: string, lastUpdated = 1): ConversationSummary {
   return { threadId, title: `Conversation ${threadId}`, lastUpdated, provider: 'p', mode: 'm', workspace: 'w' };
@@ -32,17 +37,56 @@ function history(id: string, deferred = true): PersistedMessage[] {
   ];
 }
 
+/**
+ * Stand-in for the `/ws/events` stream. Every `render` gets one — without it the composable would
+ * open a real socket in jsdom — and the push tests drive the composable through `handlers`.
+ */
+function eventsStub() {
+  const state: { handlers: QuestionEventHandlers | null; closed: number } = {
+    handlers: null,
+    closed: 0,
+  };
+  const events: typeof connectQuestionEvents = (handlers) => {
+    state.handlers = handlers;
+    return {
+      close: () => {
+        state.closed += 1;
+      },
+    };
+  };
+  return { state, events };
+}
+
 function render(dependencies: QuestionInboxDependencies, current = ref<string | null>(null), options = {}) {
   let inbox!: ReturnType<typeof useQuestionInbox>;
   const wrapper = mount(
     defineComponent({
       setup() {
-        inbox = useQuestionInbox(current, { dependencies, pollIntervalMs: 60_000, ...options });
+        inbox = useQuestionInbox(current, {
+          dependencies,
+          pollIntervalMs: 60_000,
+          events: eventsStub().events,
+          ...options,
+        });
         return () => null;
       },
     })
   );
   return { wrapper, inbox };
+}
+
+function pushed(overrides: Partial<PendingQuestionEvent> = {}): PendingQuestionEvent {
+  return {
+    rootThreadId: 'other',
+    agentId: null,
+    childThreadId: null,
+    toolCallId: 'call-1',
+    prompt: 'Pushed prompt',
+    conversationTitle: 'Conversation other',
+    agentName: null,
+    raisedAtUtc: '2026-09-21T10:00:00.0000000Z',
+    ...overrides,
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -117,6 +161,183 @@ describe('useQuestionInbox', () => {
     expect(inbox.entries.value).toHaveLength(0);
     expect(inbox.error.value).toBeNull();
     wrapper.unmount();
+  });
+
+  // Bug #5: a question the server settled early keeps a NON-deferred placeholder result; the
+  // answer, when it comes, is a user text row. The inbox must list the first and drop it on the second.
+  it('lists an early-settled question and drops it once the user-answer row is persisted', async () => {
+    const rows = history('early', false);
+    rows[1] = {
+      ...rows[1],
+      messageJson: JSON.stringify({
+        $type: 'tool_call_result',
+        tool_call_id: 'early',
+        result: '{"status":"deferred_to_notification","message":"Question sent to user"}',
+        is_deferred: false,
+      }),
+    };
+    let answered = false;
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) => (offset === 0 ? [conversation('t1')] : [])),
+      loadConversationMessages: vi.fn(async () =>
+        answered
+          ? [
+              ...rows,
+              {
+                ...rows[0],
+                id: 'early-answer',
+                messageJson: JSON.stringify({
+                  $type: 'text',
+                  role: 'user',
+                  text:
+                    '<user-answer tool="AskUserQuestion" tool-call-id="early">\n<request>\n- (q) Choose one\n</request>\n<answer>\n{"answers":[]}\n</answer>\n</user-answer>',
+                }),
+              },
+            ]
+          : rows
+      ),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(inbox.entries.value.map((entry) => entry.toolCallId)).toEqual(['early']);
+    answered = true;
+    await inbox.refresh();
+    expect(inbox.entries.value).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  // A parked question moves NOTHING a sweep can see: `lastUpdated` advances when a run COMPLETES and
+  // a parked run has not completed. These pin that the push, not the timer, is what surfaces one.
+  it('adds a pushed question immediately and lets the follow-up read replace it in the same slot', async () => {
+    const rows = new Map<string, PersistedMessage[]>();
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) => (offset ? [] : [conversation('other')])),
+      loadConversationMessages: vi.fn(async (threadId) => rows.get(threadId) ?? []),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { state, events } = eventsStub();
+    const { wrapper, inbox } = render(dependencies, ref('active'), { events });
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(inbox.entries.value).toHaveLength(0);
+    const readsBefore = (dependencies.loadConversationMessages as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // The placeholder is persisted before the server raises, so the read below finds the same call.
+    rows.set('other', history('call-1'));
+    state.handlers!.onPending(pushed());
+
+    // No await: the entry is there before any request the push kicked off can have returned.
+    expect(inbox.entries.value).toHaveLength(1);
+    expect(inbox.entries.value[0].prompt).toBe('Pushed prompt');
+    expect(inbox.entries.value[0].rootThreadId).toBe('other');
+    expect(inbox.entries.value[0].agentName).toBe('Main agent');
+
+    await vi.waitFor(() =>
+      expect((dependencies.loadConversationMessages as ReturnType<typeof vi.fn>).mock.calls.length)
+        .toBeGreaterThan(readsBefore)
+    );
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    // Same key, so the read-through entry took the placeholder's slot instead of doubling it.
+    expect(inbox.entries.value).toHaveLength(1);
+    expect(inbox.entries.value[0].prompt).toBe('Choose one');
+    wrapper.unmount();
+  });
+
+  it('keeps a pushed sub-agent question whose roster has not caught up yet', async () => {
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) => (offset ? [] : [conversation('other')])),
+      loadConversationMessages: vi.fn(async () => []),
+      // The spawn has not reached the roster; a read-through sweep therefore cannot see the child.
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { state, events } = eventsStub();
+    const { wrapper, inbox } = render(dependencies, ref('active'), { events });
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+
+    state.handlers!.onPending(
+      pushed({ agentId: 'agent-2', childThreadId: 'subagent-0123456789ab-agent-2', agentName: 'Reviewer' })
+    );
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+
+    expect(inbox.entries.value).toHaveLength(1);
+    expect(inbox.entries.value[0]).toMatchObject({
+      agentId: 'agent-2',
+      childThreadId: 'subagent-0123456789ab-agent-2',
+      agentName: 'Reviewer',
+    });
+    wrapper.unmount();
+  });
+
+  it('removes a question on question_settled, whether it was pushed or swept', async () => {
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) => (offset ? [] : [conversation('other')])),
+      loadConversationMessages: vi.fn(async () => history('call-1')),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { state, events } = eventsStub();
+    const { wrapper, inbox } = render(dependencies, ref('active'), { events });
+    await vi.waitFor(() => expect(inbox.entries.value).toHaveLength(1));
+
+    state.handlers!.onSettled('other', 'call-1');
+
+    expect(inbox.entries.value).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it('re-applies a reconnect snapshot additively and announces only genuinely new questions', async () => {
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async () => []),
+      loadConversationMessages: vi.fn(async () => []),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { state, events } = eventsStub();
+    const raised = vi.fn();
+    const { wrapper, inbox } = render(dependencies, ref('active'), { events, onQuestionRaised: raised });
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+
+    state.handlers!.onSnapshot([pushed(), pushed({ toolCallId: 'call-2' })]);
+    expect(inbox.entries.value).toHaveLength(2);
+    // A snapshot is a reconnect artefact as much as a first connect, so it must not toast.
+    expect(raised).not.toHaveBeenCalled();
+
+    state.handlers!.onPending(pushed({ toolCallId: 'call-3' }));
+    expect(raised).toHaveBeenCalledTimes(1);
+    state.handlers!.onPending(pushed({ toolCallId: 'call-3' }));
+    // Restart recovery re-raises the same call; the identity is (root, tool call), not an arrival.
+    expect(raised).toHaveBeenCalledTimes(1);
+
+    // Reconnect: this snapshot omits call-2, which does NOT mean call-2 was answered — the server's
+    // in-memory state does not hold a question whose loop has been evicted from the pool.
+    state.handlers!.onSnapshot([pushed(), pushed({ toolCallId: 'call-4' })]);
+    expect(inbox.entries.value.map((entry) => entry.toolCallId).sort()).toEqual([
+      'call-1',
+      'call-2',
+      'call-3',
+      'call-4',
+    ]);
+    expect(raised).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it('closes the event stream on dispose and keeps polling as the fallback', async () => {
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async () => []),
+      loadConversationMessages: vi.fn(async () => []),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { state, events } = eventsStub();
+    const { wrapper, inbox } = render(dependencies, ref('active'), { events, pollIntervalMs: 5 });
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    const listed = (dependencies.listConversations as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // The timer is still the fallback for a socket that never opens at all.
+    await vi.waitFor(() =>
+      expect((dependencies.listConversations as ReturnType<typeof vi.fn>).mock.calls.length)
+        .toBeGreaterThan(listed)
+    );
+
+    wrapper.unmount();
+    expect(state.closed).toBe(1);
   });
 
   it('coalesces overlapping manual refreshes', async () => {
