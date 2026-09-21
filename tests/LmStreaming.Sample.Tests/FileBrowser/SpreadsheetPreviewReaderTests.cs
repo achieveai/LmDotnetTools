@@ -148,6 +148,119 @@ public class SpreadsheetPreviewReaderTests
     }
 
     [Fact]
+    public void Read_APackageThatExpandsPastTheExpandedByteCap_IsNotPreviewableRatherThanInflatingItAll()
+    {
+        // Deflate collapses a run of identical bytes by roughly 1000:1, so passing the COMPRESSED cap says
+        // nothing about the work of opening the file. The padding part below is a perfectly valid zip entry
+        // that inflates past the expanded budget while the package on disk stays a few dozen KiB, and the
+        // workbook parts beside it are the same valid ones every other test here uses — so a refusal is
+        // attributable to the expansion and to nothing else.
+        var bytes = XlsxBuilder.BuildWithPadding(
+            FileBrowserLimits.SpreadsheetExpandedByteCap + (16L * 1024 * 1024),
+            ("Sheet1", """<row r="1"><c r="A1" t="inlineStr"><is><t>bait</t></is></c></row>""")
+        );
+
+        bytes
+            .LongLength.Should()
+            .BeLessThan(
+                FileBrowserLimits.SpreadsheetPreviewByteCap,
+                "the package has to be one the compressed cap already lets through, or this proves nothing"
+            );
+
+        var result = SpreadsheetPreviewReader.Read(bytes);
+
+        result.Previewable.Should().BeFalse();
+        result.Reason.Should().Be(SpreadsheetPreviewReader.ExpandedTooLargeReason);
+        result.Table.Should().BeNull();
+    }
+
+    [Fact]
+    public void Read_APaddedPackageThatStaysUnderTheExpandedByteCap_StillPreviews()
+    {
+        // The control for the case above. Without it, that refusal would be indistinguishable from
+        // "BuildWithPadding cannot produce a readable package at all" — the expanded-byte check runs BEFORE
+        // the parser, so a package this helper had corrupted would be refused with the very same reason and
+        // prove nothing. Same helper, same padding entry, only the size differs.
+        var bytes = XlsxBuilder.BuildWithPadding(
+            1024 * 1024,
+            ("Sheet1", """<row r="1"><c r="A1" t="inlineStr"><is><t>bait</t></is></c></row>""")
+        );
+
+        var result = SpreadsheetPreviewReader.Read(bytes);
+
+        result.Previewable.Should().BeTrue();
+        result.Table!.Sheets[0].Rows[0].Should().Equal("bait");
+    }
+
+    [Fact]
+    public void Read_ACellLongerThanTheCellCharCap_KeepsTheCapAndFlagsTheSheetTruncated()
+    {
+        // One cell, sized so that neither the row nor the column cap can be what cuts it.
+        var giant = new string('x', FileBrowserLimits.PreviewCellCharCap + 500);
+        var bytes = XlsxBuilder.Build(
+            ("Long", $"""<row r="1"><c r="A1" t="inlineStr"><is><t>{giant}</t></is></c></row>""")
+        );
+
+        var result = SpreadsheetPreviewReader.Read(bytes);
+
+        result.Previewable.Should().BeTrue();
+        var sheet = result.Table!.Sheets[0];
+        sheet.Rows[0][0].Should().HaveLength(FileBrowserLimits.PreviewCellCharCap);
+        sheet.Rows[0][0].Should().Be(giant[..FileBrowserLimits.PreviewCellCharCap]);
+        sheet.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Read_ManyModestCellsPastTheOutputCharCap_StopsAtTheCapAndFlagsTheTableTruncated()
+    {
+        // Every individual cell is well under the per-cell cap and the sheet is well under the row and
+        // column caps, so the ONLY budget that can stop this is the aggregate one.
+        const int cellChars = 1_000;
+        const int cellsPerRow = 10;
+        var rowCount = (int)(FileBrowserLimits.PreviewOutputCharCap / (cellChars * cellsPerRow)) + 50;
+        rowCount.Should().BeLessThan(FileBrowserLimits.PreviewLineCap, "the row cap must not be what cuts this");
+
+        var cell = new string('y', cellChars);
+        var rows = string.Concat(
+            Enumerable
+                .Range(1, rowCount)
+                .Select(r =>
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"""<row r="{r}">{RowCells(r, cellsPerRow, cell)}</row>"""
+                    )
+                )
+        );
+        var bytes = XlsxBuilder.Build(("Bulk", rows));
+
+        var result = SpreadsheetPreviewReader.Read(bytes);
+
+        result.Previewable.Should().BeTrue();
+        var kept = result.Table!.Sheets.SelectMany(s => s.Rows).SelectMany(r => r).Sum(c => (long)c.Length);
+        kept.Should().BeLessThanOrEqualTo(FileBrowserLimits.PreviewOutputCharCap);
+        kept.Should()
+            .BeGreaterThan(
+                FileBrowserLimits.PreviewOutputCharCap - (cellChars * cellsPerRow),
+                "the budget should be spent, not abandoned early"
+            );
+        result.Table.Truncated.Should().BeTrue();
+        result.Table.Sheets[0].Truncated.Should().BeTrue();
+        result.Table.Sheets[0].Rows.Should().HaveCountLessThan(rowCount);
+
+        static string RowCells(int row, int count, string value) =>
+            string.Concat(
+                Enumerable
+                    .Range(1, count)
+                    .Select(c =>
+                        string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"""<c r="{XlsxBuilder.ColumnRef(c)}{row}" t="inlineStr"><is><t>{value}</t></is></c>"""
+                        )
+                    )
+            );
+    }
+
+    [Fact]
     public void Read_ARowWithGapsAndTrailingBlanks_PadsTheGapsAndDropsTheTrailingBlanks()
     {
         // Row 2 has A2 and C2 present, B2 absent (a gap Excel simply omits) and D2 an explicit blank.
@@ -282,6 +395,32 @@ public class SpreadsheetPreviewReaderTests
         }
 
         public static byte[] BuildRawSheet(string name, string sheetXml) => Package([(name, sheetXml)]);
+
+        /// <summary>
+        /// The same package as <see cref="Build"/> plus one extra part of <paramref name="paddingBytes"/>
+        /// zero bytes. Zeros are the point: deflate stores them in almost nothing, so the package stays tiny
+        /// on disk while an unbounded reader would inflate all of them. The part is not named in
+        /// <c>[Content_Types].xml</c> or any relationship, so the workbook itself is unchanged.
+        /// </summary>
+        public static byte[] BuildWithPadding(long paddingBytes, params (string Name, string RowsXml)[] sheets)
+        {
+            var package = Build(sheets);
+
+            using var buffer = new MemoryStream();
+            buffer.Write(package, 0, package.Length);
+            buffer.Position = 0;
+            using (var zip = new ZipArchive(buffer, ZipArchiveMode.Update, leaveOpen: true))
+            {
+                using var padding = zip.CreateEntry("docProps/padding.bin", CompressionLevel.Optimal).Open();
+                var chunk = new byte[64 * 1024];
+                for (var written = 0L; written < paddingBytes; written += chunk.Length)
+                {
+                    padding.Write(chunk, 0, (int)Math.Min(chunk.Length, paddingBytes - written));
+                }
+            }
+
+            return buffer.ToArray();
+        }
 
         /// <summary>The A1-style column letters for a 1-based column index (1 -&gt; A, 27 -&gt; AA).</summary>
         public static string ColumnRef(int index)

@@ -39,15 +39,17 @@ public sealed record NoSessionStateDto(string State, string? WorkspaceId)
 }
 
 /// <summary>One worksheet of a <see cref="TablePreviewDto"/>: its <see cref="Name"/> and its already-capped
-/// <see cref="Rows"/> of cell strings. <see cref="Truncated"/> is true when rows or columns were dropped.</summary>
+/// <see cref="Rows"/> of cell strings. <see cref="Truncated"/> is true when rows or columns were dropped,
+/// or when a cell was shortened to the per-cell character cap.</summary>
 public sealed record SheetPreviewDto(string Name, IReadOnlyList<IReadOnlyList<string>> Rows, bool Truncated);
 
 /// <summary>A tabular preview: one entry per worksheet, in workbook order. A delimited text file has exactly one.
-/// <see cref="Truncated"/> is true when whole sheets past the sheet cap were dropped — a per-sheet
-/// <see cref="SheetPreviewDto.Truncated"/> cannot say that, and dropping them silently would be a lie.</summary>
+/// <see cref="Truncated"/> is true when whole sheets past the sheet cap were dropped, or when the
+/// whole-preview character budget stopped the read partway — a per-sheet
+/// <see cref="SheetPreviewDto.Truncated"/> can say neither, and dropping them silently would be a lie.</summary>
 public sealed record TablePreviewDto(IReadOnlyList<SheetPreviewDto> Sheets, bool Truncated = false);
 
-/// <summary>A file-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded/corrupt_spreadsheet).</summary>
+/// <summary>A file-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded/corrupt_spreadsheet/spreadsheet_too_large).</summary>
 /// <remarks>
 /// <see cref="Table"/> is populated ONLY for a spreadsheet preview, where <see cref="Text"/> and
 /// <see cref="LineCount"/> stay null. It is omitted from the JSON when null (rather than written as

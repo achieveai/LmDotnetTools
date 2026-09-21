@@ -29,10 +29,36 @@ public static class FileBrowserLimits
     /// <summary>
     /// Spreadsheet preview byte cap: 4 MiB. Deliberately separate from <see cref="PreviewByteCap"/> and much
     /// larger: an <c>.xlsx</c> is a deflate-compressed OOXML package, so 256 KiB of bytes is an arbitrarily
-    /// small workbook, while what actually bounds the work and the response is <see cref="PreviewLineCap"/>
-    /// rows x <see cref="PreviewColumnCap"/> columns x <see cref="PreviewSheetCap"/> sheets.
+    /// small workbook. This bounds only what is read off disk; what the package EXPANDS to is bounded
+    /// separately by <see cref="SpreadsheetExpandedByteCap"/>, because deflate makes the two unrelated.
     /// </summary>
     public const long SpreadsheetPreviewByteCap = 4_194_304;
+
+    /// <summary>
+    /// Expanded (decompressed) spreadsheet input cap: exactly 64 MiB, the total of every part inside the
+    /// OOXML package. Deflate reaches roughly 1000:1 on repetitive bytes, so a workbook well under
+    /// <see cref="SpreadsheetPreviewByteCap"/> can still inflate to hundreds of MB; without this, the
+    /// row/column/sheet caps bound the OUTPUT while the reader has already paid for the whole input. Sized
+    /// to <see cref="MaxFileBytes"/> so a workbook can never cost more to expand than the largest file the
+    /// workspace would have accepted uncompressed in the first place.
+    /// </summary>
+    public const long SpreadsheetExpandedByteCap = MaxFileBytes;
+
+    /// <summary>
+    /// Characters kept from one preview cell: 4096. A grid cell renders a line or two, so this is already
+    /// far past readable, while staying well under the 32767 a real spreadsheet cell may hold — the point
+    /// is only that ONE shared string cannot carry the whole response. A shortened cell marks its sheet
+    /// truncated.
+    /// </summary>
+    public const int PreviewCellCharCap = 4_096;
+
+    /// <summary>
+    /// Characters retained across the WHOLE preview: 2 Mi characters (4 MiB as UTF-16, and about as much
+    /// again once JSON-encoded). The per-cell, row, column, and sheet caps each bound one dimension, and
+    /// their product is far larger than any response worth sending; this is the one number that bounds what
+    /// the client actually receives. Reading stops at the budget and the table is marked truncated.
+    /// </summary>
+    public const long PreviewOutputCharCap = 2_097_152;
 
     /// <summary>Columns kept per spreadsheet row; cells beyond this are dropped and the sheet is marked truncated.</summary>
     public const int PreviewColumnCap = 256;
