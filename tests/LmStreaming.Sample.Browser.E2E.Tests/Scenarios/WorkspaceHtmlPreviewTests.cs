@@ -4,6 +4,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.FileBrowser;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 
@@ -308,6 +309,310 @@ public sealed class WorkspaceHtmlPreviewTests
         await Assertions.Expect(page.GetByTestId("artifact-preview-text")).ToContainTextAsync("Quarterly report");
         await page.GetByTestId("artifact-preview-mode-rendered").ClickAsync();
         await Assertions.Expect(page.GetByTestId("artifact-preview-html-frame")).ToBeVisibleAsync();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The COOKIE transport: same preview, credential no longer in the document's URL.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>The marker segment the client uses once the token is in the cookie.</summary>
+    private const string CookiePrefix = "/workspace/" + WorkspaceGrantService.CookieTransportMarker + "/";
+
+    /// <summary>
+    /// The cookie-transport document. Its subresource is inserted BY SCRIPT, from inside the sandboxed
+    /// frame, because that is the request whose credentials the browser decides on its own: an opaque-origin
+    /// document fetching a sibling under this app's path.
+    /// </summary>
+    private const string ScriptedIndexHtml = """
+        <!doctype html>
+        <html>
+          <head><meta charset="utf-8" /><title>Workspace report</title></head>
+          <body>
+            <h1 id="heading">Quarterly report</h1>
+            <script>
+              const img = document.createElement('img');
+              img.id = 'late';
+              img.src = 'img/late.png';
+              document.body.appendChild(img);
+              document.getElementById('heading').dataset.path = location.pathname;
+              document.getElementById('heading').dataset.cookie = document.cookie;
+            </script>
+          </body>
+        </html>
+        """;
+
+    /// <summary>
+    /// The real-browser proof for the cookie transport, and the one claim no unit test can make: a
+    /// <c>Secure; SameSite=None; Partitioned</c> cookie set by the mint is ACTUALLY SENT by Chromium on a
+    /// subresource request that a script inside an OPAQUE-ORIGIN sandboxed frame started — while the frame's
+    /// own URL, which that script can read and navigate away with, carries only a public marker.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The cookie is never written by this test.</b> The mint is stubbed, but it answers the exact
+    /// <c>Set-Cookie</c> line the controller emits — the attributes are pinned against the real controller
+    /// in <c>WorkspaceRawEndpointHttpTests</c> — around a token minted by the HOST's own
+    /// <see cref="WorkspaceGrantService"/> over the host's own key ring. Chromium decides on its own whether
+    /// to store that cookie and whether to attach it to a request an opaque-origin frame started, and the
+    /// subresource stub answers bytes ONLY when it did. So the image decoding is the claim.
+    /// </para>
+    /// <para>
+    /// The raw route is stubbed for the same reason the URL-transport test above stubs it: this host has no
+    /// sandbox gateway, so nothing past the grant check can return workspace bytes, and what is under test
+    /// is what the BROWSER does, not how the controller produced the response. The real route is still
+    /// exercised once, at the end, by a cookie-less <see cref="HttpClient"/> presenting the very URL the
+    /// frame's own script can read: that is a real <c>401 invalid_grant</c> from the real controller.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Workspace_html_under_the_cookie_transport_keeps_the_grant_out_of_the_document_url()
+    {
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
+            .Turn(t => t.Text("ok"))
+            .Build();
+        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        var page = session.Page;
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("hello");
+        await page.WaitForStreamIdleAsync();
+        await page.AssistantText().WaitForCountAtLeastAsync(1);
+
+        var grants = session.Factory.AppServices.GetRequiredService<WorkspaceGrantService>();
+        string? mintedTransport = null;
+        string? mintedToken = null;
+        // The Cookie header Chromium itself computed for the script-inserted subresource, captured at the
+        // moment that request leaves the opaque-origin frame.
+        string? subresourceCookie = null;
+
+        await page.RouteAsync(
+            url =>
+                url.Contains("/api/conversations/", StringComparison.Ordinal)
+                && url.Contains("/files", StringComparison.Ordinal),
+            async route =>
+            {
+                var request = route.Request;
+                var url = request.Url;
+
+                if (request.Method == "POST" && url.Contains("/files/grant", StringComparison.Ordinal))
+                {
+                    // What the client ASKED for. On http://localhost `isSecureContext` is true, so this is
+                    // the assertion that the real browser takes the cookie branch.
+                    mintedTransport = request.PostData;
+
+                    var threadId = ThreadIdOf(url);
+                    var minted = grants.Mint(threadId, principal: null);
+                    mintedToken = minted.Token;
+
+                    await route.FulfillAsync(
+                        new RouteFulfillOptions
+                        {
+                            Status = 200,
+                            ContentType = "application/json",
+                            Headers = new Dictionary<string, string>(StringComparer.Ordinal)
+                            {
+                                ["Set-Cookie"] =
+                                    $"{WorkspaceGrantService.CookieName}={minted.Token}; "
+                                    + $"max-age={(int)FileBrowserLimits.WorkspaceGrantLifetime.TotalSeconds}; "
+                                    + $"path={WorkspaceGrantService.CookiePath(threadId)}; "
+                                    + "secure; samesite=none; httponly; Partitioned",
+                            },
+                            Body = JsonSerializer.Serialize(
+                                new
+                                {
+                                    grant = WorkspaceGrantService.CookieTransportMarker,
+                                    expiresAt = minted.ExpiresAt.ToString("O", CultureInfo.InvariantCulture),
+                                    transport = "cookie",
+                                }
+                            ),
+                        }
+                    );
+                    return;
+                }
+
+                if (request.Method != "GET")
+                {
+                    await route.ContinueAsync();
+                    return;
+                }
+
+                if (url.Contains("/preview", StringComparison.Ordinal))
+                {
+                    await route.FulfillAsync(
+                        new RouteFulfillOptions
+                        {
+                            Status = 200,
+                            ContentType = "application/json",
+                            Body = JsonSerializer.Serialize(
+                                new
+                                {
+                                    previewable = true,
+                                    text = ScriptedIndexHtml,
+                                    lineCount = 12,
+                                }
+                            ),
+                        }
+                    );
+                    return;
+                }
+
+                if (url.Contains("/download", StringComparison.Ordinal))
+                {
+                    await route.ContinueAsync();
+                    return;
+                }
+
+                await route.FulfillAsync(
+                    new RouteFulfillOptions
+                    {
+                        Status = 200,
+                        ContentType = "application/json",
+                        Body = ListingJson(ListedPath(url)),
+                    }
+                );
+            }
+        );
+
+        // The raw route, stubbed exactly as the URL-transport test stubs it — but the SUBRESOURCE stub
+        // answers only when the browser attached the grant cookie, so the image decoding is the proof.
+        await page.RouteAsync(
+            url => url.Contains(CookiePrefix, StringComparison.Ordinal),
+            async route =>
+            {
+                if (route.Request.Url.Contains($"{CookiePrefix}report/index.html", StringComparison.Ordinal))
+                {
+                    await route.FulfillAsync(
+                        new RouteFulfillOptions
+                        {
+                            Status = 200,
+                            ContentType = "text/html; charset=utf-8",
+                            Headers = new Dictionary<string, string>(StringComparer.Ordinal)
+                            {
+                                ["X-Content-Type-Options"] = "nosniff",
+                                ["Cache-Control"] = "private, no-store",
+                                ["Referrer-Policy"] = "no-referrer",
+                                ["Content-Security-Policy"] = WorkspaceContentTypes.SandboxPolicy,
+                            },
+                            BodyBytes = Encoding.UTF8.GetBytes(ScriptedIndexHtml),
+                        }
+                    );
+                    return;
+                }
+
+                var headers = await route.Request.AllHeadersAsync();
+                _ = headers.TryGetValue("cookie", out subresourceCookie);
+
+                if (subresourceCookie?.Contains(WorkspaceGrantService.CookieName, StringComparison.Ordinal) != true)
+                {
+                    // What the real route would answer, and what the test must be able to tell apart from a
+                    // served image: the marker with no cookie behind it is an unreadable grant.
+                    await route.FulfillAsync(
+                        new RouteFulfillOptions
+                        {
+                            Status = 401,
+                            ContentType = "application/json",
+                            Body = "{\"error\":\"invalid_grant\",\"code\":\"invalid_grant\"}",
+                        }
+                    );
+                    return;
+                }
+
+                await route.FulfillAsync(
+                    new RouteFulfillOptions
+                    {
+                        Status = 200,
+                        ContentType = WorkspaceContentTypes.ForFileName("late.png"),
+                        Headers = new Dictionary<string, string>(StringComparer.Ordinal)
+                        {
+                            ["X-Content-Type-Options"] = "nosniff",
+                            ["Cache-Control"] = "private, no-store",
+                            ["Referrer-Policy"] = "no-referrer",
+                        },
+                        BodyBytes = Convert.FromBase64String(DotPngBase64),
+                    }
+                );
+            }
+        );
+
+        await page.OpenHeaderActionsMenuAsync();
+        await page.GetByTestId("file-browser-button").ClickAsync();
+        await page.GetByTestId("file-browser")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("file-entry-name-report").ClickAsync();
+        await page.GetByTestId("file-entry-preview-index.html")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("file-entry-preview-index.html").ClickAsync();
+
+        var frameLocator = page.GetByTestId("artifact-preview-html-frame");
+        await frameLocator.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        // --- The client really did ask for the cookie, in a real browser on a real secure context ---
+        Assert.NotNull(mintedTransport);
+        Assert.Contains("\"transport\":\"cookie\"", mintedTransport, StringComparison.Ordinal);
+        Assert.NotNull(mintedToken);
+
+        // --- The URL the document can read carries the marker and NOT the token ---
+        var src = await frameLocator.GetAttributeAsync("src");
+        Assert.NotNull(src);
+        Assert.Contains($"{CookiePrefix}report/index.html", src, StringComparison.Ordinal);
+        Assert.DoesNotContain(mintedToken, src, StringComparison.Ordinal);
+
+        var element = await frameLocator.ElementHandleAsync();
+        var frame = await element.ContentFrameAsync();
+        Assert.NotNull(frame);
+
+        // What the SCRIPT saw of its own location, and of document.cookie. This is the exfiltration the
+        // path-segment transport allowed, reduced to a public constant and an empty string.
+        await frame.WaitForSelectorAsync("#late");
+        var seenPath = await frame.EvaluateAsync<string>("() => document.getElementById('heading').dataset.path");
+        Assert.Contains(CookiePrefix, seenPath, StringComparison.Ordinal);
+        Assert.DoesNotContain(mintedToken, seenPath, StringComparison.Ordinal);
+        Assert.DoesNotContain(mintedToken, frame.Url, StringComparison.Ordinal);
+
+        var seenCookie = await frame.EvaluateAsync<string>("() => document.getElementById('heading').dataset.cookie");
+        Assert.True(
+            string.IsNullOrEmpty(seenCookie),
+            $"An HttpOnly cookie must be invisible to the sandboxed document, but it read '{seenCookie}'."
+        );
+
+        // --- The claim: the grant cookie travelled with a request the OPAQUE-ORIGIN frame started ---
+        // naturalWidth is non-zero only once the bytes decoded, and the stub answers those bytes only when
+        // the cookie was on the request. A `Secure; SameSite=None; Partitioned` cookie surviving a fetch the
+        // browser classes as cross-site is the one thing no unit test can establish.
+        await frame.WaitForFunctionAsync(
+            """
+            () => {
+              const img = document.getElementById('late');
+              return !!img && img.complete && img.naturalWidth > 0;
+            }
+            """
+        );
+        Assert.NotNull(subresourceCookie);
+        Assert.Contains(WorkspaceGrantService.CookieName, subresourceCookie, StringComparison.Ordinal);
+        Assert.Contains(mintedToken, subresourceCookie, StringComparison.Ordinal);
+
+        // --- And the URL that same script could navigate away with opens nothing ---
+        // Presented to the REAL route by a client that holds no cookie, which is what an attacker handed
+        // `location.pathname` would be.
+        var lateAbsolutePath = src.Split('?')[0]
+            .Replace("report/index.html", "report/img/late.png", StringComparison.Ordinal);
+
+        using var cookieLess = new HttpClient { BaseAddress = new Uri(session.Factory.ServerAddress) };
+        using var refused = await cookieLess.GetAsync(new Uri(lateAbsolutePath, UriKind.Relative));
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, refused.StatusCode);
+        Assert.Contains("invalid_grant", await refused.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        await session.SaveSuccessScreenshotAsync("WorkspaceHtmlPreview.Cookie_Transport");
+    }
+
+    /// <summary>The conversation id out of a <c>.../conversations/{id}/files/...</c> URL.</summary>
+    private static string ThreadIdOf(string url)
+    {
+        var segments = new Uri(url).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var index = Array.IndexOf(segments, "conversations");
+        return Uri.UnescapeDataString(segments[index + 1]);
     }
 
     /// <summary>The bytes of the three-file fixture workspace, or null for anything else (404).</summary>
