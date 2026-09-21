@@ -1855,6 +1855,36 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessage_ToANameWithSurroundingWhitespace_ReachesTheSameAgent()
+    {
+        // A handle copied out of a roster line or an envelope attribute arrives with the whitespace
+        // that surrounded it. Every lookup behind this is an exact dictionary match, so the untrimmed
+        // form used to be refused with "no agent matches 'helper'" - a correction for a name that was
+        // already correct, and the one refusal a model has no way to act on.
+        var root = CreateRegisteredRoot();
+        var (peerEndpoint, _) = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "  helper\n",
+                content = "What does the auth flag default to?",
+                msg_type = "question",
+            }
+        );
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("to_name").GetString().Should().Be("helper");
+
+        var delivered = await peerEndpoint.Received.WaitAsync(TimeSpan.FromSeconds(10));
+        delivered.FromAgentId.Should().Be(root.AgentId);
+    }
+
+    [Fact]
     public async Task SendMessage_ToAnUnknownTarget_IsRecoverableRatherThanFatal()
     {
         var (_, provider) = CreateManager(CreateRegisteredRoot());
@@ -2499,7 +2529,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         parameters
             .First(p => p.Name == "in_response_to")
             .Description.Should()
-            .Contain("DelegateTask")
+            // The wire spelling the envelope actually states, so the model is told to look for the
+            // attribute value it will really see.
+            .Contain("delegate_task")
             .And.Contain("message-id");
     }
 
@@ -3216,6 +3248,32 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         // Only the child was waited on and observed; the peer's status is CheckAgents' job.
         doc.RootElement.GetProperty("agents").GetProperty("requested").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task WaitForAgents_WithAPeerNamedByItsId_StillReportsThePeersName()
+    {
+        // `target` echoes what the model typed, so a model that addressed the peer by id got a row
+        // that spelled the id twice and named the agent nowhere - and the action it suggests, message
+        // it or check it, is one a model takes by name. The name is the part the row was missing.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        var childId = await SpawnAndResolveIdAsync(provider);
+        var (_, peerSetup) = RegisterPeer(root, "cousin");
+
+        var payload = await InvokeAsync(
+            provider,
+            "WaitForAgents",
+            new { agent_ids = $"{childId},{peerSetup.AgentId}" }
+        );
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+
+        var skipped = doc.RootElement.GetProperty("not_waited").EnumerateArray().Single();
+        skipped.GetProperty("target").GetString().Should().Be(peerSetup.AgentId);
+        skipped.GetProperty("agent_id").GetString().Should().Be(peerSetup.AgentId);
+        skipped.GetProperty("name").GetString().Should().Be("cousin");
     }
 
     [Fact]

@@ -119,4 +119,45 @@ public class SubAgentExposedToolNamesTests
     {
         NamesFrom(CreateProvider(new HashSet<string>(StringComparer.Ordinal))).Should().BeEmpty();
     }
+
+    [Fact]
+    public void AMisspelledName_IsRefusedAtComposition_NotSilentlyIgnored()
+    {
+        // The whole failure mode in one list: a host meant to grant two tools, typed one of them
+        // wrong, and got a surface one tool short with nothing anywhere saying why. Composition is the
+        // last point at which the typo is still next to the thing that wrote it.
+        var act = () =>
+            CreateProvider(
+                new HashSet<string>(StringComparer.Ordinal) { SubAgentToolProvider.SpawnToolName, "SendMesage" }
+            );
+
+        act.Should()
+            .Throw<ArgumentException>()
+            .WithMessage("*SendMesage*")
+            .Which.Message.Should()
+            .Contain(
+                SubAgentToolProvider.SendMessageToolName,
+                "the refusal has to show the spelling that would have worked"
+            );
+    }
+
+    [Fact]
+    public void AnAllowListOfMisspellings_IsRefusedRatherThanYieldingNoToolsAtAll()
+    {
+        // The #635 shape: every name wrong, so the filter grants nothing and the agent looks exactly
+        // like one configured to have no sub-agent tools.
+        var act = () => CreateProvider(new HashSet<string>(StringComparer.Ordinal) { "agent", "sendmessage" });
+
+        act.Should().Throw<ArgumentException>().WithMessage("*agent*sendmessage*");
+    }
+
+    [Fact]
+    public void ACaseInsensitiveAllowList_IsAccepted_BecauseItReallyDoesGrant()
+    {
+        // Judged by what it selects, not by equality with a constant: this set's own comparer makes
+        // "agent" match, so refusing it would refuse a configuration that works.
+        var names = NamesFrom(CreateProvider(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "agent" }));
+
+        names.Should().ContainSingle().Which.Should().Be(SubAgentToolProvider.SpawnToolName);
+    }
 }

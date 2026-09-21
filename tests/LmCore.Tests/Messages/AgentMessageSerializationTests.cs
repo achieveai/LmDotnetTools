@@ -184,7 +184,7 @@ public class AgentMessageSerializationTests
         var agent = CreateQuestion();
 
         Assert.DoesNotContain("in-response-to", agent.Text);
-        Assert.Contains("type=\"Question\"", agent.Text);
+        Assert.Contains("type=\"question\"", agent.Text);
         Assert.Contains("from=\"build-fixer\"", agent.Text);
         Assert.EndsWith("</agent-message>", agent.Text);
     }
@@ -205,8 +205,10 @@ public class AgentMessageSerializationTests
     }
 
     [Theory]
-    [InlineData(AgentMessageType.Question, "reply-msg-type=\"Response\"")]
-    [InlineData(AgentMessageType.DelegateTask, "progress-msg-type=\"TaskUpdate\"")]
+    // The wire spellings, not the C# member names: the fragment a receiver reads is the word it has
+    // to hand back to SendMessage, and SendMessage takes snake_case.
+    [InlineData(AgentMessageType.Question, "reply-msg-type=\"response\"")]
+    [InlineData(AgentMessageType.DelegateTask, "progress-msg-type=\"task_update\"")]
     public void Envelope_AppendsReplyInstruction_ForTypesThatExpectAnAnswer(
         AgentMessageType type,
         string expectedFragment

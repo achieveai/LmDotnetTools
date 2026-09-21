@@ -155,9 +155,59 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         ArgumentNullException.ThrowIfNull(manager);
         ArgumentNullException.ThrowIfNull(source);
+        ValidateExposedToolNames(exposedToolNames);
         _manager = manager;
         _source = source;
         _exposedToolNames = exposedToolNames;
+    }
+
+    /// <summary>
+    /// Refuses an allow-list entry that can never grant anything, naming it and the vocabulary it
+    /// missed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The filter in <see cref="GetFunctions"/> is a set membership test, so a misspelled entry is not
+    /// an error there - it is simply a name no descriptor has, and the surface comes back one tool
+    /// smaller. A whole list of misspellings comes back EMPTY, and an agent with no sub-agent tools is
+    /// indistinguishable from one configured to have none: the model is told nothing, the host is told
+    /// nothing, and the delegation the operator thought they enabled just never happens. Composition
+    /// is the last moment the typo is still attached to the thing that produced it.
+    /// </para>
+    /// <para>
+    /// An entry is judged by what it SELECTS, not by string equality with a constant, because the
+    /// caller owns the set's comparer: a case-insensitive set really does grant <c>agent</c>, and an
+    /// ordinal one really does not. Asking which known names this set admits answers both without
+    /// guessing which comparer was used.
+    /// </para>
+    /// <para>
+    /// An EMPTY list is left alone. "Expose nothing" is a coherent thing to ask for - it is how a host
+    /// turns delegation off for one agent - and it is the one list with no entry to be wrong about.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">An entry matches no tool this provider can emit.</exception>
+    private static void ValidateExposedToolNames(IReadOnlySet<string>? exposedToolNames)
+    {
+        if (exposedToolNames is null || exposedToolNames.Count == 0)
+        {
+            return;
+        }
+
+        var granted = AllToolNames.Where(exposedToolNames.Contains).ToArray();
+        var inert = exposedToolNames
+            .Where(name => !granted.Any(g => string.Equals(g, name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        if (inert.Length == 0)
+        {
+            return;
+        }
+
+        throw new ArgumentException(
+            $"These exposed tool names match no sub-agent tool: {string.Join(", ", inert.Order(StringComparer.Ordinal))}. "
+                + $"The names this provider can expose are: {string.Join(", ", AllToolNames)}.",
+            nameof(exposedToolNames)
+        );
     }
 
     public string ProviderName => "SubAgentTools";
@@ -683,7 +733,7 @@ public class SubAgentToolProvider : IFunctionProvider
                         "REQUIRED when msg_type is 'response' or 'task_update': the message_id you "
                         + "are answering or reporting progress on, taken from the message you "
                         + "received. For 'task_update' it is the message-id attribute of the "
-                        + "<agent-message ... type=\"DelegateTask\" message-id=\"...\"> envelope that "
+                        + "<agent-message ... type=\"delegate_task\" message-id=\"...\"> envelope that "
                         + "delegated the task to you; if you never received one, you cannot send a "
                         + "task_update — do not guess an id. Omit otherwise.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
@@ -1284,8 +1334,14 @@ public class SubAgentToolProvider : IFunctionProvider
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var target =
-            GetOptionalString(root, "target") ?? throw new ArgumentException("The 'target' parameter is required.");
+        // Trimmed, because a target is a handle a model copied out of prose - a roster line, an
+        // envelope attribute, its own earlier tool call - and a copied handle arrives with the
+        // whitespace that surrounded it there. Every lookup behind this is an exact dictionary match,
+        // so an untrimmed " helper" resolves nowhere and is answered "no agent matches", which sends
+        // the model to correct a name that was already right. Whitespace-only is absence, not a name.
+        var target = GetOptionalString(root, "target")?.Trim() is { Length: > 0 } trimmed
+            ? trimmed
+            : throw new ArgumentException("The 'target' parameter is required.");
 
         if (_manager.Collaboration is { } collaboration)
         {
@@ -1441,8 +1497,22 @@ public class SubAgentToolProvider : IFunctionProvider
             }
         );
 
-    /// <summary>Maps the tool's snake_case wire vocabulary onto the closed message-type set.</summary>
-    private static bool TryParseMessageType(string raw, out AgentMessageType messageType)
+    /// <summary>Maps the tool's wire vocabulary onto the closed message-type set.</summary>
+    /// <remarks>
+    /// <para>
+    /// Both spellings are accepted, permanently. The snake_case names are what the contract
+    /// advertises; the PascalCase member names are what the envelope carried before it was corrected
+    /// to state the wire vocabulary, and a model replying with the type it was sent must not have its
+    /// reply refused because it read an older message. The two multi-word types are the ones this
+    /// matters for - <c>Question</c>, <c>Steer</c> and <c>Response</c> always survived lower-casing,
+    /// which is what made the refusal look intermittent rather than systematic.
+    /// </para>
+    /// <para>
+    /// <see cref="AgentMessageType.DeliveryFailure"/> is deliberately absent under either spelling: it
+    /// is minted by the collaboration, and an agent may not send one.
+    /// </para>
+    /// </remarks>
+    internal static bool TryParseMessageType(string raw, out AgentMessageType messageType)
     {
         switch (raw.Trim().ToLowerInvariant())
         {
@@ -1450,9 +1520,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 messageType = AgentMessageType.Question;
                 return true;
             case "delegate_task":
+            case "delegatetask":
                 messageType = AgentMessageType.DelegateTask;
                 return true;
             case "task_update":
+            case "taskupdate":
                 messageType = AgentMessageType.TaskUpdate;
                 return true;
             case "steer":
@@ -2406,9 +2478,16 @@ public class SubAgentToolProvider : IFunctionProvider
     private const string PeerNotChildReason = "peer_not_child";
 
     /// <summary>A named target that is a real agent this one cannot block on, and what to do instead.</summary>
+    /// <remarks>
+    /// Carries the name as well as the id because <c>target</c> is whatever the model typed, which is
+    /// often the id: a row reading only <c>agent-7</c> named the agent twice and identified it never,
+    /// so the next action - message it, check it - had nothing readable to name. Every other surface
+    /// that reports an agent to a model leads with its name.
+    /// </remarks>
     private sealed record UnwaitableTarget(
         [property: JsonPropertyName("target")] string Target,
         [property: JsonPropertyName("agent_id")] string AgentId,
+        [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("reason")] string Reason,
         [property: JsonPropertyName("next_action")] string NextAction
     );
@@ -2456,6 +2535,7 @@ public class SubAgentToolProvider : IFunctionProvider
                     new UnwaitableTarget(
                         entry.Target,
                         peer.AgentId,
+                        peer.Name,
                         PeerNotChildReason,
                         $"'{entry.Target}' is not one of your sub-agents, so you cannot block on it. Check "
                             + "it with CheckAgents, or send it a message and carry on with your own work."
