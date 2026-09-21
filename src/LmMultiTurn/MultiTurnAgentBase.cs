@@ -83,6 +83,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     private readonly object _stateLock = new();
     private readonly object _historyLock = new();
 
+    // Signalled when input a run would actually act on is queued. Guarded by _stateLock, which is also
+    // what re-arms it in TryDrainInputs. See WaitForRealInputAsync.
+    private TaskCompletionSource _realInputSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
@@ -1298,6 +1302,84 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
 
     /// <summary>
+    /// Whether input a run would actually act on is queued right now.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not <see cref="PendingInputCount"/> <c>&gt; 0</c>.</b> That counts everything on the channel,
+    /// including the loop's own wake sentinel — an entry with <see cref="QueuedInput.Resume"/> set and
+    /// no messages, written only to break the input wait. A sentinel is not an interruption, and a
+    /// caller that treats it as one stops waiting for a reason that never happened. The distinction
+    /// exists at the <em>write</em> site and nowhere else, which is why this is signalled there.
+    /// </remarks>
+    internal bool HasRealInputQueued
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _realInputSignal.Task.IsCompleted;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Completes when input a run would act on arrives — a human turn, a peer agent's message, a
+    /// notification, a trigger injection — and never for the loop's own wake sentinel.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A <see cref="Task"/> of its own rather than a <see cref="CancellationToken"/> on purpose. A
+    /// blocking tool that waits on this has to be able to tell "my wait was interrupted" from "my wait
+    /// was cancelled" from "the agent is going away", and folding the first into a token makes the
+    /// three indistinguishable at the catch site. A timeout's
+    /// <see cref="OperationCanceledException"/> has orphaned work here before.
+    /// </para>
+    /// <para>
+    /// <paramref name="ct"/> cancels the <em>waiting</em>, not the signal; the returned task faults
+    /// with <see cref="OperationCanceledException"/> in that case, which is the distinction above.
+    /// </para>
+    /// </remarks>
+    internal Task WaitForRealInputAsync(CancellationToken ct)
+    {
+        // Cancellation wins over an already-set signal: Task.WaitAsync on a completed task ignores its
+        // token, which would let a cancelled wait report an interruption instead of the cancellation the
+        // caller has to distinguish.
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled(ct);
+        }
+
+        Task signal;
+        lock (_stateLock)
+        {
+            signal = _realInputSignal.Task;
+        }
+
+        return signal.WaitAsync(ct);
+    }
+
+    /// <summary>
+    /// Announces that <paramref name="queued"/> is real input. Called from every enqueue path, and
+    /// gated on <see cref="QueuedInput.Resume"/> being null at the write — the one place the sentinel
+    /// is still distinguishable.
+    /// </summary>
+    private void SignalIfRealInput(QueuedInput queued)
+    {
+        if (queued.Resume != null)
+        {
+            return;
+        }
+
+        TaskCompletionSource signal;
+        lock (_stateLock)
+        {
+            signal = _realInputSignal;
+        }
+
+        _ = signal.TrySetResult();
+    }
+
+    /// <summary>
     /// Posts a pre-built <see cref="QueuedInput"/> directly to the input channel, preserving
     /// any non-default fields (including <see cref="QueuedInput.Resume"/>). Used by
     /// <c>MultiTurnAgentLoop</c> to enqueue internal resume sentinels for deferred-tool
@@ -1309,9 +1391,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput)
-            ? ValueTask.CompletedTask
-            : _inputChannel.Writer.WriteAsync(queuedInput, ct);
+        if (_inputChannel.Writer.TryWrite(queuedInput))
+        {
+            SignalIfRealInput(queuedInput);
+            return ValueTask.CompletedTask;
+        }
+
+        return WriteThenSignalAsync();
+
+        async ValueTask WriteThenSignalAsync()
+        {
+            await _inputChannel.Writer.WriteAsync(queuedInput, ct);
+            SignalIfRealInput(queuedInput);
+        }
     }
 
     /// <summary>
@@ -1328,7 +1420,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput);
+        if (!_inputChannel.Writer.TryWrite(queuedInput))
+        {
+            return false;
+        }
+
+        SignalIfRealInput(queuedInput);
+        return true;
     }
 
     /// <summary>
@@ -1349,6 +1447,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <returns>True if any inputs were drained, false if queue was empty</returns>
     protected bool TryDrainInputs(out List<QueuedInput> inputs)
     {
+        // Re-arm BEFORE the drain, never after. A write that lands between the two sets the NEW
+        // source, so the worst this ordering can produce is a spurious wake for input this drain also
+        // took — and a waiter re-checks. Re-arming afterwards would instead discard the signal for an
+        // input that arrived mid-drain and was not taken, which is a wait that never ends.
+        lock (_stateLock)
+        {
+            if (_realInputSignal.Task.IsCompleted)
+            {
+                _realInputSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
         inputs = [];
         while (_inputChannel.Reader.TryRead(out var item))
         {
@@ -1434,10 +1544,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     throw;
                 }
 
+                SignalIfRealInput(queued);
                 return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed);
             }
         }
 
+        SignalIfRealInput(queued);
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
@@ -1538,6 +1650,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return null;
         }
 
+        SignalIfRealInput(queued);
         Logger.LogDebug(
             "Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}",
             receiptId,

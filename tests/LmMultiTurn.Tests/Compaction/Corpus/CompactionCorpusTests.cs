@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using FluentAssertions;
 using LmMultiTurn.Tests.Persistence;
@@ -216,19 +217,34 @@ public sealed class CompactionCorpusTests(CorpusReportFixture report)
 
     /// <summary>
     /// D7 / R6: the reply at <see cref="CorpusScenario.ParksAtCall"/> parks the run; the next step arrives
-    /// while it is parked. The park is enforced one seam earlier than the cut selector: no provider request
-    /// is built for the parked call, and the boundary-splitting check in the evaluator proves no cut landed
-    /// between the parked call row and its result row in any mode.
+    /// while it is parked. How the park ends depends on whether the parked tool has a registered
+    /// early-settle placeholder: a question settles with the placeholder and the interrupting run proceeds
+    /// (g), a park without one is still refused before any request is built (h). Either way no provider
+    /// request is built for the parked call itself, and the boundary-splitting check in the evaluator
+    /// proves no cut landed between the parked call row and its result row in any mode.
     /// </summary>
     private static void AssertParkedRunBuiltNoRequest(CorpusScenario scenario, int parksAt, CorpusRunData data)
     {
         data.CallsAtStep.Should().HaveCountGreaterThanOrEqualTo(2);
         data.CallsAtStep[0].Should().Be(parksAt, "the first step ends parked on the reply at call {0}", parksAt);
-        // A run arriving during the park is refused before any request is built (the loop's own guard).
-        scenario.Steps[1].ExpectError.Should().BeTrue("the corpus pins the refusal as the expected outcome");
-        data.CallsAtStep[1].Should().Be(parksAt, "the refused run must not have reached the provider");
-        data.Runs[1].IsError.Should().BeTrue();
-        data.Runs[1].Error.Should().Contain("still deferred");
+        if (scenario.Root.Replies[parksAt - 1].Tool == AskUserQuestionToolProvider.ToolName)
+        {
+            // A parked question carries an early-settle placeholder: the run arriving during the park is
+            // taken, the question settles with the placeholder so the call/result pair is closed, and the
+            // human's answer arrives afterwards as its own turn.
+            scenario.Steps[1].ExpectError.Should().BeFalse("a parked question settles early instead of refusing");
+            data.Runs[1].IsError.Should().BeFalse("{0}", data.Runs[1].Error ?? string.Empty);
+            data.CallsAtStep[1].Should().BeGreaterThan(parksAt, "the settled run does reach the provider");
+        }
+        else
+        {
+            // A park with no placeholder (a Wait) keeps the refusal: no request is built for that run.
+            scenario.Steps[1].ExpectError.Should().BeTrue("the corpus pins the refusal as the expected outcome");
+            data.CallsAtStep[1].Should().Be(parksAt, "the refused run must not have reached the provider");
+            data.Runs[1].IsError.Should().BeTrue();
+            data.Runs[1].Error.Should().Contain("still deferred");
+        }
+
         // The resolution (an answer, the timer) resumes the run and the provider is called again.
         data.Root.CallCount.Should().BeGreaterThan(parksAt, "the resumption reaches the provider");
 

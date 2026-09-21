@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
+using System.Security;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -145,6 +147,12 @@ public sealed class MultiTurnAgentLoop
     // which resolved results are waiting to be run as child runs. See DelayedResultCoordinator for
     // why this is a collaborator rather than fields here.
     private readonly DelayedResultCoordinator _delayed = new();
+
+    // How each blocking tool call (AskUserQuestion, and later the waits) ended: settled early by the
+    // loop so an interrupting input could run, or answered for real. Keyed by tool call id and kept
+    // after the coordinator's entry is retired, because the answer that lost the race arrives later
+    // and has to find out that it lost. See BlockingToolSettlement.cs.
+    private readonly ConcurrentDictionary<string, BlockingToolOutcome> _blockingEndings = new(StringComparer.Ordinal);
 
     // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
     // no CompactionSetup, in which case nothing on the request path changes.
@@ -882,23 +890,45 @@ public sealed class MultiTurnAgentLoop
                     continue;
                 }
 
-                // Parked-on-deferral safety, scoped to notifications. When the conversation is parked on
+                // Parked-on-deferral safety. When the conversation is parked on
                 // an unresolved deferral a fresh model turn cannot run (the provider would reject the
                 // pending tool_result — see the ExecuteTurnAsync precondition). For an out-of-band
                 // NotifyMessage (e.g. a background sub-agent completing while the parent is parked on a
                 // Wait) we fold it into history now — persisted under the deferring run and published live
                 // as a pill — and let the delayed-result child run deliver it to the model once the
                 // deferral resolves, turning what was an unconditional RunFailed into correct
-                // at-continuation delivery. A regular user input while deferred deliberately keeps the
-                // existing fail-fast guard (the caller must resolve the deferral first), so this is
-                // restricted to batches that are entirely notifications.
-                if (
-                    !_delayed.IsEmpty
-                    && AllMessagesAreNotifications(realInputs)
-                    && await TryAppendParkedInputsAsync(realInputs, ct)
-                )
+                // at-continuation delivery.
+                //
+                // Anything else — a user TextMessage, a peer AgentMessage, a trigger injection, or a
+                // batch that merely MIXES one of those with a notification — used to fall through to
+                // the guard and fail the run outright (bug #5). It now settles the outstanding
+                // deferrals with their tools' placeholders first, so the interrupting input can be
+                // carried to the model on a complete tool_use/tool_result pair.
+                if (!_delayed.IsEmpty)
                 {
-                    continue;
+                    if (AllMessagesAreNotifications(realInputs) && await TryAppendParkedInputsAsync(realInputs, ct))
+                    {
+                        continue;
+                    }
+
+                    if (await TrySettleDeferralsEarlyAsync(ct))
+                    {
+                        // Settling a parked deferral queues its delayed child run, and a queued cause
+                        // outranks fresh input (see the dequeue at the top of this loop). So the
+                        // interrupting messages are folded into history under the parked run exactly as
+                        // a notification would be, and the child run carries BOTH them and the settled
+                        // tool_result to the provider in ONE turn. Starting a run here instead would
+                        // race that child, and holding the input would show the model the placeholder
+                        // on its own first — which is precisely what makes a model re-ask.
+                        if (!await TryAppendParkedInputsAsync(realInputs, ct))
+                        {
+                            // The fold declined (it only does so for a spawn-suppressing input with no
+                            // parked run to pin the guarantee to). Hold rather than drop.
+                            heldInputs = realInputs;
+                        }
+
+                        continue;
+                    }
                 }
 
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
@@ -1769,6 +1799,100 @@ public sealed class MultiTurnAgentLoop
         );
 
         return true;
+    }
+
+    /// <summary>
+    /// Settles every outstanding deferral with its tool's early-settle placeholder, so a turn can run
+    /// while the human's real answer is still outstanding. Returns whether the conversation is now
+    /// somebody else's to continue — either because this settled it, or because a real resolution was
+    /// already in flight — in which case the caller must not start a run of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>All or nothing.</b> A provider request carries the whole history, so one unresolved
+    /// placeholder anywhere in it makes the request invalid. Settling only the tools that have a
+    /// placeholder would leave the rest deferred — the send would still be refused, and the
+    /// conversation would have been told a lie for nothing. So a single unsettleable deferral aborts
+    /// the whole attempt and the pre-existing fail-fast stands: a third-party tool with no async
+    /// fallback must never be silently settled.
+    /// </para>
+    /// <para>
+    /// <b>Why it reuses <c>ResolveToolCallInternalAsync</c>.</b> That is what makes this
+    /// provider-agnostic. The durable lifecycle write, the in-place replacement of the placeholder in
+    /// history, the publish to subscribers and the coordinator's retirement all happen exactly as they
+    /// do for a real answer, so history stays <c>assistant(tool_use) -> tool_result(user)</c> for
+    /// Anthropic, OpenAI and Copilot alike. No new serialization branch exists to drift.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> TrySettleDeferralsEarlyAsync(CancellationToken ct)
+    {
+        var outstanding = _delayed.Snapshot();
+        if (outstanding.Count == 0)
+        {
+            return false;
+        }
+
+        var settleable = new List<(DeferredEntry Entry, EarlySettleSpec Spec)>(outstanding.Count);
+        foreach (var entry in outstanding)
+        {
+            if (!EarlySettlePlaceholders.TryGet(entry.FunctionName, out var spec))
+            {
+                Logger.LogDebug(
+                    "Tool call {ToolCallId} ({ToolName}) has no early-settle placeholder; keeping the deferred-tool fail-fast",
+                    entry.ToolCallId,
+                    entry.FunctionName
+                );
+                return false;
+            }
+
+            settleable.Add((entry, spec));
+        }
+
+        var settled = 0;
+        var claimedByAnswer = false;
+        foreach (var (entry, spec) in settleable)
+        {
+            var ending = _blockingEndings.GetOrAdd(entry.ToolCallId, static _ => new BlockingToolOutcome());
+            if (!ending.TryClaimEarlySettle())
+            {
+                // The real result reached the latch first. Its resolution owns the continuation, so
+                // this must neither settle nor start a run alongside it.
+                claimedByAnswer = true;
+                continue;
+            }
+
+            var (outcome, failure) = await ResolveToolCallInternalAsync(
+                entry.ToolCallId,
+                spec.ResultJson,
+                isError: false,
+                contentBlocks: null,
+                isEarlySettle: true,
+                ct
+            );
+
+            if (outcome is ResolveToolCallOutcome.Resolved or ResolveToolCallOutcome.Duplicate)
+            {
+                settled++;
+                continue;
+            }
+
+            // A real resolution beat this to the coordinator's claim between the latch and here, or
+            // the store refused. Either way the call is not ours to continue.
+            claimedByAnswer = true;
+            Logger.LogInformation(
+                failure,
+                "Early settle of tool call {ToolCallId} did not apply ({Outcome}); leaving the continuation to the resolution that owns it",
+                entry.ToolCallId,
+                outcome
+            );
+        }
+
+        if (settled > 0)
+        {
+            Logger.LogInformation("Settled {Count} parked tool call(s) early so interrupting input could run", settled);
+        }
+
+        return settled > 0 || claimedByAnswer;
     }
 
     private Task PersistSuppressedRunMarkerAsync(string? suppressedRunId, CancellationToken ct)
@@ -2859,7 +2983,14 @@ public sealed class MultiTurnAgentLoop
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(result);
 
-        var (_, failure) = await ResolveToolCallInternalAsync(toolCallId, result, isError, contentBlocks, ct);
+        var (_, failure) = await ResolveToolCallInternalAsync(
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            isEarlySettle: false,
+            ct
+        );
         if (failure != null)
         {
             // Rethrow the original, not a wrapper: callers (and tests) match on the exact messages
@@ -2895,7 +3026,14 @@ public sealed class MultiTurnAgentLoop
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(result);
 
-        var (outcome, _) = await ResolveToolCallInternalAsync(toolCallId, result, isError, contentBlocks, ct);
+        var (outcome, _) = await ResolveToolCallInternalAsync(
+            toolCallId,
+            result,
+            isError,
+            contentBlocks,
+            isEarlySettle: false,
+            ct
+        );
         return outcome;
     }
 
@@ -2904,11 +3042,18 @@ public sealed class MultiTurnAgentLoop
     /// the outcome is a failure, the exception the throwing overload should raise — so the two
     /// surfaces cannot drift apart in what they consider an error.
     /// </summary>
+    /// <remarks>
+    /// <c>isEarlySettle</c> is true only for the loop's own early settle, and it is what keeps the
+    /// redirect below one-directional: a real answer that loses to an early settle is injected into
+    /// the conversation, but an early settle that loses to a real answer simply stands down —
+    /// injecting a placeholder as if it were the human's reply would be a fabrication.
+    /// </remarks>
     private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> ResolveToolCallInternalAsync(
         string toolCallId,
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
+        bool isEarlySettle,
         CancellationToken ct
     )
     {
@@ -2917,6 +3062,18 @@ public sealed class MultiTurnAgentLoop
         // conflict decision. A byte-equal redelivery bounds to the same text and stays idempotent.
         var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks, out var originalBytes);
         var fingerprint = ComputeResolutionFingerprint(result, isError);
+
+        // Claim the ending BEFORE the coordinator is asked, so the two orders are symmetric: whichever
+        // caller reaches the latch first decides, and the other reads that decision instead of racing
+        // it. A real result that finds an early settle already holding the ending is redirected here
+        // rather than refused — this is the single edit that keeps the human's answer from being lost.
+        if (!isEarlySettle && TryGetBlockingEnding(toolCallId) is { } ending && !ending.TryClaimRealResult())
+        {
+            if (ending.Ending == BlockingToolEnding.SettledEarly)
+            {
+                return await RedirectAnswerToConversationAsync(ending, toolCallId, result, ct);
+            }
+        }
 
         if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out var inFlightFingerprint))
         {
@@ -2947,6 +3104,7 @@ public sealed class MultiTurnAgentLoop
                 contentBlocks,
                 truncated,
                 originalBytes,
+                isEarlySettle,
                 ct
             );
         }
@@ -3402,11 +3560,13 @@ public sealed class MultiTurnAgentLoop
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
         int? originalBytes,
+        bool isEarlySettle,
         CancellationToken ct
     )
     {
         var noOp = false;
         ToolCallResultMessage? orphan = null;
+        var settledEarlier = false;
 
         try
         {
@@ -3423,6 +3583,17 @@ public sealed class MultiTurnAgentLoop
                     if (existing.Result == result && existing.IsError == isError)
                     {
                         noOp = true;
+                        return existing;
+                    }
+
+                    // The durable half of the latch. An early settle from a previous loop instance —
+                    // a mode or provider switch, or a whole process restart — left its placeholder in
+                    // history, and that placeholder outlives the in-memory ending. Recognising it here
+                    // is what keeps the human's answer from being refused as a conflict after a
+                    // rebuild; the answer is redirected below instead.
+                    if (!isEarlySettle && EarlySettlePlaceholders.IsEarlySettleResult(existing.Result))
+                    {
+                        settledEarlier = true;
                         return existing;
                     }
 
@@ -3445,6 +3616,13 @@ public sealed class MultiTurnAgentLoop
                 toolCallId
             );
             return (ResolveToolCallOutcome.Duplicate, null);
+        }
+
+        if (settledEarlier)
+        {
+            var ending = _blockingEndings.GetOrAdd(toolCallId, static _ => new BlockingToolOutcome());
+            _ = ending.TryClaimEarlySettle();
+            return await RedirectAnswerToConversationAsync(ending, toolCallId, result, ct);
         }
 
         if (orphan == null)
@@ -3488,6 +3666,126 @@ public sealed class MultiTurnAgentLoop
             originalBytes,
             ct
         );
+    }
+
+    /// <summary>
+    /// The recorded ending for <paramref name="toolCallId"/>, creating one only for a call whose tool
+    /// can be settled early. Null for everything else, so an ordinary deferred tool — a webhook, an
+    /// approval gate — costs nothing and behaves exactly as before.
+    /// </summary>
+    private BlockingToolOutcome? TryGetBlockingEnding(string toolCallId)
+    {
+        if (_blockingEndings.TryGetValue(toolCallId, out var existing))
+        {
+            return existing;
+        }
+
+        var entry = _delayed
+            .Snapshot()
+            .FirstOrDefault(e => string.Equals(e.ToolCallId, toolCallId, StringComparison.Ordinal));
+        return entry != null && EarlySettlePlaceholders.TryGet(entry.FunctionName, out _)
+            ? _blockingEndings.GetOrAdd(toolCallId, static _ => new BlockingToolOutcome())
+            : null;
+    }
+
+    /// <summary>
+    /// Delivers a real result that arrived after its call was settled early: it becomes an ordinary
+    /// turn in the conversation instead of resolving a call that is already resolved.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The injected message carries <b>the original request as well as the answer</b>. Compaction
+    /// shows the model a projected view of history rather than all of it, so by the time the human
+    /// replies the original <c>tool_use</c>/<c>tool_result</c> pair may be outside that view — and an
+    /// answer on its own would then be a reply to a question the model cannot see.
+    /// </para>
+    /// <para>
+    /// Reported as <see cref="ResolveToolCallOutcome.Resolved"/> because that is what it is from the
+    /// caller's side: the answer has been taken and the client's pending-answer UI should close. A
+    /// second delivery of the same answer is <see cref="ResolveToolCallOutcome.Duplicate"/> rather
+    /// than a second injection.
+    /// </para>
+    /// </remarks>
+    private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> RedirectAnswerToConversationAsync(
+        BlockingToolOutcome ending,
+        string toolCallId,
+        string result,
+        CancellationToken ct
+    )
+    {
+        if (!ending.TryClaimAnswerDelivery())
+        {
+            Logger.LogDebug(
+                "Answer for early-settled tool call {ToolCallId} was already injected; ignoring the redelivery",
+                toolCallId
+            );
+            return (ResolveToolCallOutcome.Duplicate, null);
+        }
+
+        try
+        {
+            _ = await SendAsync(
+                new UserInput([BuildEarlySettledAnswerMessage(toolCallId, result)], InputId: null, ParentRunId: null),
+                ct
+            );
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // The conversation's agent was replaced underneath this delivery (see
+            // InputAcceptanceRefusedException) or the channel could not take it. Nothing was injected,
+            // so report it as retryable rather than as success: the caller resends and the new agent
+            // takes it. StoreFailed is the outcome that says exactly that.
+            Logger.LogWarning(
+                ex,
+                "Could not inject the answer for early-settled tool call {ToolCallId}; the delivery is safe to retry",
+                toolCallId
+            );
+            return (ResolveToolCallOutcome.StoreFailed, ex);
+        }
+
+        Logger.LogInformation(
+            "Tool call {ToolCallId} was settled early; its answer was injected into the conversation instead",
+            toolCallId
+        );
+        return (ResolveToolCallOutcome.Resolved, null);
+    }
+
+    /// <summary>
+    /// Builds the turn that carries a late answer back into the conversation, restating the request it
+    /// answers. Bodies are inlined verbatim — like <see cref="NotifyMessage"/>'s detail, they are
+    /// opaque payload, not markup — while the attributes are escaped because they sit in the envelope.
+    /// </summary>
+    private TextMessage BuildEarlySettledAnswerMessage(string toolCallId, string answer)
+    {
+        var entry = _delayed
+            .Snapshot()
+            .FirstOrDefault(e => string.Equals(e.ToolCallId, toolCallId, StringComparison.Ordinal));
+        var call =
+            entry == null
+                ? GetHistorySnapshot()
+                    .OfType<ToolCallMessage>()
+                    .LastOrDefault(tc => string.Equals(tc.ToolCallId, toolCallId, StringComparison.Ordinal))
+                : null;
+
+        var toolName = entry?.FunctionName ?? call?.FunctionName ?? string.Empty;
+        var args = entry?.FunctionArgs ?? call?.FunctionArgs;
+        var request = EarlySettlePlaceholders.TryGet(toolName, out var spec)
+            ? spec.RenderRequest(args)
+            : args ?? string.Empty;
+
+        var text = new StringBuilder()
+            .Append("<user-answer tool=\"")
+            .Append(SecurityElement.Escape(toolName))
+            .Append("\" tool-call-id=\"")
+            .Append(SecurityElement.Escape(toolCallId))
+            .Append("\">\n<request>\n")
+            .Append(request)
+            .Append("\n</request>\n<answer>\n")
+            .Append(answer)
+            .Append("\n</answer>\n</user-answer>")
+            .ToString();
+
+        return new TextMessage { Text = text, Role = Role.User };
     }
 
     private static ToolCallResultMessage ApplyResolution(
