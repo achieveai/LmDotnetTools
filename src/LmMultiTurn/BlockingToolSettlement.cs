@@ -53,8 +53,17 @@ internal enum BlockingToolEnding
 /// </remarks>
 internal sealed class BlockingToolOutcome
 {
+    /// <summary>Nobody is delivering the redirected answer, and nobody has.</summary>
+    private const int DeliveryFree = 0;
+
+    /// <summary>A delivery holds the right to inject and has not finished trying.</summary>
+    private const int DeliveryInFlight = 1;
+
+    /// <summary>The answer is in the conversation. Permanent.</summary>
+    private const int DeliveryDone = 2;
+
     private int _ending;
-    private int _answerDelivered;
+    private int _answerDelivery;
 
     /// <summary>How the call ended, or <see cref="BlockingToolEnding.Pending"/> while it has not.</summary>
     public BlockingToolEnding Ending => (BlockingToolEnding)Volatile.Read(ref _ending);
@@ -66,10 +75,33 @@ internal sealed class BlockingToolOutcome
     public bool TryClaimRealResult() => TryClaim(BlockingToolEnding.Answered);
 
     /// <summary>
-    /// Claims the right to inject the redirected answer. False for every delivery after the first, so
-    /// a redelivered webhook or a double-submitted answer form cannot inject the same answer twice.
+    /// Claims the right to inject the redirected answer, as an IN-FLIGHT claim the caller must then
+    /// settle with <see cref="CommitAnswerDelivery"/> or <see cref="ReleaseAnswerDelivery"/>. False
+    /// for every delivery that arrives while one is in flight or after one has landed, so a
+    /// redelivered webhook or a double-submitted answer form cannot inject the same answer twice.
     /// </summary>
-    public bool TryClaimAnswerDelivery() => Interlocked.Exchange(ref _answerDelivered, 1) == 0;
+    /// <remarks>
+    /// Three states rather than a one-shot flag, because the injection can FAIL. The caller reports a
+    /// failed injection as <c>StoreFailed</c> — "nothing happened, send it again" — and a claim that
+    /// went straight to delivered would make every one of those retries a <c>Duplicate</c>: the
+    /// answer lost, behind an outcome that promised it was safe to retry. In-flight keeps the
+    /// exactly-once guarantee against a concurrent redelivery while leaving the claim recoverable.
+    /// </remarks>
+    public bool TryClaimAnswerDelivery() =>
+        Interlocked.CompareExchange(ref _answerDelivery, DeliveryInFlight, DeliveryFree) == DeliveryFree;
+
+    /// <summary>
+    /// Makes an in-flight claim permanent, once the answer is actually in the conversation. Every
+    /// later delivery of the same answer is refused from here on, forever.
+    /// </summary>
+    public void CommitAnswerDelivery() => Volatile.Write(ref _answerDelivery, DeliveryDone);
+
+    /// <summary>
+    /// Hands an in-flight claim back after an injection that did not happen, so the retry the caller
+    /// was told to make can take it. A no-op once the delivery has been committed.
+    /// </summary>
+    public void ReleaseAnswerDelivery() =>
+        _ = Interlocked.CompareExchange(ref _answerDelivery, DeliveryFree, DeliveryInFlight);
 
     private bool TryClaim(BlockingToolEnding ending) =>
         Interlocked.CompareExchange(ref _ending, (int)ending, (int)BlockingToolEnding.Pending)

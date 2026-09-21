@@ -267,6 +267,63 @@ public class AskUserQuestionEarlySettleTests
         await fixture.DisposeAsync();
     }
 
+    [Fact]
+    public async Task AnInjectionThatFailsReleasesTheClaim_SoTheRetryDeliversTheAnswerExactlyOnce()
+    {
+        // StoreFailed's whole contract is "nothing happened, send it again". The delivery claim used
+        // to be taken BEFORE the injection, so a failed injection left it taken forever and the retry
+        // that outcome invites came back Duplicate - the answer lost, with a success-shaped code in
+        // front of it.
+        var fixture = await ParkOnQuestionAsync();
+        var observer = new RecordingObserver();
+        fixture.Loop.InputAcceptanceObserver = observer;
+
+        await fixture.Loop.SendAsync([new TextMessage { Text = "wait, hold on", Role = Role.User }]);
+        await fixture.Collector.WaitForCompletionsAsync(2);
+
+        // The real seam, not a stub: the observer refuses the accept because the conversation holds a
+        // different agent now. That is exactly what InputAcceptanceRefusedException reports, and it is
+        // the failure the redirect's catch block names.
+        observer.RefuseAccepts = true;
+        var refused = await fixture.Loop.TryResolveToolCallAsync(QuestionCallId, "Blue");
+        observer.RefuseAccepts = false;
+
+        refused.Should().Be(ResolveToolCallOutcome.StoreFailed, "nothing was injected, so it is retryable");
+        InjectedAnswers(fixture.Loop).Should().BeEmpty("a refused send queues nothing");
+
+        // The retry StoreFailed promised has to actually land.
+        (await fixture.Loop.TryResolveToolCallAsync(QuestionCallId, "Blue"))
+            .Should()
+            .Be(ResolveToolCallOutcome.Resolved, "the claim is released when the send fails");
+
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            () => InjectedAnswers(fixture.Loop).Count == 1,
+            because: "the retry injects the answer as its own turn"
+        );
+
+        // And exactly-once still holds after the send that succeeded: the release covers the failure,
+        // it is not a licence to inject twice.
+        (await fixture.Loop.TryResolveToolCallAsync(QuestionCallId, "Blue"))
+            .Should()
+            .Be(ResolveToolCallOutcome.Duplicate);
+
+        InjectedAnswers(fixture.Loop).Should().ContainSingle("the answer is delivered exactly once");
+        ExtractResults(fixture.Loop.GetHistorySnapshot())
+            .Where(r => r.ToolCallId == QuestionCallId)
+            .Should()
+            .ContainSingle("exactly one ending reaches history");
+
+        await fixture.DisposeAsync();
+    }
+
+    /// <summary>The injected late-answer turns in history, which carry the call id they answer.</summary>
+    private static List<TextMessage> InjectedAnswers(MultiTurnAgentLoop loop) =>
+        [
+            .. loop.GetHistorySnapshot()
+                .OfType<TextMessage>()
+                .Where(t => t.Text.Contains(QuestionCallId, StringComparison.Ordinal)),
+        ];
+
     // ---------------------------------------------------------------- criterion 7
 
     [Fact]

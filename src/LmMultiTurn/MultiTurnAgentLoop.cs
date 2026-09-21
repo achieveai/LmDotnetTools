@@ -3769,6 +3769,12 @@ public sealed class MultiTurnAgentLoop
     /// second delivery of the same answer is <see cref="ResolveToolCallOutcome.Duplicate"/> rather
     /// than a second injection.
     /// </para>
+    /// <para>
+    /// An injection that FAILS is a retry, not a duplicate. The delivery claim is held only while the
+    /// send is in flight and handed back if it does not land, so the resend that
+    /// <see cref="ResolveToolCallOutcome.StoreFailed"/> invites is the one that injects the answer —
+    /// exactly-once counts injections, not attempts.
+    /// </para>
     /// </remarks>
     private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> RedirectAnswerToConversationAsync(
         BlockingToolOutcome ending,
@@ -3786,12 +3792,14 @@ public sealed class MultiTurnAgentLoop
             return (ResolveToolCallOutcome.Duplicate, null);
         }
 
+        var injected = false;
         try
         {
             _ = await SendAsync(
                 new UserInput([BuildEarlySettledAnswerMessage(toolCallId, result)], InputId: null, ParentRunId: null),
                 ct
             );
+            injected = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -3805,6 +3813,21 @@ public sealed class MultiTurnAgentLoop
                 toolCallId
             );
             return (ResolveToolCallOutcome.StoreFailed, ex);
+        }
+        finally
+        {
+            // Settled here rather than at either return, because the send has a third exit: a genuine
+            // cancellation escapes the filter above and unwinds through this method. Leaving the claim
+            // held by a delivery that never happened is the same defect as holding it after a
+            // StoreFailed — every later retry is told Duplicate and the answer is gone.
+            if (injected)
+            {
+                ending.CommitAnswerDelivery();
+            }
+            else
+            {
+                ending.ReleaseAnswerDelivery();
+            }
         }
 
         Logger.LogInformation(
