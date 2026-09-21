@@ -67,11 +67,12 @@ function question(overrides: Record<string, unknown> = {}) {
 
 function start(handlers: Partial<QuestionEventHandlers> = {}, retryDelaysMs = [0]) {
   vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+  // Typed mocks rather than `{ ...vi.fn(), ...handlers }`: spreading a Partial of the real handler
+  // type widens each member to `Handler | Mock`, and the test type-check then refuses `.mock` on it.
   const calls = {
-    onSnapshot: vi.fn(),
-    onPending: vi.fn(),
-    onSettled: vi.fn(),
-    ...handlers,
+    onSnapshot: vi.fn<QuestionEventHandlers['onSnapshot']>(handlers.onSnapshot),
+    onPending: vi.fn<QuestionEventHandlers['onPending']>(handlers.onPending),
+    onSettled: vi.fn<QuestionEventHandlers['onSettled']>(handlers.onSettled),
   };
   const stream = connectQuestionEvents(calls, {
     url: 'ws://test/ws/events',
