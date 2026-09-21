@@ -1035,7 +1035,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             ConfigureRunAdmission(state, gateGuard);
             SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
-            state.RunTask = agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(agent, agentId, effectiveName, cts.Token);
 
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
@@ -1094,6 +1094,37 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="QueuedSpawn.StateReady"/>. The pump holds no permit while parked, so it can never
     /// deadlock a permit-holder.
     /// </summary>
+    /// <summary>
+    ///     Runs a sub-agent's loop with <see cref="AgentActorScope" /> set to that agent, so tools this
+    ///     child shares with the rest of the conversation can tell who is calling them.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The conversation's todo board is the reason this exists (bug 19): one
+    ///         <c>TaskManager</c> instance serves the root and every sub-agent, its tool methods are the
+    ///         model-facing surface and cannot carry a caller argument, and a sub-agent's
+    ///         <c>bulk-initialize(clearExisting: true)</c> wiped the root's board. The scope is what lets
+    ///         the board refuse that clear without refusing the root's.
+    ///     </para>
+    ///     <para>
+    ///         A dedicated <c>async</c> method rather than a <c>using</c> around the bare
+    ///         <c>RunAsync</c> call: both read the same on the page, but only this one keeps the scope
+    ///         open for the run's whole lifetime instead of relying on the execution context captured at
+    ///         the loop's first await. The scope covers the run loop, which is where every tool call for
+    ///         this agent is dispatched from — <c>SendAsync</c> only enqueues.
+    ///     </para>
+    /// </remarks>
+    private static async Task RunUnderActorScopeAsync(
+        IMultiTurnAgent agent,
+        string agentId,
+        string? displayName,
+        CancellationToken ct
+    )
+    {
+        using var scope = AgentActorScope.Begin(agentId, displayName);
+        await agent.RunAsync(ct);
+    }
+
     private async Task RunSpawnPumpAsync(CancellationToken pumpCt)
     {
         while (!pumpCt.IsCancellationRequested)
@@ -2108,7 +2139,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             var runGeneration = state.BeginRunGeneration();
             ConfigureRunAdmission(state, gateGuard);
 
-            state.RunTask = state.Agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(state.Agent, state.AgentId, state.Name, cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);

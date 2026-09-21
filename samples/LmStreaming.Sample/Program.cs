@@ -2295,6 +2295,37 @@ try
                         todoBoardWriter.Schedule();
                     };
 
+                    // Bug 19: a bulk-initialize clear used to be total and unrecoverable — completed
+                    // rows, notes and artifacts included. The board hands over what it is about to drop
+                    // and this is where it becomes durable, under its OWN metadata key so the very next
+                    // board write (scheduled by the OnChanged above, for the cleared board) cannot
+                    // overwrite it. Fire-and-forget rather than through the coalescing writer: a clear
+                    // is a one-off event with its own payload, while that writer re-captures the LIVE
+                    // board at write time and would persist the cleared one. Failures are logged and
+                    // never surfaced as a tool error — the rows are already gone, and failing the call
+                    // would only send the model round again.
+                    var todoArchiveLogger = loggerFactory.CreateLogger("TodoBoardArchive");
+                    taskManager.OnCleared += cleared =>
+                    {
+                        var entry = cleared with { ThreadId = threadId };
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await ConversationTodoArchiveProjection.AppendAsync(conversationStore, entry);
+                            }
+                            catch (Exception ex)
+                            {
+                                todoArchiveLogger.LogWarning(
+                                    ex,
+                                    "Failed to archive the cleared todo board for thread {ThreadId}; {RowCount} root rows are not recoverable",
+                                    threadId,
+                                    entry.Tasks.Count
+                                );
+                            }
+                        });
+                    };
+
                     // PR 6 of the todo-board plan (#583): the board talks back. Assignment notices
                     // (N1, on by default) and budgeted stalled-agent nudges (N2-N4, default OFF) ride
                     // the SAME OnChanged multicast the frame publisher and the durable writer use —

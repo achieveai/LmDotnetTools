@@ -240,8 +240,8 @@ try {
     # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
     # Bump it in the same commit that adds the rows, or this fails with the message below while the
     # manifest itself is perfectly in sync.
-    Assert-Count $repositoryPlan.declarationSummary.known 10569 "Known .NET/script declarations"
-    Assert-Count $repositoryPlan.declarationSummary.reviewed 10569 "Reviewed policy rows"
+    Assert-Count $repositoryPlan.declarationSummary.known 10758 "Known .NET/script declarations"
+    Assert-Count $repositoryPlan.declarationSummary.reviewed 10758 "Reviewed policy rows"
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
