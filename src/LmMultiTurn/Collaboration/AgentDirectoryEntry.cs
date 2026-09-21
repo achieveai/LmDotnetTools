@@ -24,6 +24,15 @@ public static class AgentCollaborationStatuses
 
     /// <summary>Stopped before finishing.</summary>
     public const string Stopped = "stopped";
+
+    /// <summary>
+    /// Gone: the agent belonged to a process that no longer exists, and nothing can be delivered to
+    /// it again. A LISTING word, never a directory state — no registered entry ever carries it, and
+    /// nothing should register one with it. The directory keeps such an agent as a tombstone (#676)
+    /// whose persisted status says what it was doing when its process ended, and a listing that
+    /// repeated that word would describe a dead agent as <c>running</c>.
+    /// </summary>
+    public const string Dead = "dead";
 }
 
 /// <summary>

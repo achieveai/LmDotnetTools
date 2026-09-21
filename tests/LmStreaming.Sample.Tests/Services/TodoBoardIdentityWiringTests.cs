@@ -368,6 +368,22 @@ public sealed class TodoBoardIdentityWiringTests
     }
 
     [Fact]
+    public void AnUnknownName_AlsoNamesTheAgentsLostToARestart_MarkedDead()
+    {
+        // The gap the status test above could only note: a tombstone is in no snapshot, so a refusal
+        // built from the snapshot alone offered a roster in which the agent the caller had just been
+        // assigning work to did not exist. Listed last and labelled, so the reader learns the name is
+        // taken by an agent that is gone — which is "spawn a replacement", not "try another spelling".
+        var restarted = RestartedRootWithTombstonedAgentOne(RootA, "alpha");
+        RegisterAgent(restarted, 2, "zulu", AgentCollaborationStatuses.Running);
+
+        var resolution = TodoBoardIdentityWiring.Resolve(restarted.Directory, RootA, "ghost");
+
+        resolution.Liveness.Should().Be(TaskManager.AssigneeLiveness.Unknown);
+        resolution.KnownNames.Should().Equal("conversation", "zulu", "alpha (dead)");
+    }
+
+    [Fact]
     public void AttachedToABoard_AnUnknownNameIsRefusedNamingTheAgentsItCouldHaveMeant()
     {
         var rootA = RootHoldingAgentOne(RootA, "alpha");

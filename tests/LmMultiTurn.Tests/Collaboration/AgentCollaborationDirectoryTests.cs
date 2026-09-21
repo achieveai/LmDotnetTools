@@ -482,6 +482,47 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
+    public void InvalidatedRecords_ListsTheTombstones_WithoutTouchingTheSnapshotOrThePermit()
+    {
+        // A tombstone (#676) is deliberately kept out of Snapshot and SnapshotRecords: the first is
+        // what every listing and capacity decision reads, the second is what the next process
+        // inherits, and a ghost in either would be charged for or re-persisted forever. A listing
+        // that wants to SAY the agent is gone therefore needs its own accessor — and the accessor
+        // must not change what the other two answer, or the guard it was added beside is gone too.
+        var directory = CreateDirectory(new AgentCollaborationOptions { MaxTotalAgents = 1 });
+        _ = RegisterRoot(directory);
+        directory.MarkInvalidated(Tombstone("agent-9", "late")).Should().BeTrue();
+        directory.MarkInvalidated(Tombstone("agent-10", "early")).Should().BeTrue();
+
+        // Same order Snapshot imposes — ordinal on the identifier — so the two lists read alike.
+        directory.InvalidatedRecords().Select(record => record.AgentId).Should().Equal("agent-10", "agent-9");
+
+        directory.Snapshot().Select(entry => entry.AgentId).Should().Equal("agent-root");
+        directory.SnapshotRecords().Select(record => record.AgentId).Should().Equal("agent-root");
+        directory.Count.Should().Be(1);
+        directory
+            .TryAcquireCapacity("agent-11")
+            .Should()
+            .NotBeNull("a tombstone holds no permit, so two of them cannot exhaust a cap of one");
+    }
+
+    private static CollaborationNodeRecord Tombstone(string agentId, string name) =>
+        new()
+        {
+            AgentId = agentId,
+            CollaborationId = CollaborationId,
+            Name = name,
+            ParentAgentId = "agent-root",
+            AncestorAgentIds = ["agent-root"],
+            Kind = AgentKind.SubAgent,
+            Role = "r",
+            Description = "d",
+            StructuralDepth = 1,
+            DelegationDepth = 1,
+            Status = AgentCollaborationStatuses.Running,
+        };
+
+    [Fact]
     public void GetInbox_IsSizedByOptions_AndScopedToOneAgent()
     {
         var directory = CreateDirectory(new AgentCollaborationOptions { MaxInboxMessages = 2 });

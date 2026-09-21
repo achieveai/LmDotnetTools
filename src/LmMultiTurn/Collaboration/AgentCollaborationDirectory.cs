@@ -654,6 +654,31 @@ public sealed class AgentCollaborationDirectory
         ];
     }
 
+    /// <summary>
+    /// Every agent tombstoned by a restart (#676), ordered by canonical identifier — the rows
+    /// <see cref="MarkInvalidated"/> accepted, exactly as they were persisted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A separate accessor rather than a flag on <see cref="Snapshot"/>, because the two lists serve
+    /// opposite purposes and every existing reader of the snapshot relies on the tombstones being
+    /// absent from it: capacity is counted off it, listings are capped against it, and
+    /// <see cref="SnapshotRecords"/> is what the next process inherits, which is why a tombstone must
+    /// never reach it (see that method's remarks). This list is for the one reader that wants to SAY
+    /// an agent is gone — a roster that omits the name entirely leaves it looking free, and the
+    /// caller spawns a duplicate of an agent whose transcript is still on disk.
+    /// </para>
+    /// <para>
+    /// The row's <see cref="CollaborationNodeRecord.Status"/> is what the agent was doing when its
+    /// process ended, not what it is doing now; a reader that publishes it should publish it as
+    /// history, not as state.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<CollaborationNodeRecord> InvalidatedRecords()
+    {
+        return [.. _invalidatedById.Values.OrderBy(record => record.AgentId, StringComparer.Ordinal)];
+    }
+
     /// <summary>The bounded queue of message identifiers awaiting delivery to an agent.</summary>
     public AgentInbox? GetInbox(string agentId)
     {

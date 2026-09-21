@@ -1176,6 +1176,141 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         return names;
     }
 
+    /// <summary>
+    /// Tombstones agents the previous process owned, the way the restart reconciler does when the
+    /// conversation loop is rebuilt: each becomes a name that resolves as gone rather than unknown.
+    /// </summary>
+    private static void LoseToARestart(AgentCollaborationSetup root, params (string AgentId, string Name)[] agents)
+    {
+        AgentCollaborationRestartReconciler
+            .Reconcile(
+                root.Bundle,
+                new AgentIdentityBindingSet
+                {
+                    CollaborationId = root.Bundle.CollaborationId,
+                    RootAgentId = root.AgentId,
+                    CapturedAtUtc = DateTimeOffset.UnixEpoch,
+                    Agents =
+                    [
+                        .. agents.Select(agent => new CollaborationNodeRecord
+                        {
+                            AgentId = agent.AgentId,
+                            CollaborationId = root.Bundle.CollaborationId,
+                            Name = agent.Name,
+                            ParentAgentId = root.AgentId,
+                            AncestorAgentIds = [root.AgentId],
+                            Kind = AgentKind.SubAgent,
+                            Role = $"{agent.Name} role",
+                            Description = $"Stood in for {agent.Name}.",
+                            StructuralDepth = 1,
+                            DelegationDepth = 1,
+                            Status = AgentCollaborationStatuses.Running,
+                        }),
+                    ],
+                }
+            )
+            .Invalidated.Should()
+            .HaveCount(agents.Length, "the listing below is worthless if nothing was actually tombstoned");
+    }
+
+    [Fact]
+    public async Task GetAgents_ListsAnAgentLostToARestart_AsDeadWithAReason()
+    {
+        // The production shape of bug 3. Every loop recreation — provider switch, idle eviction, a
+        // restart — reconciles the persisted roster into tombstones, and a tombstone was in NO listing:
+        // the model saw a roster without the agent it had just been working with, concluded the name
+        // was free, and spawned a duplicate. The row has to exist, say the agent is gone, and say why,
+        // so "gone" is read as "replace it" rather than as "never existed".
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        LoseToARestart(root, ("agent-99", "helper"));
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(2);
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(2);
+        doc.RootElement.GetProperty("dead").GetInt32().Should().Be(1);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeFalse();
+
+        var rows = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .ToDictionary(a => a.GetProperty("name").GetString()!, StringComparer.Ordinal);
+
+        var ghost = rows["helper"];
+        ghost.GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Dead);
+        ghost.GetProperty("dead").GetBoolean().Should().BeTrue();
+        ghost.GetProperty("reason").GetString().Should().Contain("recreated").And.Contain("replacement");
+        ghost.GetProperty("parent_name").GetString().Should().Be(root.Name);
+        ghost.GetProperty("is_you").GetBoolean().Should().BeFalse();
+
+        // The row that is still reachable is not touched by the vocabulary the dead one needs.
+        var self = rows[root.Name];
+        self.GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Running);
+        self.TryGetProperty("dead", out _).Should().BeFalse();
+        self.TryGetProperty("reason", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetAgents_ListsEveryDeadAgent_OutsideTheCapAndAfterTheAgentsItCanStillReach()
+    {
+        // The cap exists so a long conversation's retained tail stops growing the listing; a dead
+        // agent must be neither trimmed by it nor charged to it. Trimmed, and the name the caller
+        // is about to retry is the one that vanishes; charged, and the retained tail shrinks to make
+        // room for rows that never held a permit. So: more dead agents than the cap, a retained tail
+        // longer than the floor, and every count still reads as it did before the tombstones existed.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 3 });
+        var (_, provider) = CreateManager(root);
+        _ = RegisterPeer(root, "live-a");
+        _ = RegisterPeer(root, "live-b");
+        var retired = RetirePeersInOrder(
+            root,
+            "done-a",
+            "done-b",
+            "done-c",
+            "done-d",
+            "done-e",
+            "done-f",
+            "done-g",
+            "done-h",
+            "done-i"
+        );
+        var ghosts = Enumerable.Range(1, 10).Select(n => ($"agent-9{n:00}", $"ghost-{n:00}")).ToArray();
+        LoseToARestart(root, ghosts);
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { detail = "detailed" });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        var directoryRows = 1 + 2 + retired.Count;
+        var listedFromDirectory = 3 + SubAgentToolProvider.MinListedRetainedAgents;
+        doc.RootElement.GetProperty("total").GetInt32().Should().Be(directoryRows + ghosts.Length);
+        doc.RootElement.GetProperty("returned").GetInt32().Should().Be(listedFromDirectory + ghosts.Length);
+        doc.RootElement.GetProperty("dead").GetInt32().Should().Be(ghosts.Length);
+        doc.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+
+        var names = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
+            .Select(a => a.GetProperty("name").GetString()!)
+            .ToList();
+
+        names.Should().HaveCount(listedFromDirectory + ghosts.Length);
+        names.Take(listedFromDirectory).Should().NotContain(n => n.StartsWith("ghost-", StringComparison.Ordinal));
+        names
+            .Skip(listedFromDirectory)
+            .Should()
+            .Equal(
+                ghosts.Select(g => g.Item2),
+                "every dead agent is listed, in identifier order, after every row the caller can still act on"
+            );
+        // The retained tail kept its whole floor: the dead rows were not paid for out of it.
+        names
+            .Count(n => n.StartsWith("done-", StringComparison.Ordinal))
+            .Should()
+            .Be(SubAgentToolProvider.MinListedRetainedAgents);
+    }
+
     [Fact]
     public async Task AnAgentThatFinishesItsRun_StaysLiveAndListed_BecauseAFollowUpRestartsIt()
     {

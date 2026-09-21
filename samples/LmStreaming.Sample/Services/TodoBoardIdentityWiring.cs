@@ -124,8 +124,9 @@ public static class TodoBoardIdentityWiring
 
     /// <summary>
     ///     Every agent the board could have meant: the ones still running first, then every other
-    ///     registered agent with its lifecycle status appended — <c>"analyst (completed)"</c>. Sorted
-    ///     within each half so a refusal reads the same way twice.
+    ///     registered agent with its lifecycle status appended — <c>"analyst (completed)"</c> — then
+    ///     the agents a restart took away, marked <c>"(dead)"</c>. Sorted within each group so a
+    ///     refusal reads the same way twice.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -156,8 +157,13 @@ public static class TodoBoardIdentityWiring
     ///         target whenever one fits, and the reader takes the head of the list.
     ///     </para>
     ///     <para>
-    ///         Agents lost to a restart (#676) are absent, because a tombstone is not in the snapshot at
-    ///         all. That is a gap in what this sentence can offer, not a decision made here.
+    ///         Agents lost to a restart (#676) come last, from the directory's own tombstone list,
+    ///         because a tombstone is in no snapshot. They are here for the same reason the rest are:
+    ///         the board accepts the name (a tombstone resolves as unreachable, not unknown, and owns
+    ///         its claims under its canonical id), so a refusal that omits it offers a roster in which
+    ///         the agent the caller had just been assigning work to never existed. Labelled
+    ///         <c>dead</c> rather than with the persisted status, which is what the agent was doing when
+    ///         its process ended and would describe it as still running.
     ///     </para>
     ///     <para>
     ///         Status is read straight off the entry and <see cref="AgentDirectoryEntry.IsLive" /> is not
@@ -179,6 +185,9 @@ public static class TodoBoardIdentityWiring
         [
             .. Sorted(byStatus[true].Select(entry => entry.Name)),
             .. Sorted(byStatus[false].Select(entry => $"{entry.Name} ({entry.Status})")),
+            .. Sorted(
+                directory.InvalidatedRecords().Select(record => $"{record.Name} ({AgentCollaborationStatuses.Dead})")
+            ),
         ];
 
         // Distinct over the RENDERED text, so two agents sharing a name but not a status both survive:

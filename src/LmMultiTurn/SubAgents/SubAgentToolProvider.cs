@@ -902,7 +902,9 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "owns, or has already done, a piece of work BEFORE spawning someone new to do it, and "
                 + "to get the name to address with SendMessage. An agent whose status is 'completed' is "
                 + "still a resource: it keeps the context it loaded and a message restarts it, so prefer "
-                + "one of those over a fresh agent. Only a row marked dead can never be reached again. "
+                + "one of those over a fresh agent. Only a row marked dead can never be reached again; a "
+                + "row whose status is 'dead' is an agent lost when the conversation was recreated, and "
+                + "its name is taken rather than free — spawn a replacement to continue its work. "
                 + "Pass detail='detailed' when you need more: the "
                 + "agent_id and aliases (both also work as addresses), hierarchy depths, whether you may "
                 + "read its transcript, and the tokens it has spent per model. 'primary' names the "
@@ -1786,6 +1788,18 @@ public class SubAgentToolProvider : IFunctionProvider
         var listed = SelectListedAgents(snapshot, collaboration.Options.MaxTotalAgents);
         var truncated = listed.Count < snapshot.Count;
 
+        // The agents a restart took away (#676). Read separately because they are in no snapshot —
+        // deliberately, so that nothing charges them to the permit or persists them again — and
+        // listed OUTSIDE the cap above, because the cap is a bound on the retained tail's growth and
+        // this set cannot grow the same way: it is rebuilt from the previous process's live roster at
+        // every loop recreation and never re-persisted, so it is bounded by that roster's permit. It
+        // is listed at all because its absence was the production shape of a spawn storm: the roster
+        // showed no trace of the agent the caller had been working with, the name read as free, and
+        // the caller spawned a duplicate of an agent whose transcript is still on disk.
+        var dead = collaboration.Directory.InvalidatedRecords();
+        var returned = listed.Count + dead.Count;
+        var total = snapshot.Count + dead.Count;
+
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
         // A dictionary rather than an anonymous type because the truncation note is present only when
@@ -1795,10 +1809,17 @@ public class SubAgentToolProvider : IFunctionProvider
             ["collaboration_id"] = collaboration.Bundle.CollaborationId,
             ["your_agent_id"] = collaboration.AgentId,
             // Unconditional, so completeness is stated rather than inferred from the array length.
-            ["returned"] = listed.Count,
-            ["total"] = snapshot.Count,
+            ["returned"] = returned,
+            ["total"] = total,
             ["truncated"] = truncated,
         };
+
+        if (dead.Count > 0)
+        {
+            // Only when there is something to count, like the truncation note: a conversation that
+            // never lost an agent — the common case — should not learn the vocabulary for one.
+            payload["dead"] = dead.Count;
+        }
 
         if (truncated)
         {
@@ -1811,14 +1832,21 @@ public class SubAgentToolProvider : IFunctionProvider
             // keeps. Nothing here says a listed departed agent can be reused: it cannot, and the row's
             // own `dead` member says so.
             payload["truncation_note"] =
-                $"Showing {listed.Count} of {snapshot.Count} agents. Every agent you can still reach is "
+                $"Showing {returned} of {total} agents. Every agent you can still reach is "
                 + "listed, plus the ones that left most recently; only agents that left longer ago are "
                 + "omitted. An omitted name is gone rather than unknown, so if you were about to send it "
                 + "work, spawn a replacement instead of retrying the name.";
         }
 
         var usageByAgent = detailed ? UsageByAgent(_manager.UsageLedger) : null;
-        payload["agents"] = listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)).ToList();
+        // Dead rows last: the reader takes the head of the list, and every row before them is one it
+        // can still act on.
+        payload["agents"] =
+            (List<Dictionary<string, object?>>)
+                [
+                    .. listed.Select(e => DescribeAgent(collaboration, e, detailed, usageByAgent)),
+                    .. dead.Select(record => DescribeDeadAgent(collaboration, record, detailed, usageByAgent)),
+                ];
 
         var json = JsonSerializer.Serialize(payload);
 
@@ -1827,7 +1855,7 @@ public class SubAgentToolProvider : IFunctionProvider
         // the LISTED rows, not the directory, so the pair always describes the same payload — once the
         // retained tail is capped those two diverge, and recording the directory size against the
         // capped payload's bytes would make bytes-per-agent fall as a conversation grows.
-        _manager.Instrumentation?.RecordDirectoryListing(listed.Count, Encoding.UTF8.GetByteCount(json));
+        _manager.Instrumentation?.RecordDirectoryListing(returned, Encoding.UTF8.GetByteCount(json));
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(json));
     }
@@ -1904,8 +1932,10 @@ public class SubAgentToolProvider : IFunctionProvider
         // loop and provider stay warm and the next message restarts it. `dead` says the opposite,
         // and only that: nothing can be delivered to this agent again. Written only when true, so a
         // reader that skips the member sees a usable agent, which is the safe reading and the
-        // common one. A boolean rather than a fourth word in `status`, because the status vocabulary
-        // is shared verbatim with the observation surface and a fourth value would split it.
+        // common one. A boolean beside `status` rather than a replacement for it, because for a
+        // RETAINED row the status is still true and still useful — the agent did complete, or did
+        // error — and the observation surface publishes the same word. The one row whose status
+        // cannot be trusted, an agent lost to a restart, is described by DescribeDeadAgent instead.
         if (!e.IsLive)
         {
             row["dead"] = true;
@@ -1950,6 +1980,60 @@ public class SubAgentToolProvider : IFunctionProvider
                         .ToList(),
                 };
             }
+        }
+
+        return row;
+    }
+
+    /// <summary>
+    /// The sentence a dead row carries in its <c>reason</c> member: why the agent is gone and what to
+    /// do instead. One sentence for every tombstone, because the directory has exactly one way to
+    /// make one — the restart reconciler, run when the conversation loop is rebuilt — and the row
+    /// does not record which of the rebuild's triggers it was.
+    /// </summary>
+    internal const string DeadAgentReason =
+        "torn down when the conversation was recreated (provider or mode switch, idle eviction, or a "
+        + "restart); its transcript is kept but nothing can be delivered to it, so spawn a replacement "
+        + "to continue its work";
+
+    /// <summary>
+    /// One <c>GetAgents</c> row for an agent a restart took away (#676): the same shape as
+    /// <see cref="DescribeAgent"/>, with the two members that shape cannot say on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Built THROUGH <see cref="DescribeAgent"/> from the persisted row, rather than by hand, so the
+    /// two shapes cannot drift: the rehydrated entry is never live, which already yields the
+    /// <c>dead</c> marker and <c>is_live</c>, and the parent, depths, and identifiers come out the same
+    /// way for a ghost as for anyone else.
+    /// </para>
+    /// <para>
+    /// <c>status</c> is then overwritten with <see cref="AgentCollaborationStatuses.Dead"/>, and that
+    /// is the one place the listing departs from "status says what the agent did". The persisted
+    /// status is what the agent was doing when its process ENDED — <c>stopped</c> after an orderly
+    /// teardown, because the manager's disposal sweep retires every admission with that word before
+    /// the roster is flushed, and <c>running</c> after a crash — and publishing either as the row's
+    /// status would describe an agent nothing can reach as one still worth waiting on, or as one that
+    /// merely paused. The word it was doing is kept, as history, under
+    /// <c>last_status</c> in the detailed shape. <c>reason</c> says why it is gone and what to do
+    /// instead, because "gone" alone was already available — as a refusal, after the caller had
+    /// tried the name — and what the caller does next depends on the why.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, object?> DescribeDeadAgent(
+        AgentCollaborationSetup collaboration,
+        CollaborationNodeRecord record,
+        bool detailed,
+        UsageByAgentIndex? usageByAgent
+    )
+    {
+        var row = DescribeAgent(collaboration, record.ToEntry(), detailed, usageByAgent);
+        row["status"] = AgentCollaborationStatuses.Dead;
+        row["reason"] = DeadAgentReason;
+
+        if (detailed)
+        {
+            row["last_status"] = record.Status;
         }
 
         return row;
@@ -2083,9 +2167,10 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// The rows a <c>GetAgents</c> result carries: every live agent, then the agents that left most
-    /// recently — as many as <paramref name="maxTotalAgents"/> leaves room for, never fewer than
-    /// <see cref="MinListedRetainedAgents"/>.
+    /// The rows a <c>GetAgents</c> result carries from the directory: every live agent, then the
+    /// agents that left most recently — as many as <paramref name="maxTotalAgents"/> leaves room for,
+    /// never fewer than <see cref="MinListedRetainedAgents"/>. Agents lost to a restart are not in the
+    /// snapshot and are appended by the caller, outside this budget.
     /// </summary>
     /// <remarks>
     /// <para>
