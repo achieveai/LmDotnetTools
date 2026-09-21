@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.FileBrowser;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Net.Http.Headers;
 
 namespace LmStreaming.Sample.Controllers;
@@ -266,15 +267,26 @@ public sealed class FileBrowserController(
     /// <see cref="RawWorkspaceFile"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Bearer-authenticated and authorized exactly like every other route here: the grant carries a decision
     /// this prologue already made, it never substitutes for one. <c>isListing: false</c>, so a conversation
     /// with no sandbox session answers 409 rather than handing out a grant that could address nothing.
+    /// </para>
+    /// <para>
+    /// The SAME token either way — only where it travels differs, and the CLIENT chooses that. It has to be
+    /// the client: a <c>Secure</c> cookie is accepted on https and on <c>localhost</c>, which is exactly
+    /// what <c>window.isSecureContext</c> reports, while this host sits behind an https front that does not
+    /// forward its scheme and so cannot tell the two apart. An absent or unrecognised
+    /// <see cref="WorkspaceGrantRequest.Transport"/> means the URL transport, which is what every caller
+    /// written before this existed already sends.
+    /// </para>
     /// </remarks>
     [HttpPost("grant")]
     public async Task<IActionResult> Grant(
         string threadId,
         [FromServices] WorkspaceGrantService grants,
-        CancellationToken ct
+        CancellationToken ct,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] WorkspaceGrantRequest? request = null
     )
     {
         ArgumentNullException.ThrowIfNull(grants);
@@ -285,7 +297,63 @@ public sealed class FileBrowserController(
         }
 
         var minted = grants.Mint(threadId, CurrentPrincipal());
-        return Ok(new WorkspaceGrantDto(minted.Token, minted.ExpiresAt));
+        if (!string.Equals(request?.Transport, WorkspaceGrantTransports.Cookie, StringComparison.Ordinal))
+        {
+            return Ok(new WorkspaceGrantDto(minted.Token, minted.ExpiresAt, WorkspaceGrantTransports.Url));
+        }
+
+        SetGrantCookie(threadId, minted);
+        return Ok(
+            new WorkspaceGrantDto(
+                WorkspaceGrantService.CookieTransportMarker,
+                minted.ExpiresAt,
+                WorkspaceGrantTransports.Cookie
+            )
+        );
+    }
+
+    /// <summary>
+    /// Writes the grant cookie. Every attribute is load-bearing, and one of them is not expressible through
+    /// <see cref="CookieOptions"/>'s own properties.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>HttpOnly</c> is the control this whole transport exists for: it is what the sandboxed document's
+    /// script cannot read. <c>Secure</c> because the token is a credential and because <c>SameSite=None</c>
+    /// requires it. <c>SameSite=None</c> because the <c>sandbox</c> directive gives the document an OPAQUE
+    /// origin, so the browser classes its subresource requests as cross-site and would drop a <c>Lax</c>
+    /// cookie. <c>Partitioned</c> (CHIPS) keeps that <c>SameSite=None</c> cookie eligible where
+    /// third-party cookies are blocked outright — Incognito, and increasingly the default — partitioned
+    /// under this app's own top-level site, which is the only site it is ever sent from.
+    /// </para>
+    /// <para>
+    /// No <c>Domain</c>, deliberately: a host-only cookie goes back only to the host the page was loaded
+    /// from, and never to a sibling host under a shared registrable domain.
+    /// </para>
+    /// <para>
+    /// The cookie is keyed by name and <c>Path</c>, so a RE-MINT for the same conversation replaces it
+    /// rather than accumulating — and an iframe already open keeps working, because the marker in its URL
+    /// names no particular token.
+    /// </para>
+    /// </remarks>
+    private void SetGrantCookie(string threadId, WorkspaceGrant minted)
+    {
+        var options = new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = Microsoft.AspNetCore.Http.SameSiteMode.None,
+            Path = WorkspaceGrantService.CookiePath(threadId),
+            MaxAge = FileBrowserLimits.WorkspaceGrantLifetime,
+            IsEssential = true,
+        };
+
+        // `Partitioned` has no CookieOptions property on this framework version, and an unknown attribute
+        // is exactly what Extensions is for: it is appended to the header verbatim. A browser that does not
+        // know the attribute ignores it, which is the pre-CHIPS behaviour and still correct.
+        options.Extensions.Add("Partitioned");
+
+        Response.Cookies.Append(WorkspaceGrantService.CookieName, minted.Token, options);
     }
 
     /// <summary>
@@ -300,8 +368,17 @@ public sealed class FileBrowserController(
     /// QUERY-addressed and answers <c>application/octet-stream</c>, so a browser never renders it; and a
     /// document served at <c>.../files/download?path=a/b.html</c> has base URL <c>.../files/</c>, so its
     /// relative links name routes that do not exist. Relative resolution is a property of the URL's PATH
-    /// (RFC 3986 §5.3 discards the query), which is also why the grant is a path segment: a
+    /// (RFC 3986 §5.3 discards the query), which is also why the grant segment is in the path: a
     /// <c>?grant=</c> would be dropped by every relative subresource the page loads.
+    /// </para>
+    /// <para>
+    /// <c>{grant}</c> is the TOKEN only under the URL transport. Under the cookie transport it is the
+    /// constant <see cref="WorkspaceGrantService.CookieTransportMarker"/> and the token arrives in the
+    /// <c>lm_ws_grant</c> cookie instead — so the rendered document's own URL carries no credential, and a
+    /// script inside it that navigates itself somewhere hostile leaks a public constant.
+    /// <see cref="WorkspaceGrantService.PresentedToken"/> is the one place that difference lives; everything
+    /// below validates the same token the same way, and the marker without its cookie is refused exactly as
+    /// a forged token is.
     /// </para>
     /// <para>
     /// The grant is an ADDITIONAL gate, not a replacement for one. After it validates, the ordinary
@@ -332,7 +409,8 @@ public sealed class FileBrowserController(
 
         // The grant is checked BEFORE the session prologue so that an unsigned URL costs no gateway work.
         // It is not the authorization — that still runs below, for every request that gets past here.
-        var grantFailure = grants.Validate(grant, threadId, CurrentPrincipal());
+        var presented = WorkspaceGrantService.PresentedToken(Request, grant);
+        var grantFailure = grants.Validate(presented, threadId, CurrentPrincipal());
         if (grantFailure != WorkspaceGrantFailure.None)
         {
             return GrantFailureResult(grantFailure, threadId);
@@ -1428,11 +1506,12 @@ public sealed class FileBrowserController(
     /// tab. See <see cref="WorkspaceContentTypes.SandboxPolicy"/>.
     /// </summary>
     /// <remarks>
-    /// What these headers do NOT close, and is accepted residual: the grant is in the URL, so it also
-    /// reaches the browser's own history and address bar (an "open in new tab" puts it there deliberately),
-    /// and any reverse proxy, CDN or load balancer in front of this host writes it to its own access log,
-    /// which nothing in this process can redact. This host's request log IS redacted — see
-    /// <c>Program.RedactWorkspaceGrant</c>. All of it is bounded by
+    /// What these headers do NOT close, and is accepted residual — all of it UNDER THE URL TRANSPORT only,
+    /// because under the cookie transport the URL carries a public marker and there is nothing in it to
+    /// leak. There, the token is in the URL, so it also reaches the browser's own history and address bar
+    /// (an "open in new tab" puts it there deliberately), and any reverse proxy, CDN or load balancer in
+    /// front of this host writes it to its own access log, which nothing in this process can redact. This
+    /// host's request log IS redacted — see <c>Program.RedactWorkspaceGrant</c>. All of it is bounded by
     /// <see cref="FileBrowserLimits.WorkspaceGrantLifetime"/>, and the grant reads one conversation's
     /// workspace and nothing else.
     /// </remarks>

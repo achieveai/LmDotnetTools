@@ -16,12 +16,34 @@ import { jsonResponse } from '../fixtures/fileBrowser';
  * and the URL is built by encoding each path SEGMENT rather than the whole path (so `/` stays a
  * separator and relative links inside the served document resolve to sibling workspace files).
  */
-function grantResponse(grant: string, expiresAt: Date): Response {
-  return jsonResponse({ grant, expiresAt: expiresAt.toISOString() });
+function grantResponse(grant: string, expiresAt: Date, transport = 'url'): Response {
+  return jsonResponse({ grant, expiresAt: expiresAt.toISOString(), transport });
 }
 
 function anHourFromNow(): Date {
   return new Date(Date.now() + 60 * 60 * 1000);
+}
+
+/**
+ * The mint's request, as this client now sends it. The transport is the ONE thing the client
+ * decides: the server sits behind an https front that does not forward its scheme, so only the page
+ * knows whether a `Secure` cookie would be accepted.
+ */
+function mintInit(transport: 'cookie' | 'url'): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transport }),
+    signal: undefined,
+  };
+}
+
+/**
+ * `isSecureContext` is a read-only accessor on the jsdom window, so it is redefined rather than
+ * assigned — the same seam `CopyMessageButton.test.ts` uses for the clipboard's secure-context gate.
+ */
+function setSecureContext(value: boolean): void {
+  Object.defineProperty(globalThis, 'isSecureContext', { value, configurable: true });
 }
 
 describe('requestWorkspaceGrant', () => {
@@ -32,16 +54,84 @@ describe('requestWorkspaceGrant', () => {
   });
 
   it('mints through the bearer-authenticated POST grant route', async () => {
+    setSecureContext(false);
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(grantResponse('g-1', anHourFromNow()));
 
     await expect(requestWorkspaceGrant('thread-1')).resolves.toBe('g-1');
 
-    expect(fetchSpy).toHaveBeenCalledWith('/api/conversations/thread-1/files/grant', {
-      method: 'POST',
-      signal: undefined,
-    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/conversations/thread-1/files/grant',
+      mintInit('url')
+    );
+  });
+
+  /**
+   * The point of the cookie transport: on a secure context the credential is asked for as an
+   * `HttpOnly` cookie, so the URL the sandboxed document can read carries only a public marker. A
+   * `Secure` cookie is accepted exactly where `isSecureContext` is true — https and localhost — so
+   * that flag, and not a server-side guess, is what chooses.
+   */
+  it('asks for the cookie transport on a secure context', async () => {
+    setSecureContext(true);
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(grantResponse('cookie', anHourFromNow(), 'cookie'));
+
+    await requestWorkspaceGrant('thread-1');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/conversations/thread-1/files/grant',
+      mintInit('cookie')
+    );
+  });
+
+  /**
+   * The companion that keeps the case above from passing for the wrong reason. A plain-http
+   * deployment on anything but localhost would have its `Secure` cookie dropped by the browser and
+   * then address nothing, so it must keep the URL token it always had.
+   */
+  it('falls back to the URL transport when the context is not secure', async () => {
+    setSecureContext(false);
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(grantResponse('g-1', anHourFromNow()));
+
+    await requestWorkspaceGrant('thread-1');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/conversations/thread-1/files/grant',
+      mintInit('url')
+    );
+  });
+
+  /**
+   * What is cached and put in the URL is the segment the SERVER returned, never a value this module
+   * inferred from the transport it asked for. A server that ignored the request still produces
+   * working URLs, and a marker is carried exactly as a token is.
+   */
+  it('caches the segment the server returned, not the transport it asked for', async () => {
+    setSecureContext(true);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      grantResponse('cookie', anHourFromNow(), 'cookie')
+    );
+
+    await expect(requestWorkspaceGrant('thread-1')).resolves.toBe('cookie');
+    expect(workspaceFileUrl('thread-1', await requestWorkspaceGrant('thread-1'), 'report/a.html')).toBe(
+      '/api/conversations/thread-1/workspace/cookie/report/a.html'
+    );
+  });
+
+  /**
+   * And the reverse: asking for the cookie does not make this client assume it got one. A server
+   * that answered with a URL token is believed, and that token is what goes in the URL.
+   */
+  it('uses a URL token the server returned even when the cookie transport was asked for', async () => {
+    setSecureContext(true);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(grantResponse('g-real', anHourFromNow(), 'url'));
+
+    await expect(requestWorkspaceGrant('thread-1')).resolves.toBe('g-real');
   });
 
   it('reuses a cached grant instead of minting a second one', async () => {

@@ -517,4 +517,139 @@ public class WorkspaceRawEndpointTests
 
         result.Should().BeOfType<FileContentResult>();
     }
+
+    // -------- The same two answers when the token travels in the cookie --------
+
+    /// <summary>
+    /// Puts the token where a browser would put it under the cookie transport, so the URL segment the
+    /// action sees is only the public marker.
+    /// </summary>
+    private static void PresentGrantCookie(FileBrowserController controller, string token) =>
+        controller.HttpContext.Request.Headers.Cookie = $"{WorkspaceGrantService.CookieName}={token}";
+
+    /// <summary>
+    /// The principal binding is a property of the TOKEN, not of where it travelled — so it has to hold
+    /// identically once the token is in a cookie. Without this pair the cookie transport could quietly have
+    /// become a way around the check the URL transport enforces.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_CookieMintedForAnotherPrincipal_Is403()
+    {
+        var (controller, browser, grants) = Build();
+        SeedNestedTree(browser);
+        PresentGrantCookie(controller, grants.Mint(ThreadId, PrincipalNamed("tnt_a:oid_owner")).Token);
+        controller.HttpContext.Items[IdentityHttpItems.PrincipalKey] = PrincipalNamed("tnt_a:oid_intruder");
+
+        var result = await Get(
+            controller,
+            grants,
+            "report/index.html",
+            token: WorkspaceGrantService.CookieTransportMarker
+        );
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        System.Text.Json.JsonSerializer.Serialize(refusal.Value).Should().Contain("grant_principal_mismatch");
+        browser.ReadCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RawWorkspaceFile_CookieMintedForTheSamePrincipal_IsServed()
+    {
+        var (controller, browser, grants) = Build();
+        SeedNestedTree(browser);
+        PresentGrantCookie(controller, grants.Mint(ThreadId, PrincipalNamed("tnt_a:oid_owner")).Token);
+        controller.HttpContext.Items[IdentityHttpItems.PrincipalKey] = PrincipalNamed("tnt_a:oid_owner");
+
+        var result = await Get(
+            controller,
+            grants,
+            "report/index.html",
+            token: WorkspaceGrantService.CookieTransportMarker
+        );
+
+        result.Should().BeOfType<FileContentResult>();
+    }
+
+    /// <summary>
+    /// The marker is a public constant, so it must not be a credential. Presented with no cookie behind it
+    /// — which is all a script inside the sandboxed document can read off its own <c>location</c> — it is
+    /// refused as an unreadable token, before any gateway work.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_MarkerWithNoCookie_Is401AndReadsNothing()
+    {
+        var (controller, browser, grants) = Build();
+        SeedNestedTree(browser);
+
+        var result = await Get(
+            controller,
+            grants,
+            "report/index.html",
+            token: WorkspaceGrantService.CookieTransportMarker
+        );
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+        System.Text.Json.JsonSerializer.Serialize(refusal.Value).Should().Contain("invalid_grant");
+        browser.ReadCalls.Should().Be(0);
+    }
+
+    // -------- Which transport the mint answers with --------
+
+    /// <summary>
+    /// A mint that asks for the cookie transport hands the client the MARKER and nothing else, and puts the
+    /// real token in the response's cookies. The header's own attributes are pinned over real HTTP in
+    /// <c>WorkspaceRawEndpointHttpTests</c>, which is the only place they reach a wire.
+    /// </summary>
+    [Fact]
+    public async Task Grant_CookieTransport_ReturnsTheMarkerAndPutsTheTokenInTheCookie()
+    {
+        var (controller, _, grants) = Build();
+
+        var result = await controller.Grant(
+            ThreadId,
+            grants,
+            CancellationToken.None,
+            new WorkspaceGrantRequest(WorkspaceGrantTransports.Cookie)
+        );
+
+        var dto = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<WorkspaceGrantDto>().Which;
+        dto.Grant.Should().Be(WorkspaceGrantService.CookieTransportMarker);
+        dto.Transport.Should().Be(WorkspaceGrantTransports.Cookie);
+
+        var setCookie = controller.Response.Headers.SetCookie.ToString();
+        setCookie.Should().StartWith($"{WorkspaceGrantService.CookieName}=");
+        grants
+            .Validate(setCookie.Split(';')[0].Split('=', 2)[1], ThreadId, null)
+            .Should()
+            .Be(WorkspaceGrantFailure.None);
+    }
+
+    /// <summary>
+    /// Anything that is not the cookie transport - an absent body, an older client, a value this build does
+    /// not know - keeps the URL token it always got. Degrading to a 400 would break every caller written
+    /// before the cookie existed.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("url")]
+    [InlineData("something-else")]
+    public async Task Grant_AnythingButTheCookieTransport_KeepsTheUrlToken(string? transport)
+    {
+        var (controller, _, grants) = Build();
+
+        var result = await controller.Grant(
+            ThreadId,
+            grants,
+            CancellationToken.None,
+            transport is null ? null : new WorkspaceGrantRequest(transport)
+        );
+
+        var dto = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<WorkspaceGrantDto>().Which;
+        dto.Transport.Should().Be(WorkspaceGrantTransports.Url);
+        dto.Grant.Should().NotBe(WorkspaceGrantService.CookieTransportMarker);
+        grants.Validate(dto.Grant, ThreadId, null).Should().Be(WorkspaceGrantFailure.None);
+        controller.Response.Headers.SetCookie.ToString().Should().BeEmpty();
+    }
 }

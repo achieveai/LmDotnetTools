@@ -76,7 +76,48 @@ public sealed record CreateDirectoryRequest(string Name);
 public sealed record CreateDirectoryResultDto(string Path);
 
 /// <summary>
-/// A minted workspace READ grant (Bug#15): the opaque token the client puts in a raw workspace URL's PATH,
-/// and when it stops validating so the client can refresh ahead of it.
+/// What the client asks <c>POST .../files/grant</c> for: which TRANSPORT the minted token should travel in.
 /// </summary>
-public sealed record WorkspaceGrantDto(string Grant, DateTimeOffset ExpiresAt);
+/// <param name="Transport">
+/// <c>"cookie"</c> for the <c>HttpOnly</c> cookie, anything else (including absent) for the URL-path token.
+/// A free string rather than an enum so that an older client, a probe, or a body this build does not
+/// recognise degrades to the transport that always works instead of to a 400.
+/// </param>
+/// <remarks>
+/// The whole body is optional: <c>POST</c> with no body at all is the pre-cookie client, and it must keep
+/// getting exactly what it used to get.
+/// </remarks>
+public sealed record WorkspaceGrantRequest(string? Transport);
+
+/// <summary>
+/// A minted workspace READ grant (Bug#15): the segment the client puts in a raw workspace URL's PATH, and
+/// when the grant stops validating so the client can refresh ahead of it.
+/// </summary>
+/// <param name="Grant">
+/// Under the URL transport, the opaque token itself. Under the cookie transport,
+/// <see cref="WorkspaceGrantService.CookieTransportMarker"/> — a constant, public segment, while the token
+/// is in the <c>Set-Cookie</c> this response also carries.
+/// </param>
+/// <param name="ExpiresAt">When the grant stops validating, whichever transport carries it.</param>
+/// <param name="Transport">
+/// Which transport the server actually used. Echoed rather than assumed: a client that asked for the cookie
+/// can tell from the body alone whether it got one.
+/// </param>
+public sealed record WorkspaceGrantDto(
+    string Grant,
+    DateTimeOffset ExpiresAt,
+    string Transport = WorkspaceGrantTransports.Url
+);
+
+/// <summary>The two values <see cref="WorkspaceGrantDto.Transport"/> and <see cref="WorkspaceGrantRequest.Transport"/> take.</summary>
+public static class WorkspaceGrantTransports
+{
+    /// <summary>
+    /// The token is in an <c>HttpOnly</c> cookie and the URL carries only the marker. Deliberately the SAME
+    /// string as the route segment: one value to read in a log line, and nothing to keep in step.
+    /// </summary>
+    public const string Cookie = WorkspaceGrantService.CookieTransportMarker;
+
+    /// <summary>The token is the URL path segment. The fallback where a <c>Secure</c> cookie is not accepted.</summary>
+    public const string Url = "url";
+}

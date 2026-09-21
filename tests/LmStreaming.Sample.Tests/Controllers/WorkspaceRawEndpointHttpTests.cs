@@ -107,6 +107,193 @@ public sealed class WorkspaceRawEndpointHttpTests
     }
 
     /// <summary>
+    /// One COOKIE-transport mint, handing back the body and the raw <c>Set-Cookie</c> line.
+    /// </summary>
+    /// <remarks>
+    /// The test client has no cookie container on purpose. Replaying the cookie by hand is the only way to
+    /// write the case that matters — a request that presents the marker and NOTHING else — and it is also
+    /// what lets these tests assert the header a browser would actually be given, attribute by attribute.
+    /// </remarks>
+    private static async Task<(WorkspaceGrantDto Body, string SetCookie)> MintCookieAsync(
+        HttpClient client,
+        string threadId = ThreadId
+    )
+    {
+        using var minted = await client.PostAsJsonAsync(
+            new Uri($"/api/conversations/{threadId}/files/grant", UriKind.Relative),
+            new WorkspaceGrantRequest(WorkspaceGrantTransports.Cookie)
+        );
+        minted.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = (await minted.Content.ReadFromJsonAsync<WorkspaceGrantDto>())!;
+        var setCookie = minted.Headers.GetValues("Set-Cookie").Should().ContainSingle().Subject;
+        return (body, setCookie);
+    }
+
+    /// <summary>The <c>name=value</c> pair a browser would send back, pulled out of a <c>Set-Cookie</c> line.</summary>
+    private static string CookieHeader(string setCookie) => setCookie.Split(';')[0];
+
+    private static async Task<HttpResponseMessage> GetWithCookieAsync(HttpClient client, string url, string? cookie)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(url, UriKind.Relative));
+        if (cookie is not null)
+        {
+            request.Headers.Add("Cookie", cookie);
+        }
+
+        return await client.SendAsync(request);
+    }
+
+    // -------- Cookie transport (the grant stops being visible to the document) --------
+
+    /// <summary>
+    /// The mint's whole contract under the cookie transport: the token is in an <c>HttpOnly</c>,
+    /// <c>Secure</c>, <c>SameSite=None</c>, <c>Partitioned</c>, path-scoped, DOMAIN-LESS cookie, and the body
+    /// hands the client only the public marker.
+    /// </summary>
+    /// <remarks>
+    /// Every attribute is asserted rather than the header being compared whole, because the order
+    /// <c>SetCookieHeaderValue</c> writes them in is not part of any contract — while each attribute is.
+    /// <c>Partitioned</c> especially: it has no <c>CookieOptions</c> property on this framework and is
+    /// appended through <c>Extensions</c>, so "does it reach the wire" is a question only a real response
+    /// can answer.
+    /// </remarks>
+    [Fact]
+    public async Task Grant_OverHttp_CookieTransport_SetsTheGrantCookieAndReturnsOnlyTheMarker()
+    {
+        await using var host = new RawEndpointHost();
+        using var client = host.CreateClient();
+
+        var (body, setCookie) = await MintCookieAsync(client);
+
+        body.Grant.Should().Be(WorkspaceGrantService.CookieTransportMarker);
+        body.Transport.Should().Be(WorkspaceGrantTransports.Cookie);
+        body.ExpiresAt.Should().BeAfter(DateTimeOffset.UtcNow);
+
+        setCookie.Should().StartWith($"{WorkspaceGrantService.CookieName}=");
+
+        // Attribute NAMES are case-insensitive on the wire and their order is nobody's contract, so the
+        // line is lowered once and each attribute asserted on its own.
+        var attributes = setCookie.ToLowerInvariant();
+        attributes.Should().Contain("httponly");
+        attributes.Should().Contain("secure");
+        attributes.Should().Contain("samesite=none");
+        attributes.Should().Contain("partitioned");
+        attributes
+            .Should()
+            .Contain(
+                $"path={WorkspaceGrantService.CookiePath(ThreadId).ToLowerInvariant()}",
+                "the cookie must not be sent to the rest of the API"
+            );
+        attributes.Should().Contain($"max-age={(int)FileBrowserLimits.WorkspaceGrantLifetime.TotalSeconds}");
+
+        // Host-only. A Domain attribute would send a live read credential to every sibling host under the
+        // registrable domain, which is the one thing this transport must not do.
+        attributes.Should().NotContain("domain=");
+
+        // The marker is the ONLY thing in the URL, so it must not be the token by another name.
+        setCookie
+            .Should()
+            .NotStartWith($"{WorkspaceGrantService.CookieName}={WorkspaceGrantService.CookieTransportMarker};");
+    }
+
+    /// <summary>
+    /// The marker in the path plus the cookie on the request serves the file, exactly as the URL token did.
+    /// The companion to the refusal below: without this, a route that refused everything would look correct.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_OverHttp_MarkerWithTheCookie_ServesTheFile()
+    {
+        await using var host = new RawEndpointHost();
+        using var client = host.CreateClient();
+        var (body, setCookie) = await MintCookieAsync(client);
+
+        using var response = await GetWithCookieAsync(
+            client,
+            $"/api/conversations/{ThreadId}/workspace/{body.Grant}/report/index.html",
+            CookieHeader(setCookie)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsByteArrayAsync()).Should().Equal(IndexHtml);
+        response.Headers.GetValues("Content-Security-Policy").Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The regression this transport exists for. A script inside the sandboxed document can read its own
+    /// <c>location</c> and navigate itself anywhere — no CSP directive stops that — so whatever is in the
+    /// URL is exfiltrable. Under the cookie transport that is the MARKER, and this pins that the marker on
+    /// its own opens nothing: same 401 a forged token gets, and no gateway work spent reaching it.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_OverHttp_MarkerWithoutTheCookie_Is401()
+    {
+        await using var host = new RawEndpointHost();
+        using var client = host.CreateClient();
+        var (body, _) = await MintCookieAsync(client);
+
+        using var response = await GetWithCookieAsync(
+            client,
+            $"/api/conversations/{ThreadId}/workspace/{body.Grant}/report/index.html",
+            cookie: null
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("invalid_grant");
+        host.Browser.ReadCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A cookie minted for one conversation, replayed against another, is <c>403</c> — the token IS genuine,
+    /// so re-minting it changes nothing. Moving the credential into a cookie must not weaken the thread
+    /// binding that was always carried inside the token itself.
+    /// </summary>
+    [Fact]
+    public async Task RawWorkspaceFile_OverHttp_CookieForAnotherConversation_Is403()
+    {
+        await using var host = new RawEndpointHost();
+        using var client = host.CreateClient();
+        var (_, setCookie) = await MintCookieAsync(client);
+
+        using var response = await GetWithCookieAsync(
+            client,
+            $"/api/conversations/other/workspace/{WorkspaceGrantService.CookieTransportMarker}/report/index.html",
+            CookieHeader(setCookie)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("grant_thread_mismatch");
+    }
+
+    /// <summary>
+    /// The fallback every pre-cookie caller already sends: a <c>POST</c> with NO body at all still mints the
+    /// URL-transport token, and the route still serves it with no cookie anywhere.
+    /// </summary>
+    [Fact]
+    public async Task Grant_OverHttp_WithNoBody_StillMintsTheUrlTransport()
+    {
+        await using var host = new RawEndpointHost();
+        using var client = host.CreateClient();
+
+        using var minted = await client.PostAsync(
+            new Uri($"/api/conversations/{ThreadId}/files/grant", UriKind.Relative),
+            content: null
+        );
+
+        minted.StatusCode.Should().Be(HttpStatusCode.OK);
+        minted.Headers.TryGetValues("Set-Cookie", out _).Should().BeFalse();
+
+        var body = (await minted.Content.ReadFromJsonAsync<WorkspaceGrantDto>())!;
+        body.Transport.Should().Be(WorkspaceGrantTransports.Url);
+        body.Grant.Should().NotBe(WorkspaceGrantService.CookieTransportMarker);
+
+        using var served = await client.GetAsync(
+            new Uri($"/api/conversations/{ThreadId}/workspace/{body.Grant}/report/index.html", UriKind.Relative)
+        );
+        served.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
     /// The whole response, over the wire: the mapped media type, every security header, and a
     /// <c>Content-Disposition</c> that survived the file result executing. A header written onto
     /// <c>Response</c> before a <c>FileContentResult</c> runs is exactly the kind of thing a direct action

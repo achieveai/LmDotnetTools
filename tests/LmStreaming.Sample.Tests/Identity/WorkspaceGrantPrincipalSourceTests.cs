@@ -148,6 +148,66 @@ public sealed class WorkspaceGrantPrincipalSourceTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// The cookie transport through the same door: the URL segment is the public marker, the token is in
+    /// <c>lm_ws_grant</c>, and the request still arrives AS the principal the grant was minted for. Under
+    /// enforcement this door is where the principal comes from, so a transport it did not learn about would
+    /// 401 every subresource of every preview.
+    /// </summary>
+    [Fact]
+    public async Task Enforced_RawGetWithTheMarkerAndTheGrantCookie_IsAdmittedAsTheGrantsPrincipal()
+    {
+        await using var harness = await StartAsync(enforce: true);
+        var grant = harness.Grants.Mint(ThreadId, User).Token;
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            new Uri(RawPath(ThreadId, WorkspaceGrantService.CookieTransportMarker), UriKind.Relative)
+        );
+        request.Headers.Add("Cookie", $"{WorkspaceGrantService.CookieName}={grant}");
+        var response = await harness.Server.CreateClient().SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("reached:EndUser:tnt_a:oid_b");
+    }
+
+    /// <summary>
+    /// And the marker ALONE authenticates nobody. This is the enforcing-host half of the regression the
+    /// cookie transport exists for: the marker is the only thing a script inside the sandboxed document can
+    /// read off its own <c>location</c>, so it must open nothing without the cookie the script cannot see.
+    /// </summary>
+    [Fact]
+    public async Task Enforced_TheMarkerWithoutTheGrantCookie_Is401()
+    {
+        await using var harness = await StartAsync(enforce: true);
+
+        var response = await harness
+            .Server.CreateClient()
+            .GetAsync(new Uri(RawPath(ThreadId, WorkspaceGrantService.CookieTransportMarker), UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// A grant cookie minted for conversation A, replayed against conversation B, is <c>403</c> for exactly
+    /// the reason the URL token is: the token is genuine, so re-minting it changes nothing.
+    /// </summary>
+    [Fact]
+    public async Task Enforced_GrantCookieForAnotherConversation_Is403()
+    {
+        await using var harness = await StartAsync(enforce: true);
+        var grant = harness.Grants.Mint(ThreadId, User).Token;
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            new Uri(RawPath(OtherThreadId, WorkspaceGrantService.CookieTransportMarker), UriKind.Relative)
+        );
+        request.Headers.Add("Cookie", $"{WorkspaceGrantService.CookieName}={grant}");
+        var response = await harness.Server.CreateClient().SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     [Fact]
     public async Task Enforced_ForgedGrant_Is401()
     {

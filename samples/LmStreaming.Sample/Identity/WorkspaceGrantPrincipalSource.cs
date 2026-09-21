@@ -6,8 +6,9 @@ namespace LmStreaming.Sample.Identity;
 
 /// <summary>
 /// The front door for Bug#15's path-addressed raw workspace route: a request that carries a valid
-/// <see cref="WorkspaceGrantService"/> token in its path resolves to the principal that grant was minted
-/// for, with no bearer token anywhere.
+/// <see cref="WorkspaceGrantService"/> token — in its <c>lm_ws_grant</c> COOKIE, or in its path where a
+/// <c>Secure</c> cookie is not available — resolves to the principal that grant was minted for, with no
+/// bearer token anywhere.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,7 +26,16 @@ namespace LmStreaming.Sample.Identity;
 /// <c>GET /api/conversations/{threadId}/workspace/{grant}/…</c>. Every other request — including
 /// <c>POST …/files/grant</c>, which is how a grant is obtained in the first place — returns null and is
 /// resolved by the doors that already existed. A source returning null means "not my kind of request", so
-/// this can never promote a caller another door refused.
+/// this can never promote a caller another door refused. The grant COOKIE is scoped by its own <c>Path</c>
+/// to the same one route family, so it is not even sent anywhere else.
+/// </para>
+/// <para>
+/// <b>Where the token is read from is not this door's decision.</b>
+/// <see cref="WorkspaceGrantService.PresentedToken"/> resolves the path segment to a token: the cookie when
+/// the segment is the public <see cref="WorkspaceGrantService.CookieTransportMarker"/>, the segment itself
+/// otherwise. The marker presented with no cookie — which is all a script inside the sandboxed document can
+/// construct from its own <c>location</c> — arrives here as an unreadable token and is refused with
+/// <see cref="InvalidGrantCode"/>, exactly as a forged one is.
 /// </para>
 /// <para>
 /// <b>It cannot bootstrap identity out of nothing.</b> Every principal it yields was serialised into a
@@ -146,7 +156,7 @@ public sealed class WorkspaceGrantPrincipalSource : IRequestPrincipalSource
             return null;
         }
 
-        var opened = _grants.Open(grant, threadId);
+        var opened = _grants.Open(WorkspaceGrantService.PresentedToken(context.Request, grant), threadId);
 
         switch (opened.Failure)
         {
