@@ -239,6 +239,21 @@ describe('QuestionRich — Cancel (explicit pending-question cancellation)', () 
     expect((w.get('[data-testid="question-cancel"]').element as HTMLButtonElement).disabled).toBe(false);
   });
 
+  // Bug #5: the server settled the call early with a placeholder and the answer went to the agent
+  // as a message. Once the pill reports it answered (isDeferred false), the card must read as
+  // answered — not as cancelled — and while it is still open (isDeferred true) the form must show.
+  it('an early-settled placeholder reads as answered elsewhere once its answer was delivered, and stays a form until then', () => {
+    const resultText = JSON.stringify({ status: 'deferred_to_notification', message: 'Question sent to user' });
+    const closed = mountQuestion(singleArgs, { result: resultText, hasResult: true, isDeferred: false });
+    expect(closed.w.find('[data-testid="question-form"]').exists()).toBe(false);
+    expect(closed.w.find('[data-testid="question-cancelled-resolved"]').exists()).toBe(false);
+    expect(closed.w.get('[data-testid="question-answered-elsewhere"]').text()).toMatch(/answered/i);
+
+    const open = mountQuestion(singleArgs, { result: resultText, hasResult: true, isDeferred: true });
+    expect(open.w.find('[data-testid="question-form"]').exists()).toBe(true);
+    expect(open.w.find('[data-testid="question-answered-elsewhere"]').exists()).toBe(false);
+  });
+
   it('once the canonical (server-resolved) result is a non-answer body, the interactive form does not reopen', () => {
     const resultText = JSON.stringify({ error: 'Question cancelled by user.', cancelled: true });
     const { w } = mountQuestion(singleArgs, {

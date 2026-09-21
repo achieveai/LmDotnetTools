@@ -8,6 +8,7 @@ import { listSubAgents, type SubAgentSummary } from '@/api/subAgentsApi';
 import type { ConversationSummary } from '@/types/conversations';
 import type { ToolCall, ToolCallResultMessage } from '@/types';
 import { resolveRenderer } from '@/utils/toolName';
+import { answeredQuestionIdFromText, isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 
 export interface QuestionInboxEntry {
   key: string;
@@ -72,6 +73,8 @@ function findPersistedQuestions(rows: PersistedMessage[]): Array<{
   const messages = parseMessages(rows);
   const results = new Map<string, ToolCallResultMessage>();
   const calls: ToolCall[] = [];
+  // Questions settled early keep their placeholder; the redirected answer is a user text row.
+  const answered = new Set<string>();
   for (const message of messages) {
     if (!message || typeof message !== 'object') continue;
     const value = message as {
@@ -79,7 +82,12 @@ function findPersistedQuestions(rows: PersistedMessage[]): Array<{
       tool_call_results?: ToolCallResultMessage[];
       tool_call_id?: string | null;
       result?: string;
+      text?: string;
     };
+    if (typeof value.text === 'string') {
+      const answeredId = answeredQuestionIdFromText(value.text);
+      if (answeredId) answered.add(answeredId);
+    }
     if (Array.isArray(value.tool_calls)) calls.push(...value.tool_calls);
     const resultRows = Array.isArray(value.tool_call_results)
       ? value.tool_call_results
@@ -97,7 +105,9 @@ function findPersistedQuestions(rows: PersistedMessage[]): Array<{
     seen.add(toolCallId);
     if (resolveRenderer(toolCall.function_name).family !== 'question') return [];
     const result = results.get(toolCallId);
-    return result?.is_deferred ? [{ toolCallId, toolCall, result }] : [];
+    return result && isQuestionAwaitingAnswer(result, (id) => answered.has(id))
+      ? [{ toolCallId, toolCall, result }]
+      : [];
   });
 }
 

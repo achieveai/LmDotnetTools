@@ -4,6 +4,7 @@ import DiagramViewer from './DiagramViewer.vue';
 import SmilesViewer from './SmilesViewer.vue';
 import type { TextMessage } from '@/types';
 import { parseMarkdown } from '@/utils/markdown';
+import { parseUserAnswerMessage } from '@/utils/pendingQuestions';
 import {
   WORKSPACE_FILE_LINKS,
   WORKSPACE_LINK_CLASS,
@@ -45,11 +46,42 @@ const workspaceLinkOptions = computed(() => {
     : undefined;
 });
 
+/**
+ * A late answer the server redirected into the conversation (bug #5): the question was settled
+ * early so the run could continue, and the human's answer arrives as this user-role message
+ * carrying both the request and the answer. Rendered as a compact card, never as raw markup.
+ */
+const userAnswer = computed(() => parseUserAnswerMessage(props.message.text));
+
+const answerLines = computed<string[]>(() => {
+  if (!userAnswer.value) return [];
+  try {
+    const parsed = JSON.parse(userAnswer.value.answer) as { answers?: unknown };
+    if (!Array.isArray(parsed.answers)) return [];
+    return parsed.answers.map((entry) => {
+      const answer = (entry ?? {}) as Record<string, unknown>;
+      const parts: string[] = [];
+      if (answer.skipped === true) parts.push('Skipped');
+      if (Array.isArray(answer.selectedValues) && answer.selectedValues.length) {
+        parts.push(answer.selectedValues.map(String).join(', '));
+      }
+      if (typeof answer.otherText === 'string' && answer.otherText) parts.push(answer.otherText);
+      if (typeof answer.comment === 'string' && answer.comment) parts.push(`— ${answer.comment}`);
+      const label = typeof answer.questionId === 'string' && answer.questionId ? `${answer.questionId}: ` : '';
+      return `${label}${parts.join(' ') || '(no answer)'}`;
+    });
+  } catch {
+    return [];
+  }
+});
+
 const parsedText = computed(() =>
-  parseMarkdown(props.message.text, {
-    highlight: props.isComplete !== false,
-    workspaceLinks: workspaceLinkOptions.value,
-  })
+  userAnswer.value
+    ? ''
+    : parseMarkdown(props.message.text, {
+        highlight: props.isComplete !== false,
+        workspaceLinks: workspaceLinkOptions.value,
+      })
 );
 
 const markdownElement = shallowRef<HTMLElement | null>(null);
@@ -102,7 +134,21 @@ function onContentClick(event: MouseEvent): void {
 </script>
 
 <template>
-  <div class="text-message" :class="{ thinking: message.isThinking }">
+  <div v-if="userAnswer" class="text-message user-answer" data-testid="user-answer-card">
+    <div class="user-answer__title">Answer delivered</div>
+    <div class="user-answer__section">
+      <div class="user-answer__label">Question</div>
+      <pre class="user-answer__body" data-testid="user-answer-request">{{ userAnswer.request }}</pre>
+    </div>
+    <div class="user-answer__section">
+      <div class="user-answer__label">Answer</div>
+      <ul v-if="answerLines.length" class="user-answer__answers" data-testid="user-answer-answers">
+        <li v-for="(line, index) in answerLines" :key="index">{{ line }}</li>
+      </ul>
+      <pre v-else class="user-answer__body" data-testid="user-answer-answers">{{ userAnswer.answer }}</pre>
+    </div>
+  </div>
+  <div v-else class="text-message" :class="{ thinking: message.isThinking }">
     <div :key="contentKey" ref="markdownElement" class="markdown-content" v-html="parsedText" @click="onContentClick"></div>
     <Teleport v-for="(diagram, index) in diagrams" :key="contentKey + index" :to="diagram.target">
       <DiagramViewer :source="diagram.source" :language="diagram.language" />
@@ -118,6 +164,41 @@ function onContentClick(event: MouseEvent): void {
 .text-message {
   line-height: 1.5;
   position: relative;
+}
+
+.user-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #f7f8fa;
+  color: #4f5966;
+  font-size: 13px;
+}
+
+.user-answer__title {
+  font-weight: 600;
+}
+
+.user-answer__label {
+  color: #697482;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.user-answer__body {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+.user-answer__answers {
+  margin: 2px 0 0;
+  padding-left: 18px;
 }
 
 /* Markdown element styling lives in assets/markdown.css (shared with PendingMessage). */

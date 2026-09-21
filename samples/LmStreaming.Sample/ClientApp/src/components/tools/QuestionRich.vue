@@ -23,6 +23,7 @@ import { computed, reactive, ref, useId, watch } from 'vue';
 import type { ToolPillView } from '@/utils/toolTypes';
 import type { ToolCall } from '@/types';
 import { stripMarkdownPreview } from '@/utils/stripMarkdownPreview';
+import { isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { useClientToolSubmit, type ClientToolSubmitOutcome } from '@/composables/useClientToolSubmit';
 
 const props = defineProps<{ view: ToolPillView; toolCall: ToolCall; draftKey?: string }>();
@@ -368,6 +369,14 @@ const isResolvedWithoutAnswers = computed<boolean>(
   () => !props.view.isDeferred && props.view.hasResult && resolvedAnswers.value === null
 );
 
+// Bug #5: the server settled this question EARLY (a run arrived while it was parked) and the
+// answer was delivered to the agent as a message instead of overwriting this result. The
+// placeholder is final, so once the answer is known to have been delivered (`view.isDeferred`
+// false — see `isQuestionAwaitingAnswer`) it must read as answered, never as cancelled.
+const isAnsweredElsewhere = computed<boolean>(
+  () => !props.view.isDeferred && props.view.hasResult && isEarlySettledQuestionResult(props.view.resultText)
+);
+
 function labelsFor(idx: number, values: string[]): string {
   const q = questions.value[idx];
   if (!q) return values.join(', ');
@@ -398,6 +407,15 @@ function answerFor(idx: number): Answer | undefined {
           {{ answerFor(idx)?.comment }}
         </div>
       </div>
+    </div>
+
+    <!-- Settled early by the server (bug #5): the answer went to the agent as a message, not here. -->
+    <div
+      v-else-if="isAnsweredElsewhere"
+      class="question__resolved"
+      data-testid="question-answered-elsewhere"
+    >
+      <p class="question__answer">Answered — delivered to the agent as a message.</p>
     </div>
 
     <!-- Resolved, but NOT answer-shaped (e.g. cancelled): a terminal message, never the form. -->

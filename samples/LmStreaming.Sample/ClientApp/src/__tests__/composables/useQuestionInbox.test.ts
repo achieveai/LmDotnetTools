@@ -119,6 +119,50 @@ describe('useQuestionInbox', () => {
     wrapper.unmount();
   });
 
+  // Bug #5: a question the server settled early keeps a NON-deferred placeholder result; the
+  // answer, when it comes, is a user text row. The inbox must list the first and drop it on the second.
+  it('lists an early-settled question and drops it once the user-answer row is persisted', async () => {
+    const rows = history('early', false);
+    rows[1] = {
+      ...rows[1],
+      messageJson: JSON.stringify({
+        $type: 'tool_call_result',
+        tool_call_id: 'early',
+        result: '{"status":"deferred_to_notification","message":"Question sent to user"}',
+        is_deferred: false,
+      }),
+    };
+    let answered = false;
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) => (offset === 0 ? [conversation('t1')] : [])),
+      loadConversationMessages: vi.fn(async () =>
+        answered
+          ? [
+              ...rows,
+              {
+                ...rows[0],
+                id: 'early-answer',
+                messageJson: JSON.stringify({
+                  $type: 'text',
+                  role: 'user',
+                  text:
+                    '<user-answer tool="AskUserQuestion" tool-call-id="early">\n<request>\n- (q) Choose one\n</request>\n<answer>\n{"answers":[]}\n</answer>\n</user-answer>',
+                }),
+              },
+            ]
+          : rows
+      ),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(inbox.entries.value.map((entry) => entry.toolCallId)).toEqual(['early']);
+    answered = true;
+    await inbox.refresh();
+    expect(inbox.entries.value).toHaveLength(0);
+    wrapper.unmount();
+  });
+
   it('coalesces overlapping manual refreshes', async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => (release = resolve));

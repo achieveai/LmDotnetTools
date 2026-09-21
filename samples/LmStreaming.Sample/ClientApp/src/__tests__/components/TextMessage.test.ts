@@ -228,6 +228,43 @@ describe('TextMessage workspace links', () => {
     }
   });
 
+  // Bug #5: the server redirects a late answer into the conversation as a user text message wrapped
+  // in `<user-answer …>`. It must render as a compact card, never as raw markup or escaped tags.
+  describe('redirected user answer', () => {
+    const createMessage = (overrides: Partial<TextMessageType>): TextMessageType => ({
+      $type: MessageType.Text,
+      text: '',
+      role: 'user',
+      ...overrides,
+    });
+    const envelope =
+      '<user-answer tool="AskUserQuestion" tool-call-id="call-9">\n<request>\nWhich?\n- (q1) Pick one\n  options: A | B\n</request>\n<answer>\n{"answers":[{"questionId":"q1","selectedValues":["A"],"comment":"go"}]}\n</answer>\n</user-answer>';
+
+    it('renders an Answer delivered card with the request and the decoded answers', () => {
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ role: 'user', text: envelope }) } });
+      const card = wrapper.find('[data-testid="user-answer-card"]');
+      expect(card.exists()).toBe(true);
+      expect(card.text()).toContain('Answer delivered');
+      expect(wrapper.find('[data-testid="user-answer-request"]').text()).toContain('Pick one');
+      expect(wrapper.find('[data-testid="user-answer-answers"]').text()).toContain('q1: A — go');
+      expect(wrapper.find('.markdown-content').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain('<user-answer');
+      expect(wrapper.text()).not.toContain('</answer>');
+    });
+
+    it('falls back to the raw answer body when it is not answer-shaped', () => {
+      const text = envelope.replace(/<answer>\n[\s\S]*\n<\/answer>/, '<answer>\nfree text\n</answer>');
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ role: 'user', text }) } });
+      expect(wrapper.find('[data-testid="user-answer-answers"]').text()).toBe('free text');
+    });
+
+    it('leaves an ordinary message that merely mentions the tag on the markdown path', () => {
+      const wrapper = mount(TextMessage, { props: { message: createMessage({ text: 'about <user-answer> tags' }) } });
+      expect(wrapper.find('[data-testid="user-answer-card"]').exists()).toBe(false);
+      expect(wrapper.find('.markdown-content').exists()).toBe(true);
+    });
+  });
+
   it('re-renders links when the conversation id arrives', async () => {
     const { wrapper, threadId } = mountWith('[report](docs/report.md)', { threadId: null });
     expect(wrapper.find('a.workspace-link').exists()).toBe(false);

@@ -43,6 +43,7 @@ import {
 import { sendChatMessage } from '@/api/chatClient';
 import type { ConversationUsageAggregate } from '@/api/conversationsApi';
 import { useMessageMerger } from './useMessageMerger';
+import { collectAnsweredQuestionIds, isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { getMergeKey } from './messageMergeKey';
 import { createStreamResyncCoordinator } from './streamResync';
 import { buildDisplayItems } from './messageDisplay';
@@ -346,6 +347,12 @@ export function useChat(options: UseChatOptions = {}) {
 
   // Tool results map: tool_call_id -> ToolCallResultMessage
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
+
+  // Questions the server settled EARLY (bug #5: something else arrived while the run was parked on
+  // them) keep their placeholder result for good — the answer comes back as a `<user-answer …>`
+  // message instead of overwriting it. Until that message has streamed in, the only thing that
+  // knows the question was answered is this client's own acked submission, recorded here.
+  const locallyAnsweredQuestionIds = ref(new Set<string>());
   
   // Persistent WebSocket connection for full-duplex communication
   let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
@@ -745,6 +752,13 @@ export function useChat(options: UseChatOptions = {}) {
    * already returns non-pending messages in arrival order.
    */
   const displayItems = computed<DisplayItem[]>(() => buildDisplayItems(sortMessages()));
+
+  const answeredQuestionIds = computed(() => collectAnsweredQuestionIds(displayItems.value));
+
+  /** Whether an early-settled question's answer has already reached the agent (see `isQuestionAwaitingAnswer`). */
+  function isQuestionAnswered(toolCallId: string): boolean {
+    return answeredQuestionIds.value.has(toolCallId) || locallyAnsweredQuestionIds.value.has(toolCallId);
+  }
 
   /**
    * Handle RunAssignment message - activate pending messages
@@ -1802,7 +1816,7 @@ export function useChat(options: UseChatOptions = {}) {
       return { status: 'error', code: 'not_connected', message: 'No active connection' };
     }
     const { sendClientToolResult } = await loadWsClient();
-    return new Promise((resolve) => {
+    const outcome = await new Promise<import('./useClientToolSubmit').ClientToolSubmitOutcome>((resolve) => {
       pendingSubmissions.set(toolCallId, resolve);
       try {
         sendClientToolResult(wsConnection!, toolCallId, result, isError);
@@ -1815,6 +1829,15 @@ export function useChat(options: UseChatOptions = {}) {
         });
       }
     });
+    // An early-settled question is closed by its answer being DELIVERED, not by a republished
+    // result (there is none). Close it here on the ack so the form leaves the dock at once; the
+    // injected `<user-answer …>` message makes the same decision durable when it streams in.
+    if (outcome.status === 'acked' && isEarlySettledQuestionResult(toolResults.value.get(toolCallId)?.result)) {
+      const next = new Set(locallyAnsweredQuestionIds.value);
+      next.add(toolCallId);
+      locallyAnsweredQuestionIds.value = next;
+    }
+    return outcome;
   }
 
   /**
@@ -2024,6 +2047,7 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
+    locallyAnsweredQuestionIds.value = new Set();
     // NB: the streaming flags (isLoading/isSending) are deliberately NOT reset here. clearMessages
     // runs at the START of every switch — BEFORE the awaited loadMessagesFromBackend +
     // resumeStreamIfActive — so lowering them here flashed a transient "idle" through a switch-back
@@ -2128,6 +2152,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageIndex.value.clear();
     messageOrder.value = [];
     toolResults.value.clear();
+    locallyAnsweredQuestionIds.value = new Set();
     resetContentTurnEpoch();
     reset();
 
@@ -2300,6 +2325,7 @@ export function useChat(options: UseChatOptions = {}) {
     markStreamLoading,
     submitClientToolResult,
     hasPendingClientQuestion,
+    isQuestionAnswered,
   };
 }
 

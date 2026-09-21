@@ -1,4 +1,4 @@
-import { ref, watch, onScopeDispose } from 'vue';
+import { ref, watch, onScopeDispose, computed } from 'vue';
 import type {
   Message,
   DisplayItem,
@@ -46,6 +46,7 @@ import {
   textWithCitationsToText,
 } from './messageConversions';
 import { buildDisplayItems, type DisplayableMessage } from './messageDisplay';
+import { collectAnsweredQuestionIds, isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useSubAgentPanel');
@@ -118,6 +119,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   const optimisticSendKeys = new Set<string>();
   let optimisticSendSeq = 0;
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
+  // Same contract as useChat: a question the server settled early stays open until its answer has
+  // been delivered — by the `<user-answer …>` message in this child's transcript, or by this
+  // client's own acked submission over the child's socket.
+  const locallyAnsweredQuestionIds = ref(new Set<string>());
+  const answeredQuestionIds = computed(() => collectAnsweredQuestionIds(focusedDisplayItems.value));
+  function isQuestionAnswered(toolCallId: string): boolean {
+    return answeredQuestionIds.value.has(toolCallId) || locallyAnsweredQuestionIds.value.has(toolCallId);
+  }
   let childCurrentRunId: string | null = null;
   let focusedConnection: WebSocketConnection | null = null;
   // Pending `submitToFocusedChild` submissions keyed by toolCallId (#246 defect 1/2). Settled by a
@@ -269,6 +278,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusedOrder = [];
     optimisticSendKeys.clear();
     toolResults.value = new Map();
+    locallyAnsweredQuestionIds.value = new Set();
     childCurrentRunId = null;
     focusedDisplayItems.value = [];
     merger.reset();
@@ -993,7 +1003,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       return { status: 'error', code: 'not_connected', message: 'No active sub-agent connection' };
     }
     const connection = focusedConnection;
-    return new Promise<ClientToolSubmitOutcome>((resolve) => {
+    const outcome = await new Promise<ClientToolSubmitOutcome>((resolve) => {
       pendingSubmissions.set(toolCallId, resolve);
       try {
         sendClientToolResult(connection, toolCallId, result, isError);
@@ -1006,6 +1016,12 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         });
       }
     });
+    if (outcome.status === 'acked' && isEarlySettledQuestionResult(toolResults.value.get(toolCallId)?.result)) {
+      const next = new Set(locallyAnsweredQuestionIds.value);
+      next.add(toolCallId);
+      locallyAnsweredQuestionIds.value = next;
+    }
+    return outcome;
   }
 
   /** Look up a captured tool result by tool_call_id (for resolving a focused pill). */
@@ -1051,5 +1067,6 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     sendToFocusedChild,
     submitToFocusedChild,
     getResultForToolCall,
+    isQuestionAnswered,
   };
 }

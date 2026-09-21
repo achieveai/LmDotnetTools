@@ -38,6 +38,8 @@ import {
   type AgentRoutingLookup,
 } from '@/utils/agentColors';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
+import { IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
+import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import { GET_CHECKPOINT_STATE, type CheckpointStateLookup } from '@/composables/messageDisplay';
 import ModeSelector from './ModeSelector.vue';
@@ -144,6 +146,7 @@ const {
   markStreamLoading,
   getResultForToolCall,
   hasPendingClientQuestion,
+  isQuestionAnswered,
   submitClientToolResult,
   threadId: chatThreadId,
 } = useChat({
@@ -246,6 +249,7 @@ const {
   sendToFocusedChild,
   submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
+  isQuestionAnswered: isSubAgentQuestionAnswered,
   refreshChildren: refreshSubAgentChildren,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
@@ -467,7 +471,7 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
     }
     await nextTick();
     const result = entry.agentId ? getSubAgentResultForToolCall(entry.toolCallId) : getResultForToolCall(entry.toolCallId);
-    if (!result?.is_deferred) {
+    if (!isQuestionAwaitingAnswer(result, entry.agentId ? isSubAgentQuestionAnswered : isQuestionAnswered)) {
       questionNavigationError.value = 'This question is no longer waiting for an answer.';
       void questionInbox.refresh();
       return;
@@ -523,6 +527,7 @@ watch(questionScope, () => { questionOpen.value = false; questionBusy.value = fa
 // Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
 // shadows this with the child's own resolver for its subtree.
 provide('getResultForToolCall', getResultForToolCall);
+provide(IS_QUESTION_ANSWERED, isQuestionAnswered);
 // Provide the client-tool submit function (#246, e.g. AskUserQuestion) so a descendant question
 // component can resolve a deferred tool call over the shared WebSocket without prop-drilling
 // through MessageList/SubAgentTranscript.
@@ -1548,6 +1553,7 @@ onBeforeUnmount(() => {
           :is-streaming="isFocusedStreaming"
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
+          :is-question-answered="isSubAgentQuestionAnswered"
           :submit-client-tool-result="submitToFocusedChild"
           :view-preference="viewPreference"
           @send="handleSubAgentSend"

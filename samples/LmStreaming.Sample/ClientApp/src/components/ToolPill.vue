@@ -19,13 +19,14 @@ import MatchesRich from '@/components/tools/MatchesRich.vue';
 import WeatherRich from '@/components/tools/WeatherRich.vue';
 import QuestionRich from '@/components/tools/QuestionRich.vue';
 import { normalizeToolName } from '@/utils/toolName';
+import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 
 const props = withDefaults(defineProps<{
   toolCall: ToolCall;
   presentation?: 'card' | 'activity-row';
 }>(), { presentation: 'card' });
 
-const { getResult } = useToolResult();
+const { getResult, isQuestionAnswered } = useToolResult();
 
 const expanded = ref(false);
 function toggle() {
@@ -41,7 +42,7 @@ const view = computed(() =>
     result: resultMsg.value?.result ?? null,
     hasResult: resultMsg.value !== null,
     isErrorFlag: resultMsg.value?.is_error ?? null,
-    isDeferred: resultMsg.value?.is_deferred ?? false,
+    isDeferred: isQuestionAwaitingAnswer(resultMsg.value, isQuestionAnswered),
   })
 );
 
