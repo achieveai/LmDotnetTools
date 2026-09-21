@@ -23,9 +23,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/*
+ * Renders go through the shared render queue, which hands the main thread back between two jobs.
+ * That is a real macrotask, so draining microtasks alone no longer reaches the rendered state.
+ */
 async function settle() {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let turn = 0; turn < 4; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function readBlob(blob: Blob): Promise<string> {
@@ -189,6 +194,110 @@ describe("DiagramViewer", () => {
     expect(style).toContain("height: 100%");
     expect(style).toContain("object-fit: contain");
   });
+
+/**
+ * jsdom has no IntersectionObserver, so every test above exercises the no-observer fallback where a
+ * diagram counts as approached at once. These tests install one to pin the lazy pipeline itself.
+ */
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = [];
+  readonly targets: Element[] = [];
+  disconnected = false;
+
+  constructor(
+    private readonly callback: IntersectionObserverCallback,
+    readonly options?: IntersectionObserverInit,
+  ) {
+    FakeIntersectionObserver.instances.push(this);
+  }
+
+  observe(target: Element) {
+    this.targets.push(target);
+  }
+
+  unobserve() {}
+
+  disconnect() {
+    this.disconnected = true;
+  }
+
+  approach() {
+    this.callback(
+      this.targets.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+describe("lazy rendering", () => {
+  beforeEach(() => {
+    FakeIntersectionObserver.instances = [];
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a labelled placeholder and renders nothing until the diagram approaches the viewport", async () => {
+    renderMock.mockResolvedValue(svg("late"));
+    const wrapper = mount(DiagramViewer, {
+      props: { source: "graph TD; A-->B", language: "mermaid" },
+    });
+    await settle();
+
+    expect(renderMock).not.toHaveBeenCalled();
+    expect(wrapper.get('[data-testid="diagram-placeholder"]').text()).toBe("Mermaid diagram");
+    expect(wrapper.find('[data-testid="diagram-image"]').exists()).toBe(false);
+    // A viewport of lead time, so the diagram is drawn before the reader reaches it.
+    expect(FakeIntersectionObserver.instances[0].options?.rootMargin).toBe("100% 0px");
+
+    FakeIntersectionObserver.instances[0].approach();
+    await settle();
+
+    expect(renderMock).toHaveBeenCalledOnce();
+    expect(wrapper.find('[data-testid="diagram-placeholder"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="diagram-image"]').attributes("src")).toBe("blob:diagram-1");
+  });
+
+  it("keeps a drawn diagram when it scrolls out of view and back", async () => {
+    renderMock.mockResolvedValue(svg("kept"));
+    const wrapper = mount(DiagramViewer, {
+      props: { source: "graph TD; A-->B", language: "mermaid" },
+    });
+    const observer = FakeIntersectionObserver.instances[0];
+    observer.approach();
+    await settle();
+    expect(renderMock).toHaveBeenCalledOnce();
+
+    expect(observer.disconnected).toBe(true);
+    observer.approach();
+    await settle();
+
+    expect(renderMock).toHaveBeenCalledOnce();
+    expect(wrapper.get('[data-testid="diagram-image"]').attributes("src")).toBe("blob:diagram-1");
+  });
+
+  it("never renders a diagram unmounted while it waited its turn in the queue", async () => {
+    const blocking = deferred<string>();
+    renderMock.mockReturnValueOnce(blocking.promise).mockResolvedValue(svg("second"));
+    const visible = mount(DiagramViewer, { props: { source: "visible", language: "mermaid" } });
+    const passed = mount(DiagramViewer, { props: { source: "passed", language: "mermaid" } });
+
+    FakeIntersectionObserver.instances[0].approach();
+    FakeIntersectionObserver.instances[1].approach();
+    await settle();
+    expect(renderMock).toHaveBeenCalledOnce();
+
+    passed.unmount();
+    blocking.resolve(svg("first"));
+    await settle();
+
+    expect(renderMock).toHaveBeenCalledOnce();
+    expect(renderMock).toHaveBeenCalledWith("visible", "mermaid");
+    expect(visible.get('[data-testid="diagram-image"]').attributes("src")).toBe("blob:diagram-1");
+  });
+});
 
   it("uses the winning sanitized SVG for download and revokes replaced and unmounted URLs", async () => {
     renderMock.mockResolvedValueOnce(svg("first")).mockResolvedValueOnce(svg("second"));

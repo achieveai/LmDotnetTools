@@ -1,6 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { parseSmilesFence, renderSmiles } from '@/utils/smilesRenderer';
+import {
+  observeApproach,
+  queueRender,
+  viewportDistance,
+  type QueuedRender,
+} from '@/utils/renderQueue';
 
 /*
  * Renders a ```smiles fence as one 2D structure drawing per line.
@@ -8,7 +14,9 @@ import { parseSmilesFence, renderSmiles } from '@/utils/smilesRenderer';
  * Deliberately the same shape as `DiagramViewer`: the drawing is produced client-side, sanitized by
  * `sanitizeDiagramSvg`, and handed to an `<img>` over a blob URL. The generated SVG therefore never
  * enters the Markdown HTML allowlist, and a broken structure shows the parser's own message beside
- * the structures that did draw.
+ * the structures that did draw. That extends to the lazy pipeline -- drawing starts when the fence
+ * approaches the viewport, and each structure goes through the same shared render queue as a
+ * diagram, so a fence of 24 structures cannot monopolize the main thread either.
  */
 const props = defineProps<{ source: string }>();
 
@@ -22,8 +30,12 @@ interface Figure {
 const showingSource = ref(false);
 const loading = ref(false);
 const figures = ref<Figure[]>([]);
+const viewerElement = ref<HTMLElement | null>(null);
+const approached = ref(false);
 let generation = 0;
 let disposed = false;
+let stopObserving: (() => void) | null = null;
+let queued: QueuedRender<string>[] = [];
 
 const rendered = computed(() => figures.value.filter((figure) => figure.url));
 
@@ -35,10 +47,16 @@ async function updateFigures(): Promise<void> {
   const currentGeneration = ++generation;
   loading.value = true;
   const entries = parseSmilesFence(props.source);
+  for (const job of queued) job.cancel();
+  queued = [];
   const next = await Promise.all(
     entries.map(async ({ smiles, label }): Promise<Figure> => {
+      // Queued, not awaited in parallel: the queue runs one drawing at a time and yields between
+      // them, so the figures appear progressively instead of in one frozen burst.
+      const job = queueRender(() => renderSmiles(smiles), () => viewportDistance(viewerElement.value));
+      queued.push(job);
       try {
-        const svg = await renderSmiles(smiles);
+        const svg = await job.promise;
         return {
           smiles,
           label,
@@ -66,17 +84,36 @@ async function updateFigures(): Promise<void> {
   loading.value = false;
 }
 
-watch(() => props.source, updateFigures, { immediate: true });
+function markApproached(): void {
+  if (approached.value) return;
+  approached.value = true;
+  void updateFigures();
+}
+
+watch(() => props.source, () => {
+  if (approached.value) void updateFigures();
+});
+
+onMounted(() => {
+  const element = viewerElement.value;
+  if (!element) {
+    markApproached();
+    return;
+  }
+  stopObserving = observeApproach(element, markApproached);
+});
 
 onBeforeUnmount(() => {
   disposed = true;
   generation += 1;
+  stopObserving?.();
+  for (const job of queued) job.cancel();
   revokeAll();
 });
 </script>
 
 <template>
-  <section class="smiles-viewer" aria-label="Chemical structures">
+  <section ref="viewerElement" class="smiles-viewer" aria-label="Chemical structures">
     <div class="smiles-toolbar">
       <span class="smiles-format" data-testid="smiles-format">SMILES</span>
       <div class="smiles-view-options" aria-label="Structure view">
@@ -102,6 +139,9 @@ onBeforeUnmount(() => {
 
     <div class="smiles-canvas">
       <pre v-if="showingSource" data-testid="smiles-source" tabindex="0"><code>{{ source }}</code></pre>
+      <p v-else-if="!approached" class="smiles-placeholder" data-testid="smiles-placeholder">
+        Chemical structures
+      </p>
       <p v-else-if="loading && !figures.length" class="smiles-status" role="status">Drawing structures…</p>
       <template v-else>
         <div class="smiles-figures">
@@ -244,6 +284,22 @@ pre {
   margin: 0;
   color: #667085;
   font-size: 13px;
+}
+
+/* Reserves height until the structures are drawn -- see DiagramViewer's .diagram-placeholder. */
+.smiles-placeholder {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  align-self: stretch;
+  justify-self: stretch;
+  margin: 0;
+  border-radius: 8px;
+  background: repeating-linear-gradient(-45deg, #f6f8fb 0 10px, #f1f4f9 10px 20px);
+  color: #98a2b3;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .smiles-error {
