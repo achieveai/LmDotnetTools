@@ -17,6 +17,7 @@ import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
 import type { QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { PendingQuestionEvent } from '@/api/eventsWsClient';
 import type { ToolCallResultMessage } from '@/types';
 import { closeEgressDialog, openEgressDialog } from '@/composables/useEgressAuth';
 
@@ -37,6 +38,8 @@ const makeConversation = (overrides: Partial<ConversationSummary> = {}): Convers
 const sharedMocks = vi.hoisted(() => ({
   questionEntries: [] as QuestionInboxEntry[],
   questionEntriesRef: null as Ref<QuestionInboxEntry[]> | null,
+  /** `useQuestionInbox`'s `onQuestionRaised` hook, captured at mount. See the mock below. */
+  raiseQuestion: null as ((question: PendingQuestionEvent) => void) | null,
   chatLoading: false,
   isSending: false,
   modesLoading: false,
@@ -380,9 +383,12 @@ vi.mock('@/api/contextApi', () => ({
 // mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
 vi.mock('@/composables/useQuestionInbox', async () => {
   const { ref } = await import('vue');
-  return { useQuestionInbox: () => {
+  return { useQuestionInbox: (_current: unknown, options?: { onQuestionRaised?: (q: unknown) => void }) => {
     const entries = ref(sharedMocks.questionEntries);
     sharedMocks.questionEntriesRef = entries;
+    // Capture the push hook so the toast tests can raise a question the way `/ws/events` does,
+    // without a socket. The real composable calls it once per genuinely new pushed question.
+    sharedMocks.raiseQuestion = options?.onQuestionRaised ?? null;
     return { entries, isRefreshing: ref(false), error: ref(null), refresh: vi.fn(async () => {}) };
   } };
 });
@@ -925,6 +931,105 @@ describe('ChatLayout question inbox automatic retry', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="elsewhere-question-dock"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  /**
+   * The row above and the header count are both PASSIVE: they are already on screen and a user who
+   * is reading does not re-scan them. The toast is the part that makes an ARRIVAL noticeable, so it
+   * fires from the push hook — once, for a question in another conversation — and not from a sweep.
+   */
+  const raised = (overrides: Partial<PendingQuestionEvent> = {}): PendingQuestionEvent => ({
+    rootThreadId: 'thread-9',
+    agentId: null,
+    childThreadId: null,
+    toolCallId: 'question-9',
+    prompt: 'Which quarter should I start from?',
+    conversationTitle: 'Budget review',
+    agentName: null,
+    raisedAtUtc: '2026-09-21T10:00:00.0000000Z',
+    ...overrides,
+  });
+
+  it('toasts a question that arrives in another conversation, naming where it came from', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+
+    const toast = wrapper.get('[data-testid="question-toast"]');
+    expect(toast.text()).toContain('Budget review');
+    expect(toast.text()).toContain('Main agent');
+    expect(toast.text()).toContain('Which quarter should I start from?');
+    wrapper.unmount();
+  });
+
+  it('stays silent for a question in the conversation already on screen', async () => {
+    sharedMocks.questionEntries = [entry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sharedMocks.raiseQuestion!(
+      raised({ rootThreadId: 'thread-1', toolCallId: entry.toolCallId, conversationTitle: 'Chat' })
+    );
+    await flushPromises();
+
+    // PendingQuestionDock already owns this one; a toast over the open form is noise.
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('navigates from the toast only when the user presses Review', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="question-toast-review"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('retires the toast when its question stops waiting', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(true);
+
+    sharedMocks.questionEntriesRef!.value = [];
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('highlights the header inbox button while a question waits elsewhere, and not otherwise', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const trigger = wrapper.get('[data-testid="question-inbox-trigger"]');
+    expect(trigger.classes()).toContain('pending-elsewhere');
+    expect(wrapper.find('[data-testid="question-inbox-elsewhere"]').exists()).toBe(true);
+    expect(trigger.attributes('aria-label')).toContain('another conversation');
+
+    // The count alone cannot distinguish these two states, which is why the accent exists.
+    sharedMocks.questionEntriesRef!.value = [entry];
+    await flushPromises();
+    expect(wrapper.get('[data-testid="question-inbox-trigger"]').classes()).not.toContain('pending-elsewhere');
+    expect(wrapper.find('[data-testid="question-inbox-elsewhere"]').exists()).toBe(false);
     wrapper.unmount();
   });
 

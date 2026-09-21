@@ -262,6 +262,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     public PromptCachingMode ParentPromptCaching { get; init; }
 
     /// <summary>
+    /// Host hook told when a descendant's <c>AskUserQuestion</c> parks or settles, or null when the
+    /// host wired none. Already scoped to the parent loop's thread by whoever set it; this level only
+    /// adds the child's display name at spawn time, so the host learns WHICH agent is asking without
+    /// the child loop having to know the name it was given.
+    /// </summary>
+    /// <remarks>
+    /// Internal and settable rather than a public init property, because the only thing that sets it is
+    /// <see cref="MultiTurnAgentLoop.PendingQuestionObserver"/>, and a loop builds its manager inside
+    /// its own constructor — before any of its init accessors have run. Not a constructor parameter for
+    /// the reason <see cref="ParentPromptCaching"/> documents. Read at spawn time, so assigning it
+    /// after construction is what the design expects rather than a race.
+    /// </remarks>
+    internal IPendingQuestionObserver? PendingQuestionObserver { get; set; }
+
+    /// <summary>
     /// Per-agent admission bookkeeping, keyed by agent id.
     /// </summary>
     /// <remarks>
@@ -3752,7 +3767,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                 collaboration: childCollaboration,
                 descendantQuestionSink: _descendantQuestionSink,
                 compaction: ChildOptions.Compaction
-            );
+            )
+            {
+                // The child's own name, filled in only when the notice carries none — so a
+                // GRANDCHILD's name, already stamped one level down, survives this hop. Set here
+                // rather than as a constructor argument to keep the published constructor's CLR
+                // signature intact for already-compiled package consumers.
+                PendingQuestionObserver = PendingQuestionObserver is null
+                    ? null
+                    : new ScopedPendingQuestionObserver(PendingQuestionObserver, agentName: spawnName ?? template.Name),
+            };
 
             // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
             // withheld nothing or that the child holds anyway, or a filter that resolved the whole

@@ -742,6 +742,29 @@ creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsyn
   `unknown_thread`. A never-minted id and another tenant's id answer the same; a refusal that already
   admits the id names something keeps its `403`, and never a `401` (same reasoning as #342).
 
+#### `/ws/events` authorizes per FRAME, because it names no conversation
+
+The app-wide pending-question stream (`PendingQuestionHub`, consumed by `api/eventsWsClient.ts`) is a
+third WebSocket transport. `IsGuardedWebSocketPath` is segment-based on `/ws`, so it is inside the
+same boundary as the two above and the handshake demands a signed-in principal under enforcement —
+but it takes no `threadId`, so there is nothing for `WebSocketConversationGate` to authorize there.
+
+Authorization therefore moves to each frame:
+
+- The handshake captures `context.Items[IdentityHttpItems.PrincipalKey]` and holds it for the life of
+  the connection. It must be captured, not read later: the broadcast pump is a background loop with
+  no ambient request, and `IPrincipalAccessor` is request-scoped by design.
+- Every `snapshot` row and every `question_pending` / `question_settled` frame is checked against that
+  captured principal with the **same** `ConversationAuthorizer` the REST routes and `/ws` use, for
+  `Read` on the question's ROOT thread. `ConversationAuthorizer` grew a principal-taking overload for
+  this; it did not grow a second copy of the policy.
+- `Read`, not `Write`, because this channel confers nothing. It reports that a question is waiting and
+  which conversation to go to; answering it still means opening `/ws`, which demands `Write`.
+- With `Identity:Enforce` off, `ConversationAuthorizer.IsEnforced` is false and every frame is
+  visible — the same "no enforcement, no filtering" posture the rest of the surface has.
+- Frames carry ids, the conversation title and the FIRST question's prompt text. No transcript, no
+  tool arguments beyond that prompt, and no message content.
+
 **`auth/{providerId}`: decided, and half of it closed.** The signed-in page no longer renders the
 account, the granted scopes or the token expiry. `IOAuthTokenProvider` is a process-wide singleton, so
 that account was never the caller's — it was the host operator's, handed to anyone who could reach the

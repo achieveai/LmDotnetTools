@@ -18,7 +18,9 @@ import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
 import QuestionInbox from './QuestionInbox.vue';
+import QuestionToast from './QuestionToast.vue';
 import { useQuestionInbox, type QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { PendingQuestionEvent } from '@/api/eventsWsClient';
 import ConversationInspector from './ConversationInspector.vue';
 import PanelSplitter from './PanelSplitter.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
@@ -417,7 +419,39 @@ function handleSubAgentSend(text: string): void {
   sendToFocusedChild(text);
 }
 
-const questionInbox = useQuestionInbox(() => currentThreadId.value);
+/**
+ * The question a toast is currently announcing, or null. Identified by (root, tool call) rather
+ * than by an inbox key so nothing here has to re-derive the inbox's key composition; `reviewToastQuestion`
+ * looks the entry back up and reuses `openInboxQuestion`.
+ */
+const toastQuestion = ref<{
+  rootThreadId: string;
+  toolCallId: string;
+  source: string;
+  prompt: string;
+} | null>(null);
+
+/**
+ * Announce a question that has just parked SOMEWHERE ELSE. Called once per genuinely new question
+ * pushed over `/ws/events` — never from a poll and never from a reconnect's snapshot, so a dropped
+ * socket does not re-toast what the user has already seen.
+ *
+ * A question in the conversation on screen is deliberately silent: `PendingQuestionDock` already
+ * has it, and a toast over the form the user is looking at is noise.
+ */
+function announceRemoteQuestion(question: PendingQuestionEvent): void {
+  if (question.rootThreadId === currentThreadId.value) return;
+  toastQuestion.value = {
+    rootThreadId: question.rootThreadId,
+    toolCallId: question.toolCallId,
+    source: `${question.conversationTitle || 'Conversation'} · ${question.agentName || (question.agentId ? 'Agent' : 'Main agent')}`,
+    prompt: question.prompt,
+  };
+}
+
+const questionInbox = useQuestionInbox(() => currentThreadId.value, {
+  onQuestionRaised: announceRemoteQuestion,
+});
 const questionInboxEntries = computed(() => questionInbox.entries.value.map((entry) => ({
   ...entry,
   agentName: entry.agentName || 'Main agent',
@@ -488,6 +522,21 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
   }
 }
 
+/**
+ * The toast's Review button: the same destination as the "elsewhere" row, so navigation, the
+ * "no longer waiting" guard and the error surface all stay in one place.
+ */
+function reviewToastQuestion(): void {
+  const target = toastQuestion.value;
+  toastQuestion.value = null;
+  if (!target) return;
+  const entry = questionInbox.entries.value.find(
+    (candidate) =>
+      candidate.rootThreadId === target.rootThreadId && candidate.toolCallId === target.toolCallId
+  );
+  if (entry) void openInboxQuestion(entry);
+}
+
 function selectInboxQuestion(key: string): void {
   const entry = questionInbox.entries.value.find((candidate) => candidate.key === key);
   if (entry) void openInboxQuestion(entry);
@@ -513,6 +562,19 @@ const questionsElsewhere = computed(() =>
       prompt: entry.prompt,
     }))
 );
+
+// Retire the toast as soon as its question stops being a REMOTE pending one: settled anywhere (it
+// leaves `entries`), or the user moved into that conversation, where the dock owns it. Without this
+// the notice outlives the thing it announces.
+watch([questionInbox.entries, currentThreadId], () => {
+  const target = toastQuestion.value;
+  if (!target) return;
+  const stillWaiting = questionInbox.entries.value.some(
+    (candidate) =>
+      candidate.rootThreadId === target.rootThreadId && candidate.toolCallId === target.toolCallId
+  );
+  if (!stillWaiting || target.rootThreadId === currentThreadId.value) toastQuestion.value = null;
+});
 
 watch([questionInbox.entries, currentThreadId, questionOpen, questionBusy], () => {
   if (questionOpen.value || questionBusy.value || questionNavigating.value || document.visibilityState === 'hidden') return;
@@ -1286,6 +1348,7 @@ onBeforeUnmount(() => {
       <div v-if="!focusMode" class="app-header-right">
         <QuestionInbox :entries="questionInboxEntries" :refreshing="questionInbox.isRefreshing.value"
           :error="questionInbox.error.value" :disabled="questionBusy || questionNavigating"
+          :elsewhere="questionsElsewhere.length"
           @select="selectInboxQuestion" @refresh="questionInbox.refresh()" />
         <HeaderActionsMenu
           ref="headerActionsMenuRef"
@@ -1606,6 +1669,17 @@ onBeforeUnmount(() => {
       </template>
     </ConversationInspector>
     </div>
+
+    <!-- Transient arrival notice for a question parked in ANOTHER conversation. The header count and
+         the elsewhere row still hold it after this expires; this is what makes the arrival land. -->
+    <QuestionToast
+      v-if="toastQuestion"
+      :key="`${toastQuestion.rootThreadId}:${toastQuestion.toolCallId}`"
+      :source="toastQuestion.source"
+      :prompt="toastQuestion.prompt"
+      @review="reviewToastQuestion"
+      @dismiss="toastQuestion = null"
+    />
   </div>
 </template>
 

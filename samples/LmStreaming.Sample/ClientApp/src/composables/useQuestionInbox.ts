@@ -5,6 +5,11 @@ import {
   type PersistedMessage,
 } from '@/api/conversationsApi';
 import { listSubAgents, type SubAgentSummary } from '@/api/subAgentsApi';
+import {
+  connectQuestionEvents,
+  type PendingQuestionEvent,
+  type QuestionEventStream,
+} from '@/api/eventsWsClient';
 import type { ConversationSummary } from '@/types/conversations';
 import type { ToolCall, ToolCallResultMessage } from '@/types';
 import { resolveRenderer } from '@/utils/toolName';
@@ -36,6 +41,19 @@ export interface QuestionInboxOptions {
   fullSweepIntervalMs?: number;
   pageSize?: number;
   dependencies?: QuestionInboxDependencies;
+  /**
+   * Opens the app-wide question stream. Injectable for tests; defaults to the real `/ws/events`
+   * client. The polling sweep below is NOT removed when this is connected — it stays as the fallback
+   * for a socket that cannot be opened at all, and for questions parked by a loop that has since
+   * been evicted from the pool (which the server's in-memory snapshot no longer holds).
+   */
+  events?: typeof connectQuestionEvents;
+  /**
+   * Called once per question that becomes newly pending — from a push, not from a sweep. Lets a
+   * caller announce an arrival (a toast) without diffing `entries` itself. Not called for a
+   * question already in the inbox, so a reconnect's snapshot re-announces nothing.
+   */
+  onQuestionRaised?: (question: PendingQuestionEvent) => void;
 }
 
 type Scope = Omit<QuestionInboxEntry, 'key' | 'toolCallId' | 'toolCall' | 'result' | 'prompt'>;
@@ -135,7 +153,20 @@ export function useQuestionInbox(
   const pollIntervalMs = options.pollIntervalMs ?? 30_000;
   const fullSweepIntervalMs = options.fullSweepIntervalMs ?? 5 * 60_000;
   const entryMap = ref(new Map<string, QuestionInboxEntry>());
-  const entries = computed(() => [...entryMap.value.values()]);
+  /**
+   * Entries synthesized from a PUSH, held apart from the swept ones so the two cannot erase each
+   * other. A pushed question is real before any read confirms it, and the sweep that confirms it
+   * needs the sub-agent roster — which lags the spawn — so folding pushes into `entryMap` would let
+   * `removeMissingChildren` delete a question the server has just told us is waiting.
+   */
+  const pushedMap = ref(new Map<string, QuestionInboxEntry>());
+  const entries = computed(() => {
+    // Swept last: it carries the real tool call, result and conversation summary, so where both
+    // sources know a key the read-through entry wins over the synthesized one.
+    const merged = new Map(pushedMap.value);
+    for (const [key, entry] of entryMap.value) merged.set(key, entry);
+    return [...merged.values()];
+  });
   const isRefreshing = ref(false);
   const error = ref<string | null>(null);
   const fingerprints = new Map<string, number>();
@@ -144,6 +175,8 @@ export function useQuestionInbox(
   let inFlightIsFull = false;
   let fullRefreshQueued = false;
   let timer: ReturnType<typeof setInterval> | undefined;
+  const openEvents = options.events ?? connectQuestionEvents;
+  let stream: QuestionEventStream | null = null;
 
   const scopePrefix = (scope: Scope) =>
     `root:${scope.rootThreadId}/agent:${scope.agentId ?? 'root'}/child:${scope.childThreadId ?? 'root'}/tool:`;
@@ -152,11 +185,30 @@ export function useQuestionInbox(
     const prefix = scopePrefix(scope);
     const next = new Map(entryMap.value);
     for (const key of next.keys()) if (key.startsWith(prefix)) next.delete(key);
+    const found = new Set<string>();
     for (const pending of findPersistedQuestions(rows)) {
       const key = `${prefix}${pending.toolCallId}`;
+      found.add(key);
       next.set(key, { key, ...scope, ...pending, prompt: promptFor(pending.toolCall) });
     }
     entryMap.value = next;
+    // This read is authoritative for THIS scope's transcript, so a pushed entry it did not find is
+    // settled (or was never persisted) and must go. That is the only place a push is retired other
+    // than an explicit `question_settled`; a roster that has not caught up cannot retire one,
+    // because `removeMissingChildren` never touches this map.
+    dropPushed((key) => key.startsWith(prefix) && !found.has(key));
+  }
+
+  function dropPushed(matches: (key: string, entry: QuestionInboxEntry) => boolean) {
+    let removed = false;
+    const next = new Map(pushedMap.value);
+    for (const [key, entry] of [...next]) {
+      if (matches(key, entry)) {
+        next.delete(key);
+        removed = true;
+      }
+    }
+    if (removed) pushedMap.value = next;
   }
 
   async function allConversations(): Promise<ConversationSummary[]> {
@@ -178,7 +230,10 @@ export function useQuestionInbox(
         a.threadId === active ? -1 : b.threadId === active ? 1 : 0
       );
       const knownRoots = new Set(ordered.map((conversation) => conversation.threadId));
-      const pendingRoots = new Set([...entryMap.value.values()].map((entry) => entry.rootThreadId));
+      // Both sources: a root whose only pending question arrived by PUSH still has to be re-read,
+      // and its `lastUpdated` has not moved (the run is parked, not finished), so the fingerprint
+      // test below would otherwise skip exactly the conversation the push was about.
+      const pendingRoots = new Set(entries.value.map((entry) => entry.rootThreadId));
       const candidates = ordered.filter(
         (conversation) =>
           full ||
@@ -243,6 +298,7 @@ export function useQuestionInbox(
         const next = new Map(entryMap.value);
         for (const [key, entry] of next) if (!knownRoots.has(entry.rootThreadId)) next.delete(key);
         entryMap.value = next;
+        dropPushed((_key, entry) => !knownRoots.has(entry.rootThreadId));
         lastFullSweep = Date.now();
       }
     } catch (reason) {
@@ -264,6 +320,86 @@ export function useQuestionInbox(
       }
     }
     entryMap.value = next;
+  }
+
+  /**
+   * Builds the entry a pushed question stands in as until a read confirms it.
+   *
+   * The key is composed with the SAME `scopePrefix` the sweep uses, so when the read-through entry
+   * lands it occupies this exact slot instead of doubling the question. `toolCall`/`result` are
+   * placeholders: the event carries the rendered prompt, not the raw arguments, and nothing on the
+   * open path renders them — `openInboxQuestion` re-reads the live result out of the loaded
+   * transcript before it shows a form.
+   */
+  function pushedEntry(question: PendingQuestionEvent): QuestionInboxEntry {
+    const known = [...entryMap.value.values(), ...pushedMap.value.values()].find(
+      (entry) => entry.rootThreadId === question.rootThreadId
+    );
+    const conversation: ConversationSummary = known?.conversation ?? {
+      threadId: question.rootThreadId,
+      title: question.conversationTitle ?? 'Conversation',
+      lastUpdated: 0,
+    };
+    const scope: Scope = {
+      rootThreadId: question.rootThreadId,
+      conversationTitle: question.conversationTitle ?? conversation.title,
+      conversation,
+      agentId: question.agentId,
+      agentName:
+        question.agentId === null ? 'Main agent' : (question.agentName ?? question.agentId),
+      childThreadId: question.childThreadId,
+    };
+    const key = `${scopePrefix(scope)}${question.toolCallId}`;
+    const deferredAt = Date.parse(question.raisedAtUtc);
+    return {
+      key,
+      ...scope,
+      toolCallId: question.toolCallId,
+      toolCall: {
+        tool_call_id: question.toolCallId,
+        function_name: 'AskUserQuestion',
+        function_args: null,
+      },
+      result: {
+        $type: 'tool_call_result',
+        role: 'tool',
+        tool_call_id: question.toolCallId,
+        result: '',
+        is_deferred: true,
+        deferred_at: Number.isNaN(deferredAt) ? null : deferredAt,
+      },
+      prompt: question.prompt,
+    };
+  }
+
+  /** True when neither source already holds this question. */
+  function isNew(key: string) {
+    return !entryMap.value.has(key) && !pushedMap.value.has(key);
+  }
+
+  /** Adds the question if it is not already known; returns true when it was genuinely new. */
+  function applyPending(question: PendingQuestionEvent): boolean {
+    const entry = pushedEntry(question);
+    const fresh = isNew(entry.key);
+    if (!entryMap.value.has(entry.key)) {
+      pushedMap.value = new Map(pushedMap.value).set(entry.key, entry);
+    }
+    return fresh;
+  }
+
+  function applySettled(rootThreadId: string, toolCallId: string) {
+    const suffix = `/tool:${toolCallId}`;
+    const stale = (key: string) => key.startsWith(`root:${rootThreadId}/`) && key.endsWith(suffix);
+    dropPushed(stale);
+    const next = new Map(entryMap.value);
+    let removed = false;
+    for (const key of [...next.keys()]) {
+      if (stale(key)) {
+        next.delete(key);
+        removed = true;
+      }
+    }
+    if (removed) entryMap.value = next;
   }
 
   function requestRefresh(full: boolean): Promise<void> {
@@ -293,10 +429,31 @@ export function useQuestionInbox(
       if (document.visibilityState === 'visible') void automaticRefresh();
     }, pollIntervalMs);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    // Push is what makes a question raised elsewhere visible in a second; the timer above stays as
+    // the fallback for a socket that never opens and for questions the server's in-memory state no
+    // longer holds.
+    stream = openEvents({
+      onSnapshot: (questions) => {
+        const added = questions.map(applyPending).filter(Boolean).length;
+        // A reconnect's snapshot must not re-announce what the user has already been shown, so the
+        // toast hook is deliberately not called here — only genuinely new arrivals are announced.
+        if (added > 0) void requestRefresh(false);
+      },
+      onPending: (question) => {
+        if (applyPending(question)) options.onQuestionRaised?.(question);
+        // Targeted, not full: only this root can have changed, and the read replaces the placeholder
+        // with the real call. Cheap, because the incremental sweep re-reads any root that has a
+        // pending entry — which this one now does.
+        void requestRefresh(false);
+      },
+      onSettled: applySettled,
+    });
   });
   onScopeDispose(() => {
     if (timer) clearInterval(timer);
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    stream?.close();
+    stream = null;
   });
 
   return { entries: readonly(entries), refresh, isRefreshing: readonly(isRefreshing), error: readonly(error) };

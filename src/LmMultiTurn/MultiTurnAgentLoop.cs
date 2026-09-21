@@ -88,6 +88,39 @@ public sealed class MultiTurnAgentLoop
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
 
+    /// <summary>
+    /// Optional host hook told when an <c>AskUserQuestion</c> parks and when it settles — here, and in
+    /// every sub-agent this loop's hierarchy spawns. Null reports nothing: no allocation, no behaviour
+    /// change. See <see cref="IPendingQuestionObserver"/> for why a host cannot derive this by watching
+    /// conversation summaries.
+    /// </summary>
+    /// <remarks>
+    /// An init property rather than a constructor parameter, for the reason
+    /// <c>MultiTurnAgentLoopConstructorCompatibilityTests</c> pins: this type ships in a NuGet package
+    /// and an optional parameter is still part of the CLR constructor signature, so appending one
+    /// breaks an already-compiled consumer with a <see cref="MissingMethodException"/>.
+    /// <para>
+    /// The accessor has a body because the manager is built in the constructor, before any init
+    /// property runs. It hands the manager a wrapper stamped with THIS loop's thread id, so a
+    /// descendant's notice names the thread one level closer to the root; composing those wrappers
+    /// down the chain yields the true root without any level knowing the whole hierarchy.
+    /// </para>
+    /// </remarks>
+    public IPendingQuestionObserver? PendingQuestionObserver
+    {
+        get => _pendingQuestionObserver;
+        init
+        {
+            _pendingQuestionObserver = value;
+            if (SubAgentManager is not null)
+            {
+                SubAgentManager.PendingQuestionObserver = value is null
+                    ? null
+                    : new ScopedPendingQuestionObserver(value, ThreadId);
+            }
+        }
+    }
+
     /// <summary>The sub-agent tool provider registered on this loop, or null when no sub-agent options
     /// were supplied. Exposed so a host can suppress new child creation for one run while retaining
     /// messaging and result access to children that already exist.</summary>
@@ -142,6 +175,10 @@ public sealed class MultiTurnAgentLoop
     // Resolved root delivery target for a descendant's parked AskUserQuestion (#246). Always non-null
     // after construction — see the ctor's descendantQuestionSink resolution.
     private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
+
+    // Backing field for PendingQuestionObserver below. Not readonly: an init accessor assigns it after
+    // the constructor body has already built this loop's SubAgentManager.
+    private IPendingQuestionObserver? _pendingQuestionObserver;
 
     // Everything about tool calls that deferred: what is outstanding, which run parked on it, and
     // which resolved results are waiting to be run as child runs. See DelayedResultCoordinator for
@@ -2662,6 +2699,12 @@ public sealed class MultiTurnAgentLoop
 
             await PublishToAllAsync(result, ct);
 
+            // Told AFTER history and the live publish, so a host that reacts by reading the
+            // transcript finds the call it was just told about. Reported here and not from the
+            // client-tool provider because this is the only point that sees EVERY deferral —
+            // including the ones a restart rebuilds (see RaiseQuestionIfPending's other caller).
+            RaiseQuestionIfPending(deferredEntry);
+
             Logger.LogInformation(
                 "Tool call {ToolCallId} ({FunctionName}) deferred with placeholder length {Length}",
                 toolCall.ToolCallId,
@@ -3398,6 +3441,10 @@ public sealed class MultiTurnAgentLoop
 
         var cause = _delayed.CompleteResolve(pending, newMessage);
 
+        // Settled: answered, cancelled, or redirected. One call for every way a question stops
+        // waiting, because every one of them commits through CompleteResolve.
+        SettleQuestionIfPending(pending.Entry);
+
         Logger.LogInformation(
             "Tool call {ToolCallId} resolved (was deferred for {ElapsedMs}ms)",
             toolCallId,
@@ -3917,6 +3964,69 @@ public sealed class MultiTurnAgentLoop
     }
 
     /// <summary>
+    /// Tells the host's <see cref="IPendingQuestionObserver"/> that <paramref name="entry"/> is an
+    /// <c>AskUserQuestion</c> now waiting for the human. Does nothing for any other deferring tool,
+    /// and nothing at all when the host wired no observer.
+    /// </summary>
+    /// <remarks>
+    /// Never lets an observer's failure reach the run. The observer is a presentation hook: a host
+    /// whose broadcast throws must not turn a parked question into a failed run, because the question
+    /// itself is perfectly valid and the polling fallback still finds it.
+    /// </remarks>
+    private void RaiseQuestionIfPending(DeferredEntry entry)
+    {
+        if (_pendingQuestionObserver is not { } observer)
+        {
+            return;
+        }
+
+        var notice = PendingQuestionNotices.TryDescribe(
+            ThreadId,
+            entry.FunctionName,
+            entry.ToolCallId,
+            entry.FunctionArgs,
+            DateTimeOffset.FromUnixTimeMilliseconds(entry.DeferredAtUnixMs)
+        );
+        if (notice is null)
+        {
+            return;
+        }
+
+        try
+        {
+            observer.OnQuestionRaised(notice);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Pending-question observer threw for tool call {ToolCallId}", entry.ToolCallId);
+        }
+    }
+
+    /// <summary>
+    /// Tells the host's <see cref="IPendingQuestionObserver"/> that an <c>AskUserQuestion</c> has
+    /// stopped waiting. Same guards as <see cref="RaiseQuestionIfPending"/>.
+    /// </summary>
+    private void SettleQuestionIfPending(DeferredEntry entry)
+    {
+        if (
+            _pendingQuestionObserver is not { } observer
+            || !string.Equals(entry.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+        )
+        {
+            return;
+        }
+
+        try
+        {
+            observer.OnQuestionSettled(ThreadId, entry.ToolCallId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Pending-question observer threw settling tool call {ToolCallId}", entry.ToolCallId);
+        }
+    }
+
+    /// <summary>
     /// Returns the set of tool calls currently deferred (awaiting external resolution).
     /// Hosts use this to inspect state, render pending UI, or — on process restart —
     /// reconnect external workflows to the calls they're supposed to complete.
@@ -4071,6 +4181,12 @@ public sealed class MultiTurnAgentLoop
             if (_delayed.TryReserve(entry, parked: true))
             {
                 restoredCount++;
+
+                // A restart rebuilds a question that is STILL waiting, and a host whose in-memory
+                // record died with the previous process has no other way to learn about it. The
+                // contract says a repeat for the same tool call id is expected, so re-raising here
+                // cannot double-count anything that keys on (root, tool call id).
+                RaiseQuestionIfPending(entry);
             }
 
             // Remember the last-loaded deferring run so inputs arriving while the conversation is

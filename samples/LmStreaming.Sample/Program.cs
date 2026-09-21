@@ -2212,7 +2212,15 @@ try
                         // the turn loop exactly as before. ConversationsController.GetMessages hides the
                         // persisted notice rows from the browser on reload.
                         elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
-                    );
+                    )
+                    {
+                        // Push a parked AskUserQuestion to every open tab over /ws/events, from this
+                        // root and from every sub-agent it spawns at any depth. Supplied here rather
+                        // than to the pool because the loop is what this host constructs; an init
+                        // property rather than a constructor argument because LmMultiTurn ships as a
+                        // package whose constructor shape is pinned.
+                        PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                    };
 
                     // #676: whatever the LAST process wrote about this root's agents is reconciled into
                     // this collaboration, and the roster plus its open reply-bearing obligations are then
@@ -2505,6 +2513,13 @@ try
     // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
     _ = builder.Services.AddSingleton<WebSocketConnectionRegistry>();
     _ = builder.Services.AddSingleton<ChatWebSocketManager>();
+
+    // The app-wide pending-question channel behind /ws/events. Registered unconditionally: it is
+    // inert until an agent loop reports a parked AskUserQuestion, and a client that never opens the
+    // socket costs it one idle pump. Conversation sockets are per-thread, so a question raised in a
+    // conversation the user is not looking at has no socket of its own to arrive on — this is that
+    // socket. See PendingQuestionHub for why polling could not close the same gap.
+    _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
 
@@ -2803,6 +2818,81 @@ try
 
                 webSocket.Dispose();
                 wsLogger.LogInformation("Sub-agent WebSocket connection closed for agent {AgentId}", agentId);
+            }
+        }
+    );
+
+    // An APP-WIDE event socket, deliberately not attached to any one conversation. It carries only
+    // pending-question events today:
+    //
+    //   {"$type":"snapshot","questions":[ <pending>, ... ]}     on connect
+    //   {"$type":"question_pending", rootThreadId, agentId, childThreadId, toolCallId, prompt,
+    //                                conversationTitle, agentName, raisedAtUtc}
+    //   {"$type":"question_settled", rootThreadId, toolCallId}
+    //
+    // Why a separate route: "/ws" and "/ws/subagent" each bind ONE thread, so a question raised in a
+    // conversation the user is not looking at has no open socket to arrive on. The client used to
+    // find those by re-reading transcripts on a 30s/5m timer, which is as good as polling can get —
+    // `lastUpdated` moves when a run COMPLETES, and a run parked on a question has not completed.
+    //
+    // Authorization: this route sits under the "/ws" segment, so IdentityMiddleware already demands a
+    // principal exactly as it does for the other two. What it CANNOT do is gate the socket on one
+    // conversation, because the socket names none — so the principal is captured at the handshake and
+    // every event is filtered against it per subscriber (PendingQuestionHub.MayReadAsync) using the
+    // same ConversationAuthorizer the REST routes use. Read, not Write: this channel says a question
+    // exists and where to answer it; answering still goes through "/ws", which demands Write.
+    _ = app.Map(
+        "/ws/events",
+        async (HttpContext context, PendingQuestionHub hub, ILogger<Program> wsLogger, CancellationToken ct) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", ct);
+                return;
+            }
+
+            var principal =
+                context.Items[IdentityHttpItems.PrincipalKey] as AchieveAi.LmDotnetTools.LmCore.Identity.Principal;
+
+            var webSocket = await AcceptNegotiatedWebSocketAsync(context);
+            var subscriber = await hub.SubscribeAsync(webSocket, principal, ct);
+            wsLogger.LogInformation(
+                "Event WebSocket connection established ({ConnectionId}).",
+                subscriber.ConnectionId
+            );
+
+            try
+            {
+                // Read-only channel. Draining inbound frames is how the socket learns it was closed:
+                // without a receive in flight a client close is never observed and the subscriber
+                // would be held until the host shuts down.
+                var buffer = new byte[1024];
+                while (webSocket.State == System.Net.WebSockets.WebSocketState.Open && !ct.IsCancellationRequested)
+                {
+                    var received = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    if (received.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (System.Net.WebSockets.WebSocketException) { }
+            finally
+            {
+                hub.Unsubscribe(subscriber);
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation("Event WebSocket connection closed ({ConnectionId}).", subscriber.ConnectionId);
             }
         }
     );
