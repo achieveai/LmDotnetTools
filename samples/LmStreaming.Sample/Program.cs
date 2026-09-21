@@ -800,7 +800,7 @@ try
         // while any model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddConfiguredPricing registers this
-        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 156K, which is also the window
+        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 196K, which is also the window
         // of any model the catalog does not list). Null only for a container that never registered it.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
         // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see

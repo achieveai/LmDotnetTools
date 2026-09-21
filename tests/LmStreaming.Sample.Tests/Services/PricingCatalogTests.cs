@@ -562,13 +562,13 @@ public class PricingCatalogTests
     // does not know (Claude CLI / Codex / unlisted Copilot ids), so the gauge and compaction work for them. ---
 
     [Fact]
-    public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault156KWindow()
+    public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault196KWindow()
     {
         var capacity = CapacityFrom(Config()).Resolve("gpt-5.6-sol");
 
         capacity.Should().NotBeNull("an unknown model falls back to the host cap rather than no window");
         capacity!.WindowTokens.Should().Be(PricingCatalog.DefaultMaxContextTokens);
-        PricingCatalog.DefaultMaxContextTokens.Should().Be(156_000);
+        PricingCatalog.DefaultMaxContextTokens.Should().Be(196_000);
         capacity.MaxOutputTokens.Should().BeNull("the cap states a window, not an output ceiling");
     }
 
@@ -585,7 +585,7 @@ public class PricingCatalogTests
             )
             .Resolve("claude-sonnet-4-5-20250929");
 
-        capacity!.WindowTokens.Should().Be(156_000);
+        capacity!.WindowTokens.Should().Be(196_000);
         capacity.MaxOutputTokens.Should().Be(64_000);
     }
 
@@ -621,11 +621,11 @@ public class PricingCatalogTests
     }
 
     [Fact]
-    public void TheShippedAppsettings_CapsContextAt156K()
+    public void TheShippedAppsettings_CapsContextAt196K()
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        configuration.GetValue<long?>("ContextWindow:MaxTokens").Should().Be(156_000);
+        configuration.GetValue<long?>("ContextWindow:MaxTokens").Should().Be(196_000);
     }
 
     [Theory]
@@ -649,7 +649,7 @@ public class PricingCatalogTests
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
         ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
-        CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(156_000);
+        CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(196_000);
     }
 
     [Theory]
