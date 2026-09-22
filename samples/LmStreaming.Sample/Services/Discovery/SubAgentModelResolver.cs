@@ -63,7 +63,7 @@ internal sealed class SubAgentModelResolver
         && _allowedModelIdSet.Contains(model.Id);
 
     // Collapses the tier configuration into the sanctioned override set: every distinct candidate named
-    // across all tiers that resolves to a ROUTABLE (Anthropic|Responses) Copilot catalog model, keyed by
+    // across all tiers that resolves to a ROUTABLE (Anthropic|Responses|ChatCompletions) Copilot catalog model, keyed by
     // its canonical catalog id (so casing/aliases normalize and a model listed in several tiers appears
     // once). Walking tiers weakest-first gives a stable, cheapest-first advertised order. This is the same
     // Copilot-only, routable filter TryGetRoutableModel applies to tier resolution, so the menu, the
@@ -85,7 +85,14 @@ internal sealed class SubAgentModelResolver
                     continue;
                 }
 
-                if (model.Transport is not (CopilotModelTransport.Anthropic or CopilotModelTransport.Responses))
+                if (
+                    model.Transport
+                    is not (
+                        CopilotModelTransport.Anthropic
+                        or CopilotModelTransport.Responses
+                        or CopilotModelTransport.ChatCompletions
+                    )
+                )
                 {
                     continue;
                 }
@@ -231,7 +238,12 @@ internal sealed class SubAgentModelResolver
                 continue;
             }
 
-            if (model.Transport is CopilotModelTransport.Anthropic or CopilotModelTransport.Responses)
+            if (
+                model.Transport
+                is CopilotModelTransport.Anthropic
+                    or CopilotModelTransport.Responses
+                    or CopilotModelTransport.ChatCompletions
+            )
             {
                 modelId = model.Id;
                 return true;

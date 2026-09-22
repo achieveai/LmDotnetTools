@@ -4,13 +4,12 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 /// <summary>
 ///     The request transport a Copilot model is reachable through, derived from the model's
-///     <c>supported_endpoints</c>. Only <see cref="Anthropic"/> and <see cref="Responses"/> are
-///     routable by the sample today; everything else (e.g. <c>/chat/completions</c>-only models
-///     such as Gemini) is <see cref="Unsupported"/> and filtered out.
+///     <c>supported_endpoints</c>. Models with none of the three routable endpoints are
+///     <see cref="Unsupported"/> and filtered out.
 /// </summary>
 public enum CopilotModelTransport
 {
-    /// <summary>No routable endpoint (e.g. only <c>/chat/completions</c>).</summary>
+    /// <summary>No routable endpoint.</summary>
     Unsupported = 0,
 
     /// <summary>Reachable via <c>POST /v1/messages</c> (Anthropic Messages shape).</summary>
@@ -18,6 +17,12 @@ public enum CopilotModelTransport
 
     /// <summary>Reachable via <c>POST /responses</c> (OpenAI Responses shape).</summary>
     Responses = 2,
+
+    /// <summary>
+    ///     Reachable only via <c>POST /chat/completions</c> (OpenAI Chat Completions shape, e.g. Gemini),
+    ///     in Copilot's dialect — see <c>CopilotChatCompletionsDialectHandler</c>.
+    /// </summary>
+    ChatCompletions = 3,
 }
 
 /// <summary>
@@ -26,7 +31,7 @@ public enum CopilotModelTransport
 /// </summary>
 /// <param name="Id">Raw Copilot model id (e.g. <c>claude-opus-4.8</c>, <c>gpt-5.5</c>). Used verbatim as the request model id.</param>
 /// <param name="DisplayName">Human-friendly label from the response <c>name</c> (falls back to <see cref="Id"/>).</param>
-/// <param name="Vendor">Normalized publisher — <c>Anthropic</c> or <c>OpenAI</c> (<c>Azure OpenAI</c> collapses to <c>OpenAI</c>).</param>
+/// <param name="Vendor">Normalized publisher (<c>Azure OpenAI</c> collapses to <c>OpenAI</c>).</param>
 /// <param name="Transport">The routable transport derived from <c>supported_endpoints</c>.</param>
 /// <param name="SupportsAdaptiveThinking">
 ///     <c>true</c> when the model advertises <c>capabilities.supports.adaptive_thinking</c>. Such
@@ -89,8 +94,8 @@ public sealed record CopilotModelInfo(
 }
 
 /// <summary>
-///     The normalized publisher partition a Copilot model belongs to. The sample only surfaces these
-///     two vendors; Google/Microsoft and any other publisher are excluded during parsing.
+///     The normalized publisher partition a Copilot model belongs to. Only these vendors are surfaced;
+///     any other publisher (e.g. Microsoft) is excluded during parsing.
 /// </summary>
 public enum CopilotModelVendor
 {
@@ -99,4 +104,10 @@ public enum CopilotModelVendor
 
     /// <summary>OpenAI (GPT/o-series) models, including Copilot's <c>Azure OpenAI</c>-hosted variants.</summary>
     OpenAI = 2,
+
+    /// <summary>xAI (Grok) models, served over the Responses transport.</summary>
+    XAi = 3,
+
+    /// <summary>Google (Gemini) models, served over the Chat Completions transport.</summary>
+    Google = 4,
 }

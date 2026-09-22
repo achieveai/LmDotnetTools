@@ -9,20 +9,20 @@ public sealed class CopilotModelCatalogParserTests
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "copilot-models-real-response.json"));
 
     [Fact]
-    public void Parse_real_response_keeps_only_routable_anthropic_and_openai_models()
+    public void Parse_real_response_keeps_only_routable_partitioned_models()
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        // 34 models upstream → 13 routable Anthropic/OpenAI (7 Claude + 5 OpenAI + 1 Azure-OpenAI).
-        models.Should().HaveCount(13);
-        models
-            .Should()
-            .OnlyContain(m => m.Vendor == CopilotModelVendor.Anthropic || m.Vendor == CopilotModelVendor.OpenAI);
+        // 34 models upstream → 15 routable (7 Claude + 5 OpenAI + 1 Azure-OpenAI + 2 Gemini).
+        models.Should().HaveCount(15);
         models
             .Should()
             .OnlyContain(m =>
-                m.Transport == CopilotModelTransport.Anthropic || m.Transport == CopilotModelTransport.Responses
+                m.Vendor == CopilotModelVendor.Anthropic
+                || m.Vendor == CopilotModelVendor.OpenAI
+                || m.Vendor == CopilotModelVendor.Google
             );
+        models.Should().NotContain(m => m.Transport == CopilotModelTransport.Unsupported);
     }
 
     [Fact]
@@ -62,11 +62,49 @@ public sealed class CopilotModelCatalogParserTests
     }
 
     [Fact]
-    public void Parse_excludes_google_and_chat_completions_only_models()
+    public void Parse_maps_gemini_models_to_google_partition_with_chat_completions_transport()
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        models.Select(m => m.Id).Should().NotContain(["gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-pro"]);
+        var google = models.Where(m => m.Vendor == CopilotModelVendor.Google).ToList();
+
+        // gemini-2.5-pro declares no supported_endpoints, so it stays unroutable.
+        google.Select(m => m.Id).Should().BeEquivalentTo("gemini-3.1-pro-preview", "gemini-3.5-flash");
+        google.Should().OnlyContain(m => m.Transport == CopilotModelTransport.ChatCompletions);
+    }
+
+    [Fact]
+    public void Parse_maps_xai_models_to_xai_partition_with_responses_transport()
+    {
+        const string json = """
+            { "data": [
+              { "id": "grok-4.7", "name": "Grok 4.7", "vendor": "xAI", "supported_endpoints": ["/responses"] }
+            ] }
+            """;
+
+        var model = CopilotModelCatalogParser.Parse(json).Should().ContainSingle().Subject;
+
+        model.Vendor.Should().Be(CopilotModelVendor.XAi);
+        model.Transport.Should().Be(CopilotModelTransport.Responses);
+    }
+
+    [Fact]
+    public void Parse_prefers_native_endpoints_over_chat_completions()
+    {
+        // Claude and GPT also list /chat/completions; the native endpoint must keep winning.
+        const string json = """
+            { "data": [
+              { "id": "claude-x", "vendor": "Anthropic", "supported_endpoints": ["/chat/completions", "/v1/messages"] },
+              { "id": "gpt-x", "vendor": "OpenAI", "supported_endpoints": ["/chat/completions", "/responses"] }
+            ] }
+            """;
+
+        var models = CopilotModelCatalogParser.Parse(json);
+
+        models
+            .Select(m => m.Transport)
+            .Should()
+            .Equal(CopilotModelTransport.Anthropic, CopilotModelTransport.Responses);
     }
 
     [Fact]

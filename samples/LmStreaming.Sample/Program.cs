@@ -3307,8 +3307,9 @@ public partial class Program
 
     /// <summary>
     ///     Maps a discovered Copilot model's transport to the matching agent factory. Anthropic-shaped
-    ///     models route through the Copilot Messages backend; OpenAI-shaped models through the Copilot
-    ///     Responses backend.
+    ///     models route through the Copilot Messages backend; OpenAI-shaped models (and Grok) through the
+    ///     Copilot Responses backend; Chat-Completions-only models (Gemini) through Copilot's
+    ///     <c>/chat/completions</c>.
     /// </summary>
     internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
     {
@@ -3316,6 +3317,10 @@ public partial class Program
         {
             CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
             CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
+            CopilotModelTransport.ChatCompletions => CreateCopilotChatCompletionsAgent(
+                model.DisplayName,
+                loggerFactory
+            ),
             _ => throw new ProviderUnavailableException(model.Id, $"unsupported Copilot transport {model.Transport}"),
         };
     }
@@ -3363,6 +3368,21 @@ public partial class Program
             CopilotResponsesTransport.Sse,
             s_copilotSession.Value,
             logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>()
+        );
+    }
+
+    /// <summary>
+    ///     Creates an OpenAI Chat Completions agent (Gemini) routed through the GitHub Copilot backend.
+    /// </summary>
+    private static IStreamingAgent CreateCopilotChatCompletionsAgent(string name, ILoggerFactory loggerFactory)
+    {
+        Log.Information("Creating Copilot-backed Chat Completions agent: {Name}", name);
+        return CopilotChatCompletionsAgentFactory.Create(
+            name,
+            s_copilotTokenProvider.Value,
+            timeout: CopilotResponseTimeout,
+            session: s_copilotSession.Value,
+            logger: loggerFactory.CreateLogger<OpenClientAgent>()
         );
     }
 

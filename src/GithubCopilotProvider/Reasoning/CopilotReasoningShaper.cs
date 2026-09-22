@@ -38,6 +38,12 @@ public static class CopilotReasoningShaper
                 "Reasoning",
                 new ResponseReasoningOptions { Effort = effort, Summary = "auto" }
             ),
+            // Chat Completions carries effort as a top-level "reasoning_effort" string; the extra
+            // property is copied verbatim into the request body.
+            CopilotModelTransport.ChatCompletions when effort is not null => ImmutableDictionary<
+                string,
+                object?
+            >.Empty.Add("reasoning_effort", effort),
             _ => ImmutableDictionary<string, object?>.Empty,
         };
     }

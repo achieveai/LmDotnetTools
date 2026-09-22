@@ -1,13 +1,13 @@
-# GithubCopilotProvider — route Anthropic & OpenAI agents through GitHub Copilot
+# GithubCopilotProvider — route Anthropic, OpenAI, xAI & Google models through GitHub Copilot
 
-This package lets you drive the existing `AnthropicProvider` and `OpenAiResponsesProvider`
-agents against the **GitHub Copilot** backend instead of the vendors' public APIs. It owns the
+This package lets you drive the existing `AnthropicProvider`, `OpenAiResponsesProvider` and
+`OpenAIProvider` agents against the **GitHub Copilot** backend instead of the vendors' public APIs. It owns the
 Copilot-specific concerns — OAuth token acquisition, the `copilot-*` request headers, and the
 SSE/WebSocket transports — and reuses the provider agents and their event→message mapping
 unchanged. Only the HTTP/WebSocket transport differs.
 
-Because of that role it is the one project that references **both** sibling providers
-(`AnthropicProvider` and `OpenAiResponsesProvider`); the dependency direction is intentional and
+Because of that role it is the one project that references the sibling providers
+(`AnthropicProvider`, `OpenAiResponsesProvider` and `OpenAIProvider`); the dependency direction is intentional and
 one-way — the providers know nothing about Copilot.
 
 ## Components
@@ -27,13 +27,21 @@ one-way — the providers know nothing about Copilot.
 - **`CopilotHeadersHandler`** — `DelegatingHandler` that attaches the bearer token and the Copilot
   headers (`copilot-integration-id`, `editor-version`, session/interaction ids, …) to every request
   without overwriting headers the caller already set.
+- **`CopilotChatCompletionsDialectHandler`** — `DelegatingHandler` that translates Copilot's
+  `/chat/completions` dialect (used by Gemini) to and from the OpenAI shape `OpenClient` speaks:
+  `reasoning_text`/`reasoning_opaque` ↔ `reasoning`/`reasoning_details`, `content: null` → `""`,
+  zero-token usage stripped from each chunk, and reasoning split out of a tool-call chunk. Every
+  Copilot quirk lives here; `OpenAIProvider` stays unaware of Copilot.
 
 ### Agents (`Agents/`)
 - **`CopilotAnthropicAgentFactory.Create(...)`** — builds an `AnthropicAgent` that talks the
   Anthropic Messages API (`/v1/messages`) through Copilot.
 - **`CopilotResponsesAgentFactory.Create(...)`** — builds an `OpenAiResponsesAgent` that talks the
   OpenAI Responses API (`/responses`) through Copilot over **SSE** or **WebSocket**
-  (`CopilotResponsesTransport`).
+  (`CopilotResponsesTransport`). Grok (xAI) models use this path too.
+- **`CopilotChatCompletionsAgentFactory.Create(...)`** — builds an `OpenClientAgent` that talks
+  `/chat/completions` through Copilot via the dialect handler. Used for models whose only endpoint
+  is chat completions (Gemini).
 
 ### Reasoning (`Reasoning/`)
 - **`CopilotReasoningShaper.Shape(model, effort)`** — turns a typed `ReasoningEffort` into the
@@ -54,7 +62,11 @@ the model reasons but does not affect whether the reasoning is readable. `"summa
 display value this SDK ever requests — never `"updates"`, never raw chain-of-thought.
 
 Responses-transport models take `reasoning: {effort, summary: "auto"}`; `summary` is the equivalent
-opt-in there.
+opt-in there. Chat-completions models take a top-level `reasoning_effort` string.
+
+`CopilotModelCatalogParser` picks the transport from each model's `supported_endpoints`, preferring
+`/v1/messages`, then `/responses`, then `/chat/completions`, so Claude and GPT models that also list
+chat completions keep their native API.
 
 ## Usage
 

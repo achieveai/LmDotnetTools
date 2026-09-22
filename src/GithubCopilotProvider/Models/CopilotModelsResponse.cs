@@ -32,6 +32,9 @@ public static class CopilotModelsResponse
     /// <summary><c>ws:/responses</c> — the WebSocket variant of the Responses transport.</summary>
     public const string ResponsesWebSocketEndpoint = "ws:/responses";
 
+    /// <summary><c>POST /chat/completions</c> — the OpenAI Chat Completions transport.</summary>
+    public const string ChatCompletionsEndpoint = "/chat/completions";
+
     /// <summary>
     ///     Unwraps the response to its model list and yields the object entries in upstream order.
     ///     Accepts both the <c>{ "data": [ ... ] }</c> envelope and a bare top-level array; any other
