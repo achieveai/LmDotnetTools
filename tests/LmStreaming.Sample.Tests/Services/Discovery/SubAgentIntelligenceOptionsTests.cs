@@ -1,4 +1,5 @@
 using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Configuration;
@@ -153,6 +154,54 @@ public sealed class SubAgentIntelligenceOptionsTests
         options.Tiers.Should().ContainSingle().Which.Key.Should().Be(5);
         options.Tiers[5].Should().Equal("real-model");
         logger.Entries.Count(entry => entry.Level == LogLevel.Error).Should().Be(1);
+    }
+
+    [Fact]
+    public void Load_ParsesTierEffortsAndLogsAndSkipsInvalidOnes()
+    {
+        // Efforts share the frontmatter vocabulary (case-insensitive). A bad value or key is logged and
+        // skipped; the tier keeps no effort of its own rather than failing the whole map.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Efforts:1"] = "HIGH",
+                    ["SubAgentIntelligence:Efforts:3"] = "medium",
+                    ["SubAgentIntelligence:Efforts:4"] = "extra-high",
+                    ["SubAgentIntelligence:Efforts:5"] = "turbo",
+                    ["SubAgentIntelligence:Efforts:9"] = "low",
+                }
+            )
+            .Build();
+        var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
+
+        var options = SubAgentIntelligenceOptions.Load(configuration, logger);
+
+        options
+            .Efforts.Should()
+            .BeEquivalentTo(
+                new Dictionary<int, ReasoningEffort>
+                {
+                    [1] = ReasoningEffort.High,
+                    [3] = ReasoningEffort.Medium,
+                    [4] = ReasoningEffort.Xhigh,
+                }
+            );
+        logger.Entries.Count(entry => entry.Level == LogLevel.Error).Should().Be(2);
+    }
+
+    [Fact]
+    public void Load_WithoutAnEffortsSectionLeavesEveryTierWithoutEffort()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["SubAgentIntelligence:Tiers:3:0"] = "model-a" })
+            .Build();
+        var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
+
+        var options = SubAgentIntelligenceOptions.Load(configuration, logger);
+
+        options.Efforts.Should().BeEmpty();
+        logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Error);
     }
 
     [Fact]

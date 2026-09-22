@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 namespace LmStreaming.Sample.Services.Discovery;
 
@@ -177,16 +179,24 @@ internal sealed class SubAgentModelResolver
     }
 
     /// <summary>
+    /// The reasoning effort configured for <paramref name="tier"/> in
+    /// <c>SubAgentIntelligence:Efforts</c>, or null when the tier names none.
+    /// </summary>
+    internal ReasoningEffort? TierEffort(int tier) =>
+        _options.Efforts.TryGetValue(tier, out var effort) ? effort : null;
+
+    /// <summary>
     /// Like <see cref="Resolve"/>, but when the requested tier is unconfigured or has no routable
     /// catalog candidate it CLIMBS to the next-higher configured tier (more capable) until one
-    /// resolves or the ladder is exhausted. An explicit model still wins outright and a null tier
-    /// still inherits the parent. This is the per-spawn entry point used when a workflow controller
-    /// (or a JSON-repair fallback, via <c>ResolveClimbing(null, 0)</c> for the lowest available
-    /// tier) requests a tier that may be unmapped in this deployment — climbing yields the nearest
-    /// available model rather than silently inheriting the parent, which is exactly the gap the
-    /// single-tier <see cref="Resolve"/> leaves.
+    /// resolves or the ladder is exhausted. An explicit model still wins outright (with no tier effort)
+    /// and a null tier still inherits the parent. The effort returned is the one configured for the
+    /// tier the climb LANDED on, so a model always runs with the effort its own tier sanctions. This is
+    /// the per-spawn entry point used when a workflow controller (or a JSON-repair fallback, via
+    /// <c>ResolveClimbing(null, 0)</c> for the lowest available tier) requests a tier that may be
+    /// unmapped in this deployment — climbing yields the nearest available model rather than silently
+    /// inheriting the parent, which is exactly the gap the single-tier <see cref="Resolve"/> leaves.
     /// </summary>
-    internal string? ResolveClimbing(string? explicitModel, int? modelIntelligence)
+    internal SubAgentTierSelection? ResolveClimbing(string? explicitModel, int? modelIntelligence)
     {
         var normalizedModel = explicitModel?.Trim();
         if (
@@ -194,7 +204,7 @@ internal sealed class SubAgentModelResolver
             && !string.Equals(normalizedModel, "inherit", StringComparison.OrdinalIgnoreCase)
         )
         {
-            return normalizedModel;
+            return new SubAgentTierSelection(normalizedModel, Effort: null);
         }
 
         if (modelIntelligence is null)
@@ -208,7 +218,7 @@ internal sealed class SubAgentModelResolver
         {
             if (TryGetRoutableModel(_options.Tiers[tier], out var routable))
             {
-                return routable;
+                return new SubAgentTierSelection(routable, TierEffort(tier));
             }
         }
 

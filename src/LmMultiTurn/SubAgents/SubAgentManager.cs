@@ -3417,12 +3417,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         // model, so model + budget inheritance treats it like any pinned model (override > tier > template
         // > parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the
         // sub-agent on its parent-inherited model, exactly as if no tier had been requested.
-        var tierResolvedModel =
+        var tierSelection =
             string.IsNullOrWhiteSpace(modelOverride)
             && modelIntelligence is { } tier
             && _options.TierModelResolver is { } tierResolver
                 ? tierResolver(tier)
                 : null;
+        var tierResolvedModel =
+            tierSelection is { } selection && !string.IsNullOrWhiteSpace(selection.ModelId) ? selection.ModelId : null;
 
         // The operator's conversation-wide default applies only when THIS SPAWN named neither a model nor a
         // resolvable tier. Folding it into effectiveModel is what places it above the template: everything
@@ -3440,14 +3442,22 @@ public sealed class SubAgentManager : IAsyncDisposable
             ? modelOverride
             : tierResolvedModel ?? conversationDefaultModel;
         var isModelTierResolved = template.IsModelTierResolved || tierResolvedModel is not null;
-        // A template-authored effort remains the most specific choice. The conversation floor is
-        // orthogonal to model routing and therefore survives spawn/template model and tier selection;
-        // the characteristics factory capability-shapes it for whichever model won. Only when neither
-        // exists do we apply the older parent-inheritance rule, which is intentionally suppressed by a
-        // task-specific model choice (see SubAgentOptions.InheritedEffort).
+        // The tier effort belongs to the model its tier picked, so it applies only while that model runs:
+        // a spawn tier's model always runs; a tier-authored template's model runs only when this spawn chose
+        // no model of its own (override, spawn tier, or conversation default).
+        var tierEffort =
+            tierResolvedModel is not null ? tierSelection?.Effort
+            : template.IsModelTierResolved && effectiveModel is null ? template.TierEffort
+            : null;
+        // A template-authored effort remains the most specific choice. Next comes the tier's effort, raised
+        // to the conversation floor when the floor is higher. The floor is orthogonal to model routing and
+        // therefore survives spawn/template model and tier selection; the characteristics factory
+        // capability-shapes whichever effort wins for whichever model won. Only when none exists do we
+        // apply the older parent-inheritance rule, which is intentionally suppressed by a task-specific
+        // model choice (see SubAgentOptions.InheritedEffort).
         var requestedReasoningEffort =
             template.Effort
-            ?? _options.ConversationEffortFloor
+            ?? AtLeast(tierEffort, _options.ConversationEffortFloor)
             ?? (
                 !string.IsNullOrWhiteSpace(modelOverride) || template.IsModelExplicitlySelected || isModelTierResolved
                     ? null
@@ -3868,6 +3878,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             disposable.Dispose();
         }
     }
+
+    // The higher of two efforts, either of which may be absent. ReasoningEffort is declared weakest-first,
+    // so comparing its values orders it; this is a request-side choice, not a provider rank.
+    private static ReasoningEffort? AtLeast(ReasoningEffort? effort, ReasoningEffort? floor) =>
+        effort is { } e && floor is { } f ? (e >= f ? e : f) : effort ?? floor;
 
     /// <summary>
     /// Resolves the sub-agent's <see cref="GenerateReplyOptions"/> with model inheritance: an explicit

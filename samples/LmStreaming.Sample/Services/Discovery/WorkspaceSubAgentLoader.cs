@@ -292,6 +292,9 @@ public sealed class WorkspaceSubAgentLoader
         {
             CharacteristicsAgentFactory = characteristicsAgentFactory,
             ModelIntelligence = parsed.ModelIntelligence,
+            // Resolve does not climb, so the tier that picked the model is the authored one.
+            TierEffort =
+                isTierResolved && parsed.ModelIntelligence is { } tier ? _modelResolver?.TierEffort(tier) : null,
         };
     }
 

@@ -214,6 +214,114 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         receivedCharacteristics!.Effort.Should().Be(ReasoningEffort.Low);
     }
 
+    [Theory]
+    [InlineData(ReasoningEffort.High, null, null, ReasoningEffort.High)]
+    [InlineData(ReasoningEffort.High, ReasoningEffort.Xhigh, null, ReasoningEffort.Xhigh)]
+    [InlineData(ReasoningEffort.Xhigh, ReasoningEffort.Medium, null, ReasoningEffort.Xhigh)]
+    [InlineData(ReasoningEffort.High, ReasoningEffort.Xhigh, ReasoningEffort.Low, ReasoningEffort.Low)]
+    public async Task SpawnAsync_SpawnTierEffortRanksBelowTemplateEffortAndIsRaisedToTheFloor(
+        ReasoningEffort tierEffort,
+        ReasoningEffort? conversationEffortFloor,
+        ReasoningEffort? templateEffort,
+        ReasoningEffort expected
+    )
+    {
+        // Precedence: authored template effort, else max(tier effort, conversation floor). The floor is a
+        // minimum, so it lifts a lower tier effort but never lowers a higher one.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            Effort = templateEffort,
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            conversationEffortFloor: conversationEffortFloor,
+            tierModelResolver: tier => tier == 3 ? "tier-model" : null,
+            tierEffort: tierEffort
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
+
+        receivedCharacteristics!.ModelId.Should().Be("tier-model");
+        receivedCharacteristics.Effort.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ModelOverrideDropsTheTierEffort()
+    {
+        // A named model is not the tier's model, so the tier's effort must not ride along with it.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            tierModelResolver: tier => tier == 3 ? "tier-model" : null,
+            tierEffort: ReasoningEffort.Xhigh
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
+
+        receivedCharacteristics!.ModelId.Should().Be("spawn-model");
+        receivedCharacteristics.Effort.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false, ReasoningEffort.Medium)]
+    [InlineData(true, ReasoningEffort.Xhigh)]
+    public async Task SpawnAsync_TemplateTierEffortAppliesOnlyWhileTheTemplateTierModelRuns(
+        bool spawnPicksTier,
+        ReasoningEffort expected
+    )
+    {
+        // A tier-authored template carries its tier's effort. It holds while the template's own model runs;
+        // once the spawn picks a tier of its own, that tier's effort replaces it with its model.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a tier-resolved test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            DefaultOptions = new GenerateReplyOptions { ModelId = "template-tier-model" },
+            IsModelTierResolved = true,
+            TierEffort = ReasoningEffort.Medium,
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            tierModelResolver: tier => tier == 4 ? "spawn-tier-model" : null,
+            tierEffort: ReasoningEffort.Xhigh
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: spawnPicksTier ? 4 : null);
+
+        receivedCharacteristics!.ModelId.Should().Be(spawnPicksTier ? "spawn-tier-model" : "template-tier-model");
+        receivedCharacteristics.Effort.Should().Be(expected);
+    }
+
     [Fact]
     public async Task SpawnAsync_TemplateEffortOverridesInheritedEffort()
     {
@@ -439,7 +547,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         {
             Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             ConversationEffortFloor = ReasoningEffort.Xhigh,
-            TierModelResolver = tier => tier == 3 ? "tier-3-model" : null,
+            TierModelResolver = tier => tier == 3 ? new SubAgentTierSelection("tier-3-model", Effort: null) : null,
             PlainPathCharacteristicsAgentFactory = characteristics =>
             {
                 receivedCharacteristics = characteristics;
@@ -1151,7 +1259,8 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         ImmutableDictionary<string, object?>? inheritedReasoning = null,
         Func<int, string?>? tierModelResolver = null,
         Func<string, IStreamingAgent>? tierAgentFactory = null,
-        string? defaultSubAgentModelId = null
+        string? defaultSubAgentModelId = null,
+        ReasoningEffort? tierEffort = null
     )
     {
         var options = new SubAgentOptions
@@ -1160,7 +1269,10 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             InheritedEffort = inheritedEffort,
             ConversationEffortFloor = conversationEffortFloor,
             InheritedReasoning = inheritedReasoning,
-            TierModelResolver = tierModelResolver,
+            // Every resolved tier model carries the same tierEffort (none unless a case sets it).
+            TierModelResolver = tierModelResolver is null
+                ? null
+                : tier => tierModelResolver(tier) is { } model ? new SubAgentTierSelection(model, tierEffort) : null,
             TierAgentFactory = tierAgentFactory,
             DefaultSubAgentModelId = defaultSubAgentModelId,
         };
