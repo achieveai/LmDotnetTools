@@ -729,6 +729,151 @@ public class MultiTurnAgentLoopReconfigureTests
 
     #region Helpers
 
+    /// <summary>
+    /// A host that hands the loop the provider it CONSTRUCTED it with (OwnsProviderAgent) gets that
+    /// provider released by the first successful switch, once, and never again by later switches.
+    /// </summary>
+    [Fact]
+    public async Task AnOwnedConstructorProvider_IsDisposedOnceByTheFirstSwitch()
+    {
+        var constructed = new DisposableProvider();
+        await using var loop = new MultiTurnAgentLoop(
+            constructed,
+            new FunctionRegistry(),
+            threadId: "reconfigure-owned-ctor-switch",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        )
+        {
+            OwnsProviderAgent = true,
+        };
+        loop.OwnsProviderAgent.Should().BeTrue();
+        constructed.Disposals.Should().Be(0, "guard: taking ownership releases nothing");
+
+        var first = new DisposableProvider();
+        loop.Reconfigure(NewSpec(first, new FunctionRegistry(), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+        constructed.Disposals.Should().Be(1, "owned and superseded by the first switch");
+        first.Disposals.Should().Be(0, "the provider now serving the loop is live");
+
+        loop.Reconfigure(NewSpec(new DisposableProvider(), new FunctionRegistry(), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+        constructed.Disposals.Should().Be(1, "released once, not again by a later switch");
+        first.Disposals.Should().Be(1);
+    }
+
+    /// <summary>
+    /// A conversation that is never switched still releases the owned constructor provider at teardown,
+    /// once; the default leaves it alone, as before.
+    /// </summary>
+    [Fact]
+    public async Task AnOwnedConstructorProvider_IsDisposedOnceAtUnswitchedTeardown()
+    {
+        var owned = new DisposableProvider();
+        var loop = new MultiTurnAgentLoop(
+            owned,
+            new FunctionRegistry(),
+            threadId: "reconfigure-owned-ctor-teardown",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        )
+        {
+            OwnsProviderAgent = true,
+        };
+        var hostOwned = new DisposableProvider();
+        var defaultLoop = new MultiTurnAgentLoop(
+            hostOwned,
+            new FunctionRegistry(),
+            threadId: "reconfigure-host-ctor-teardown",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+        defaultLoop.OwnsProviderAgent.Should().BeFalse();
+
+        await loop.DisposeAsync();
+        await loop.DisposeAsync();
+        await defaultLoop.DisposeAsync();
+
+        owned.Disposals.Should().Be(1, "teardown releases the owned constructor provider exactly once");
+        hostOwned.Disposals.Should().Be(0, "without the opt-in the constructor provider stays the host's");
+    }
+
+    /// <summary>
+    /// A switch refused because a run is streaming on the owned constructor provider leaves it live: the
+    /// run finishes on it and nothing is released.
+    /// </summary>
+    [Fact]
+    public async Task AnOwnedConstructorProvider_SurvivesARefusedBusySwitch()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var constructed = new DisposableProvider(entered, release.Task);
+        await using var loop = new MultiTurnAgentLoop(
+            constructed,
+            RegistryWith("OldOnly"),
+            threadId: "reconfigure-owned-ctor-busy",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        )
+        {
+            OwnsProviderAgent = true,
+        };
+
+        using var cts = new CancellationTokenSource();
+        var runs = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        _ = loop.RunAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "first", Role = Role.User }]);
+        await entered.Task.WaitAsync(Wait.DefaultTimeout);
+
+        loop.Reconfigure(NewSpec(new DisposableProvider(), RegistryWith("NewOnly"), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.RefusedBusy);
+        constructed.Disposals.Should().Be(0, "the run in flight is streaming on it");
+
+        _ = release.TrySetResult();
+        await runs.WaitAsync(0);
+        constructed.CallCount.Should().Be(1, "the run finished on the provider it started on");
+        constructed.Disposals.Should().Be(0);
+        loop.OwnsProviderAgent.Should().BeTrue("a refusal leaves ownership where it was");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// A switch that fails to build leaves the owned constructor provider live and owned, and it still
+    /// serves the next turn.
+    /// </summary>
+    [Fact]
+    public async Task AnOwnedConstructorProvider_SurvivesASwitchThatFailsToBuild()
+    {
+        var constructed = new DisposableProvider();
+        await using var loop = new MultiTurnAgentLoop(
+            constructed,
+            RegistryWith("OldOnly"),
+            threadId: "reconfigure-owned-ctor-build-failure",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        )
+        {
+            OwnsProviderAgent = true,
+        };
+
+        var broken = RegistryWith("NewOnly").AddProvider(new ThrowingFunctionProvider());
+        loop.Invoking(l => l.Reconfigure(NewSpec(new DisposableProvider(), broken, ownsProvider: true)))
+            .Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*cannot enumerate*");
+        constructed.Disposals.Should().Be(0, "the loop is still on it");
+        loop.OwnsProviderAgent.Should().BeTrue("a failed build leaves ownership where it was");
+
+        using var cts = new CancellationTokenSource();
+        var runs = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        _ = loop.RunAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "after the failure", Role = Role.User }]);
+        await runs.WaitAsync(0);
+        constructed.CallCount.Should().Be(1, "the owned constructor provider still serves");
+        constructed.Disposals.Should().Be(0);
+
+        await cts.CancelAsync();
+    }
+
     private static AgentReconfiguration NewSpec(
         IStreamingAgent provider,
         FunctionRegistry registry,

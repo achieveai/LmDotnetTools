@@ -41,7 +41,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 ///     agent disposes it (<see cref="IAsyncDisposable"/> preferred, else <see cref="IDisposable"/>)
 ///     exactly once: when a LATER successful reconfiguration supersedes it, or at the agent's own
 ///     teardown. False — the default, and the only safe answer for a provider any other component
-///     still holds — leaves its lifetime to the host, exactly as a provider supplied at construction.
+///     still holds — leaves its lifetime to the host, as for a provider supplied at construction unless the host initialized
+///     the loop's <c>OwnsProviderAgent</c>.
 ///     A refused or failed reconfiguration disposes nothing either way.
 /// </param>
 public sealed record AgentReconfiguration(

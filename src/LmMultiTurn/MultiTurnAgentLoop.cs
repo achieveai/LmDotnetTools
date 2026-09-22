@@ -66,9 +66,14 @@ public sealed class MultiTurnAgentLoop
     private IDictionary<string, ToolHandler> _toolHandlers;
 
     // The bare provider this loop OWNS, when a reconfiguration said so (AgentReconfiguration.
-    // OwnsProviderAgent); null for one the host keeps alive itself, which is what a provider supplied
-    // at construction always is. Released exactly once: by the commit that supersedes it, or at teardown.
+    // OwnsProviderAgent) or the host initialized OwnsProviderAgent for the one supplied at construction;
+    // null for one the host keeps alive itself. Released exactly once: by the commit that supersedes it,
+    // or at teardown.
     private IStreamingAgent? _ownedProviderAgent;
+
+    // The bare provider supplied at construction (the stack wraps it), kept so OwnsProviderAgent's
+    // initializer, which runs after the constructor, can take ownership of it.
+    private readonly IStreamingAgent _constructedProviderAgent;
 
     // Per-generation context observation (#681). The ordinal is loop-local and monotonic across restarts:
     // seeded lazily from the persisted latest observation on the first generation after a restart, then
@@ -706,6 +711,7 @@ public sealed class MultiTurnAgentLoop
         }
 
         var stack = BuildProviderStack(providerAgent, functionRegistry, loggerFactory);
+        _constructedProviderAgent = providerAgent;
         _agent = stack.Agent;
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
@@ -1030,6 +1036,20 @@ public sealed class MultiTurnAgentLoop
         _ = ReleaseOwnedProvider(supersededProvider, "superseded by a reconfiguration");
 
         return ReconfigureOutcome.Applied;
+    }
+
+    /// <summary>
+    ///     Whether this loop owns the provider it is serving, releasing it exactly once: when a successful
+    ///     reconfiguration supersedes it, or at the loop's teardown. Initialize it to true to hand the loop
+    ///     the provider supplied at construction; the default, false, leaves that provider the host's, as
+    ///     before. From then on each reconfiguration decides for the provider it brings
+    ///     (<see cref="AgentReconfiguration.OwnsProviderAgent"/>). An init property rather than a constructor
+    ///     argument because this package's constructor shape is pinned.
+    /// </summary>
+    public bool OwnsProviderAgent
+    {
+        get => _ownedProviderAgent is not null;
+        init => _ownedProviderAgent = value ? _constructedProviderAgent : null;
     }
 
     /// <summary>

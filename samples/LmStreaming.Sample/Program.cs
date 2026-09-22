@@ -2455,6 +2455,10 @@ try
                             // property rather than a constructor argument because LmMultiTurn ships as a
                             // package whose constructor shape is pinned.
                             PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            // providerAgent was built for this loop alone and no child is ever handed the
+                            // instance (see ApplyCharacteristicsAgentFactory), so the loop owns it: the first
+                            // in-place switch, or the loop's teardown if there is none, disposes it once.
+                            OwnsProviderAgent = true,
                         };
                     }
 
