@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.Misc.Utils;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LmStreaming.Sample.Services;
 
@@ -36,7 +37,17 @@ public sealed class ConversationToolScope : IAsyncDisposable
     public const string ResourceKey = "conversation-scope";
 
     private readonly List<IAsyncDisposable> _owned = [];
+    private readonly ILogger<ConversationToolScope> _logger;
     private bool _disposed;
+
+    /// <param name="logger">
+    ///     Where a resource that fails its final flush is reported; defaults to a null logger so an
+    ///     object-initializer construction stays valid.
+    /// </param>
+    public ConversationToolScope(ILogger<ConversationToolScope>? logger = null)
+    {
+        _logger = logger ?? NullLogger<ConversationToolScope>.Instance;
+    }
 
     /// <summary>
     ///     The conversation's todo board — the single instance every task tool, every sub-agent and the
@@ -76,9 +87,11 @@ public sealed class ConversationToolScope : IAsyncDisposable
 
     /// <inheritdoc />
     /// <remarks>
-    ///     Failures are swallowed per resource: this runs from the pool's entry teardown, where each of
-    ///     these is a final flush (the board writer, the collaboration roster) and one refusing to close
-    ///     must not stop the rest from being asked.
+    ///     Failures are contained per resource, not hidden: this runs from the pool's entry teardown,
+    ///     where each of these is a final flush (the board writer, the collaboration roster) and one
+    ///     refusing to close must not stop the rest from being asked — but a flush that failed is a
+    ///     durability loss an operator has to be able to find, so each one is logged with the resource's
+    ///     type and the exception before the next is attempted.
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
@@ -94,8 +107,13 @@ public sealed class ConversationToolScope : IAsyncDisposable
             {
                 await resource.DisposeAsync();
             }
-            catch
-            { /* a failed flush must not skip the remaining ones */
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Conversation-scope resource {ResourceType} failed to dispose; the remaining resources are still being disposed",
+                    resource.GetType().Name
+                );
             }
         }
 

@@ -265,31 +265,60 @@ public sealed class WorkflowRunRegistry
         return [.. (tabs ?? []).Select(static tab => tab.AsRetained())];
     }
 
+    /// <summary>How many fresh destinations a quarantine tries before giving up on the move.</summary>
+    private const int QuarantineNamingAttempts = 8;
+
     private bool Quarantine(string path, JsonException reason)
     {
-        var quarantined = path + ".corrupt-" + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ");
-        try
+        // The destination must be unique, never merely timestamped: two quarantines of the same index
+        // inside one millisecond (a poll storm on a conversation that keeps getting re-corrupted, or a
+        // clock stepped back) would otherwise collide, the move would fail, and the corrupt primary
+        // would stay in place — where PersistTabs refuses to overwrite it, so the conversation could
+        // never persist a tab again. The UTC stamp stays for the operator reading the directory; the
+        // random suffix is what makes the name unique, and a destination that exists anyway (or appears
+        // between the check and the move) is simply regenerated.
+        for (var attempt = 1; ; attempt++)
         {
-            File.Move(path, quarantined);
-            _logger.LogError(
-                reason,
-                "Workflow-tab index {IndexPath} is unreadable and was quarantined as {QuarantinePath}; the conversation reads as having no persisted tabs",
-                path,
-                quarantined
-            );
-            return true;
-        }
-        catch (Exception moveFailure) when (moveFailure is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogError(
-                moveFailure,
-                "Workflow-tab index {IndexPath} is unreadable ({Reason}) and could not be quarantined; the conversation reads as having no persisted tabs",
-                path,
-                reason.Message
-            );
-            return false;
+            var quarantined = QuarantinePathFor(path);
+            if (File.Exists(quarantined))
+            {
+                continue;
+            }
+
+            try
+            {
+                File.Move(path, quarantined);
+                _logger.LogError(
+                    reason,
+                    "Workflow-tab index {IndexPath} is unreadable and was quarantined as {QuarantinePath}; the conversation reads as having no persisted tabs",
+                    path,
+                    quarantined
+                );
+                return true;
+            }
+            catch (IOException) when (attempt < QuarantineNamingAttempts && File.Exists(quarantined))
+            {
+                // Lost the race for this name; the next attempt draws another.
+            }
+            catch (Exception moveFailure) when (moveFailure is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogError(
+                    moveFailure,
+                    "Workflow-tab index {IndexPath} is unreadable ({Reason}) and could not be quarantined; the conversation reads as having no persisted tabs",
+                    path,
+                    reason.Message
+                );
+                return false;
+            }
         }
     }
+
+    private static string QuarantinePathFor(string path) =>
+        path
+        + ".corrupt-"
+        + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ")
+        + "-"
+        + Guid.NewGuid().ToString("N")[..8];
 
     private string PathFor(string threadId)
     {

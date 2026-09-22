@@ -65,6 +65,11 @@ public sealed class MultiTurnAgentLoop
     private IStreamingAgent _agent;
     private IDictionary<string, ToolHandler> _toolHandlers;
 
+    // The bare provider this loop OWNS, when a reconfiguration said so (AgentReconfiguration.
+    // OwnsProviderAgent); null for one the host keeps alive itself, which is what a provider supplied
+    // at construction always is. Released exactly once: by the commit that supersedes it, or at teardown.
+    private IStreamingAgent? _ownedProviderAgent;
+
     // Per-generation context observation (#681). The ordinal is loop-local and monotonic across restarts:
     // seeded lazily from the persisted latest observation on the first generation after a restart, then
     // advanced in memory. Only the run loop's single sequential turn path touches it; the latest
@@ -971,6 +976,11 @@ public sealed class MultiTurnAgentLoop
         ToolSchemaTokens = stack.ToolSchemaTokens;
         SubAgentTools = subAgentTools;
 
+        // Ownership moves with the commit, and only with it: a refusal or a build failure above never
+        // reaches here, so the provider the loop was serving stays both live and owned as it was.
+        var supersededProvider = _ownedProviderAgent;
+        _ownedProviderAgent = spec.OwnsProviderAgent ? spec.ProviderAgent : null;
+
         if (inheritable is { } snapshot)
         {
             var newSubAgentOptions = spec.SubAgentOptions!;
@@ -1002,7 +1012,57 @@ public sealed class MultiTurnAgentLoop
             _toolHandlers.Count
         );
 
+        // Last, once nothing on this loop can reach it any more: the stack, the compaction runtime and
+        // the sub-agent template source all point at the new provider by now, and the busy refusal
+        // above guarantees no turn is mid-stream on the old one.
+        _ = ReleaseOwnedProvider(supersededProvider, "superseded by a reconfiguration");
+
         return ReconfigureOutcome.Applied;
+    }
+
+    /// <summary>
+    /// Disposes a provider this loop owned, exactly once, preferring <see cref="IAsyncDisposable"/>
+    /// over <see cref="IDisposable"/> and never throwing: a provider that fails to close is logged,
+    /// because nothing that called this can do anything better with the failure than record it.
+    /// </summary>
+    /// <remarks>
+    /// Returns the disposal so an async caller can await it. The synchronous commit path cannot, and
+    /// does not need to: the provider is unreachable from the loop by then, so a disposal that
+    /// genuinely goes asynchronous simply finishes on its own, still observed through the same catch.
+    /// </remarks>
+    private Task ReleaseOwnedProvider(IStreamingAgent? provider, string reason)
+    {
+        if (provider is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return ReleaseAsync();
+
+        async Task ReleaseAsync()
+        {
+            try
+            {
+                if (provider is IAsyncDisposable asyncDisposable)
+                {
+                    await asyncDisposable.DisposeAsync();
+                }
+                else if (provider is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(
+                    ex,
+                    "Owned provider agent {ProviderType} for thread {ThreadId} failed to dispose ({Reason})",
+                    provider.GetType().Name,
+                    ThreadId,
+                    reason
+                );
+            }
+        }
     }
 
     /// <summary>
@@ -1073,6 +1133,13 @@ public sealed class MultiTurnAgentLoop
         {
             await _triggerRuntime.DisposeAsync();
         }
+
+        // The run loop is already stopped by the time the base reaches this hook, so the provider the
+        // loop currently owns has served its last turn. Cleared first so the release is once-only even
+        // if this hook were ever re-entered.
+        var ownedProvider = _ownedProviderAgent;
+        _ownedProviderAgent = null;
+        await ReleaseOwnedProvider(ownedProvider, "loop teardown");
     }
 
     /// <summary>

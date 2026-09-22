@@ -135,7 +135,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <para>
     /// <c>Existing</c> is the conversation's LIVE agent and its current configuration, present only on
     /// a mode/provider switch that found one pooled. It is the factory's opportunity to serve the
-    /// switch without a teardown: see <see cref="AgentSwitchContext"/>.
+    /// switch without a teardown: see <see cref="AgentSwitchContext"/>. It is an init-only property
+    /// rather than a positional parameter so the positional constructor and <c>Deconstruct</c> keep
+    /// the CLR shape published in 1.0.x (a second positional overload would make every call that
+    /// omits the trailing optionals ambiguous).
     /// </para>
     /// </summary>
     public sealed record AgentCreationContext(
@@ -145,9 +148,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string? DumpFile,
         string? WorkspaceId,
         SandboxCredential? CallerCredential = null,
-        MultiTurnLifecycleServices? LifecycleServices = null,
-        AgentSwitchContext? Existing = null
-    );
+        MultiTurnLifecycleServices? LifecycleServices = null
+    )
+    {
+        /// <summary>
+        /// The conversation's live agent and its current configuration on a mode/provider switch;
+        /// <c>null</c> on first creation and on a recreate after eviction.
+        /// </summary>
+        public AgentSwitchContext? Existing { get; init; }
+    }
 
     /// <summary>
     /// The conversation's live agent, offered to the factory on a mode/provider switch so it can
@@ -2174,7 +2183,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
     /// conversation is bound to.
     /// </exception>
-    public async Task<AgentSwitchResult> RecreateAgentWithModeAsync(
+    public async Task<AgentSwitchResult> SwitchModeAsync(
         string threadId,
         AgentProfile mode,
         SandboxCredential? callerCredential = null,
@@ -2246,7 +2255,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
     /// conversation is bound to.
     /// </exception>
-    public async Task<AgentSwitchResult> RecreateAgentWithProviderAsync(
+    public async Task<AgentSwitchResult> SwitchProviderAsync(
         string threadId,
         string newProviderId,
         AgentProfile currentMode,
@@ -2291,6 +2300,35 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         return switched;
     }
+
+    /// <summary>
+    /// <see cref="SwitchModeAsync"/> returning only the resulting agent. Kept for 1.0.x source and
+    /// binary compatibility: the name is historical — since the in-place switch the agent returned
+    /// may be the very instance the thread already had. New callers use <see cref="SwitchModeAsync"/>,
+    /// which also reports which branch ran.
+    /// </summary>
+    /// <inheritdoc cref="SwitchModeAsync"/>
+    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(
+        string threadId,
+        AgentProfile mode,
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
+    ) => (await SwitchModeAsync(threadId, mode, callerCredential, ownerUserId)).Agent;
+
+    /// <summary>
+    /// <see cref="SwitchProviderAsync"/> returning only the resulting agent. Kept for 1.0.x source and
+    /// binary compatibility: the name is historical — since the in-place switch the agent returned
+    /// may be the very instance the thread already had. New callers use
+    /// <see cref="SwitchProviderAsync"/>, which also reports which branch ran.
+    /// </summary>
+    /// <inheritdoc cref="SwitchProviderAsync"/>
+    public async Task<IMultiTurnAgent> RecreateAgentWithProviderAsync(
+        string threadId,
+        string newProviderId,
+        AgentProfile currentMode,
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
+    ) => (await SwitchProviderAsync(threadId, newProviderId, currentMode, callerCredential, ownerUserId)).Agent;
 
     /// <summary>
     /// Swaps a thread's pooled agent for a freshly-built one under the per-thread creation lock,
@@ -2619,9 +2657,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 requestResponseDumpFileName,
                 workspaceId,
                 callerCredential,
-                _lifecycleServices,
-                DescribeSwitch(existingEntry)
+                _lifecycleServices
             )
+            {
+                Existing = DescribeSwitch(existingEntry),
+            }
         );
         var agent = result.Agent;
 

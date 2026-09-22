@@ -177,6 +177,44 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         File.ReadAllBytes(quarantined).Should().Equal(damaged);
     }
 
+    /// <summary>
+    /// The quarantine destination is unique per attempt, not merely timestamped. The same index
+    /// corrupted and read again inside one millisecond must land in a second file, with every earlier
+    /// quarantine intact and the primary moved out of the way each time — otherwise the failed move
+    /// leaves the corrupt primary in place, PersistTabs refuses to overwrite it, and the conversation
+    /// can never persist a tab again. Driven back to back with no delay so the timestamps collide.
+    /// </summary>
+    [Fact]
+    public void RepeatedCorruption_QuarantinesEachIndexToItsOwnFile()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+
+        var bodies = new List<byte[]>();
+        for (var round = 0; round < 5; round++)
+        {
+            var body = System.Text.Encoding.UTF8.GetBytes("{truncated-" + round);
+            bodies.Add(body);
+            File.WriteAllBytes(path, body);
+
+            registry.GetPersistedTabs("t1").Should().BeEmpty($"round {round} reads the damaged index as empty");
+
+            File.Exists(path).Should().BeFalse($"round {round} moves the primary aside");
+            Directory
+                .GetFiles(_dir, "*.corrupt-*")
+                .Select(File.ReadAllBytes)
+                .Should()
+                .BeEquivalentTo(bodies, $"round {round} lands in its own file and every earlier quarantine is intact");
+        }
+
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        registry
+            .GetPersistedTabs("t1")
+            .Should()
+            .ContainSingle(tab => tab.AgentId == "wf2", "the index is usable again after every quarantine");
+    }
+
     public static TheoryData<byte[]> CorruptIndexBodies() =>
         [
             "{truncated"u8.ToArray(),

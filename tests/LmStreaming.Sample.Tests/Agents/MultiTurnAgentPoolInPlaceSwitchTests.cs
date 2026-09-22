@@ -50,7 +50,7 @@ public class MultiTurnAgentPoolInPlaceSwitchTests
         // inferred local would be converted afresh at every use and no reference comparison against the
         // entry's mode could ever hold.
         AgentProfile newMode = SystemChatModes.All.First(m => m.Id != DefaultMode.Id);
-        var result = await pool.RecreateAgentWithModeAsync("thread-inplace-mode", newMode);
+        var result = await pool.SwitchModeAsync("thread-inplace-mode", newMode);
 
         result.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
         result.Agent.Should().BeSameAs(original, "the factory handed the live agent back");
@@ -89,7 +89,7 @@ public class MultiTurnAgentPoolInPlaceSwitchTests
         (await WaitForPersistedProviderAsync(store, "thread-inplace-prov")).Should().Be("test");
         var runTaskBefore = pool.GetRunTaskForTest("thread-inplace-prov");
 
-        var result = await pool.RecreateAgentWithProviderAsync("thread-inplace-prov", "openai", DefaultMode);
+        var result = await pool.SwitchProviderAsync("thread-inplace-prov", "openai", DefaultMode);
 
         result.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
         result.Agent.Should().BeSameAs(original);
@@ -129,7 +129,7 @@ public class MultiTurnAgentPoolInPlaceSwitchTests
             );
         var runTaskBefore = pool.GetRunTaskForTest("thread-recreate");
 
-        var result = await pool.RecreateAgentWithProviderAsync("thread-recreate", "openai", DefaultMode);
+        var result = await pool.SwitchProviderAsync("thread-recreate", "openai", DefaultMode);
 
         result.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.Recreated);
         result.Agent.Should().NotBeSameAs(original);

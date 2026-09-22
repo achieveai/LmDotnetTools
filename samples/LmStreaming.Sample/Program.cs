@@ -1424,7 +1424,7 @@ try
                         .LoadAsync(conversationStore, threadId)
                         .GetAwaiter()
                         .GetResult();
-                    scope = new ConversationToolScope
+                    scope = new ConversationToolScope(loggerFactory.CreateLogger<ConversationToolScope>())
                     {
                         Board = persistedBoard is { IsEmpty: false }
                             ? TaskManager.FromSnapshot(persistedBoard)

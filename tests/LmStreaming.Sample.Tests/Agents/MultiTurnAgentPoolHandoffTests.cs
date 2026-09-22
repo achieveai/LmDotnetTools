@@ -298,7 +298,7 @@ public class MultiTurnAgentPoolHandoffTests
         pool.TryGetHandoffState("thread-switch-inplace", out var queued).Should().BeTrue();
         queued.IsBusy.Should().BeTrue("the precondition: there really is a turn in hand");
 
-        var switched = await pool.RecreateAgentWithModeAsync(
+        var switched = await pool.SwitchModeAsync(
             "thread-switch-inplace",
             SystemChatModes.All.First(m => m.Id != SystemChatModes.DefaultModeId),
             ownerUserId: Alice
@@ -332,7 +332,7 @@ public class MultiTurnAgentPoolHandoffTests
         pool.TryGetHandoffState("thread-switch", out var queued).Should().BeTrue();
         queued.IsBusy.Should().BeTrue("the precondition: there really is a turn in hand to lose");
 
-        var replacement = await pool.RecreateAgentWithModeAsync(
+        var replacement = await pool.SwitchModeAsync(
             "thread-switch",
             SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
             ownerUserId: Alice

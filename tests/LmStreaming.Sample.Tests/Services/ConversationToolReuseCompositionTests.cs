@@ -87,7 +87,7 @@ public sealed class ConversationToolReuseCompositionTests
                 var before = pool.GetOrCreateAgent(threadId, DefaultMode, "test", requestResponseDumpFileName: null);
                 workflows.TryGet(threadId, out var managerBefore).Should().BeTrue("guard: the witness must exist");
 
-                var switched = await pool.RecreateAgentWithModeAsync(threadId, OtherMode);
+                var switched = await pool.SwitchModeAsync(threadId, OtherMode);
 
                 switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
                 switched.Agent.Should().BeSameAs(before, "the conversation keeps its loop, and with it its sub-agents");
@@ -106,7 +106,7 @@ public sealed class ConversationToolReuseCompositionTests
                 var before = pool.GetOrCreateAgent(threadId, DefaultMode, "test", requestResponseDumpFileName: null);
                 workflows.TryGet(threadId, out var managerBefore).Should().BeTrue("guard: the witness must exist");
 
-                var switched = await pool.RecreateAgentWithProviderAsync(threadId, "test-anthropic", DefaultMode);
+                var switched = await pool.SwitchProviderAsync(threadId, "test-anthropic", DefaultMode);
 
                 switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
                 switched.Agent.Should().BeSameAs(before);
@@ -132,7 +132,7 @@ public sealed class ConversationToolReuseCompositionTests
                 workflows.TryGet(threadId, out var managerBefore).Should().BeTrue("guard: the witness must exist");
 
                 services.GetRequiredService<IConfiguration>()["WORKSPACE_AGENT_LMWORKFLOW_ENABLED"] = "false";
-                var switched = await pool.RecreateAgentWithModeAsync(threadId, OtherMode);
+                var switched = await pool.SwitchModeAsync(threadId, OtherMode);
 
                 switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
                 switched.Agent.Should().BeSameAs(before);
@@ -159,7 +159,7 @@ public sealed class ConversationToolReuseCompositionTests
             {
                 var before = pool.GetOrCreateAgent(threadId, DefaultMode, "test", requestResponseDumpFileName: null);
 
-                var switched = await pool.RecreateAgentWithProviderAsync(threadId, "claude-mock", DefaultMode);
+                var switched = await pool.SwitchProviderAsync(threadId, "claude-mock", DefaultMode);
 
                 switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.Recreated);
                 switched.Agent.Should().NotBeSameAs(before);

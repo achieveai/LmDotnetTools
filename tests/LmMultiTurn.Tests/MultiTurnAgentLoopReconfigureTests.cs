@@ -521,12 +521,219 @@ public class MultiTurnAgentLoopReconfigureTests
             );
     }
 
+    /// <summary>
+    /// Ownership is what stops a switch on an API-backed provider leaking its HTTP client: the owned
+    /// provider a successful reconfiguration supersedes is disposed exactly once, the one it brought in
+    /// is not, and the provider the loop was CONSTRUCTED with — which the host still holds — is never
+    /// touched. Both disposal interfaces are offered so the preference for the async one is visible.
+    /// </summary>
+    [Fact]
+    public async Task ASuccessfulReconfigure_DisposesTheOwnedProviderItSupersedes_Once()
+    {
+        var constructed = new DisposableProvider();
+        await using var loop = new MultiTurnAgentLoop(
+            constructed,
+            new FunctionRegistry(),
+            threadId: "reconfigure-owned-superseded",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+
+        var first = new DisposableProvider();
+        var second = new DisposableProvider();
+        loop.Reconfigure(NewSpec(first, new FunctionRegistry(), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+        first.Disposals.Should().Be(0, "the provider now serving the loop is live");
+
+        loop.Reconfigure(NewSpec(second, new FunctionRegistry(), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+
+        first.Disposals.Should().Be(1, "superseded and owned, so released by the commit that superseded it");
+        first.SyncDisposals.Should().Be(0, "IAsyncDisposable is preferred when a provider offers both");
+        second.Disposals.Should().Be(0, "the provider now serving the loop is live");
+        constructed.Disposals.Should().Be(0, "a provider supplied at construction stays the host's to dispose");
+    }
+
+    /// <summary>
+    /// Teardown releases the provider the loop owns at that moment, and only once: a second
+    /// <c>DisposeAsync</c> is the base's idempotent no-op, not a second release.
+    /// </summary>
+    [Fact]
+    public async Task LoopTeardown_DisposesTheProviderItOwns_Once()
+    {
+        var constructed = new DisposableProvider();
+        var loop = new MultiTurnAgentLoop(
+            constructed,
+            new FunctionRegistry(),
+            threadId: "reconfigure-owned-teardown",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+        var owned = new DisposableProvider();
+        loop.Reconfigure(NewSpec(owned, new FunctionRegistry(), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+        owned.Disposals.Should().Be(0, "guard: nothing is released before teardown");
+
+        await loop.DisposeAsync();
+        await loop.DisposeAsync();
+
+        owned.Disposals.Should().Be(1, "teardown releases the owned provider, and the second DisposeAsync is a no-op");
+        constructed.Disposals.Should().Be(0, "a provider supplied at construction stays the host's to dispose");
+    }
+
+    /// <summary>
+    /// A refusal touches nothing: the owned provider a run is streaming on stays live and finishes that
+    /// run, and the provider the refused spec carried is never taken, so it is never released either.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedBusyReconfigure_DisposesNothing_AndTheRunFinishesOnTheProviderItStartedOn()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var owned = new DisposableProvider(entered, release.Task);
+
+        await using var loop = new MultiTurnAgentLoop(
+            new ScriptedProvider(),
+            RegistryWith("OldOnly"),
+            threadId: "reconfigure-owned-busy",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+        loop.Reconfigure(NewSpec(owned, RegistryWith("OldOnly"), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+
+        using var cts = new CancellationTokenSource();
+        var runs = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        _ = loop.RunAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "first", Role = Role.User }]);
+        await entered.Task.WaitAsync(Wait.DefaultTimeout);
+
+        var replacement = new DisposableProvider();
+        loop.Reconfigure(NewSpec(replacement, RegistryWith("NewOnly"), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.RefusedBusy);
+
+        owned.Disposals.Should().Be(0, "the run in flight is streaming on it");
+        replacement.Disposals.Should().Be(0, "a refused spec's provider was never taken");
+
+        _ = release.TrySetResult();
+        await runs.WaitAsync(0);
+        owned.CallCount.Should().Be(1, "the run finished on the provider it started on");
+        owned.Disposals.Should().Be(0, "still the loop's live provider after the run");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// Build-then-assign extends to ownership: a spec the loop cannot build from releases nothing, and
+    /// the owned provider it left in place still serves the next turn.
+    /// </summary>
+    [Fact]
+    public async Task AReconfigureThatFailsToBuild_DisposesNothing_AndTheOwnedProviderStillServes()
+    {
+        var owned = new DisposableProvider();
+        await using var loop = new MultiTurnAgentLoop(
+            new ScriptedProvider(),
+            RegistryWith("OldOnly"),
+            threadId: "reconfigure-owned-build-failure",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+        loop.Reconfigure(NewSpec(owned, RegistryWith("OldOnly"), ownsProvider: true))
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+
+        var broken = RegistryWith("NewOnly").AddProvider(new ThrowingFunctionProvider());
+        var replacement = new DisposableProvider();
+        loop.Invoking(l => l.Reconfigure(NewSpec(replacement, broken, ownsProvider: true)))
+            .Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*cannot enumerate*");
+
+        owned.Disposals.Should().Be(0, "the loop is still on it");
+        replacement.Disposals.Should().Be(0, "a spec that failed to build never handed its provider over");
+
+        using var cts = new CancellationTokenSource();
+        var runs = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        _ = loop.RunAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "after the failure", Role = Role.User }]);
+        await runs.WaitAsync(0);
+
+        owned.CallCount.Should().Be(1, "the provider a failed switch left in place still serves the next turn");
+        replacement.CallCount.Should().Be(0);
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// Every superseded provider is released exactly once across a sequence of switches, and the last
+    /// one at teardown — no provider is released twice, and none is skipped.
+    /// </summary>
+    [Fact]
+    public async Task RepeatedSwitches_DisposeEachSupersededProviderExactlyOnce()
+    {
+        DisposableProvider[] providers = [new(), new(), new()];
+        var loop = new MultiTurnAgentLoop(
+            new ScriptedProvider(),
+            new FunctionRegistry(),
+            threadId: "reconfigure-owned-repeated",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+
+        foreach (var provider in providers)
+        {
+            loop.Reconfigure(NewSpec(provider, new FunctionRegistry(), ownsProvider: true))
+                .Should()
+                .Be(ReconfigureOutcome.Applied);
+        }
+
+        providers
+            .Select(p => p.Disposals)
+            .Should()
+            .Equal(
+                [1, 1, 0],
+                "each superseded provider is released by the switch that superseded it; the current one is live"
+            );
+
+        await loop.DisposeAsync();
+
+        providers
+            .Select(p => p.Disposals)
+            .Should()
+            .Equal([1, 1, 1], "teardown releases the last owned provider and re-releases none of the earlier ones");
+    }
+
+    /// <summary>
+    /// The default: a provider the host keeps alive itself is never the loop's to release, however
+    /// many switches supersede it and whatever tears the loop down.
+    /// </summary>
+    [Fact]
+    public async Task ASwitchWithoutOwnership_DisposesNothing()
+    {
+        var first = new DisposableProvider();
+        var second = new DisposableProvider();
+        var loop = new MultiTurnAgentLoop(
+            new ScriptedProvider(),
+            new FunctionRegistry(),
+            threadId: "reconfigure-unowned",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+
+        loop.Reconfigure(NewSpec(first, new FunctionRegistry())).Should().Be(ReconfigureOutcome.Applied);
+        loop.Reconfigure(NewSpec(second, new FunctionRegistry())).Should().Be(ReconfigureOutcome.Applied);
+        await loop.DisposeAsync();
+
+        first.Disposals.Should().Be(0, "a provider the host keeps alive itself is never the loop's to release");
+        second.Disposals.Should().Be(0);
+    }
+
     #region Helpers
 
     private static AgentReconfiguration NewSpec(
         IStreamingAgent provider,
         FunctionRegistry registry,
-        SubAgentOptions? subAgentOptions = null
+        SubAgentOptions? subAgentOptions = null,
+        bool ownsProvider = false
     ) =>
         new(
             provider,
@@ -535,7 +742,8 @@ public class MultiTurnAgentLoopReconfigureTests
             DefaultOptions: new GenerateReplyOptions { ModelId = NewModel },
             IncludeAskUserQuestionTool: false,
             IncludeNotifyClientTool: false,
-            SubAgentOptions: subAgentOptions
+            SubAgentOptions: subAgentOptions,
+            OwnsProviderAgent: ownsProvider
         );
 
     private static FunctionRegistry RegistryWith(string toolName) =>
@@ -599,6 +807,48 @@ public class MultiTurnAgentLoopReconfigureTests
 
             return collected;
         }
+    }
+
+    /// <summary>
+    /// A <see cref="ScriptedProvider"/> that also counts its disposals, offering BOTH disposal
+    /// interfaces so a test can see which one the loop chose. Disposal is counted, never enforced:
+    /// the provider keeps answering after it, so a wrongly-early release shows up in the counts
+    /// rather than as a crash somewhere else.
+    /// </summary>
+    private sealed class DisposableProvider(TaskCompletionSource? entered = null, Task? release = null)
+        : IStreamingAgent,
+            IAsyncDisposable,
+            IDisposable
+    {
+        private readonly ScriptedProvider _inner = new(entered, release);
+        private int _asyncDisposals;
+        private int _syncDisposals;
+
+        public int Disposals => Volatile.Read(ref _asyncDisposals) + Volatile.Read(ref _syncDisposals);
+
+        public int SyncDisposals => Volatile.Read(ref _syncDisposals);
+
+        public int CallCount => _inner.CallCount;
+
+        public ValueTask DisposeAsync()
+        {
+            _ = Interlocked.Increment(ref _asyncDisposals);
+            return ValueTask.CompletedTask;
+        }
+
+        public void Dispose() => Interlocked.Increment(ref _syncDisposals);
+
+        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => _inner.GenerateReplyStreamingAsync(messages, options, cancellationToken);
+
+        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => _inner.GenerateReplyAsync(messages, options, cancellationToken);
     }
 
     /// <summary>A summarizer the test never drives; supplied so the runtime builds none over the provider.</summary>

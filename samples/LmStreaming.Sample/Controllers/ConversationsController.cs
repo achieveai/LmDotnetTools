@@ -2148,9 +2148,7 @@ public class ConversationsController(
             // so its cross-app refusal lands on the same caller_credential_conflict catch below.
             await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch", callerCredential);
 
-            switchKind = (
-                await agentPool.RecreateAgentWithModeAsync(threadId, mode, callerCredential, CallerUserId)
-            ).Kind;
+            switchKind = (await agentPool.SwitchModeAsync(threadId, mode, callerCredential, CallerUserId)).Kind;
         }
         catch (AgentBusyException ex)
         {
@@ -2348,7 +2346,7 @@ public class ConversationsController(
             await ReleaseAgentBoundToAnotherUserAsync(threadId, "Provider switch", callerCredential);
 
             switchKind = (
-                await agentPool.RecreateAgentWithProviderAsync(
+                await agentPool.SwitchProviderAsync(
                     threadId,
                     request.ProviderId,
                     currentMode,

@@ -36,6 +36,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// <param name="LoggerFactory">
 ///     Optional factory for the rebuilt pipeline middlewares' category loggers, as at construction.
 /// </param>
+/// <param name="OwnsProviderAgent">
+///     Whether the agent takes ownership of <paramref name="ProviderAgent"/>'s lifetime. When true, the
+///     agent disposes it (<see cref="IAsyncDisposable"/> preferred, else <see cref="IDisposable"/>)
+///     exactly once: when a LATER successful reconfiguration supersedes it, or at the agent's own
+///     teardown. False — the default, and the only safe answer for a provider any other component
+///     still holds — leaves its lifetime to the host, exactly as a provider supplied at construction.
+///     A refused or failed reconfiguration disposes nothing either way.
+/// </param>
 public sealed record AgentReconfiguration(
     IStreamingAgent ProviderAgent,
     FunctionRegistry FunctionRegistry,
@@ -44,7 +52,8 @@ public sealed record AgentReconfiguration(
     bool IncludeAskUserQuestionTool,
     bool IncludeNotifyClientTool,
     SubAgentOptions? SubAgentOptions,
-    ILoggerFactory? LoggerFactory = null
+    ILoggerFactory? LoggerFactory = null,
+    bool OwnsProviderAgent = false
 );
 
 /// <summary>What <see cref="IReconfigurableAgent.Reconfigure"/> did.</summary>

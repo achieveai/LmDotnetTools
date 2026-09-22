@@ -212,7 +212,7 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             );
         Logger.LogInformation("Sandbox MCP client published under {Key}", key);
 
-        var providerSwitch = await pool.RecreateAgentWithProviderAsync(threadId, "test-anthropic", workspaceAgent);
+        var providerSwitch = await pool.SwitchProviderAsync(threadId, "test-anthropic", workspaceAgent);
         providerSwitch.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
         providerSwitch.Agent.Should().BeSameAs(before);
         pool.GetReusableResourcesForTest(threadId)
@@ -221,7 +221,7 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             .WhoseValue.Should()
             .BeSameAs(client, "a provider switch re-registers the sandbox tools from the client it already has");
 
-        var hidden = await pool.RecreateAgentWithModeAsync(threadId, noSandbox);
+        var hidden = await pool.SwitchModeAsync(threadId, noSandbox);
         hidden.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
         pool.GetReusableResourcesForTest(threadId)
             .Should()
@@ -229,7 +229,7 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             .WhoseValue.Should()
             .BeSameAs(client, "a mode without a sandbox leaves the client dormant for the children still holding it");
 
-        var back = await pool.RecreateAgentWithModeAsync(threadId, workspaceAgent);
+        var back = await pool.SwitchModeAsync(threadId, workspaceAgent);
         back.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
         pool.GetReusableResourcesForTest(threadId)
             .Should()
