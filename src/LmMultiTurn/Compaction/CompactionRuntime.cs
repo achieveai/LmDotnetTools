@@ -190,6 +190,12 @@ internal sealed class CompactionRuntime
     /// <summary>True when a manual request may be waiting: the loop runs it before it next waits for input.</summary>
     public bool HasPendingManual => _manualPending;
 
+    /// <summary>
+    ///     True while an operator's compaction is queued or running. It runs outside any turn, so a run id
+    ///     does not show it, yet its summary call may be in flight on the loop's provider.
+    /// </summary>
+    internal bool IsManualActive => _manualPending || Volatile.Read(ref _manualRunning) != 0;
+
     /// <summary>True when this loop would accept a manual compaction request at all.</summary>
     public bool AcceptsManual =>
         Mode == CompactionMode.Compact && _host.Store is not null && !Options.IsKilled(_setup.ReadEnvironment);

@@ -225,6 +225,41 @@ public sealed class ProgramSubAgentCompositionTests
         provider.Agent.Should().BeSameAs(routedAgent);
     }
 
+    /// <summary>
+    /// An explicit model the factory cannot route falls back on the PARENT's provider instance. The child
+    /// must get a fresh template agent instead: the parent loop owns its provider and disposes it on an
+    /// in-place switch, which would otherwise close a live child's client.
+    /// </summary>
+    [Fact]
+    public void ApplyCharacteristicsAgentFactory_ParentFallbackGetsAFreshOwnedAgentNotTheParents()
+    {
+        var parentAgent = new Mock<IStreamingAgent>().Object;
+        var templateAgent = new Mock<IStreamingAgent>().Object;
+        var result = global::Program.ApplyCharacteristicsAgentFactory(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["custom"] = Template("custom", () => templateAgent),
+                },
+            },
+            _ => new SubAgentProviderAgent(parentAgent, ImmutableDictionary<string, object?>.Empty)
+            {
+                UseParentModel = true,
+            }
+        );
+
+        var provider = result
+            .Templates["custom"]
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("unroutable-model", null) { IsModelExplicitlySelected = true }
+            );
+
+        provider.Agent.Should().BeSameAs(templateAgent).And.NotBeSameAs(parentAgent);
+        provider.OwnsAgent.Should().BeTrue("the child disposes the agent built for it");
+        provider.UseParentModel.Should().BeTrue("the spawn still runs on the parent's model");
+    }
+
     [Fact]
     public void ApplyCharacteristicsAgentFactory_InheritedSpawnsReceiveFreshTemplateAgents()
     {

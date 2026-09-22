@@ -899,6 +899,18 @@ public sealed class MultiTurnAgentLoop
             return ReconfigureOutcome.RefusedBusy;
         }
 
+        // An operator's compaction runs between turns, so no run id marks it, but its summary call may be
+        // streaming on the current provider: moving (and, when owned, disposing) that provider under it
+        // would break the call. Busy for the same reason a run is.
+        if (_compaction is { IsManualActive: true })
+        {
+            Logger.LogInformation(
+                "Refusing to reconfigure thread {ThreadId}: a manual compaction is queued or running",
+                ThreadId
+            );
+            return ReconfigureOutcome.RefusedBusy;
+        }
+
         // ---- BUILD. Nothing observable is touched until every part below exists. A throw from here
         // leaves the loop entirely on its old configuration, which is what makes a bad spec safe.
         var registry = spec.FunctionRegistry;

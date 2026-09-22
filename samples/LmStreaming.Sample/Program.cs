@@ -2376,7 +2376,14 @@ try
                                     IncludeAskUserQuestionTool: askUserQuestionToolEnabled,
                                     IncludeNotifyClientTool: true,
                                     SubAgentOptions: subAgentOptions,
-                                    LoggerFactory: loggerFactory
+                                    LoggerFactory: loggerFactory,
+                                    // This builder made providerAgent for this switch alone, and no child
+                                    // receives the instance (ApplyCharacteristicsAgentFactory and the
+                                    // template source's rebind hand children fresh agents, even on the
+                                    // parent-fallback path). Compaction rebinds to the new one and the
+                                    // busy refusal means no turn is mid-stream on the old one, so the
+                                    // loop may dispose the provider this switch supersedes.
+                                    OwnsProviderAgent: true
                                 )
                             ) == ReconfigureOutcome.RefusedBusy
                         )
@@ -4066,6 +4073,12 @@ public partial class Program
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
     /// </summary>
+    /// <remarks>
+    /// A spawn that ends up on the parent's model — inherited, or an explicit/tier model the factory could
+    /// not route and fell back on (<see cref="SubAgentProviderAgent.UseParentModel"/>) — gets a FRESH,
+    /// owned agent from the template rather than the parent's provider instance. No child ever holds the
+    /// parent loop's provider, which is what lets the loop own and dispose it on an in-place switch.
+    /// </remarks>
     internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
         SubAgentOptions options,
         Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory
@@ -4084,7 +4097,9 @@ public partial class Program
                         CharacteristicsAgentFactory = characteristics =>
                         {
                             var provider = characteristicsAgentFactory(characteristics);
-                            return characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved
+                            return
+                                (characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved)
+                                && !provider.UseParentModel
                                 ? provider
                                 : provider with
                                 {
