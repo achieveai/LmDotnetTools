@@ -274,6 +274,43 @@ public sealed class CopilotWebSearchRegistrationTests
         result.Status.Should().NotContain(Token);
     }
 
+    /// <summary>
+    /// A switch between two Copilot models hands the session back: the tool is registered on the new
+    /// registry from the client already open, with no second handshake, and the resource the caller
+    /// gets is the one it passed in — the identity the pool's reuse protocol keys on.
+    /// </summary>
+    [Fact]
+    public void TryRegister_WithTheKeptSession_ReRegistersOnItWithoutASecondHandshake()
+    {
+        var upstream = new FakeCopilotMcpHandler();
+        var first = Register(enabledTools: null, upstream);
+        first.Registered.Should().BeTrue("guard: the first registration opens the session");
+        var handshakes = upstream.Requests.Count(request =>
+            request.Body.Contains("\"initialize\"", StringComparison.Ordinal)
+        );
+        handshakes.Should().BePositive("guard: the first registration must have performed the handshake");
+
+        var registry = new FunctionRegistry();
+        var second = CopilotWebSearchRegistration.TryRegister(
+            registry,
+            enabledTools: null,
+            new StaticTokenProvider(Token),
+            new CopilotSessionContext(),
+            new CopilotOptions { BaseUrl = "https://copilot.test" },
+            NullLoggerFactory.Instance,
+            upstream,
+            existingResource: first.Resource
+        );
+
+        second.Registered.Should().BeTrue();
+        second.Resource.Should().BeSameAs(first.Resource);
+        RegisteredNames(registry).Should().Equal("WebSearch");
+        upstream
+            .Requests.Count(request => request.Body.Contains("\"initialize\"", StringComparison.Ordinal))
+            .Should()
+            .Be(handshakes, "the kept session is registered from, not reconnected");
+    }
+
     private static CopilotWebSearchRegistrationResult Register(
         IReadOnlyList<string>? enabledTools,
         FakeCopilotMcpHandler upstream
@@ -332,27 +369,31 @@ public sealed class CopilotWebSearchRegistrationTests
                 };
             }
 
+            // Responses echo the request's id: a session that is listed from twice (a kept session
+            // re-registered after a switch) sends a third request id, and a hard-coded one would be
+            // an orphan reply the client never matches.
             var method = ReadMethod(body);
+            var id = ReadId(body);
             return method switch
             {
                 "initialize" => Sse(
-                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"tools\":{}},\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"copilot-test\",\"version\":\"1\"}}}",
+                    $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"capabilities\":{{\"tools\":{{}}}},\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{{\"name\":\"copilot-test\",\"version\":\"1\"}}}}}}",
                     includeSession: true
                 ),
                 "notifications/initialized" => new HttpResponseMessage(HttpStatusCode.Accepted),
-                "tools/list" => Sse(ToolsListResponse(toolCount)),
+                "tools/list" => Sse(ToolsListResponse(id, toolCount)),
                 "tools/call" => Sse(
-                    "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Current answer [1]\\n\\nSources: https://example.test/source\"}]}}"
+                    $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Current answer [1]\\n\\nSources: https://example.test/source\"}}]}}}}"
                 ),
                 _ => new HttpResponseMessage(HttpStatusCode.Accepted),
             };
         }
 
-        private static string ToolsListResponse(int count)
+        private static string ToolsListResponse(string id, int count)
         {
             const string tool =
                 "{\"name\":\"web_search\",\"description\":\"Search the web with citations\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}";
-            return $"{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{string.Join(",", Enumerable.Repeat(tool, count))}]}}}}";
+            return $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"tools\":[{string.Join(",", Enumerable.Repeat(tool, count))}]}}}}";
         }
 
         protected override void Dispose(bool disposing)
@@ -370,6 +411,18 @@ public sealed class CopilotWebSearchRegistrationTests
 
             using var document = JsonDocument.Parse(body);
             return document.RootElement.TryGetProperty("method", out var method) ? method.GetString() : null;
+        }
+
+        /// <summary>The request's JSON-RPC id as raw JSON (a number or a string), or <c>1</c> for a notification.</summary>
+        private static string ReadId(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "1";
+            }
+
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.TryGetProperty("id", out var id) ? id.GetRawText() : "1";
         }
 
         private static HttpResponseMessage Sse(string json, bool includeSession = false)

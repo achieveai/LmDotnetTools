@@ -57,10 +57,13 @@ public sealed class MultiTurnAgentLoop
     : MultiTurnAgentBase,
         ISubAgentContextSink,
         ISpawnSuppressingAgent,
-        IManualCompactionAgent
+        IManualCompactionAgent,
+        IReconfigurableAgent
 {
-    private readonly IStreamingAgent _agent;
-    private readonly IDictionary<string, ToolHandler> _toolHandlers;
+    // The provider-dependent half of this loop. Replaced wholesale by Reconfigure (build-then-assign),
+    // never mutated in place; the conversation-owned collaborators below it are kept across a switch.
+    private IStreamingAgent _agent;
+    private IDictionary<string, ToolHandler> _toolHandlers;
 
     // Per-generation context observation (#681). The ordinal is loop-local and monotonic across restarts:
     // seeded lazily from the persisted latest observation on the first generation after a restart, then
@@ -81,11 +84,15 @@ public sealed class MultiTurnAgentLoop
     /// actually need arguments — a genuinely parameterless tool called with empty args still runs.
     /// Ordinal, matching the handler-dictionary lookup.
     /// </summary>
-    private readonly HashSet<string> _functionsRequiringArgs;
+    private HashSet<string> _functionsRequiringArgs;
 
     /// <summary>The sub-agent manager for this loop, or null when no sub-agent options were supplied.
     /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
+    /// <remarks>
+    /// Survives <see cref="Reconfigure"/> as the same instance — it owns the live children, which is the
+    /// whole reason a mode/model switch reconfigures rather than replaces the loop.
+    /// </remarks>
     public SubAgentManager? SubAgentManager { get; }
 
     /// <summary>
@@ -124,7 +131,12 @@ public sealed class MultiTurnAgentLoop
     /// <summary>The sub-agent tool provider registered on this loop, or null when no sub-agent options
     /// were supplied. Exposed so a host can suppress new child creation for one run while retaining
     /// messaging and result access to children that already exist.</summary>
-    public SubAgentToolProvider? SubAgentTools { get; }
+    /// <remarks>
+    /// Unlike <see cref="SubAgentManager"/> this is a stateless view, so <see cref="Reconfigure"/>
+    /// replaces it with a fresh instance over the SAME manager and template source — that is how a mode
+    /// changes which sub-agent tools are exposed — and sets it to null for a mode that exposes none.
+    /// </remarks>
+    public SubAgentToolProvider? SubAgentTools { get; private set; }
 
     /// <inheritdoc />
     public override bool EnforcesSpawnSuppression => true;
@@ -192,15 +204,28 @@ public sealed class MultiTurnAgentLoop
     private readonly ConcurrentDictionary<string, BlockingToolOutcome> _blockingEndings = new(StringComparer.Ordinal);
 
     // The just-in-time compaction policy and the view it maintains (#684). Null when the host supplied
-    // no CompactionSetup, in which case nothing on the request path changes.
+    // no CompactionSetup, in which case nothing on the request path changes. Kept across a
+    // reconfiguration — it holds the active checkpoint and the row identities behind it — and told about
+    // the new prompt/options/provider through CompactionRuntime.Rebind.
     private readonly CompactionRuntime? _compaction;
+
+    // The setup the runtime above was built from, retained because composing the system prompt needs it
+    // (the compaction note is part of the composition) and Reconfigure composes the prompt the same way
+    // the constructor does. Null exactly when _compaction is null.
+    private readonly CompactionSetup? _compactionSetup;
+
+    // The template catalog the sub-agent tool provider reads, retained so a reconfiguration can rebuild
+    // that provider over the SAME source — an outer owner (a sandbox session registry) may have
+    // registered templates into it mid-session, and a fresh source would lose them. Null exactly when
+    // this loop has no SubAgentManager.
+    private readonly MutableSubAgentTemplateSource? _subAgentTemplateSource;
 
     // The experimental elapsed-time notice clock. Null when the host supplied no options, in which
     // case no notice is ever appended and the turn loop is unchanged.
     private readonly ElapsedTimeNoticeTracker? _elapsedTimeNotice;
 
     /// <summary>Estimated tokens of the tool definitions every request carries (compaction's fixed prefix).</summary>
-    internal long ToolSchemaTokens { get; }
+    internal long ToolSchemaTokens { get; private set; }
 
     internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
@@ -474,10 +499,7 @@ public sealed class MultiTurnAgentLoop
             // is assigned by the base constructor, which runs before `Collaboration` is set in this
             // constructor's body. Composing it in the body would leave the prompt already stored. The
             // compaction note goes on the same way, after identity but before host/caller instructions.
-            AgentIdentityPreamble.Prepend(
-                CompactionRuntime.WithSystemNote(systemPrompt, compaction, defaultOptions?.ModelId),
-                collaboration
-            ),
+            ComposeSystemPrompt(systemPrompt, compaction, defaultOptions?.ModelId, collaboration),
             defaultOptions,
             maxTurnsPerRun,
             inputChannelCapacity,
@@ -528,6 +550,7 @@ public sealed class MultiTurnAgentLoop
         // Just-in-time compaction (#684). The runtime holds no reference to this loop — every fact it
         // needs is a delegate — and it is built before the inheritable-tool snapshot below so the recall
         // tool it names can be registered after that snapshot (a child registers its own instance).
+        _compactionSetup = compaction;
         _compaction = compaction is null
             ? null
             : new CompactionRuntime(
@@ -577,90 +600,27 @@ public sealed class MultiTurnAgentLoop
         // and register Agent/CheckAgent tools before building the middleware stack.
         if (subAgentOptions != null)
         {
-            // IMPORTANT: Snapshot parent tools BEFORE registering sub-agent tools.
-            // This ensures sub-agents inherit the parent's domain tools but NOT the
-            // Agent/CheckAgent tools, preventing unbounded recursive delegation.
-            var (contracts, handlers) = functionRegistry.Build();
-
-            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflowAgent/
-            // CheckWorkflow/WaitWorkflow) from the snapshot handed to sub-agents. Unlike the
-            // Agent-family tools — excluded structurally because they're registered AFTER this
-            // snapshot — these are registered on the parent's own registry BEFORE the loop is
-            // built, so they're already in the snapshot and would otherwise be inherited by a
-            // sub-agent whose template sets EnabledTools = null. Filtering the snapshot copy does
-            // not touch the parent's own tool set (built from the full registry below).
-            var inheritableContracts = FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
-                .ToList();
-
-            // Transparency seam (WorkflowAgent): a nested-root loop — a workflow controller — runs on
-            // its own isolated, workflow-only registry, yet its delegate sub-agents must inherit the
-            // tools of the first non-WorkflowAgent ancestor (the launching conversation). Those
-            // ancestor tools arrive via ExternalInheritableTools and are merged into the snapshot
-            // handed to THIS loop's sub-agents. The loop's OWN advertised tools (built from the full
-            // registry below) are untouched, so the controller surface stays workflow-only. Skip any
-            // name excluded from inheritance or already present, so an external tool can never shadow
-            // a control-plane tool.
-            if (subAgentOptions.ExternalInheritableTools is { } externalTools)
-            {
-                var excluded = subAgentOptions.NonInheritedToolNames is { } names
-                    ? new HashSet<string>(names, StringComparer.Ordinal)
-                    : new HashSet<string>(StringComparer.Ordinal);
-                var present = new HashSet<string>(inheritableContracts.Select(c => c.Name), StringComparer.Ordinal);
-                var mergedHandlers = new Dictionary<string, ToolHandler>(handlers);
-                var beforeMerge = inheritableContracts.Count;
-
-                foreach (var contract in externalTools.Contracts)
-                {
-                    if (
-                        excluded.Contains(contract.Name)
-                        || present.Contains(contract.Name)
-                        || !externalTools.Handlers.TryGetValue(contract.Name, out var handler)
-                    )
-                    {
-                        continue;
-                    }
-
-                    inheritableContracts.Add(contract);
-                    mergedHandlers[contract.Name] = handler;
-                    _ = present.Add(contract.Name);
-                }
-
-                handlers = mergedHandlers;
-
-                // Observability (content-free: counts only, no task/prompt text): make the transparency
-                // merge traceable in the logs so "did the delegate inherit the ancestor's tools?" is
-                // answerable from JSONL rather than inferred from the /subagents API.
-                var mergedCount = inheritableContracts.Count - beforeMerge;
-                logger?.LogDebug(
-                    "Merged external inheritable tools into the sub-agent snapshot for {ThreadId}: "
-                        + "offered {OfferedCount}, merged {MergedCount}, skipped {SkippedCount}, "
-                        + "inheritable total {InheritableTotal}.",
-                    threadId,
-                    externalTools.Contracts.Count,
-                    mergedCount,
-                    externalTools.Contracts.Count - mergedCount,
-                    inheritableContracts.Count
-                );
-            }
+            var (inheritableContracts, handlers) = BuildInheritableToolSnapshot(
+                functionRegistry,
+                subAgentOptions,
+                threadId,
+                logger
+            );
 
             // Use the caller-supplied source when present (so an outer owner — typically
             // a sandbox session registry — can activate discovered subagents mid-session
             // by calling TryRegister on it). Otherwise wrap the static template dictionary
             // in a fresh source so behavior matches the previous immutable contract.
             var source = subAgentTemplateSource ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
+            _subAgentTemplateSource = source;
 
             SubAgentManager = new SubAgentManager(
                 parentAgent: this,
-                parentContracts: [.. inheritableContracts],
+                parentContracts: inheritableContracts,
                 parentHandlers: handlers,
                 // A root that compacts hands the same setup down so every level of the hierarchy runs
                 // the policy over its own thread with its own summarizer (see CompactionSetup).
-                options: subAgentOptions.Compaction is null && compaction is not null
-                    ? subAgentOptions with
-                    {
-                        Compaction = compaction,
-                    }
-                    : subAgentOptions,
+                options: WithInheritedCompaction(subAgentOptions),
                 source: source,
                 logger: logger,
                 // Sub-agents whose template/override sets no model inherit the parent's model, so a
@@ -740,9 +700,34 @@ public sealed class MultiTurnAgentLoop
             );
         }
 
+        var stack = BuildProviderStack(providerAgent, functionRegistry, loggerFactory);
+        _agent = stack.Agent;
+        _toolHandlers = stack.ToolHandlers;
+        _functionsRequiringArgs = stack.FunctionsRequiringArgs;
+        ToolSchemaTokens = stack.ToolSchemaTokens;
+    }
+
+    /// <summary>The provider-dependent parts a loop serves a turn with, built from one registry and one provider.</summary>
+    private readonly record struct ProviderStack(
+        IStreamingAgent Agent,
+        IDictionary<string, ToolHandler> ToolHandlers,
+        HashSet<string> FunctionsRequiringArgs,
+        long ToolSchemaTokens
+    );
+
+    /// <summary>
+    /// Builds the middleware stack and the tool-dispatch snapshots over one registry, exactly as the
+    /// constructor does, and hands them back rather than assigning them — so a reconfiguration can build
+    /// the whole thing before touching anything observable.
+    /// </summary>
+    private ProviderStack BuildProviderStack(
+        IStreamingAgent providerAgent,
+        FunctionRegistry functionRegistry,
+        ILoggerFactory? loggerFactory
+    )
+    {
         // Build tool call components from registry
         var (toolCallMiddleware, finalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
-        _toolHandlers = finalHandlers;
 
         // Snapshot which tools declare a required parameter so the dispatch guard in
         // ExecuteToolCallAsync can reject an empty/truncated argument payload for a tool that needs
@@ -750,11 +735,10 @@ public sealed class MultiTurnAgentLoop
         // args. Sourced from the same registry the handlers came from, so names line up with
         // _toolHandlers (Build() applies the same collision-renaming BuildToolCallComponents does).
         var (registeredContracts, _) = functionRegistry.Build();
-        _functionsRequiringArgs = new HashSet<string>(
+        var functionsRequiringArgs = new HashSet<string>(
             registeredContracts.Where(c => c.Parameters?.Any(p => p.IsRequired) == true).Select(c => c.Name),
             StringComparer.Ordinal
         );
-        ToolSchemaTokens = CompactionTokenEstimate.EstimateToolSchemas(registeredContracts);
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -762,7 +746,7 @@ public sealed class MultiTurnAgentLoop
 
         // Build the complete middleware stack (loop owns the pipeline)
         // Response path order: Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall
-        _agent = providerAgent
+        var agent = providerAgent
             .WithMessageTransformation(loggerFactory?.CreateLogger<MessageTransformationMiddleware>())
             .WithMiddleware(new JsonFragmentUpdateMiddleware())
             .WithMiddleware(publishingMiddleware)
@@ -773,7 +757,266 @@ public sealed class MultiTurnAgentLoop
                 )
             )
             .WithMiddleware(toolCallMiddleware);
+
+        return new ProviderStack(
+            agent,
+            finalHandlers,
+            functionsRequiringArgs,
+            CompactionTokenEstimate.EstimateToolSchemas(registeredContracts)
+        );
     }
+
+    /// <summary>
+    /// Composes the stored system prompt out of its three layers — the collaboration identity preamble,
+    /// the compaction note, and the host's own prompt — in the one order the loop uses.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the constructor's base call and by <see cref="Reconfigure"/>. The compaction note is
+    /// resolved against the model the loop is about to send with, because the note is only added for a
+    /// route where compaction actually resolves to something other than Off.
+    /// </remarks>
+    private static string? ComposeSystemPrompt(
+        string? systemPrompt,
+        CompactionSetup? compaction,
+        string? modelId,
+        AgentCollaborationSetup? collaboration
+    ) =>
+        AgentIdentityPreamble.Prepend(
+            CompactionRuntime.WithSystemNote(systemPrompt, compaction, modelId),
+            collaboration
+        );
+
+    /// <summary>
+    /// Snapshots the tools a spawned sub-agent inherits from this loop, from the registry as it stands
+    /// BEFORE the Agent/CheckAgent tools are registered on it.
+    /// </summary>
+    /// <remarks>
+    /// Taking the snapshot first is what keeps sub-agents from inheriting the Agent-family tools, which
+    /// would allow unbounded recursive delegation. Called once at construction and again on every
+    /// reconfiguration, since the new mode's tool surface is what its future children should inherit.
+    /// </remarks>
+    private static (
+        IReadOnlyList<FunctionContract> Contracts,
+        IDictionary<string, ToolHandler> Handlers
+    ) BuildInheritableToolSnapshot(
+        FunctionRegistry functionRegistry,
+        SubAgentOptions subAgentOptions,
+        string threadId,
+        ILogger? logger
+    )
+    {
+        var (contracts, handlers) = functionRegistry.Build();
+
+        // Drop any host-declared non-inherited tools (e.g. StartWorkflowAgent/CheckWorkflow/
+        // WaitWorkflow) from the snapshot handed to sub-agents. Unlike the Agent-family tools —
+        // excluded structurally because they're registered AFTER this snapshot — these are registered
+        // on the parent's own registry BEFORE the loop is built, so they're already in the snapshot and
+        // would otherwise be inherited by a sub-agent whose template sets EnabledTools = null.
+        // Filtering the snapshot copy does not touch the parent's own tool set (built from the full
+        // registry by BuildProviderStack).
+        var inheritableContracts = FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
+            .ToList();
+
+        // Transparency seam (WorkflowAgent): a nested-root loop — a workflow controller — runs on
+        // its own isolated, workflow-only registry, yet its delegate sub-agents must inherit the
+        // tools of the first non-WorkflowAgent ancestor (the launching conversation). Those
+        // ancestor tools arrive via ExternalInheritableTools and are merged into the snapshot
+        // handed to THIS loop's sub-agents. The loop's OWN advertised tools are untouched, so the
+        // controller surface stays workflow-only. Skip any name excluded from inheritance or already
+        // present, so an external tool can never shadow a control-plane tool.
+        if (subAgentOptions.ExternalInheritableTools is { } externalTools)
+        {
+            var excluded = subAgentOptions.NonInheritedToolNames is { } names
+                ? new HashSet<string>(names, StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
+            var present = new HashSet<string>(inheritableContracts.Select(c => c.Name), StringComparer.Ordinal);
+            var mergedHandlers = new Dictionary<string, ToolHandler>(handlers);
+            var beforeMerge = inheritableContracts.Count;
+
+            foreach (var contract in externalTools.Contracts)
+            {
+                if (
+                    excluded.Contains(contract.Name)
+                    || present.Contains(contract.Name)
+                    || !externalTools.Handlers.TryGetValue(contract.Name, out var handler)
+                )
+                {
+                    continue;
+                }
+
+                inheritableContracts.Add(contract);
+                mergedHandlers[contract.Name] = handler;
+                _ = present.Add(contract.Name);
+            }
+
+            handlers = mergedHandlers;
+
+            // Observability (content-free: counts only, no task/prompt text): make the transparency
+            // merge traceable in the logs so "did the delegate inherit the ancestor's tools?" is
+            // answerable from JSONL rather than inferred from the /subagents API.
+            var mergedCount = inheritableContracts.Count - beforeMerge;
+            logger?.LogDebug(
+                "Merged external inheritable tools into the sub-agent snapshot for {ThreadId}: "
+                    + "offered {OfferedCount}, merged {MergedCount}, skipped {SkippedCount}, "
+                    + "inheritable total {InheritableTotal}.",
+                threadId,
+                externalTools.Contracts.Count,
+                mergedCount,
+                externalTools.Contracts.Count - mergedCount,
+                inheritableContracts.Count
+            );
+        }
+
+        return ([.. inheritableContracts], handlers);
+    }
+
+    /// <inheritdoc />
+    public ReconfigureOutcome Reconfigure(AgentReconfiguration spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentNullException.ThrowIfNull(spec.ProviderAgent);
+        ArgumentNullException.ThrowIfNull(spec.FunctionRegistry);
+        ArgumentNullException.ThrowIfNull(spec.DefaultOptions);
+
+        // A run in flight owns the configuration it started with, and there is no correct way to move it
+        // mid-stream. An input that has merely been ACCEPTED is a different thing: it has not been sent
+        // anywhere, so it survives this and runs under the new configuration.
+        // "In progress" is the pool's predicate, not the run id alone. A run cancelled mid-flight never
+        // reaches CompleteRunAsync, so its id stays on the loop after the loop itself has stopped; read as
+        // busy, that stale id would refuse every later switch on a conversation nothing is running.
+        if (!string.IsNullOrWhiteSpace(CurrentRunId) && IsRunning)
+        {
+            Logger.LogInformation(
+                "Refusing to reconfigure thread {ThreadId}: run {RunId} is in progress",
+                ThreadId,
+                CurrentRunId
+            );
+            return ReconfigureOutcome.RefusedBusy;
+        }
+
+        // ---- BUILD. Nothing observable is touched until every part below exists. A throw from here
+        // leaves the loop entirely on its old configuration, which is what makes a bad spec safe.
+        var registry = spec.FunctionRegistry;
+        var options = WithOutputBudgetFloor(spec.DefaultOptions);
+        var systemPrompt = ComposeSystemPrompt(spec.SystemPrompt, _compactionSetup, options.ModelId, Collaboration);
+
+        if (spec.IncludeAskUserQuestionTool)
+        {
+            _ = registry.AddProvider(new AskUserQuestionToolProvider());
+        }
+
+        if (spec.IncludeNotifyClientTool)
+        {
+            _ = registry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
+        }
+
+        // The inheritable snapshot is taken before the sub-agent tools go on, exactly as at construction.
+        (IReadOnlyList<FunctionContract> Contracts, IDictionary<string, ToolHandler> Handlers)? inheritable = null;
+        SubAgentToolProvider? subAgentTools = null;
+        if (SubAgentManager is not null && spec.SubAgentOptions is { } subAgentOptions)
+        {
+            inheritable = BuildInheritableToolSnapshot(registry, subAgentOptions, ThreadId, Logger);
+            // A new provider over the SAME manager and template source: the exposed tool names are a
+            // property of the MODE, while the children and the catalog belong to the conversation.
+            subAgentTools = new SubAgentToolProvider(
+                SubAgentManager,
+                _subAgentTemplateSource!,
+                subAgentOptions.ExposedToolNames
+            );
+            _ = registry.AddProvider(subAgentTools);
+        }
+        else if (SubAgentManager is null && spec.SubAgentOptions is not null)
+        {
+            // A manager is built once, from the constructor, because it is the owner of a conversation's
+            // children. A loop that never had one has no children to keep alive and so nothing this
+            // method could preserve; growing one here would duplicate the constructor's wiring for a
+            // case no host reaches (a host that wants sub-agents supplies them when it builds the loop).
+            Logger.LogWarning(
+                "Thread {ThreadId} was reconfigured with sub-agent options but was built without them; "
+                    + "sub-agent tools stay unavailable on this loop.",
+                ThreadId
+            );
+        }
+
+        // The trigger runtime and the compaction runtime are kept — armed Waits and the active
+        // checkpoint live in them — so only their registry-facing tools are put back on the new registry.
+        if (_triggerRuntime is not null)
+        {
+            _ = registry.AddProvider(new WaitToolProvider(_triggerRuntime));
+        }
+
+        if (_compaction is { IsEnabled: true })
+        {
+            _ = registry.AddProvider(
+                new RecallConversationToolProvider(
+                    ThreadId,
+                    Store,
+                    () => _compaction.ActiveBoundarySeq,
+                    _compaction.Options.Recall,
+                    () => _compaction.ViewCapChars
+                )
+            );
+        }
+
+        var stack = BuildProviderStack(spec.ProviderAgent, registry, spec.LoggerFactory);
+
+        // ---- COMMIT. Rebind first: it is the only step left that can still throw, and it is itself
+        // build-then-assign, so a rejection here leaves the loop on the old configuration as well.
+        _compaction?.Rebind(systemPrompt, options, spec.ProviderAgent);
+
+        ApplyReconfiguredConfiguration(systemPrompt, options);
+        _agent = stack.Agent;
+        _toolHandlers = stack.ToolHandlers;
+        _functionsRequiringArgs = stack.FunctionsRequiringArgs;
+        ToolSchemaTokens = stack.ToolSchemaTokens;
+        SubAgentTools = subAgentTools;
+
+        if (inheritable is { } snapshot)
+        {
+            var newSubAgentOptions = spec.SubAgentOptions!;
+
+            // The catalog belongs to the conversation — a template the context-discovery webhook
+            // activated is not in the spec and must stay — but every template the spec DOES carry is
+            // replaced, because its factory is bound to a provider. Kept as it was, a spawn after a
+            // provider switch would pair the parent's NEW model id with the OLD transport.
+            foreach (var (name, template) in newSubAgentOptions.Templates)
+            {
+                _subAgentTemplateSource!.Upsert(name, template);
+            }
+
+            // Future spawns only. Every child already registered keeps what it was spawned with.
+            SubAgentManager!.UpdateParentConfiguration(
+                snapshot.Contracts,
+                snapshot.Handlers,
+                DefaultOptions.ModelId,
+                DefaultOptions.MaxToken,
+                DefaultOptions.PromptCaching,
+                WithInheritedCompaction(newSubAgentOptions)
+            );
+        }
+
+        Logger.LogInformation(
+            "Reconfigured thread {ThreadId} onto model {ModelId} with {ToolCount} tool(s)",
+            ThreadId,
+            DefaultOptions.ModelId,
+            _toolHandlers.Count
+        );
+
+        return ReconfigureOutcome.Applied;
+    }
+
+    /// <summary>
+    /// A root that compacts hands the same setup down so every level of the hierarchy runs the policy
+    /// over its own thread with its own summarizer (see <see cref="CompactionSetup"/>); options that
+    /// already name one keep it.
+    /// </summary>
+    private SubAgentOptions WithInheritedCompaction(SubAgentOptions options) =>
+        options.Compaction is null && _compactionSetup is not null
+            ? options with
+            {
+                Compaction = _compactionSetup,
+            }
+            : options;
 
     /// <summary>
     /// The <c>NotifyClient</c> tool's narrow persist+publish path (#246). Deliberately bypasses
@@ -2578,8 +2821,10 @@ public sealed class MultiTurnAgentLoop
 
     /// <summary>
     /// The request's measured size from the provider's usage: input plus cache creation, plus cache reads
-    /// when the provider reports them ADDITIVELY (Anthropic's <c>input_tokens</c> excludes them, and it
-    /// is the provider that surfaces <c>cache_creation_input_tokens</c>) rather than as a subset of input.
+    /// when the provider reports them ADDITIVELY (Anthropic's <c>input_tokens</c> excludes them) rather
+    /// than as a subset of input. The additive mark is the PRESENCE of <c>cache_creation_input_tokens</c>,
+    /// which the Anthropic provider stamps on every response — 0 included — precisely so a full cache hit
+    /// still counts its read here.
     /// </summary>
     private static long MeasuredInputTokens(Usage usage)
     {

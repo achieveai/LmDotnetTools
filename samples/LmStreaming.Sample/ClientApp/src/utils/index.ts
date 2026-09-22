@@ -7,5 +7,6 @@ export * from './toolResult';
 export * from './toolParsers';
 export * from './toolName';
 export * from './toolPillState';
+export * from './toolActivity';
 export * from './folderUpload';
 export * from './stripMarkdownPreview';

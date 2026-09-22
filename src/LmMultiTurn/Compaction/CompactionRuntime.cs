@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -100,10 +101,14 @@ internal sealed class CompactionRuntime
     }
 
     private readonly CompactionSetup _setup;
-    private readonly CompactionRuntimeHost _host;
+
+    // The loop-side facts and the provider-bound collaborators derived from them. Not readonly because
+    // the owning loop can be moved onto another mode/model in place (see Rebind); everything this
+    // runtime has LEARNED about the conversation lives in the other fields and survives that.
+    private CompactionRuntimeHost _host;
+    private ICheckpointSummarizer _summarizer;
+    private CheckpointPipeline _pipeline;
     private readonly CompactionPolicy _policy;
-    private readonly ICheckpointSummarizer _summarizer;
-    private readonly CheckpointPipeline _pipeline;
     private readonly TimeProvider _clock;
     private readonly ToolKnowledgeRegistry _registry;
     private readonly Func<string?, long> _text;
@@ -695,6 +700,54 @@ internal sealed class CompactionRuntime
         options.Validate();
         _registry = ToolKnowledgeRegistry.Merge(options.ToolKnowledge);
         _policy = new CompactionPolicy(options);
+        BindToProvider(providerAgent);
+    }
+
+    /// <summary>
+    ///     Repoints this runtime at a reconfigured loop: a new composed system prompt, new default options
+    ///     (model, budget, caching) and the provider agent a summary pass must call.
+    /// </summary>
+    /// <remarks>
+    ///     Everything the runtime has learned about this conversation — the active checkpoint, the tracked
+    ///     row identities, the generation ordinal, the cleared watermark, the in-flight persists — is state
+    ///     about the THREAD, not about the model, so it is deliberately kept. Only what was derived from
+    ///     the loop's configuration is rebuilt.
+    ///     <para>
+    ///     Build-then-assign, like the reconfiguration that calls it: the new summarizer, pipeline and mode
+    ///     are computed into locals and the fields are replaced only once all of them exist, so a spec this
+    ///     runtime rejects (a CachedPrefix summary model that no longer matches the loop's) throws with the
+    ///     runtime still entirely on its old binding.
+    ///     </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">The setup's summary model is incompatible with the new options.</exception>
+    internal void Rebind(string? systemPrompt, GenerateReplyOptions defaultOptions, IAgent providerAgent)
+    {
+        ArgumentNullException.ThrowIfNull(defaultOptions);
+        ArgumentNullException.ThrowIfNull(providerAgent);
+
+        var rebound = _host with { SystemPrompt = systemPrompt, DefaultOptions = defaultOptions };
+        var previous = _host;
+        _host = rebound;
+        try
+        {
+            BindToProvider(providerAgent);
+        }
+        catch
+        {
+            _host = previous;
+            throw;
+        }
+    }
+
+    /// <summary>
+    ///     Builds the parts that depend on the provider agent and on <c>_host.DefaultOptions</c> — the
+    ///     summarizer, the checkpoint pipeline and the resolved mode — and assigns them together.
+    /// </summary>
+    [MemberNotNull(nameof(_summarizer), nameof(_pipeline))]
+    private void BindToProvider(IAgent providerAgent)
+    {
+        var options = _setup.Options;
+        var host = _host;
         if (
             options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
             && options.SummaryModelId is { } summaryModel
@@ -703,13 +756,13 @@ internal sealed class CompactionRuntime
         {
             throw new ArgumentException(
                 "SummaryPrefixMode CachedPrefix needs the same model as the loop: a different summary model shares no prompt cache.",
-                nameof(setup)
+                nameof(providerAgent)
             );
         }
 
-        // The delegate is only called during a summary pass, long after the ctor has filled the fields it reads.
-        _summarizer =
-            setup.Summarizer
+        // The delegate is only called during a summary pass, long after this has filled the fields it reads.
+        var summarizer =
+            _setup.Summarizer
             ?? (
                 options.SummaryPrefixMode == SummaryPrefixMode.CachedPrefix
                     ? new CachedPrefixCheckpointSummarizer(
@@ -717,16 +770,21 @@ internal sealed class CompactionRuntime
                         PrefixThroughSeq,
                         () => host.DefaultOptions.Functions,
                         host.DefaultOptions.ModelId,
-                        setup.SummarySystemPrompt
+                        _setup.SummarySystemPrompt
                     )
                     : new ProviderCheckpointSummarizer(
                         providerAgent,
                         options.SummaryModelId ?? host.DefaultOptions.ModelId,
-                        setup.SummarySystemPrompt
+                        _setup.SummarySystemPrompt
                     )
             );
-        _pipeline = new CheckpointPipeline(
-            _summarizer,
+
+        // A loop without a store has nowhere to append a checkpoint, so it can observe but never compact.
+        var resolved = options.ResolveMode(_setup.ProviderId, host.DefaultOptions.ModelId);
+        var mode = host.Store is null && resolved > CompactionMode.Warn ? CompactionMode.Warn : resolved;
+
+        var pipeline = new CheckpointPipeline(
+            summarizer,
             new CheckpointPipelineOptions
             {
                 Validation = new CheckpointValidationOptions
@@ -746,9 +804,9 @@ internal sealed class CompactionRuntime
             _clock
         );
 
-        // A loop without a store has nowhere to append a checkpoint, so it can observe but never compact.
-        var resolved = options.ResolveMode(setup.ProviderId, host.DefaultOptions.ModelId);
-        Mode = host.Store is null && resolved > CompactionMode.Warn ? CompactionMode.Warn : resolved;
+        _summarizer = summarizer;
+        _pipeline = pipeline;
+        Mode = mode;
     }
 
     /// <summary>Told to the model whenever compaction is on, so it never claims to have compacted the conversation.</summary>
@@ -769,8 +827,8 @@ internal sealed class CompactionRuntime
         return string.IsNullOrEmpty(systemPrompt) ? SystemNote : SystemNote + "\n\n" + systemPrompt;
     }
 
-    /// <summary>The mode for this loop's route.</summary>
-    public CompactionMode Mode { get; }
+    /// <summary>The mode for this loop's route. Re-resolved when the loop is reconfigured (<see cref="Rebind"/>).</summary>
+    public CompactionMode Mode { get; private set; }
 
     /// <summary>False in <see cref="CompactionMode.Off"/>: the loop neither evaluates nor builds a view.</summary>
     public bool IsEnabled => Mode > CompactionMode.Off;

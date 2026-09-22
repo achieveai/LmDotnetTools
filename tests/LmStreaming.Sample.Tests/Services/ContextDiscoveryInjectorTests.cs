@@ -233,7 +233,7 @@ public class ContextDiscoveryInjectorTests
         );
 
         sent.Should().Be(1);
-        ((RecordingMultiTurnAgent)recreated).SentMessages.Should().ContainSingle();
+        ((RecordingMultiTurnAgent)recreated.Agent).SentMessages.Should().ContainSingle();
     }
 
     [Fact]

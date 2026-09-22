@@ -151,9 +151,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected ILogger Logger { get; }
 
     /// <summary>
-    /// The system prompt for the agent.
+    /// The system prompt for the agent. Fixed for the agent's life unless a derived loop replaces the
+    /// whole mode/model-dependent configuration through <see cref="ApplyReconfiguredConfiguration"/>.
     /// </summary>
-    protected string? SystemPrompt { get; }
+    protected string? SystemPrompt { get; private set; }
 
     /// <summary>
     /// The composed system prompt, for tests. Internal rather than public: the prompt is an
@@ -183,9 +184,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected CancellationToken LifetimeToken { get; }
 
     /// <summary>
-    /// The default options for generating replies.
+    /// The default options for generating replies. Fixed for the agent's life unless a derived loop
+    /// replaces the whole mode/model-dependent configuration through
+    /// <see cref="ApplyReconfiguredConfiguration"/>.
     /// </summary>
-    protected GenerateReplyOptions DefaultOptions { get; }
+    protected GenerateReplyOptions DefaultOptions { get; private set; }
 
     /// <summary>
     /// The conversation history. Access via AddToHistory and GetHistorySnapshot for thread safety.
@@ -260,7 +263,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// per-turn usage, a sandbox-backed loop's session creation — and to derive a spawned
     /// agent's bundle with <c>with { Lineage = ... }</c>.
     /// </remarks>
-    protected MultiTurnLifecycleServices LifecycleServices { get; }
+    protected MultiTurnLifecycleServices LifecycleServices { get; private set; }
 
     /// <summary>
     /// Owns this thread's run and turn lifecycle: which run is in flight, which caller ends it,
@@ -384,23 +387,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         _maxReplayBufferSize = maxReplayBufferSize;
         _maxReplayBufferBytes = maxReplayBufferBytes;
 
-        // Per-turn output-budget floor. When no MaxToken is configured, the provider falls back to its
-        // raw 4096 default (AnthropicRequest: MaxTokens = options?.MaxToken ?? 4096). A single turn that
-        // emits a real file body (Write.content) or script (Bash.command) as a tool_use argument then
-        // exhausts that budget: the provider stops with stop_reason=max_tokens and truncates the streaming
-        // tool-call JSON mid-string, so the loop executes corrupt args. The main agent already dodges this
-        // by setting MaxToken explicitly (8192); sub-agents and the workflow-controller loop are built with
-        // options carrying only a model id, so they inherited the 4096 ceiling and their Write/Bash calls
-        // consistently failed. Filling ONLY a null MaxToken here is non-breaking: any explicit budget
-        // (including the main agent's) is preserved, and it never touches ModelId (empty ModelId still lets
-        // the provider pick its default model — this sets budget only, never clobbers model selection).
-        var baseOptions = defaultOptions ?? new GenerateReplyOptions();
-        DefaultOptions = baseOptions.MaxToken is null
-            ? baseOptions with
-            {
-                MaxToken = DefaultMaxTokenFloor,
-            }
-            : baseOptions;
+        DefaultOptions = WithOutputBudgetFloor(defaultOptions);
         Store = store;
         Logger = logger ?? NullLogger.Instance;
 
@@ -423,6 +410,58 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
+    }
+
+    /// <summary>
+    /// Fills a null per-turn output budget with <see cref="DefaultMaxTokenFloor"/>.
+    /// </summary>
+    /// <remarks>
+    /// When no MaxToken is configured, the provider falls back to its raw 4096 default
+    /// (AnthropicRequest: MaxTokens = options?.MaxToken ?? 4096). A single turn that emits a real file
+    /// body (Write.content) or script (Bash.command) as a tool_use argument then exhausts that budget:
+    /// the provider stops with stop_reason=max_tokens and truncates the streaming tool-call JSON
+    /// mid-string, so the loop executes corrupt args. The main agent already dodges this by setting
+    /// MaxToken explicitly (8192); sub-agents and the workflow-controller loop are built with options
+    /// carrying only a model id, so they inherited the 4096 ceiling and their Write/Bash calls
+    /// consistently failed. Filling ONLY a null MaxToken is non-breaking: any explicit budget (including
+    /// the main agent's) is preserved, and it never touches ModelId (empty ModelId still lets the
+    /// provider pick its default model — this sets budget only, never clobbers model selection).
+    /// <para>
+    /// Shared by the constructor and <see cref="ApplyReconfiguredConfiguration"/>, so a reconfigured
+    /// agent gets exactly the budget floor a newly constructed one would.
+    /// </para>
+    /// </remarks>
+    private protected static GenerateReplyOptions WithOutputBudgetFloor(GenerateReplyOptions? defaultOptions)
+    {
+        var baseOptions = defaultOptions ?? new GenerateReplyOptions();
+        return baseOptions.MaxToken is null ? baseOptions with { MaxToken = DefaultMaxTokenFloor } : baseOptions;
+    }
+
+    /// <summary>
+    /// Replaces the mode/model-dependent configuration the base class owns, for a derived loop that
+    /// supports in-place reconfiguration (<see cref="IReconfigurableAgent"/>).
+    /// </summary>
+    /// <param name="systemPrompt">The fully composed prompt, exactly as the constructor would have stored it.</param>
+    /// <param name="defaultOptions">The new per-turn options template; the output-budget floor is applied here.</param>
+    /// <remarks>
+    /// Assignment only, and deliberately so: the caller has already built every part that can fail, and
+    /// nothing on this path is allowed to throw and leave the agent half-switched. The lifecycle bundle's
+    /// model id is restamped too, because it describes the model this loop sends with, and it is read
+    /// back both here (the per-generation context observation) and inside the run-lifecycle finalizer
+    /// (the <c>run_started</c> payload) — which keeps its own copy, hence the second assignment. The
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> singleton is left alone: copying it would break
+    /// the reference checks that keep a lifecycle-free agent allocation-free.
+    /// </remarks>
+    private protected void ApplyReconfiguredConfiguration(string? systemPrompt, GenerateReplyOptions? defaultOptions)
+    {
+        SystemPrompt = systemPrompt;
+        DefaultOptions = WithOutputBudgetFloor(defaultOptions);
+        if (!ReferenceEquals(LifecycleServices, MultiTurnLifecycleServices.Disabled))
+        {
+            LifecycleServices = LifecycleServices with { ModelId = DefaultOptions.ModelId };
+        }
+
+        Lifecycle.ModelId = DefaultOptions.ModelId;
     }
 
     /// <summary>

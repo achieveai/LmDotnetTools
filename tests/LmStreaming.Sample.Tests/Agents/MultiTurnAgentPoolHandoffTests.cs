@@ -277,17 +277,52 @@ public class MultiTurnAgentPoolHandoffTests
     }
 
     [Fact]
-    public async Task SwitchingMode_DiscardsAQueuedTurn_AndDoesNotCarryItToTheReplacement()
+    public async Task SwitchingModeInPlace_CarriesAQueuedTurn_BecauseTheAgentStillHoldsIt()
     {
-        // The THIRD place "does this entry have work in hand?" could be asked. The grantee handoff
-        // and the sandbox session refresh both ask it and both refuse; a mode switch does not ask at
-        // all - it builds the replacement, swaps it in and disposes the old entry, taking that
-        // agent's input channel with it.
+        // The THIRD place "does this entry have work in hand?" could be asked, and the answer now
+        // depends on which branch the switch took.
         //
-        // That is the decided behaviour, not an oversight, and this test is what makes it a decision:
-        // a switch is the conversation's OWN explicit request and already discards a streaming run
-        // without asking, so refusing only for a turn that has not started yet would make the pool
-        // stricter about queued work than about work actively producing tokens.
+        // In place, the question does not arise: the agent, its input channel and the turn sitting in
+        // it are the same objects afterwards. So the accepted id MUST travel - it is not a claim about
+        // a replacement's queue, it is a fact about the queue that never moved. A run of this same
+        // agent will name that id and retire it exactly as it would have without the switch.
+        //
+        // This is the flipped form of SwitchingMode_DiscardsAQueuedTurn..., which pinned the old
+        // universal behaviour; the recreate branch below keeps pinning it.
+        await using var pool = CreatePoolServingSwitchesInPlace();
+        var original = CreateOwnedAgent(pool, "thread-switch-inplace", Alice);
+        original.CurrentRunId = null;
+        original.IsRunning = false;
+
+        ReportAccept(pool, "thread-switch-inplace", "input-1", original);
+        pool.TryGetHandoffState("thread-switch-inplace", out var queued).Should().BeTrue();
+        queued.IsBusy.Should().BeTrue("the precondition: there really is a turn in hand");
+
+        var switched = await pool.RecreateAgentWithModeAsync(
+            "thread-switch-inplace",
+            SystemChatModes.All.First(m => m.Id != SystemChatModes.DefaultModeId),
+            ownerUserId: Alice
+        );
+
+        switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
+        switched.Agent.Should().BeSameAs(original, "the switch kept the agent");
+
+        pool.TryGetHandoffState("thread-switch-inplace", out var after).Should().BeTrue();
+        after.IsBusy.Should().BeTrue("the turn is still queued in the same agent, so the entry still has work in hand");
+    }
+
+    [Fact]
+    public async Task SwitchingMode_ByRecreation_DiscardsAQueuedTurn_AndDoesNotCarryItToTheReplacement()
+    {
+        // The recreate branch, unchanged. The grantee handoff and the sandbox session refresh both ask
+        // "work in hand?" and both refuse; a recreating switch does not ask at all - it builds the
+        // replacement, swaps it in and disposes the old entry, taking that agent's input channel with
+        // it.
+        //
+        // That is the decided behaviour, not an oversight: a switch is the conversation's OWN explicit
+        // request and already discards a streaming run without asking, so refusing only for a turn
+        // that has not started yet would make the pool stricter about queued work than about work
+        // actively producing tokens.
         await using var pool = CreatePool();
         var original = CreateOwnedAgent(pool, "thread-switch", Alice);
         original.CurrentRunId = null;
@@ -303,7 +338,8 @@ public class MultiTurnAgentPoolHandoffTests
             ownerUserId: Alice
         );
 
-        replacement.Should().NotBeSameAs(original, "the switch replaced the agent");
+        replacement.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.Recreated);
+        replacement.Agent.Should().NotBeSameAs(original, "the switch replaced the agent");
 
         // The ledger does NOT travel. Carrying the id would be a lie: the replacement's input channel
         // never received that input, so no run of its could ever name it, and the entry would read
@@ -734,4 +770,23 @@ public class MultiTurnAgentPoolHandoffTests
         {
             TimeProvider = timeProvider ?? TimeProvider.System,
         };
+
+    /// <summary>
+    /// A pool whose factory serves a switch by handing the LIVE agent back, which is what makes the
+    /// pool keep the entry instead of replacing it.
+    /// </summary>
+    /// <remarks>
+    /// It cannot use <see cref="CreatePool"/>: that overload's factory takes loose positional
+    /// arguments and so never sees the <c>AgentCreationContext</c> - and therefore never sees the
+    /// live agent it would have to return.
+    /// </remarks>
+    private static MultiTurnAgentPool CreatePoolServingSwitchesInPlace() =>
+        new(
+            context => new MultiTurnAgentPool.AgentCreationResult(
+                context.Existing?.Agent ?? new FakeMultiTurnAgent(context.ThreadId) { KeepSubscriptionOpen = true }
+            ),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 }

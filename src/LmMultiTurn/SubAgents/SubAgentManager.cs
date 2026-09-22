@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -76,10 +77,14 @@ public sealed record SubAgentModelRouting(
 public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
-    private readonly string? _parentModelId;
-    private readonly int? _parentMaxToken;
-    private readonly IReadOnlyList<FunctionContract> _parentContracts;
-    private readonly IDictionary<string, ToolHandler> _parentHandlers;
+
+    // The parent-derived inputs to a spawn. Not readonly because the owning loop can be moved onto
+    // another model and tool surface in place (see UpdateParentConfiguration); the parent AGENT never
+    // changes, so nothing already spawned is affected.
+    private string? _parentModelId;
+    private int? _parentMaxToken;
+    private IReadOnlyList<FunctionContract> _parentContracts;
+    private IDictionary<string, ToolHandler> _parentHandlers;
 
     /// <summary>
     /// Every tool name the parent exposes, in contract order. This is the roster an <c>add_tools</c>
@@ -87,7 +92,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// against — both of which must see the IDENTICAL list or the two resolutions could disagree
     /// about what "before removal" contained.
     /// </summary>
-    private readonly string[] _parentToolNames;
+    private string[] _parentToolNames;
 
     /// <summary>
     /// <see cref="_parentToolNames"/> as an ordinal set, so deciding whether an <c>add_tools</c> or
@@ -100,15 +105,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="SpawnCapabilityRecord.UnmatchedAddTools"/> reports, even though the child never
     /// inherits the parent's copy. <see cref="_inheritableToolCount"/> is the other, narrower count.
     /// </remarks>
-    private readonly HashSet<string> _parentToolNameSet;
+    private HashSet<string> _parentToolNameSet;
 
     /// <summary>
     /// The inheritable half of the parent's surface. #638 F-002: AskUserQuestion/NotifyClient can
     /// never be inherited, so counting them both overstated the loss and let the empty-toolset signal
     /// fire on a parent from which nothing was inheritable in the first place.
     /// </summary>
-    private readonly int _inheritableToolCount;
-    private readonly SubAgentOptions _options;
+    private int _inheritableToolCount;
+    private SubAgentOptions _options;
 
     /// <summary>
     /// The options handed to each spawned child's own loop: this manager's options minus the spawn
@@ -228,7 +233,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// The options a child's own loop (and therefore its own manager) is built on — exposed so a test
     /// can stand up a nested manager exactly the way a spawned child would.
     /// </summary>
-    internal SubAgentOptions ChildOptions { get; }
+    internal SubAgentOptions ChildOptions { get; private set; }
 
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
@@ -259,7 +264,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// overload would make legacy source calls that omit optional arguments ambiguous.
     /// <c>SubAgentManagerPublicSurfaceTests</c> pins the published constructor shape.
     /// </remarks>
-    public PromptCachingMode ParentPromptCaching { get; init; }
+    public PromptCachingMode ParentPromptCaching
+    {
+        get => _parentPromptCaching;
+        init => _parentPromptCaching = value;
+    }
+
+    // Backing field for ParentPromptCaching, so UpdateParentConfiguration can replace it without the
+    // property growing a public setter it has never had.
+    private PromptCachingMode _parentPromptCaching;
 
     /// <summary>
     /// Host hook told when a descendant's <c>AskUserQuestion</c> parks or settles, or null when the
@@ -601,13 +614,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         _parentAgent = parentAgent;
-        _parentContracts = parentContracts;
-        _parentHandlers = parentHandlers;
-        // The parent's surface is fixed for this manager's lifetime, so its three derived views are
-        // taken once here rather than rebuilt on every spawn. See the field docs for what each is for.
-        _parentToolNames = [.. parentContracts.Select(c => c.Name)];
-        _parentToolNameSet = new HashSet<string>(_parentToolNames, StringComparer.Ordinal);
-        _inheritableToolCount = parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+        AdoptParentToolSurface(parentContracts, parentHandlers);
         _options = options;
         _source = source;
         _logger = logger ?? NullLogger.Instance;
@@ -656,6 +663,91 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Start the defer-queue pump. Its first action parks on _queueSignal (initialized above via its
         // field initializer), so this call returns to the ctor immediately without consuming a thread.
         _pumpTask = RunSpawnPumpAsync(_pumpCts.Token);
+    }
+
+    /// <summary>
+    /// Takes the parent's tool surface and the three views derived from it, which are taken once per
+    /// surface rather than rebuilt on every spawn. See the field docs for what each is for.
+    /// </summary>
+    [MemberNotNull(
+        nameof(_parentContracts),
+        nameof(_parentHandlers),
+        nameof(_parentToolNames),
+        nameof(_parentToolNameSet)
+    )]
+    private void AdoptParentToolSurface(
+        IReadOnlyList<FunctionContract> parentContracts,
+        IDictionary<string, ToolHandler> parentHandlers
+    )
+    {
+        _parentContracts = parentContracts;
+        _parentHandlers = parentHandlers;
+        _parentToolNames = [.. parentContracts.Select(c => c.Name)];
+        _parentToolNameSet = new HashSet<string>(_parentToolNames, StringComparer.Ordinal);
+        _inheritableToolCount = parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+    }
+
+    /// <summary>
+    /// Re-points the parent-derived inputs to a spawn after the owning loop was reconfigured onto a new
+    /// mode or model in place (<see cref="IReconfigurableAgent"/>).
+    /// </summary>
+    /// <param name="parentContracts">The new inheritable tool snapshot, already filtered by the loop.</param>
+    /// <param name="parentHandlers">Handlers matching <paramref name="parentContracts"/>.</param>
+    /// <param name="parentModelId">The parent's new model, inherited by a child whose template sets none.</param>
+    /// <param name="parentMaxToken">The parent's new per-turn output budget, inherited the same way.</param>
+    /// <param name="parentPromptCaching">The parent's new caching mode, inherited the same way.</param>
+    /// <param name="options">
+    ///     The new mode's spawn configuration: provider factories, model catalog, required tools and the
+    ///     rest of what a spawn resolves at spawn time. The capacities this manager was BUILT with (the
+    ///     concurrency gate, the retained and queued limits, the ordinal sequence) are kept: they size
+    ///     live state that a switch cannot resize. <see cref="ChildOptions"/> is re-derived from it too,
+    ///     so a child spawned from now on hands ITS children the switched-to factories.
+    /// </param>
+    /// <remarks>
+    /// <b>Future spawns only.</b> Every child already registered here — running, queued or terminal —
+    /// keeps the model, budget and tools it was spawned with; a child's configuration is resolved once,
+    /// at spawn time, and this changes nothing that has already been resolved. The parent AGENT is the
+    /// same loop, so there is no re-parenting either: children keep relaying to the conversation they
+    /// have always belonged to.
+    /// <para>
+    /// Called only from a loop that has just confirmed no run is in progress, so no new spawn can be
+    /// requested concurrently. A spawn already sitting in the defer queue can start
+    /// alongside this and read a mix of old and new values; it is bounded to that one child's inherited
+    /// tool list, and the alternative — a lock on the spawn path for a once-per-mode-switch write —
+    /// costs every spawn to protect a case the host cannot even reach.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    internal void UpdateParentConfiguration(
+        IReadOnlyList<FunctionContract> parentContracts,
+        IDictionary<string, ToolHandler> parentHandlers,
+        string? parentModelId,
+        int? parentMaxToken,
+        PromptCachingMode parentPromptCaching,
+        SubAgentOptions options
+    )
+    {
+        ArgumentNullException.ThrowIfNull(parentContracts);
+        ArgumentNullException.ThrowIfNull(parentHandlers);
+        ArgumentNullException.ThrowIfNull(options);
+
+        AdoptParentToolSurface(parentContracts, parentHandlers);
+        _parentModelId = parentModelId;
+        _parentMaxToken = parentMaxToken;
+        _parentPromptCaching = parentPromptCaching;
+        _options = options with
+        {
+            MaxConcurrentSubAgents = _options.MaxConcurrentSubAgents,
+            MaxRetainedSubAgents = _options.MaxRetainedSubAgents,
+            MaxQueuedSubAgents = _options.MaxQueuedSubAgents,
+            OrdinalAllocator = _options.OrdinalAllocator,
+        };
+        // The derived copy a child is built on, or a child spawned after the switch would still hand
+        // its own children the pre-switch factories.
+        ChildOptions = _options.ForChildLoop() with
+        {
+            OrdinalAllocator = _ordinals,
+        };
     }
 
     /// <summary>

@@ -1054,7 +1054,7 @@ public class MultiTurnAgentPoolTests
 
         var newAgent = await pool.RecreateAgentWithProviderAsync("thread-dispose-throw", "openai", mode);
 
-        newAgent.Should().NotBeSameAs(old);
+        newAgent.Agent.Should().NotBeSameAs(old);
         (await WaitForPersistedProviderAsync(store, "thread-dispose-throw")).Should().Be("openai");
         pool.GetEffectiveProviderId("thread-dispose-throw", null).Should().Be("openai");
     }

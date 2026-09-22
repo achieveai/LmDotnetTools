@@ -183,6 +183,25 @@ public class PromptCachingStreamParserTests
         Assert.False(usage.ExtraProperties.ContainsKey("ephemeral_1h_input_tokens"));
     }
 
+    [Theory]
+    [InlineData("""{"input_tokens": 200, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 6400}""")]
+    [InlineData("""{"input_tokens": 200, "cache_read_input_tokens": 6400}""")]
+    public void ProcessEvent_ACacheHitWithNoWrite_StillStampsCacheCreationTokens_SoTheAccountingReadsAdditive(
+        string messageStartUsage
+    )
+    {
+        // input_tokens EXCLUDES the cache read on every Anthropic-shaped response, not only on the ones that
+        // also wrote to the cache. Downstream (MultiTurnAgentLoop.MeasuredInputTokens) reads the presence of
+        // cache_creation_input_tokens as "this provider counts additively", so a full cache hit — and a
+        // DeepSeek response, which never carries the field at all — must stamp it too, at 0.
+        var usage = StreamUsage(messageStartUsage);
+
+        Assert.Equal(200, usage.PromptTokens);
+        Assert.Equal(6400, usage.TotalCachedTokens);
+        Assert.True(usage.ExtraProperties.ContainsKey("cache_creation_input_tokens"));
+        Assert.Equal(0, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
+    }
+
     private static Usage StreamUsage(string messageStartUsage)
     {
         var parser = new AnthropicStreamParser();

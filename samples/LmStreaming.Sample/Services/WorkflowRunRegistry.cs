@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmWorkflow;
 using LmStreaming.Sample.Models;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LmStreaming.Sample.Services;
 
@@ -51,6 +52,7 @@ public sealed class WorkflowRunRegistry
     private readonly ConcurrentDictionary<string, WorkflowManager> _byThread = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, object> _fileLocks = new(StringComparer.Ordinal);
     private readonly string? _indexDirectory;
+    private readonly ILogger<WorkflowRunRegistry> _logger;
 
     private static readonly JsonSerializerOptions IndexJson = new(JsonSerializerDefaults.Web) { WriteIndented = false };
 
@@ -63,18 +65,21 @@ public sealed class WorkflowRunRegistry
     /// <param name="maxPersistedEntriesPerConversation">
     ///     Ceiling on retained rows per conversation; see <see cref="MaxPersistedEntriesPerConversation"/>.
     /// </param>
+    /// <param name="logger">Where a quarantined index is reported; null logs nothing.</param>
     /// <exception cref="ArgumentOutOfRangeException">
     ///     <paramref name="maxPersistedEntriesPerConversation"/> is not positive — an index that may hold
     ///     nothing would silently discard every tab it was asked to make durable.
     /// </exception>
     public WorkflowRunRegistry(
         string? indexDirectory = null,
-        int maxPersistedEntriesPerConversation = DefaultMaxPersistedEntriesPerConversation
+        int maxPersistedEntriesPerConversation = DefaultMaxPersistedEntriesPerConversation,
+        ILogger<WorkflowRunRegistry>? logger = null
     )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxPersistedEntriesPerConversation, 1);
 
         _indexDirectory = indexDirectory;
+        _logger = logger ?? NullLogger<WorkflowRunRegistry>.Instance;
         MaxPersistedEntriesPerConversation = maxPersistedEntriesPerConversation;
         if (!string.IsNullOrWhiteSpace(_indexDirectory))
         {
@@ -116,11 +121,18 @@ public sealed class WorkflowRunRegistry
             return;
         }
 
-        var gate = _fileLocks.GetOrAdd(threadId, static _ => new object());
-        lock (gate)
+        lock (GateFor(threadId))
         {
+            var retained = TryReadIndex(threadId);
+            if (retained is null)
+            {
+                // Unreadable and still in place: overwriting it would destroy the bytes a post-mortem needs.
+                // The next poll retries the quarantine once whatever held the file has let go.
+                return;
+            }
+
             var merged = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
-            foreach (var existing in ReadIndex(threadId))
+            foreach (var existing in retained)
             {
                 merged[(existing.Kind, existing.AgentId)] = existing;
             }
@@ -144,7 +156,24 @@ public sealed class WorkflowRunRegistry
                 var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
                 try
                 {
-                    File.WriteAllText(temp, JsonSerializer.Serialize(Bound(merged, tabs), IndexJson));
+                    // Flushed to the device before the rename: the rename is journaled but a buffered
+                    // write is not, so an unclean shutdown between the two used to leave a full-length
+                    // index of NUL bytes under the final name.
+                    using (
+                        var stream = new FileStream(
+                            temp,
+                            FileMode.CreateNew,
+                            FileAccess.Write,
+                            FileShare.None,
+                            bufferSize: 4096,
+                            FileOptions.WriteThrough
+                        )
+                    )
+                    {
+                        JsonSerializer.Serialize(stream, Bound(merged, tabs), IndexJson);
+                        stream.Flush(flushToDisk: true);
+                    }
+
                     File.Move(temp, path, overwrite: true);
                 }
                 finally
@@ -193,10 +222,26 @@ public sealed class WorkflowRunRegistry
     public IReadOnlyList<SubAgentSummary> GetPersistedTabs(string threadId)
     {
         ArgumentException.ThrowIfNullOrEmpty(threadId);
-        return string.IsNullOrWhiteSpace(_indexDirectory) ? [] : ReadIndex(threadId);
+        if (string.IsNullOrWhiteSpace(_indexDirectory))
+        {
+            return [];
+        }
+
+        // Same gate as the writer: an unlocked reader that finds the index damaged would otherwise race
+        // the poll rewriting it and quarantine the fresh, good file instead.
+        lock (GateFor(threadId))
+        {
+            return TryReadIndex(threadId) ?? [];
+        }
     }
 
-    private IReadOnlyList<SubAgentSummary> ReadIndex(string threadId)
+    private object GateFor(string threadId) => _fileLocks.GetOrAdd(threadId, static _ => new object());
+
+    /// <summary>
+    ///     The retained rows, empty when there is no index. Null when the index is unreadable and is still in
+    ///     place because it could not be moved aside; callers must not overwrite it.
+    /// </summary>
+    private IReadOnlyList<SubAgentSummary>? TryReadIndex(string threadId)
     {
         var path = PathFor(threadId);
         if (!File.Exists(path))
@@ -204,12 +249,46 @@ public sealed class WorkflowRunRegistry
             return [];
         }
 
-        return
-        [
-            .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? []).Select(
-                static tab => tab.AsRetained()
-            ),
-        ];
+        List<SubAgentSummary>? tabs;
+        try
+        {
+            tabs = JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson);
+        }
+        catch (JsonException ex)
+        {
+            // A crash artifact (an unclean shutdown once left a whole index of NUL bytes), not data.
+            // Moved aside rather than deleted so the corruption stays visible and recoverable, and the
+            // conversation reads as having no persisted tabs instead of failing every poll from now on.
+            return Quarantine(path, ex) ? [] : null;
+        }
+
+        return [.. (tabs ?? []).Select(static tab => tab.AsRetained())];
+    }
+
+    private bool Quarantine(string path, JsonException reason)
+    {
+        var quarantined = path + ".corrupt-" + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ");
+        try
+        {
+            File.Move(path, quarantined);
+            _logger.LogError(
+                reason,
+                "Workflow-tab index {IndexPath} is unreadable and was quarantined as {QuarantinePath}; the conversation reads as having no persisted tabs",
+                path,
+                quarantined
+            );
+            return true;
+        }
+        catch (Exception moveFailure) when (moveFailure is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(
+                moveFailure,
+                "Workflow-tab index {IndexPath} is unreadable ({Reason}) and could not be quarantined; the conversation reads as having no persisted tabs",
+                path,
+                reason.Message
+            );
+            return false;
+        }
     }
 
     private string PathFor(string threadId)

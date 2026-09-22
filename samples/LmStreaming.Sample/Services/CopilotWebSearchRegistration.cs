@@ -22,7 +22,8 @@ internal static class CopilotWebSearchRegistration
         CopilotSessionContext session,
         CopilotOptions options,
         ILoggerFactory loggerFactory,
-        HttpMessageHandler? innerHandler = null
+        HttpMessageHandler? innerHandler = null,
+        IAsyncDisposable? existingResource = null
     )
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -39,31 +40,44 @@ internal static class CopilotWebSearchRegistration
         var logger = loggerFactory.CreateLogger("LmStreaming.Sample.CopilotWebSearchRegistration");
         HttpClientTransport? transport = null;
         McpClient? client = null;
+        // A session handed back from the configuration being switched away from is registered from
+        // as is — one MCP session, no second handshake — and is never disposed here on failure: the
+        // caller decides whether it survives, exactly as it does for a session this call did not open.
+        var reused = existingResource as OwnedMcpResource;
         try
         {
-            var httpClient = CopilotHttpClientFactory.Create(
-                options.BaseUrl,
-                tokenProvider,
-                session,
-                options,
-                innerHandler: innerHandler
-            );
-            transport = new HttpClientTransport(
-                new HttpClientTransportOptions
-                {
-                    Name = ClientName,
-                    Endpoint = new Uri(new Uri(options.BaseUrl), "/mcp/readonly"),
-                    TransportMode = HttpTransportMode.StreamableHttp,
-                    ConnectionTimeout = InitializationTimeout,
-                    AdditionalHeaders = new Dictionary<string, string> { ["X-MCP-Tools"] = ToolName },
-                },
-                httpClient,
-                loggerFactory,
-                ownsHttpClient: true
-            );
-
             using var cts = new CancellationTokenSource(InitializationTimeout);
-            client = McpClient.CreateAsync(transport, cancellationToken: cts.Token).GetAwaiter().GetResult();
+            if (reused is not null)
+            {
+                client = reused.Client;
+                transport = reused.Transport;
+            }
+            else
+            {
+                var httpClient = CopilotHttpClientFactory.Create(
+                    options.BaseUrl,
+                    tokenProvider,
+                    session,
+                    options,
+                    innerHandler: innerHandler
+                );
+                transport = new HttpClientTransport(
+                    new HttpClientTransportOptions
+                    {
+                        Name = ClientName,
+                        Endpoint = new Uri(new Uri(options.BaseUrl), "/mcp/readonly"),
+                        TransportMode = HttpTransportMode.StreamableHttp,
+                        ConnectionTimeout = InitializationTimeout,
+                        AdditionalHeaders = new Dictionary<string, string> { ["X-MCP-Tools"] = ToolName },
+                    },
+                    httpClient,
+                    loggerFactory,
+                    ownsHttpClient: true
+                );
+
+                client = McpClient.CreateAsync(transport, cancellationToken: cts.Token).GetAwaiter().GetResult();
+            }
+
             var provider = McpClientFunctionProvider
                 .CreateAsync(
                     new Dictionary<string, McpClient> { [ClientName] = client },
@@ -77,7 +91,11 @@ internal static class CopilotWebSearchRegistration
             var functions = provider.GetFunctions().ToList();
             if (functions.Count != 1 || !string.Equals(functions[0].Contract.Name, ToolName, StringComparison.Ordinal))
             {
-                Dispose(client, transport);
+                if (reused is null)
+                {
+                    Dispose(client, transport);
+                }
+
                 return new(false, null, "Copilot web_search unavailable");
             }
 
@@ -97,11 +115,21 @@ internal static class CopilotWebSearchRegistration
                 ReturnDescription = descriptor.Contract.ReturnDescription,
             };
             _ = registry.AddFunction(renamedContract, descriptor.Handler, providerName: ClientName);
-            return new(true, new OwnedMcpResource(client, transport), "Copilot web_search registered");
+            return new(
+                true,
+                reused ?? new OwnedMcpResource(client, transport),
+                reused is null
+                    ? "Copilot web_search registered"
+                    : "Copilot web_search re-registered on the kept session"
+            );
         }
         catch (Exception ex)
         {
-            Dispose(client, transport);
+            if (reused is null)
+            {
+                Dispose(client, transport);
+            }
+
             logger.LogWarning(ex, "Copilot hosted web_search is unavailable; using configured fallback");
             return new(false, null, "Copilot web_search unavailable");
         }
@@ -122,6 +150,10 @@ internal static class CopilotWebSearchRegistration
 
     private sealed class OwnedMcpResource(McpClient client, HttpClientTransport transport) : IAsyncDisposable
     {
+        public McpClient Client => client;
+
+        public HttpClientTransport Transport => transport;
+
         public async ValueTask DisposeAsync()
         {
             try

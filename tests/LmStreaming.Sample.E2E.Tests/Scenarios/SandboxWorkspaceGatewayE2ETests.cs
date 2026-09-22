@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -172,6 +173,79 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
     }
 
     /// <summary>
+    /// The sandbox MCP client is conversation-owned: a child spawned under Workspace Agent mode holds
+    /// its tool handlers by reference, so a mode or provider switch must hand the SAME client back to
+    /// the new configuration (re-registered, not reconnected) and leave it dormant under a mode without
+    /// a sandbox rather than dispose it under that child.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_switch_on_a_workspace_agent_keeps_the_sandbox_mcp_client()
+    {
+        LogTestStart();
+
+        var prereq = SandboxGatewayPrerequisites.Detect();
+        Skip.IfNot(prereq.Available, prereq.SkipReason);
+        using var config = prereq.CreateConfigScope();
+
+        // No turn is ever sent; the responder exists because the scripted builder needs one.
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("workspace-agent", _ => true)
+            .Turn(t => t.Text("unused"))
+            .Build();
+        using var factory = new E2EWebAppFactory(
+            "test",
+            // The responder itself, not one wire's handler: the provider switch below re-creates the
+            // provider agent on the other scripted wire.
+            new ScriptedBuilder(responder),
+            configureServices: services => services.AddSingleton(LoggerFactory)
+        );
+        var pool = factory.Services.GetRequiredService<MultiTurnAgentPool>();
+        var workspaceAgent = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId)!;
+        var noSandbox = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var threadId = "sandbox-reuse-" + Guid.NewGuid().ToString("N");
+
+        var before = pool.GetOrCreateAgent(threadId, workspaceAgent, "test", requestResponseDumpFileName: null);
+        var (key, client) = pool.GetReusableResourcesForTest(threadId)
+            .Single(resource =>
+                resource.Key.StartsWith(Program.SandboxMcpClientResourceKeyPrefix, StringComparison.Ordinal)
+            );
+        Logger.LogInformation("Sandbox MCP client published under {Key}", key);
+
+        var providerSwitch = await pool.RecreateAgentWithProviderAsync(threadId, "test-anthropic", workspaceAgent);
+        providerSwitch.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
+        providerSwitch.Agent.Should().BeSameAs(before);
+        pool.GetReusableResourcesForTest(threadId)
+            .Should()
+            .ContainKey(key)
+            .WhoseValue.Should()
+            .BeSameAs(client, "a provider switch re-registers the sandbox tools from the client it already has");
+
+        var hidden = await pool.RecreateAgentWithModeAsync(threadId, noSandbox);
+        hidden.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
+        pool.GetReusableResourcesForTest(threadId)
+            .Should()
+            .ContainKey(key)
+            .WhoseValue.Should()
+            .BeSameAs(client, "a mode without a sandbox leaves the client dormant for the children still holding it");
+
+        var back = await pool.RecreateAgentWithModeAsync(threadId, workspaceAgent);
+        back.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
+        pool.GetReusableResourcesForTest(threadId)
+            .Should()
+            .ContainKey(key)
+            .WhoseValue.Should()
+            .BeSameAs(client, "switching back finds the dormant client again instead of opening a second session");
+    }
+
+    private static string FrameType(System.Text.Json.JsonDocument frame) =>
+        frame.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+        && frame.RootElement.TryGetProperty("$type", out var type)
+        && type.ValueKind == System.Text.Json.JsonValueKind.String
+            ? type.GetString()!
+            : "(untyped)";
+
+    /// <summary>
     /// Validates the CORE sandbox MCP tool set end-to-end through the real gateway by driving a
     /// scripted instruction chain that exercises, in sequence,
     /// <c>Write → Read → Bash → Glob → Grep</c>, then asserts
@@ -243,7 +317,14 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             .Turn(t => t.Text("Completed sandbox tool chain."))
             .Build();
 
-        using var factory = new E2EWebAppFactory("test-anthropic", new ScriptedBuilder(responder.AsAnthropicHandler()));
+        // The host logs through the test's factory so a run that ends without tool calls leaves its
+        // reason (a gateway probe timing out, a session that failed to provision) in THIS test's output
+        // rather than in a console nobody reads.
+        using var factory = new E2EWebAppFactory(
+            "test-anthropic",
+            new ScriptedBuilder(responder.AsAnthropicHandler()),
+            configureServices: services => services.AddSingleton(LoggerFactory)
+        );
 
         var threadId = "sandbox-chain-" + Guid.NewGuid().ToString("N");
         Logger.LogInformation(
@@ -256,6 +337,16 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
 
         await client.SendUserMessageAsync("Run the workspace tool chain: write, read, bash, glob, grep.");
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(180));
+        Logger.LogInformation(
+            "Frame types in arrival order: [{FrameTypes}]",
+            string.Join(", ", frames.Select(FrameType))
+        );
+        foreach (
+            var frame in frames.Where(frame => FrameType(frame).Contains("error", StringComparison.OrdinalIgnoreCase))
+        )
+        {
+            Logger.LogWarning("Error frame: {Frame}", frame.RootElement.GetRawText());
+        }
 
         var toolNames = frames.ToolCallNames();
         var toolResults = frames.ToolCallResults();

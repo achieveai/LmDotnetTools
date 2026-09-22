@@ -141,12 +141,21 @@ internal sealed class CancellationObservingStream : Stream
 {
     private readonly byte[] _prefix;
     private readonly TaskCompletionSource _cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _position;
 
     public CancellationObservingStream(string prefix) => _prefix = Encoding.UTF8.GetBytes(prefix);
 
     /// <summary>Completes when a read is cancelled (i.e. the proxy cancelled the upstream).</summary>
     public Task Cancelled => _cancelled.Task;
+
+    /// <summary>
+    ///     Completes once a read has consumed the prefix and is blocked waiting for more: the proxy is
+    ///     provably reading this body, so a cancellation issued from here on has a read to reach. A
+    ///     cancellation issued on a timer instead can fire before the request reaches the upstream at all,
+    ///     and then there is no read for it to reach.
+    /// </summary>
+    public Task Blocked => _blocked.Task;
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
@@ -158,6 +167,7 @@ internal sealed class CancellationObservingStream : Stream
             return count;
         }
 
+        _ = _blocked.TrySetResult();
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken);
