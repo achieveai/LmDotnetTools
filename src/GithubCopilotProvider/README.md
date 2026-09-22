@@ -1,4 +1,4 @@
-# GithubCopilotProvider — route Anthropic, OpenAI, xAI & Google models through GitHub Copilot
+# GithubCopilotProvider — route Anthropic, OpenAI, xAI, Google & Microsoft models through GitHub Copilot
 
 This package lets you drive the existing `AnthropicProvider`, `OpenAiResponsesProvider` and
 `OpenAIProvider` agents against the **GitHub Copilot** backend instead of the vendors' public APIs. It owns the
@@ -38,7 +38,7 @@ one-way — the providers know nothing about Copilot.
   Anthropic Messages API (`/v1/messages`) through Copilot.
 - **`CopilotResponsesAgentFactory.Create(...)`** — builds an `OpenAiResponsesAgent` that talks the
   OpenAI Responses API (`/responses`) through Copilot over **SSE** or **WebSocket**
-  (`CopilotResponsesTransport`). Grok (xAI) models use this path too.
+  (`CopilotResponsesTransport`). Grok (xAI) and MAI (Microsoft) models use this path too.
 - **`CopilotChatCompletionsAgentFactory.Create(...)`** — builds an `OpenClientAgent` that talks
   `/chat/completions` through Copilot via the dialect handler. Used for models whose only endpoint
   is chat completions (Gemini).

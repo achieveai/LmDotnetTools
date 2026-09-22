@@ -13,14 +13,15 @@ public sealed class CopilotModelCatalogParserTests
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        // 34 models upstream → 15 routable (7 Claude + 5 OpenAI + 1 Azure-OpenAI + 2 Gemini).
-        models.Should().HaveCount(15);
+        // 34 models upstream → 16 routable (7 Claude + 5 OpenAI + 1 Azure-OpenAI + 2 Gemini + 1 MAI).
+        models.Should().HaveCount(16);
         models
             .Should()
             .OnlyContain(m =>
                 m.Vendor == CopilotModelVendor.Anthropic
                 || m.Vendor == CopilotModelVendor.OpenAI
                 || m.Vendor == CopilotModelVendor.Google
+                || m.Vendor == CopilotModelVendor.Microsoft
             );
         models.Should().NotContain(m => m.Transport == CopilotModelTransport.Unsupported);
     }
@@ -108,13 +109,31 @@ public sealed class CopilotModelCatalogParserTests
     }
 
     [Fact]
-    public void Parse_excludes_non_partition_vendors_even_when_transport_is_routable()
+    public void Parse_maps_microsoft_models_to_microsoft_partition_with_responses_transport()
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        // mai-code-1-flash-picker supports /responses but is vendor "Microsoft" — vendor filtering
-        // is independent of transport, so it must not appear.
-        models.Select(m => m.Id).Should().NotContain("mai-code-1-flash-picker");
+        // The real catalog lists MAI under vendor "Microsoft" with /responses as its only endpoint.
+        var model = models.Should().ContainSingle(m => m.Id == "mai-code-1-flash-picker").Subject;
+        model.Vendor.Should().Be(CopilotModelVendor.Microsoft);
+        model.Transport.Should().Be(CopilotModelTransport.Responses);
+    }
+
+    [Fact]
+    public void Parse_excludes_non_partition_vendors_even_when_transport_is_routable()
+    {
+        // Copilot's Fireworks-served internal model supports /chat/completions but is not a partition
+        // we surface — vendor filtering is independent of transport, so it must not appear.
+        const string json = """
+            { "data": [
+              { "id": "trajectory-compaction", "vendor": "Fireworks", "supported_endpoints": ["/chat/completions"] },
+              { "id": "gpt-x", "vendor": "OpenAI", "supported_endpoints": ["/responses"] }
+            ] }
+            """;
+
+        var models = CopilotModelCatalogParser.Parse(json);
+
+        models.Select(m => m.Id).Should().Equal("gpt-x");
     }
 
     [Fact]

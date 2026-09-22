@@ -4,9 +4,9 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 /// <summary>
 ///     Parses the GitHub Copilot <c>GET /models</c> response into the subset of models the sample can
-///     list and route: those published by Anthropic, OpenAI, xAI or Google <em>and</em> reachable via a
-///     supported transport (<c>/v1/messages</c>, <c>/responses</c> or <c>/chat/completions</c>). Any other
-///     publisher (e.g. Microsoft) is dropped.
+///     list and route: those published by Anthropic, OpenAI, xAI, Google or Microsoft <em>and</em> reachable
+///     via a supported transport (<c>/v1/messages</c>, <c>/responses</c> or <c>/chat/completions</c>). Any
+///     other publisher is dropped.
 /// </summary>
 /// <remarks>
 ///     Pure and side-effect free so it can be unit-tested against the captured real response fixture.
@@ -113,7 +113,7 @@ public static class CopilotModelCatalogParser
     /// <summary>
     ///     Maps the response <c>vendor</c> to a partition. Copilot reports newer GPTs as <c>OpenAI</c>
     ///     but some hosted variants as <c>Azure OpenAI</c>; both collapse to <see cref="CopilotModelVendor.OpenAI"/>.
-    ///     <c>xAI</c> and <c>Google</c> map to their own partitions. Any other publisher (Microsoft, ...) is
+    ///     <c>xAI</c>, <c>Google</c> and <c>Microsoft</c> map to their own partitions. Any other publisher is
     ///     not a partition we surface.
     /// </summary>
     private static bool TryNormalizeVendor(string? vendor, out CopilotModelVendor normalized)
@@ -149,6 +149,12 @@ public static class CopilotModelCatalogParser
         if (trimmed.Equals("Google", StringComparison.OrdinalIgnoreCase))
         {
             normalized = CopilotModelVendor.Google;
+            return true;
+        }
+
+        if (trimmed.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = CopilotModelVendor.Microsoft;
             return true;
         }
 

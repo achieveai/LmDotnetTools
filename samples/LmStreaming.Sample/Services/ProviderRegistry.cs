@@ -20,7 +20,7 @@ namespace LmStreaming.Sample.Services;
 /// GitHub Copilot models are discovered dynamically at startup (see
 /// <see cref="AchieveAi.LmDotnetTools.GithubCopilotProvider.Models.CopilotModelsClient"/>) and injected
 /// as catalog entries keyed by their raw model id, partitioned into one <c>Copilot · {vendor}</c> group
-/// per vendor (Anthropic, OpenAI, xAI, Google). When no Copilot token resolves (or discovery fails) the injected
+/// per vendor (Anthropic, OpenAI, xAI, Google, Microsoft). When no Copilot token resolves (or discovery fails) the injected
 /// list is empty and no Copilot models are exposed.
 /// </remarks>
 public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IProviderResolver
@@ -29,6 +29,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private const string CopilotOpenAiGroup = "Copilot · OpenAI";
     private const string CopilotXAiGroup = "Copilot · xAI";
     private const string CopilotGoogleGroup = "Copilot · Google";
+    private const string CopilotMicrosoftGroup = "Copilot · Microsoft";
     private const string AnthropicCompatGroupSuffix = " (Anthropic-compatible)";
 
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
@@ -161,6 +162,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
                 CopilotModelVendor.Anthropic => CopilotAnthropicGroup,
                 CopilotModelVendor.XAi => CopilotXAiGroup,
                 CopilotModelVendor.Google => CopilotGoogleGroup,
+                CopilotModelVendor.Microsoft => CopilotMicrosoftGroup,
                 _ => CopilotOpenAiGroup,
             };
             // Suffix "(Copilot)" so the model is identifiable as Copilot-backed even in a client that

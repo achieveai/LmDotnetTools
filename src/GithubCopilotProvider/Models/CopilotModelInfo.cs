@@ -95,7 +95,7 @@ public sealed record CopilotModelInfo(
 
 /// <summary>
 ///     The normalized publisher partition a Copilot model belongs to. Only these vendors are surfaced;
-///     any other publisher (e.g. Microsoft) is excluded during parsing.
+///     any other publisher is excluded during parsing.
 /// </summary>
 public enum CopilotModelVendor
 {
@@ -110,4 +110,7 @@ public enum CopilotModelVendor
 
     /// <summary>Google (Gemini) models, served over the Chat Completions transport.</summary>
     Google = 4,
+
+    /// <summary>Microsoft (MAI) models, served over the Responses transport.</summary>
+    Microsoft = 5,
 }
