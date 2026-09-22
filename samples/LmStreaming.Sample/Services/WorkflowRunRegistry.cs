@@ -50,7 +50,14 @@ public sealed class WorkflowRunRegistry
     public const int DefaultMaxPersistedEntriesPerConversation = 256;
 
     private readonly ConcurrentDictionary<string, WorkflowManager> _byThread = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, object> _fileLocks = new(StringComparer.Ordinal);
+
+    // A fixed stripe of index-file gates, picked by thread id. The same id always maps to the same gate, so
+    // one conversation's reads and writes stay serialized, and memory stays bounded however many historical
+    // conversations are polled. A map keyed by thread id would grow for the life of the process, and evicting
+    // from one safely needs ref-counting. Unrelated conversations that share a stripe only queue behind each
+    // other's short file read or write.
+    internal const int IndexGateStripes = 64;
+    private readonly object[] _indexGates = [.. Enumerable.Range(0, IndexGateStripes).Select(_ => new object())];
     private readonly string? _indexDirectory;
     private readonly ILogger<WorkflowRunRegistry> _logger;
 
@@ -235,7 +242,8 @@ public sealed class WorkflowRunRegistry
         }
     }
 
-    private object GateFor(string threadId) => _fileLocks.GetOrAdd(threadId, static _ => new object());
+    internal object GateFor(string threadId) =>
+        _indexGates[(int)((uint)StringComparer.Ordinal.GetHashCode(threadId) % IndexGateStripes)];
 
     /// <summary>
     ///     The retained rows, empty when there is no index. Null when the index is unreadable and is still in

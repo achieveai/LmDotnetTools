@@ -215,6 +215,32 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             .ContainSingle(tab => tab.AgentId == "wf2", "the index is usable again after every quarantine");
     }
 
+    /// <summary>
+    /// The index gate serializes one conversation's reads and writes without keeping a lock per conversation
+    /// ever seen: every read of the same id takes the same gate, and polling thousands of distinct ids never
+    /// uses more than the fixed stripe count.
+    /// </summary>
+    [Fact]
+    public void IndexGates_AreStablePerThread_AndBoundedAcrossManyThreads()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+
+        registry.GateFor("t1").Should().BeSameAs(registry.GateFor("t1"), "one conversation always takes the same gate");
+
+        var gates = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        for (var i = 0; i < 10_000; i++)
+        {
+            var threadId = "thread-" + i;
+            _ = registry.GetPersistedTabs(threadId);
+            _ = gates.Add(registry.GateFor(threadId));
+        }
+
+        gates
+            .Count.Should()
+            .BeLessThanOrEqualTo(WorkflowRunRegistry.IndexGateStripes, "gates do not grow per conversation");
+        gates.Count.Should().BeGreaterThan(1, "guard: distinct conversations are spread over the stripes");
+    }
+
     public static TheoryData<byte[]> CorruptIndexBodies() =>
         [
             "{truncated"u8.ToArray(),
