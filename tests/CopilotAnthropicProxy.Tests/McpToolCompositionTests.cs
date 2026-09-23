@@ -511,9 +511,16 @@ public class McpToolCompositionTests
             ),
         };
         request.Headers.TryAddWithoutValidation("Mcp-Session-Id", "session-1");
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        using var cts = new CancellationTokenSource();
 
-        var act = async () => await client.SendAsync(request, cts.Token);
+        // Cancelled once the proxy is provably reading the upstream body, not on a timer: on a loaded
+        // machine a timer fires before the call has reached jina, and a cancellation with nothing
+        // upstream to reach is not the behaviour under test.
+        var sending = client.SendAsync(request, cts.Token);
+        await upstreamStream.Blocked.WaitAsync(TimeSpan.FromSeconds(10));
+        await cts.CancelAsync();
+
+        var act = async () => await sending;
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         await upstreamStream.Cancelled.WaitAsync(TimeSpan.FromSeconds(2));

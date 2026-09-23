@@ -95,14 +95,15 @@ Copilot-served ids, priced at the vendor's retail API list price as a public-equ
 | `claude-opus-5` | — | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-5` | — | 2.00 | 0.20 | 2.50 | 4.00 | 10.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-haiku-4.5` | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1.00 | 0.10 | 1.25 | 2.00 | 5.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
-| `deepseek-v4-pro` | — | 0.66 | 0.022 | — | — | 1.98 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
-| `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-v4-pro` | — | 0.66 | 0.022 | — | — | 1.98 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
 - OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 196K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.
 - `claude-fable-5-1` cache hits are 0.025x input, not the usual 0.1x (Anthropic's footnote).
 - DeepSeek ids carry the off-peak rate. Peak hours (01:00-04:00 and 06:00-10:00 UTC, weekdays) bill double, so peak-hour runs read low.
+- DeepSeek ids are Additive because the sample reaches DeepSeek through its Anthropic-compatible API, whose `input_tokens` excludes cache reads. Priced as SubsetOfInput (the state until 2026-09-21), every cache-hit turn had its uncached input clamped to 0 and was flagged `cache_accounting_mismatch`.
 - `deepseek-flash` is DeepSeek-V4.1-Flash. `deepseek-v4-flash` is a retired name DeepSeek still accepts and bills at the Flash price, so it is an alias.
 - Claude cache reads through Copilot are recorded only when the request asks for caching. Before sub-agents inherited `PromptCaching`, every Claude sub-agent sent without it and recorded 0 cache reads; those older records price all input at the uncached rate.
 - The vendor windows (200K to 1.05M) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 196K.

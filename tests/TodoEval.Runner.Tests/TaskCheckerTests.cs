@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Time.Testing;
 using TodoEval.Runner.Sweep;
 
 namespace TodoEval.Runner.Tests;
@@ -201,7 +202,12 @@ public class TaskCheckerTests : IDisposable
         var pidFile = Path.Combine(_dir, "timeout-pids.txt").Replace("\\", "/");
         WriteBlockingChecker(pidFile);
 
-        var judging = new PwshTaskChecker(TextWriter.Null, TimeSpan.FromSeconds(3)).JudgeAsync(
+        // The budget runs on a clock this test advances, and only once the checker has written its pids:
+        // on a wall clock, a loaded machine spends three seconds starting pwsh, the checker is killed
+        // before it exists, and the test reports "finished before it wrote its pids" for a contract that
+        // held. The budget is still the checker's own timeout branch; only WHEN it elapses is ours.
+        var clock = new FakeTimeProvider();
+        var judging = new PwshTaskChecker(TextWriter.Null, TimeSpan.FromSeconds(3), clock).JudgeAsync(
             BlockingTask(),
             _dir,
             _dir,
@@ -209,6 +215,7 @@ public class TaskCheckerTests : IDisposable
         );
 
         var pids = await WaitForPids(pidFile, judging);
+        clock.Advance(TimeSpan.FromSeconds(3));
         var result = await judging;
 
         result!.Outcome.Should().Be(J1Result.Unjudged);

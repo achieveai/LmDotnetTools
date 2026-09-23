@@ -652,11 +652,14 @@ public class AnthropicStreamParser
             InputTokenDetails = _cacheReadTokens > 0 ? new InputTokenDetails { CachedTokens = _cacheReadTokens } : null,
         };
 
+        // Always stamped, 0 included: input_tokens EXCLUDES cache reads on every Anthropic-shaped response,
+        // and the accounting layer reads this field's presence as "count additively". Gating it on a
+        // write would silently turn a full cache hit — or a DeepSeek response, which never sends the
+        // field — into a subset-style record that drops the whole cache read from the measured input.
+        usage = usage.SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens);
         if (_cacheCreationTokens > 0)
         {
-            usage = usage
-                .SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens)
-                .SetExtraProperty("ephemeral_1h_input_tokens", _cacheWrite1hTokens);
+            usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", _cacheWrite1hTokens);
         }
 
         return new UsageMessage

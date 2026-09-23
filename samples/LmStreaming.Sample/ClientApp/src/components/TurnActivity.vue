@@ -3,6 +3,7 @@ import { computed, ref, useId } from 'vue';
 import type { DisplayItem, ToolCall } from '@/types';
 import { isToolsCallMessage } from '@/types';
 import { deriveToolPillState } from '@/utils/toolPillState';
+import { describeRunningTool, summarizeToolCall } from '@/utils/toolActivity';
 import { useToolResult } from '@/composables/useToolResult';
 import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import MetadataPill from './MetadataPill.vue';
@@ -39,6 +40,22 @@ const toolStates = computed(() =>
   })
 );
 
+/**
+ * What the run is doing RIGHT NOW: the LAST tool call with no result yet, described with the same
+ * wording the expanded row uses ("reading src/foo.ts", "running npm test"). The last one — not the
+ * first — because that is the call the user is actually waiting on; earlier ones already finished
+ * or were superseded on screen. Empty while nothing is in flight (the model is writing text).
+ */
+const runningToolPhrase = computed(() => {
+  for (let i = toolStates.value.length - 1; i >= 0; i--) {
+    const view = toolStates.value[i];
+    if (view.state !== 'awaiting-result' && view.state !== 'streaming-args') continue;
+    const name = toolCalls.value[i].function_name;
+    return describeRunningTool(name, view, summarizeToolCall(name, view));
+  }
+  return '';
+});
+
 const summary = computed(() => {
   const failed = toolStates.value.filter((state) => state.state === 'error').length;
   const actionLabel = `${toolCalls.value.length} action${toolCalls.value.length === 1 ? '' : 's'}`;
@@ -46,7 +63,9 @@ const summary = computed(() => {
   if (toolStates.value.some((state) => state.state === 'awaiting-input')) {
     return 'Waiting for your answer';
   }
-  if (props.isLoading) return 'Working…';
+  if (props.isLoading) {
+    return runningToolPhrase.value ? `Working: ${runningToolPhrase.value}` : 'Working…';
+  }
   const unresolved = toolStates.value.some(
     (state) => state.state === 'awaiting-result' || state.state === 'streaming-args'
   );
@@ -87,7 +106,7 @@ const hasFailure = computed(() => toolStates.value.some((state) => state.state =
       @click="expanded = !expanded"
     >
       <span aria-hidden="true">{{ hasFailure ? '⚠' : expanded ? '▾' : '▸' }}</span>
-      <span>{{ summary }}</span>
+      <span class="turn-activity__label">{{ summary }}</span>
     </button>
     <div
       v-if="expanded"
@@ -137,6 +156,15 @@ const hasFailure = computed(() => toolStates.value.some((state) => state.state =
   font: inherit;
   cursor: pointer;
   text-align: left;
+}
+
+/* A live tool phrase can carry a long path or command; clip it to one line exactly as the
+   expanded activity row does (.tool-pill__activity-description), so the toggle never wraps. */
+.turn-activity__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .turn-activity__toggle:hover,

@@ -3,7 +3,12 @@ import { computed, inject, ref } from 'vue';
 import type { Component } from 'vue';
 import type { ToolCall } from '@/types';
 import type { ToolCallState } from '@/utils/toolTypes';
-import { resolveRenderer, deriveToolPillState } from '@/utils';
+import {
+  resolveRenderer,
+  deriveToolPillState,
+  summarizeToolCall,
+  describeToolActivity,
+} from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
 import {
   GET_AGENT_COLOR,
@@ -18,7 +23,6 @@ import TerminalRich from '@/components/tools/TerminalRich.vue';
 import MatchesRich from '@/components/tools/MatchesRich.vue';
 import WeatherRich from '@/components/tools/WeatherRich.vue';
 import QuestionRich from '@/components/tools/QuestionRich.vue';
-import { normalizeToolName } from '@/utils/toolName';
 import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 
 const props = withDefaults(defineProps<{
@@ -46,85 +50,12 @@ const view = computed(() =>
   })
 );
 
-const summary = computed(() => {
-  try {
-    return renderer.value.summarize(view.value.parsedArgs, view.value.resultText, view.value);
-  } catch {
-    return '';
-  }
-});
+const summary = computed(() => summarizeToolCall(props.toolCall.function_name, view.value));
 
-const normalizedToolName = computed(() => normalizeToolName(props.toolCall.function_name));
-
-function stringArg(...keys: string[]): string {
-  for (const key of keys) {
-    const value = view.value.parsedArgs?.[key];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return '';
-}
-
-function humanizeToolName(name: string): string {
-  const spaced = name.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
-  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : 'Tool activity';
-}
-
-const activityDescription = computed(() => {
-  const state = view.value.state;
-  const succeeded = state === 'success';
-  const failed = state === 'error';
-  const detail = summary.value;
-  const family = renderer.value.family;
-  const toolName = normalizedToolName.value;
-
-  if (toolName === 'sendmessage') {
-    const target = stringArg('target', 'agent_id');
-    return failed
-      ? `Failed to send message${target ? ` to ${target}` : ''}`
-      : `${succeeded ? 'Sent' : 'Sending'} message${target ? ` to ${target}` : ''}`;
-  }
-  if (toolName === 'agent') {
-    const target = stringArg('subagent_type', 'name');
-    return failed
-      ? `Failed to start${target ? ` ${target}` : ' agent'}`
-      : `${succeeded ? 'Started' : 'Starting'}${target ? ` ${target}` : ' agent'}`;
-  }
-  if (toolName.includes('checkagent') || toolName === 'getagents') {
-    return `${failed ? 'Failed to check' : succeeded ? 'Checked' : 'Checking'} agent status`;
-  }
-  if (toolName === 'view_image') {
-    return failed ? 'Failed to view an image' : succeeded ? 'Viewed an image' : 'Viewing an image';
-  }
-
-  switch (family) {
-    case 'read': {
-      const path = stringArg('file_path');
-      return `${failed ? 'Failed to read' : succeeded ? 'Read' : 'Reading'} ${path || 'a file'}`;
-    }
-    case 'write': {
-      const path = stringArg('file_path') || 'file';
-      return `${failed ? 'Failed to write' : succeeded ? 'Wrote' : 'Writing'} ${path}`;
-    }
-    case 'edit': {
-      const path = stringArg('file_path') || 'file';
-      const stats = detail.includes('·') ? detail.slice(detail.indexOf('·') + 1).trim() : '';
-      return `${failed ? 'Failed to update' : succeeded ? 'Updated' : 'Updating'} ${path}${stats ? ` · ${stats}` : ''}`;
-    }
-    case 'shell':
-      return `${failed ? 'Command failed' : succeeded ? 'Ran' : 'Running'}${detail ? ` ${detail}` : ' command'}`;
-    case 'grep':
-    case 'glob':
-      return `${failed ? 'Search failed' : succeeded ? 'Searched for' : 'Searching for'}${detail ? ` ${detail}` : ''}`;
-    case 'math':
-      return `${failed ? 'Calculation failed' : succeeded ? 'Calculated' : 'Calculating'}${detail ? ` ${detail}` : ''}`;
-    case 'web':
-      return `${failed ? 'Web request failed' : succeeded ? 'Opened' : 'Opening'}${detail ? ` ${detail}` : ' web resource'}`;
-    default: {
-      const label = humanizeToolName(props.toolCall.function_name || toolName);
-      return `${failed ? `${label} failed` : label}${detail ? ` · ${detail}` : ''}`;
-    }
-  }
-});
+// Shared with the collapsed consumer headline (TurnActivity) — see utils/toolActivity.
+const activityDescription = computed(() =>
+  describeToolActivity(props.toolCall.function_name, view.value, summary.value)
+);
 
 const activityIconPath = computed(() => {
   switch (renderer.value.family) {

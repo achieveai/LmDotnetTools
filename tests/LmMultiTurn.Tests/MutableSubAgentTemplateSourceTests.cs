@@ -349,4 +349,40 @@ public class MutableSubAgentTemplateSourceTests
             .Agent.Should()
             .BeSameAs(routedAgent);
     }
+
+    /// <summary>
+    /// A rebound template whose characteristics factory falls back on the parent's provider instance
+    /// (<see cref="SubAgentProviderAgent.UseParentModel"/>) hands the child a fresh, owned agent instead,
+    /// so a parent that disposes its own provider on reconfigure cannot close a child's client.
+    /// </summary>
+    [Fact]
+    public void RebindFactories_ParentFallbackGetsAFreshOwnedAgentNotTheParents()
+    {
+        var parentAgent = new Mock<IStreamingAgent>().Object;
+        var templateAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ => new SubAgentProviderAgent(
+            parentAgent,
+            System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
+        )
+        {
+            UseParentModel = true,
+        };
+        var source = new MutableSubAgentTemplateSource(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["echo"] = Template("echo") with { AgentFactory = () => templateAgent },
+            }
+        );
+        source.RebindFactories(StubFactory, characteristicsFactory);
+
+        var provider = source
+            .Templates["echo"]
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("unroutable", null) { IsModelExplicitlySelected = true }
+            );
+
+        provider.Agent.Should().BeSameAs(templateAgent).And.NotBeSameAs(parentAgent);
+        provider.OwnsAgent.Should().BeTrue();
+        provider.UseParentModel.Should().BeTrue();
+    }
 }

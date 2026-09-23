@@ -460,14 +460,43 @@ public class PricingCatalogTests
             entry["_source"].Should().NotBeNullOrWhiteSpace($"shipped entry '{entry.Key}' must cite its vendor page");
         }
 
-        // The Anthropic ids report input EXCLUDING cache tokens, so they must not carry the subset default.
+        // Every id the sample serves over an Anthropic-shaped endpoint reports input EXCLUDING cache reads,
+        // so none of them may carry the subset default. DeepSeek is in this set: the sample reaches it
+        // through the Anthropic-compatible API (ANTHROPIC_COMPAT_PROVIDERS), whose usage is additive.
         foreach (var entry in configuration.GetSection("Pricing:Models").GetChildren())
         {
-            if (entry.Key.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+            if (IsServedOverAnAnthropicShapedEndpoint(entry.Key))
             {
                 resolver.Resolve(entry.Key)!.CacheAccounting.Should().Be(CacheAccounting.Additive, entry.Key);
             }
         }
+    }
+
+    private static bool IsServedOverAnAnthropicShapedEndpoint(string modelId) =>
+        modelId.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)
+        || modelId.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void ADeepSeekTurnServedOverTheAnthropicCompatibleApi_IsPricedAdditively_AndComplete()
+    {
+        // A real deepseek-flash record from the sample's ledger: 244 cache-miss input tokens beside a
+        // 110,336-token cache read. Under the subset default that read exceeds the input, so uncached
+        // input was clamped to 0, the $0.15/M term was dropped and the record was flagged Partial.
+        // 244 × 0.15 + 110,336 × 0.003 + 335 × 0.6 = 36.6 + 331.008 + 201 = 568.6 → 569 micro-dollars.
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var pricing = ResolverFrom(configuration).Resolve("deepseek-flash");
+        pricing.Should().NotBeNull();
+
+        var estimate = pricing!.Estimate(
+            Observation("deepseek-flash", input: 244, output: 335) with
+            {
+                CacheReadTokens = 110_336,
+            }
+        );
+
+        estimate.Micros.Should().Be(569);
+        estimate.Completeness.Should().Be(CostCompleteness.Complete);
+        estimate.MissingCategories.Should().NotContain(CostEstimate.CacheAccountingMismatch);
     }
 
     private static string FindSampleAppsettings()

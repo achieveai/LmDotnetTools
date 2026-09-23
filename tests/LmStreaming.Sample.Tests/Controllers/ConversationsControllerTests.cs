@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
@@ -2450,4 +2451,187 @@ public class ConversationsControllerTests
         response.RunId.Should().BeNull();
         response.Status.Should().Be(nameof(ConversationRunStatus.NotStarted));
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // What a switch REPORTS now that there are two branches (in-place reconfigure vs recreate).
+    //
+    // The armed-Wait warning is a statement about a TEARDOWN: the old loop's trigger runtime went
+    // away with it, so the park-and-wake the user set up is gone. In place nothing is torn down and
+    // the wait is still armed, so returning the warning there would tell the user their wait was
+    // discarded when it is sitting right where they left it. Both halves are pinned below, from one
+    // arrangement that differs only in what the factory returns.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task SwitchMode_WarnsAboutTheArmedWait_WhenTheSwitchRecreatedTheAgent()
+    {
+        const string threadId = "thread-wait-recreate";
+        await using var pool = await CreatePoolWithArmedWaitAsync(threadId, servesSwitchInPlace: false);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SwitchMode(
+            threadId,
+            new SwitchModeRequest { ModeId = "math-helper" },
+            CancellationToken.None
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert
+            .IsType<SwitchModeResponse>(ok.Value)
+            .Warning.Should()
+            .NotBeNull("a recreate disposes the loop that armed the wait, so the caller has to be told");
+    }
+
+    [Fact]
+    public async Task SwitchMode_DoesNotWarnAboutTheArmedWait_WhenTheSwitchWasServedInPlace()
+    {
+        const string threadId = "thread-wait-inplace";
+        await using var pool = await CreatePoolWithArmedWaitAsync(threadId, servesSwitchInPlace: true);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes());
+
+        // Guard: the arrangement must actually still hold an armed wait, or this test would pass for
+        // the trivial reason that there was nothing to warn about in the first place.
+        (await pool.HasArmedWaitAsync(threadId))
+            .Should()
+            .BeTrue();
+
+        var result = await controller.SwitchMode(
+            threadId,
+            new SwitchModeRequest { ModeId = "math-helper" },
+            CancellationToken.None
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert
+            .IsType<SwitchModeResponse>(ok.Value)
+            .Warning.Should()
+            .BeNull("the loop and its trigger runtime were kept, so the wait is still armed");
+        (await pool.HasArmedWaitAsync(threadId)).Should().BeTrue("and it really did survive");
+    }
+
+    [Fact]
+    public async Task SwitchMode_ReturnsConflict_WhenTheFactoryRefusesABusyInPlaceSwitch()
+    {
+        const string threadId = "thread-busy-mode";
+        await using var pool = CreatePoolRefusingSwitchesAsBusy(threadId);
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SwitchMode(
+            threadId,
+            new SwitchModeRequest { ModeId = "math-helper" },
+            CancellationToken.None
+        );
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        conflict.StatusCode.Should().Be(409);
+        var payload = JsonSerializer.Serialize(conflict.Value);
+        payload.Should().Contain("mode_switch_while_streaming");
+        payload.Should().Contain(threadId);
+    }
+
+    [Fact]
+    public async Task SwitchProvider_ReturnsConflict_WhenTheFactoryRefusesABusyInPlaceSwitch()
+    {
+        const string threadId = "thread-busy-provider";
+        await using var pool = CreatePoolRefusingSwitchesAsBusy(threadId);
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SwitchProvider(
+            threadId,
+            new SwitchProviderRequest { ProviderId = "openai" },
+            CancellationToken.None
+        );
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        conflict.StatusCode.Should().Be(409);
+        var payload = JsonSerializer.Serialize(conflict.Value);
+        payload.Should().Contain("provider_switch_while_streaming");
+        payload.Should().Contain(threadId);
+    }
+
+    /// <summary>
+    /// A pool holding a REAL <see cref="MultiTurnAgentLoop"/> parked on a long timer <c>Wait</c>, so
+    /// <see cref="MultiTurnAgentPool.HasArmedWaitAsync"/> answers true. The only difference between the
+    /// two arrangements is what the factory returns on the switch call: the live agent (in place) or a
+    /// freshly built one (recreate) — which is exactly the distinction the warning now turns on.
+    /// </summary>
+    private static async Task<MultiTurnAgentPool> CreatePoolWithArmedWaitAsync(
+        string threadId,
+        bool servesSwitchInPlace
+    )
+    {
+        var waitCall = new ToolCallMessage
+        {
+            FunctionName = WaitToolProvider.WaitToolName,
+            FunctionArgs = JsonSerializer.Serialize(
+                new
+                {
+                    kind = "timer",
+                    args = new { delay = "10m" },
+                    timeout = "30m",
+                }
+            ),
+            ToolCallId = "tc-armed-wait",
+            Role = Role.Assistant,
+        };
+
+        var provider = new Mock<IStreamingAgent>();
+        provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable(waitCall)));
+
+        var pool = new MultiTurnAgentPool(
+            context =>
+                servesSwitchInPlace && context.Existing is { } existing
+                    ? new MultiTurnAgentPool.AgentCreationResult(existing.Agent)
+                    : new MultiTurnAgentPool.AgentCreationResult(
+                        new MultiTurnAgentLoop(
+                            provider.Object,
+                            new FunctionRegistry(),
+                            context.ThreadId,
+                            triggerOptions: new TriggerOptions(),
+                            logger: NullLogger<MultiTurnAgentLoop>.Instance
+                        )
+                    ),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var loop = (MultiTurnAgentLoop)
+            pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "wait", Role = Role.User }]))
+        )
+        {
+            // drain until the run parks on the deferred Wait
+        }
+
+        return pool;
+    }
+
+    /// <summary>
+    /// A pool whose factory refuses every switch the way the sample's does when the live loop is
+    /// mid-run: with <see cref="AgentBusyException"/>, leaving the thread untouched.
+    /// </summary>
+    private static MultiTurnAgentPool CreatePoolRefusingSwitchesAsBusy(string threadId) =>
+        new(
+            context =>
+                context.Existing is not null
+                    ? throw new AgentBusyException(threadId)
+                    : new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 }

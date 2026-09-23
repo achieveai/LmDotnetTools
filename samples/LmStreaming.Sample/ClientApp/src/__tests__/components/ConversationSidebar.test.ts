@@ -264,6 +264,131 @@ describe('ConversationSidebar — project folders', () => {
   });
 });
 
+describe('ConversationSidebar — per-project reveal cap', () => {
+  function inWorkspace(workspace: string, count: number): ConversationSummary[] {
+    return Array.from({ length: count }, (_, i) => ({
+      threadId: `${workspace}-${i}`,
+      title: `${workspace} ${i}`,
+      lastUpdated: 1000 - i,
+      workspace,
+    }));
+  }
+
+  const rows = (wrapper: ReturnType<typeof mountSidebar>, testId: string) =>
+    wrapper
+      .get(`[data-testid="project-conversations-${testId}"]`)
+      .findAll('[data-testid="conversation-item"]');
+
+  const moreRow = (wrapper: ReturnType<typeof mountSidebar>, testId: string) =>
+    wrapper.find(`[data-testid="project-conversations-more-${testId}"]`);
+
+  it('shows only the first five chats of a project plus a more row', () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 7), workspaces });
+
+    expect(rows(wrapper, 'repo-a').map((row) => row.attributes('data-thread-id'))).toEqual([
+      'repo-a-0',
+      'repo-a-1',
+      'repo-a-2',
+      'repo-a-3',
+      'repo-a-4',
+    ]);
+    expect(moreRow(wrapper, 'repo-a').exists()).toBe(true);
+  });
+
+  it('reveals the remainder on click and drops the more row once nothing is hidden', async () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 7), workspaces });
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+
+    expect(rows(wrapper, 'repo-a')).toHaveLength(7);
+    expect(moreRow(wrapper, 'repo-a').exists()).toBe(false);
+  });
+
+  it('raises the cap five at a time', async () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 12), workspaces });
+    expect(rows(wrapper, 'repo-a')).toHaveLength(5);
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+    expect(rows(wrapper, 'repo-a')).toHaveLength(10);
+    expect(moreRow(wrapper, 'repo-a').exists()).toBe(true);
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+    expect(rows(wrapper, 'repo-a')).toHaveLength(12);
+    expect(moreRow(wrapper, 'repo-a').exists()).toBe(false);
+  });
+
+  it('keeps each project cap independent', async () => {
+    const wrapper = mountSidebar({
+      conversations: [...inWorkspace('repo-a', 7), ...inWorkspace('default', 7)],
+      workspaces,
+    });
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+
+    expect(rows(wrapper, 'repo-a')).toHaveLength(7);
+    expect(rows(wrapper, 'default')).toHaveLength(5);
+    expect(moreRow(wrapper, 'default').exists()).toBe(true);
+  });
+
+  it('never hides the active conversation behind the cap', () => {
+    const wrapper = mountSidebar({
+      conversations: inWorkspace('repo-a', 12),
+      workspaces,
+      currentThreadId: 'repo-a-8',
+    });
+
+    expect(rows(wrapper, 'repo-a')).toHaveLength(10);
+    expect(wrapper.find('[data-thread-id="repo-a-8"]').exists()).toBe(true);
+  });
+
+  it('keeps the cap across a collapse and expand of the project', async () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 12), workspaces });
+    await moreRow(wrapper, 'repo-a').trigger('click');
+
+    await wrapper.get('[data-testid="project-toggle-repo-a"]').trigger('click');
+    await wrapper.get('[data-testid="project-toggle-repo-a"]').trigger('click');
+
+    expect(rows(wrapper, 'repo-a')).toHaveLength(10);
+  });
+
+  it('asks the server for another page once the click exposes every loaded chat', async () => {
+    const wrapper = mountSidebar({
+      conversations: inWorkspace('repo-a', 12),
+      workspaces,
+      hasMore: true,
+    });
+
+    // First click still leaves rows hidden locally, so nothing is fetched.
+    await moreRow(wrapper, 'repo-a').trigger('click');
+    expect(wrapper.emitted('loadMore')).toBeUndefined();
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+    expect(wrapper.emitted('loadMore')).toHaveLength(1);
+  });
+
+  it('does not fetch when the server has no further pages', async () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 7), workspaces });
+
+    await moreRow(wrapper, 'repo-a').trigger('click');
+
+    expect(wrapper.emitted('loadMore')).toBeUndefined();
+  });
+
+  it('leaves the "No project" group uncapped so the scroll pager still has an overflowing list', () => {
+    const wrapper = mountSidebar({ conversations: conversations(7), workspaces });
+
+    expect(rows(wrapper, 'legacy')).toHaveLength(7);
+    expect(moreRow(wrapper, 'legacy').exists()).toBe(false);
+  });
+
+  it('omits the more row for a project that fits the cap exactly', () => {
+    const wrapper = mountSidebar({ conversations: inWorkspace('repo-a', 5), workspaces });
+
+    expect(rows(wrapper, 'repo-a')).toHaveLength(5);
+    expect(moreRow(wrapper, 'repo-a').exists()).toBe(false);
+  });
+});
+
 /**
  * jsdom lays nothing out, so the scroll geometry the handler reads is all zeros. Stamp the three
  * values that decide "near the bottom" onto the real element.

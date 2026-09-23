@@ -99,18 +99,153 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         restarted.GetPersistedTabs("t1").Should().ContainSingle().Which.Status.Should().Be("interrupted");
     }
 
-    [Fact]
-    public void CorruptIndex_IsSurfacedInsteadOfTreatedAsEmpty()
+    /// <summary>
+    /// An index that does not parse is a crash artifact, not data: the published host came back from
+    /// an unclean shutdown with a 25 KB index that was NUL bytes end to end (the rename was journaled,
+    /// the data never reached the platter), and every sub-agent poll on that conversation answered 500
+    /// until the file was moved aside by hand. The read must never fail the caller: the file is
+    /// quarantined beside the index (so the corruption is visible and recoverable, not hidden) and the
+    /// conversation reads as having no persisted tabs, which the next poll re-creates from live state.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(CorruptIndexBodies))]
+    public void CorruptIndex_IsQuarantinedAndReadAsEmpty(byte[] body)
     {
         var registry = new WorkflowRunRegistry(_dir);
         registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
         var path = Directory.GetFiles(_dir, "*.json").Single();
-        File.WriteAllText(path, "{truncated");
+        File.WriteAllBytes(path, body);
 
-        var act = () => registry.GetPersistedTabs("t1");
+        registry.GetPersistedTabs("t1").Should().BeEmpty();
 
-        act.Should().Throw<JsonException>();
+        File.Exists(path).Should().BeFalse("the unreadable index is moved aside, not left to fail every later read");
+        var quarantined = Directory.GetFiles(_dir, "*.corrupt-*").Should().ContainSingle().Subject;
+        File.ReadAllBytes(quarantined).Should().Equal(body, "quarantine preserves the bytes for a post-mortem");
+
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        registry
+            .GetPersistedTabs("t1")
+            .Should()
+            .ContainSingle(tab => tab.AgentId == "wf2", "the index is usable again");
     }
+
+    /// <summary>
+    /// Readers and the writer share one gate per conversation. Without it a poll that hits the damaged
+    /// index races the poll that is rewriting it: the reader's quarantine rename lands after the writer's
+    /// rename and moves the fresh, good index aside. This drives both paths hard on one conversation and
+    /// checks the invariants that only hold when they are serialized: the good index survives, and the only
+    /// quarantined file is the damaged one. It is a probabilistic detector of the race, not a proof.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentReadsAndWrites_QuarantineOnlyTheDamagedIndex()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+        var damaged = new byte[25_645];
+        File.WriteAllBytes(path, damaged);
+
+        using var start = new ManualResetEventSlim(false);
+        var reader = Task.Run(() =>
+        {
+            start.Wait();
+            for (var i = 0; i < 500; i++)
+            {
+                _ = registry.GetPersistedTabs("t1");
+            }
+        });
+        var writer = Task.Run(() =>
+        {
+            start.Wait();
+            for (var i = 0; i < 500; i++)
+            {
+                registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+            }
+        });
+        start.Set();
+        await Task.WhenAll(reader, writer);
+
+        registry
+            .GetPersistedTabs("t1")
+            .Should()
+            .ContainSingle(tab => tab.AgentId == "wf2", "the rewritten index is intact");
+        var quarantined = Directory
+            .GetFiles(_dir, "*.corrupt-*")
+            .Should()
+            .ContainSingle("only the damaged index is moved aside")
+            .Subject;
+        File.ReadAllBytes(quarantined).Should().Equal(damaged);
+    }
+
+    /// <summary>
+    /// The quarantine destination is unique per attempt, not merely timestamped. The same index
+    /// corrupted and read again inside one millisecond must land in a second file, with every earlier
+    /// quarantine intact and the primary moved out of the way each time — otherwise the failed move
+    /// leaves the corrupt primary in place, PersistTabs refuses to overwrite it, and the conversation
+    /// can never persist a tab again. Driven back to back with no delay so the timestamps collide.
+    /// </summary>
+    [Fact]
+    public void RepeatedCorruption_QuarantinesEachIndexToItsOwnFile()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+
+        var bodies = new List<byte[]>();
+        for (var round = 0; round < 5; round++)
+        {
+            var body = System.Text.Encoding.UTF8.GetBytes("{truncated-" + round);
+            bodies.Add(body);
+            File.WriteAllBytes(path, body);
+
+            registry.GetPersistedTabs("t1").Should().BeEmpty($"round {round} reads the damaged index as empty");
+
+            File.Exists(path).Should().BeFalse($"round {round} moves the primary aside");
+            Directory
+                .GetFiles(_dir, "*.corrupt-*")
+                .Select(File.ReadAllBytes)
+                .Should()
+                .BeEquivalentTo(bodies, $"round {round} lands in its own file and every earlier quarantine is intact");
+        }
+
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        registry
+            .GetPersistedTabs("t1")
+            .Should()
+            .ContainSingle(tab => tab.AgentId == "wf2", "the index is usable again after every quarantine");
+    }
+
+    /// <summary>
+    /// The index gate serializes one conversation's reads and writes without keeping a lock per conversation
+    /// ever seen: every read of the same id takes the same gate, and polling thousands of distinct ids never
+    /// uses more than the fixed stripe count.
+    /// </summary>
+    [Fact]
+    public void IndexGates_AreStablePerThread_AndBoundedAcrossManyThreads()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+
+        registry.GateFor("t1").Should().BeSameAs(registry.GateFor("t1"), "one conversation always takes the same gate");
+
+        var gates = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        for (var i = 0; i < 10_000; i++)
+        {
+            var threadId = "thread-" + i;
+            _ = registry.GetPersistedTabs(threadId);
+            _ = gates.Add(registry.GateFor(threadId));
+        }
+
+        gates
+            .Count.Should()
+            .BeLessThanOrEqualTo(WorkflowRunRegistry.IndexGateStripes, "gates do not grow per conversation");
+        gates.Count.Should().BeGreaterThan(1, "guard: distinct conversations are spread over the stripes");
+    }
+
+    public static TheoryData<byte[]> CorruptIndexBodies() =>
+        [
+            "{truncated"u8.ToArray(),
+            new byte[25_645], // the real artifact: a whole file of NUL bytes after an unclean shutdown
+        ];
 
     [Fact]
     public void Persistence_IsNoOp_WhenNoIndexDirectoryConfigured()
