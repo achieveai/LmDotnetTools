@@ -2127,10 +2127,13 @@ public class ConversationsController(
             );
         }
 
-        // A mode switch recreates the agent, which tears down its trigger runtime. If a Wait is armed
-        // (the run is parked on a timer, not streaming — so it passed the IsInProgress guard above), the
+        // A mode switch that RECREATES the agent tears down its trigger runtime. If a Wait is armed (the
+        // run is parked on a timer, not streaming — so it passed the IsInProgress guard above), the
         // switch is still allowed but the pending wait is discarded; capture that up front so the
-        // response can warn the caller. Checked before recreate, since recreate drops the old agent.
+        // response can warn the caller. Checked before the switch, since a recreate drops the old agent.
+        //
+        // Only half of the answer: whether the wait was actually discarded depends on which branch the
+        // switch took, which is not known until it has run. See the warning at the bottom.
         var hadArmedWait = await agentPool.HasArmedWaitAsync(threadId, ct);
 
         // Switching into a sandbox-backed mode (e.g. Workspace Agent) eagerly creates the sandbox
@@ -2138,13 +2141,34 @@ public class ConversationsController(
         // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
+        MultiTurnAgentPool.AgentSwitchKind switchKind;
         try
         {
             // AFTER the authorization above, never before - see the helper's remarks. Inside the try
             // so its cross-app refusal lands on the same caller_credential_conflict catch below.
             await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch", callerCredential);
 
-            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode, callerCredential, CallerUserId);
+            switchKind = (await agentPool.SwitchModeAsync(threadId, mode, callerCredential, CallerUserId)).Kind;
+        }
+        catch (AgentBusyException ex)
+        {
+            // The factory can only serve this switch on the live loop, and a run started between the
+            // IsInProgress check above and the swap. Same condition as that check, so the same answer:
+            // the thread is untouched and retrying once the run finishes will work.
+            logger.LogWarning(
+                ex,
+                "Blocked mode switch for thread {ThreadId} to mode {ModeId}: the agent factory refused an in-place switch on a running agent.",
+                threadId,
+                request.ModeId
+            );
+            return Conflict(
+                new
+                {
+                    error = "Cannot switch mode while response is streaming.",
+                    code = "mode_switch_while_streaming",
+                    threadId,
+                }
+            );
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -2201,7 +2225,13 @@ public class ConversationsController(
             {
                 ModeId = mode.Id,
                 ModeName = mode.Name,
-                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+                // The warning describes a TEARDOWN, so it belongs to the recreate branch alone. An
+                // in-place switch keeps the loop and its trigger runtime, so the wait is still armed and
+                // telling the caller it was discarded would be plainly false.
+                Warning =
+                    hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
+                        ? ArmedWaitDiscardedWarning
+                        : null,
             }
         );
     }
@@ -2299,26 +2329,49 @@ public class ConversationsController(
             );
         }
 
-        // See SwitchMode: a provider swap recreates the agent and discards any armed Wait. Capture it
-        // before recreate so the response can warn the caller that a pending park-and-wake was dropped.
+        // See SwitchMode: a provider swap that RECREATES the agent discards any armed Wait. Capture it
+        // before the switch so the response can warn the caller that a pending park-and-wake was
+        // dropped — and see the warning at the bottom for why that is only half the answer.
         var hadArmedWait = await agentPool.HasArmedWaitAsync(threadId, ct);
 
         // Switching to a sandbox-backed provider eagerly reprovisions; a gateway rejection or an
         // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
+        MultiTurnAgentPool.AgentSwitchKind switchKind;
         try
         {
             // AFTER the authorization above, never before - see the helper's remarks. Inside the try
             // so its cross-app refusal lands on the same caller_credential_conflict catch below.
             await ReleaseAgentBoundToAnotherUserAsync(threadId, "Provider switch", callerCredential);
 
-            _ = await agentPool.RecreateAgentWithProviderAsync(
+            switchKind = (
+                await agentPool.SwitchProviderAsync(
+                    threadId,
+                    request.ProviderId,
+                    currentMode,
+                    callerCredential,
+                    CallerUserId
+                )
+            ).Kind;
+        }
+        catch (AgentBusyException ex)
+        {
+            // See SwitchMode: the factory can only serve this switch on the live loop and a run started
+            // after the IsInProgress check above. The thread is untouched; retry once the run finishes.
+            logger.LogWarning(
+                ex,
+                "Blocked provider switch for thread {ThreadId} to provider {ProviderId}: the agent factory refused an in-place switch on a running agent.",
                 threadId,
-                request.ProviderId,
-                currentMode,
-                callerCredential,
-                CallerUserId
+                request.ProviderId
+            );
+            return Conflict(
+                new
+                {
+                    error = "Cannot switch provider while response is streaming.",
+                    code = "provider_switch_while_streaming",
+                    threadId,
+                }
             );
         }
         catch (SandboxCredentialConflictException ex)
@@ -2374,7 +2427,12 @@ public class ConversationsController(
             new SwitchProviderResponse
             {
                 ProviderId = request.ProviderId,
-                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+                // See SwitchMode: the warning describes a teardown, so it belongs to the recreate branch
+                // alone. In place the trigger runtime is kept and the wait is still armed.
+                Warning =
+                    hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
+                        ? ArmedWaitDiscardedWarning
+                        : null,
             }
         );
     }

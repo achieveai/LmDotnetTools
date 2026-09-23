@@ -139,8 +139,13 @@ public sealed class MutableSubAgentTemplateSource
                 ? null
                 : characteristics =>
                 {
+                    // A spawn on the parent's model — inherited, or a fallback from a model the factory
+                    // could not route — gets a fresh, owned agent: a child never shares the parent's
+                    // provider instance, so the parent may dispose its own when it is reconfigured.
                     var provider = _characteristicsAgentFactory(characteristics);
-                    return characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved
+                    return
+                        (characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved)
+                        && !provider.UseParentModel
                         ? provider
                         : provider with
                         {

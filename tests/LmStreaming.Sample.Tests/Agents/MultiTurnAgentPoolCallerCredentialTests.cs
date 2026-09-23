@@ -478,9 +478,9 @@ public class MultiTurnAgentPoolCallerCredentialTests
         _ = pool.GetOrCreateAgent("thread-mode-ui", mode);
 
         var newMode = SystemChatModes.All[0];
-        var recreated = await pool.RecreateAgentWithModeAsync("thread-mode-ui", newMode, callerCredential: null);
+        var recreated = await pool.SwitchModeAsync("thread-mode-ui", newMode, callerCredential: null);
 
-        recreated.Should().NotBeNull();
+        recreated.Agent.Should().NotBeNull();
     }
 
     [Fact]

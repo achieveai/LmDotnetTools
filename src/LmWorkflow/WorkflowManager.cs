@@ -239,6 +239,13 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly SemaphoreSlim _concurrencyGate;
     private bool _disposed;
 
+    /// <summary>
+    /// Whether <see cref="DisposeAsync"/> has run. A host that keeps a manager alive across a
+    /// reconfiguration (rather than rebuilding it) asserts liveness through this, because a disposed
+    /// manager still answers <see cref="ListRuns"/> — with nothing.
+    /// </summary>
+    public bool IsDisposed => Volatile.Read(ref _disposed);
+
     /// <summary>Creates the manager.</summary>
     /// <param name="controllerAgentFactory">
     ///     Builds a FRESH controller <see cref="IStreamingAgent"/> per workflow run. The caller resolves the

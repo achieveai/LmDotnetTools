@@ -109,6 +109,60 @@ const groups = computed<ConversationGroup[]>(() => {
   return result;
 });
 
+/**
+ * How many conversations a project folder shows before the user asks for more, and how many each
+ * "more…" click adds. Keeps a project with a long history from burying the other projects.
+ *
+ * The legacy "No project" group is exempt and renders every loaded row: it is the group that holds
+ * workspace-less threads, so it is the one list long enough to overflow the scroll container that
+ * drives infinite paging. `ConversationPagingAndSortTests` (Browser.E2E.Tests) pins that behavior —
+ * it seeds 45 workspace-less conversations, expects 30 rows, then scroll-pages to 45.
+ */
+const GROUP_REVEAL_STEP = 5;
+
+/**
+ * Per-project reveal caps, keyed by {@link ConversationGroup.key}. In-memory only and deliberately
+ * independent of the collapse state, so folding a project away does not re-hide what was revealed.
+ */
+const groupRevealCaps = ref(new Map<string, number>());
+
+/**
+ * The cap actually in force for a group: the requested one, raised if needed so the active
+ * conversation is never hidden (it is the one row the user must be able to see).
+ */
+function revealCap(group: ConversationGroup): number {
+  if (group.key === LEGACY_GROUP_ID) return Number.POSITIVE_INFINITY;
+  const requested = groupRevealCaps.value.get(group.key) ?? GROUP_REVEAL_STEP;
+  const activeIndex = props.currentThreadId
+    ? group.conversations.findIndex((row) => row.threadId === props.currentThreadId)
+    : -1;
+  if (activeIndex < requested) return requested;
+  return Math.ceil((activeIndex + 1) / GROUP_REVEAL_STEP) * GROUP_REVEAL_STEP;
+}
+
+function visibleConversations(group: ConversationGroup): ConversationSummary[] {
+  return group.conversations.slice(0, revealCap(group));
+}
+
+function hiddenCount(group: ConversationGroup): number {
+  return Math.max(0, group.conversations.length - revealCap(group));
+}
+
+/**
+ * Reveals the next slice of a project's conversations.
+ *
+ * When the new cap covers everything loaded for that project and the server still has pages, this
+ * also asks for the next page — otherwise a user clicking "more…" on the deepest project would be
+ * stuck at a cap that has nothing left to uncover.
+ */
+function revealMore(group: ConversationGroup): void {
+  const next = revealCap(group) + GROUP_REVEAL_STEP;
+  groupRevealCaps.value = new Map(groupRevealCaps.value).set(group.key, next);
+  if (next >= group.conversations.length && props.hasMore) {
+    emit('loadMore');
+  }
+}
+
 const collapsedGroups = ref(new Set<string>());
 
 function isGroupExpanded(groupId: string): boolean {
@@ -508,7 +562,7 @@ function handleDelete(event: Event, threadId: string): void {
             :data-testid="`project-conversations-${group.testId}`"
           >
             <li
-              v-for="conv in group.conversations"
+              v-for="conv in visibleConversations(group)"
               :key="conv.threadId"
               :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
               data-testid="conversation-item"
@@ -538,6 +592,17 @@ function handleDelete(event: Event, threadId: string): void {
               </button>
             </li>
 
+            <li v-if="hiddenCount(group) > 0" class="group-more-row">
+              <button
+                class="load-more-btn group-more-btn"
+                type="button"
+                :data-testid="`project-conversations-more-${group.testId}`"
+                :aria-label="`Show more conversations in ${group.label}`"
+                @click="revealMore(group)"
+              >
+                more… ({{ hiddenCount(group) }})
+              </button>
+            </li>
           </ul>
         </li>
 
@@ -1026,6 +1091,19 @@ function handleDelete(event: Event, threadId: string): void {
 .load-more-btn:disabled {
   cursor: wait;
   opacity: 0.65;
+}
+
+/* Reads as part of the folder: indented to the conversation text, borderless and quieter than the
+   global pagination button below the whole list. */
+.group-more-row {
+  padding: 0 8px 2px 40px;
+}
+
+.group-more-btn {
+  padding: 3px 0;
+  border: 0;
+  font-size: 11px;
+  text-align: left;
 }
 
 .sr-only {

@@ -422,19 +422,48 @@ describe('MessageList Consumer activity projection', () => {
     notification: { notifyKind, label: `${notifyKind} label`, detail: `${notifyKind} detail` },
   });
 
+  /**
+   * A pill carrying N tool calls in order. Ids are `call-0`, `call-1`, … so `mountList`'s
+   * `results` map can resolve ONE call and leave the others in flight.
+   */
+  const toolsPill = (
+    id: string,
+    calls: Array<{ name: string; args: string }>,
+    runId = 'run-1'
+  ) => ({
+    id,
+    type: 'pill' as const,
+    runId,
+    items: [
+      {
+        $type: MessageType.ToolsCall,
+        role: 'assistant' as const,
+        tool_calls: calls.map((call, index) => ({
+          tool_call_id: `call-${index}`,
+          function_name: call.name,
+          function_args: call.args,
+        })),
+      },
+    ],
+  });
+
   function mountList(
     displayItems: any[],
-    options: { isLoading?: boolean; result?: any } = {}
+    options: { isLoading?: boolean; result?: any; results?: Record<string, any> } = {}
   ) {
     return mount(MessageList, {
       props: { displayItems, isLoading: options.isLoading ?? false, viewPreference: 'consumer' },
       global: {
         provide: {
-          [GET_RESULT_FOR_TOOL_CALL]: () => options.result ?? null,
+          [GET_RESULT_FOR_TOOL_CALL]: (toolCallId: string) =>
+            options.results?.[toolCallId] ?? options.result ?? null,
         },
       },
     });
   }
+
+  const toggleText = (wrapper: ReturnType<typeof mountList>) =>
+    wrapper.get('[data-testid="turn-activity-toggle"]').text();
 
   it('keeps every user and answer block but replaces a turn’s reasoning and tools with one activity line', () => {
     const wrapper = mountList([
@@ -564,6 +593,94 @@ describe('MessageList Consumer activity projection', () => {
     );
 
     expect(wrapper.get('[data-testid="turn-activity-toggle"]').text()).toContain('Working');
+  });
+
+  it('names the tool that is still running in the collapsed Working line', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [
+          { name: 'Read', args: '{"file_path":"src/foo.ts"}' },
+          { name: 'Bash', args: '{"command":"npm test"}' },
+        ]),
+      ],
+      { isLoading: true, results: { 'call-0': { result: 'ok', is_error: false } } }
+    );
+
+    // The LAST unresolved call is what the user is waiting on — not the first one in the turn.
+    expect(toggleText(wrapper)).toContain('Working: running npm test');
+    expect(toggleText(wrapper)).not.toContain('reading');
+  });
+
+  it('names a tool whose arguments are still streaming', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [
+          { name: 'Bash', args: '{"command":"npm test"}' },
+          { name: 'Read', args: '{"file_path":"src/fo' },
+        ]),
+      ],
+      { isLoading: true, results: { 'call-0': { result: 'ok', is_error: false } } }
+    );
+
+    expect(toggleText(wrapper)).toContain('Working: reading a file');
+    expect(toggleText(wrapper)).not.toContain('running');
+  });
+
+  it('names an unknown tool by its humanized name while it runs', () => {
+    const wrapper = mountList(
+      [user('u-1', 'Question'), toolsPill('p-1', [{ name: 'MyCustomTool', args: '{"foo":"bar"}' }])],
+      { isLoading: true }
+    );
+
+    expect(toggleText(wrapper)).toContain('Working: My Custom Tool');
+  });
+
+  it('keeps the plain Working line while the model writes text and no tool is running', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [{ name: 'Read', args: '{"file_path":"src/foo.ts"}' }]),
+        answer('a-1', 'Still writing'),
+      ],
+      { isLoading: true, result: { result: 'ok', is_error: false } }
+    );
+
+    expect(toggleText(wrapper)).toContain('Working…');
+    expect(toggleText(wrapper)).not.toContain('Working:');
+  });
+
+  it('replaces the live tool phrase with the aggregate once the run is finished', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [
+          { name: 'Read', args: '{"file_path":"src/foo.ts"}' },
+          { name: 'Bash', args: '{"command":"npm test"}' },
+        ]),
+      ],
+      { result: { result: 'ok', is_error: false } }
+    );
+
+    expect(toggleText(wrapper)).toContain('Completed 2 actions');
+    expect(toggleText(wrapper)).not.toContain('Working');
+  });
+
+  it('keeps a pending question ahead of a tool that is still running', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [
+          { name: 'AskUserQuestion', args: '{"questions":[]}' },
+          { name: 'Bash', args: '{"command":"npm test"}' },
+        ]),
+      ],
+      { isLoading: true, results: { 'call-0': { result: '', is_deferred: true } } }
+    );
+
+    expect(toggleText(wrapper)).toContain('Waiting for your answer');
+    expect(toggleText(wrapper)).not.toContain('Working');
   });
 
   it('does not relabel old activity as Working when a new user turn has no response yet', () => {
