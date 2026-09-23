@@ -164,7 +164,7 @@ internal sealed class SubAgentModelResolver
             return null;
         }
 
-        if (TryGetRoutableModel(candidates, out var routable))
+        if (TryGetRoutableModel(candidates, out var routable, out _))
         {
             return routable;
         }
@@ -185,12 +185,20 @@ internal sealed class SubAgentModelResolver
     internal ReasoningEffort? TierEffort(int tier) =>
         _options.Efforts.TryGetValue(tier, out var effort) ? effort : null;
 
+    // The effort a tier runs a given candidate at: the candidate's own "model:effort" entry when it has
+    // one, otherwise the tier's.
+    private ReasoningEffort? EffortFor(int tier, string candidate) =>
+        _options.ModelEfforts.TryGetValue(tier, out var efforts) && efforts.TryGetValue(candidate, out var effort)
+            ? effort
+            : TierEffort(tier);
+
     /// <summary>
     /// Like <see cref="Resolve"/>, but when the requested tier is unconfigured or has no routable
     /// catalog candidate it CLIMBS to the next-higher configured tier (more capable) until one
     /// resolves or the ladder is exhausted. An explicit model still wins outright (with no tier effort)
     /// and a null tier still inherits the parent. The effort returned is the one configured for the
-    /// tier the climb LANDED on, so a model always runs with the effort its own tier sanctions. This is
+    /// tier the climb LANDED on, so a model always runs with the effort its own tier sanctions; a
+    /// candidate written as <c>"model:effort"</c> carries its own effort within that tier. This is
     /// the per-spawn entry point used when a workflow controller (or a JSON-repair fallback, via
     /// <c>ResolveClimbing(null, 0)</c> for the lowest available tier) requests a tier that may be
     /// unmapped in this deployment — climbing yields the nearest available model rather than silently
@@ -216,9 +224,9 @@ internal sealed class SubAgentModelResolver
         // for an unmapped tier lands on the nearest higher-capability tier that is actually routable.
         foreach (var tier in _options.Tiers.Keys.Where(key => key >= modelIntelligence.Value).OrderBy(key => key))
         {
-            if (TryGetRoutableModel(_options.Tiers[tier], out var routable))
+            if (TryGetRoutableModel(_options.Tiers[tier], out var routable, out var candidate))
             {
-                return new SubAgentTierSelection(routable, TierEffort(tier));
+                return new SubAgentTierSelection(routable, EffortFor(tier, candidate));
             }
         }
 
@@ -239,7 +247,9 @@ internal sealed class SubAgentModelResolver
     // (Copilot ids precede it in every configured tier), but to make an anthropic-compat model
     // selectable on its own, add a second lookup here that also consults TryGetAnthropicCompatModel
     // and returns its provider id when present.
-    private bool TryGetRoutableModel(IReadOnlyList<string> candidates, out string modelId)
+    // matchedCandidate is the configured id that matched, which keys a per-model effort; modelId is the
+    // catalog's canonical id for it.
+    private bool TryGetRoutableModel(IReadOnlyList<string> candidates, out string modelId, out string matchedCandidate)
     {
         foreach (var candidate in candidates)
         {
@@ -256,11 +266,13 @@ internal sealed class SubAgentModelResolver
             )
             {
                 modelId = model.Id;
+                matchedCandidate = candidate;
                 return true;
             }
         }
 
         modelId = string.Empty;
+        matchedCandidate = string.Empty;
         return false;
     }
 

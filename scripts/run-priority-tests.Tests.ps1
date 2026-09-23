@@ -240,8 +240,8 @@ try {
     # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
     # Bump it in the same commit that adds the rows, or this fails with the message below while the
     # manifest itself is perfectly in sync.
-    Assert-Count $repositoryPlan.declarationSummary.known 10870 "Known .NET/script declarations"
-    Assert-Count $repositoryPlan.declarationSummary.reviewed 10870 "Reviewed policy rows"
+    Assert-Count $repositoryPlan.declarationSummary.known 10872 "Known .NET/script declarations"
+    Assert-Count $repositoryPlan.declarationSummary.reviewed 10872 "Reviewed policy rows"
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -258,7 +258,7 @@ try {
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
     # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 416), @("P1", 8205), @("P2", 2100), @("P3", 149))) {
+    foreach ($tier in @(@("P0", 416), @("P1", 8207), @("P2", 2100), @("P3", 149))) {
         Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
@@ -269,7 +269,7 @@ try {
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9601 "Measured coverage classifications"
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 208 "Rows in approved projects without coverage capture"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1061 "Rows absent from the frozen capture"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1063 "Rows absent from the frozen capture"
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

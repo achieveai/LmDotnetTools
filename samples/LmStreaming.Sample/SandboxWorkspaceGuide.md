@@ -337,7 +337,7 @@ effort: high
   ```json
   "SubAgentIntelligence": {
     "Tiers": {
-      "3": ["first-choice-model", "fallback-model"]
+      "3": ["first-choice-model", "fallback-model:xhigh"]
     },
     "Efforts": {
       "3": "medium"
@@ -355,6 +355,11 @@ effort: high
   It applies only while that tier's model runs; when a request climbs to a higher tier, the
   landed tier's effort applies. An authored `effort` wins. Otherwise the tier effort is raised to
   the conversation's effort floor when the floor is higher.
+
+  A candidate written as `"model:effort"` carries its own effort, which replaces the tier's when
+  that candidate is the one the tier resolves to. Above, tier 3 runs `first-choice-model` at
+  medium, but falls back to `fallback-model` at xhigh. The suffix is stripped on load, so the
+  model menu and the override allow-list still see plain ids.
 
 - **`effort`** accepts **`low`**, **`medium`**, **`high`**, **`extra-high`**, or **`xhigh`**
   (`extra-high` and `xhigh` are equivalent). The request is clamped to the highest selectable effort
