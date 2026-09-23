@@ -19,14 +19,17 @@ namespace LmStreaming.Sample.Services;
 /// <remarks>
 /// GitHub Copilot models are discovered dynamically at startup (see
 /// <see cref="AchieveAi.LmDotnetTools.GithubCopilotProvider.Models.CopilotModelsClient"/>) and injected
-/// as catalog entries keyed by their raw model id, partitioned into <c>Copilot · Anthropic</c> /
-/// <c>Copilot · OpenAI</c> groups. When no Copilot token resolves (or discovery fails) the injected
+/// as catalog entries keyed by their raw model id, partitioned into one <c>Copilot · {vendor}</c> group
+/// per vendor (Anthropic, OpenAI, xAI, Google, Microsoft). When no Copilot token resolves (or discovery fails) the injected
 /// list is empty and no Copilot models are exposed.
 /// </remarks>
 public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IProviderResolver
 {
     private const string CopilotAnthropicGroup = "Copilot · Anthropic";
     private const string CopilotOpenAiGroup = "Copilot · OpenAI";
+    private const string CopilotXAiGroup = "Copilot · xAI";
+    private const string CopilotGoogleGroup = "Copilot · Google";
+    private const string CopilotMicrosoftGroup = "Copilot · Microsoft";
     private const string AnthropicCompatGroupSuffix = " (Anthropic-compatible)";
 
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
@@ -137,8 +140,8 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             builder[id] = new ProviderDescriptor(id, displayName, isStatic, entry.KnownLimitation);
         }
 
-        // Dynamically discovered GitHub Copilot models — one entry per routable Anthropic/OpenAI
-        // model, keyed by its raw model id and partitioned into the two Copilot groups. Availability
+        // Dynamically discovered GitHub Copilot models — one entry per routable model, keyed by its
+        // raw model id and partitioned into one Copilot group per vendor. Availability
         // mirrors the Copilot token gate the former curated entries used.
         foreach (var model in copilotModels ?? [])
         {
@@ -154,7 +157,14 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
                 _ = staticBuilder.Add(id);
             }
 
-            var group = model.Vendor == CopilotModelVendor.Anthropic ? CopilotAnthropicGroup : CopilotOpenAiGroup;
+            var group = model.Vendor switch
+            {
+                CopilotModelVendor.Anthropic => CopilotAnthropicGroup,
+                CopilotModelVendor.XAi => CopilotXAiGroup,
+                CopilotModelVendor.Google => CopilotGoogleGroup,
+                CopilotModelVendor.Microsoft => CopilotMicrosoftGroup,
+                _ => CopilotOpenAiGroup,
+            };
             // Suffix "(Copilot)" so the model is identifiable as Copilot-backed even in a client that
             // renders a flat list without the group headers.
             var displayName = $"{model.DisplayName} (Copilot)";

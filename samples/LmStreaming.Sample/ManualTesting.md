@@ -66,8 +66,8 @@ Provider modes:
 Providers **without** a native web capability receive the Jina-backed function tools `WebFetch`
 (read a page as Markdown) and `WebSearch` (ranked results as Markdown) as a fallback. The no-native
 providers that get them are `openai` and every dynamically discovered GitHub Copilot model (the
-"Copilot · Anthropic" / "Copilot · OpenAI" dropdown entries, keyed by raw model id such as
-`claude-opus-4.8` or `gpt-5.5`). Providers with native web — `anthropic`/`test-anthropic`
+"Copilot · Anthropic" / "Copilot · OpenAI" / "Copilot · xAI" / "Copilot · Google" / "Copilot · Microsoft" dropdown
+entries, keyed by raw model id such as `claude-opus-4.8`, `gpt-5.5` or `gemini-3.5-flash`). Providers with native web — `anthropic`/`test-anthropic`
 (`web_search`), the Claude/Codex CLIs, plain `copilot`, and the `*-mock`/`test` providers — do
 **not** get them, so a conversation never has both native web and the Jina fallback. `WebSearch` is
 only registered when `JINA_API_KEY` is set; `WebFetch` works without a key. Both are also gated by

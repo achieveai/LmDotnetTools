@@ -1,4 +1,6 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -125,7 +127,7 @@ public sealed class SubAgentModelResolverTests
             Model("catalog-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing("explicit-model", 3).Should().Be("explicit-model");
+        ClimbedModel(resolver, "explicit-model", 3).Should().Be("explicit-model");
     }
 
     [Fact]
@@ -136,7 +138,7 @@ public sealed class SubAgentModelResolverTests
             Model("catalog-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing(null, null).Should().BeNull();
+        ClimbedModel(resolver, null, null).Should().BeNull();
     }
 
     [Fact]
@@ -148,7 +150,7 @@ public sealed class SubAgentModelResolverTests
             Model("strong-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing(null, 1).Should().Be("cheap-model");
+        ClimbedModel(resolver, null, 1).Should().Be("cheap-model");
     }
 
     [Fact]
@@ -163,7 +165,7 @@ public sealed class SubAgentModelResolverTests
         );
 
         resolver.Resolve(null, 2).Should().BeNull();
-        resolver.ResolveClimbing(null, 2).Should().Be("strong-model");
+        ClimbedModel(resolver, null, 2).Should().Be("strong-model");
     }
 
     [Fact]
@@ -176,7 +178,7 @@ public sealed class SubAgentModelResolverTests
             Model("strong-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing(null, 1).Should().Be("strong-model");
+        ClimbedModel(resolver, null, 1).Should().Be("strong-model");
     }
 
     [Fact]
@@ -190,7 +192,7 @@ public sealed class SubAgentModelResolverTests
             Model("strong-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing(null, 0).Should().Be("cheap-model");
+        ClimbedModel(resolver, null, 0).Should().Be("cheap-model");
     }
 
     [Fact]
@@ -203,10 +205,56 @@ public sealed class SubAgentModelResolverTests
             Model("cheap-model", CopilotModelTransport.Responses)
         );
 
-        resolver.ResolveClimbing(null, 3).Should().BeNull();
-        resolver.ResolveClimbing(null, 3).Should().BeNull();
+        ClimbedModel(resolver, null, 3).Should().BeNull();
+        ClimbedModel(resolver, null, 3).Should().BeNull();
 
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning).Should().Be(1);
+    }
+
+    [Fact]
+    public void ResolveClimbing_CarriesTheEffortOfTheTierItLandedOn()
+    {
+        // Tier 1 is unroutable, so the climb lands on tier 3. The effort must be tier 3's, never the
+        // requested tier's: a Low effort meant for a cheap model must not ride along to the strong one.
+        var resolver = CreateResolver(
+            new SubAgentIntelligenceOptions
+            {
+                Tiers = new Dictionary<int, string[]> { [1] = ["missing-model"], [3] = ["strong-model"] },
+                Efforts = new Dictionary<int, ReasoningEffort>
+                {
+                    [1] = ReasoningEffort.Low,
+                    [3] = ReasoningEffort.Xhigh,
+                },
+            },
+            new CapturingLogger<SubAgentModelResolver>(),
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 1).Should().Be(new SubAgentTierSelection("strong-model", ReasoningEffort.Xhigh));
+    }
+
+    [Fact]
+    public void ResolveClimbing_TierWithoutEffortAndExplicitModelCarryNoEffort()
+    {
+        var resolver = CreateResolver(
+            new SubAgentIntelligenceOptions
+            {
+                Tiers = new Dictionary<int, string[]> { [1] = ["cheap-model"], [3] = ["strong-model"] },
+                Efforts = new Dictionary<int, ReasoningEffort> { [3] = ReasoningEffort.High },
+            },
+            new CapturingLogger<SubAgentModelResolver>(),
+            Model("cheap-model", CopilotModelTransport.Responses),
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 1).Should().Be(new SubAgentTierSelection("cheap-model", Effort: null));
+        resolver
+            .ResolveClimbing("explicit-model", 3)
+            .Should()
+            .Be(
+                new SubAgentTierSelection("explicit-model", Effort: null),
+                "a model the caller named is not a tier choice, so no tier effort applies"
+            );
     }
 
     [Fact]
@@ -307,7 +355,9 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses)
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
+            Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
 
         options.Tiers.Should().NotBeEmpty("an all-empty ladder is what emptied the allow-list");
@@ -343,7 +393,9 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses)
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
+            Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
 
         // Guard against vacuity: with an empty ladder this loop iterates nothing and the test would pass
@@ -359,9 +411,50 @@ public sealed class SubAgentModelResolverTests
         }
     }
 
+    [Theory]
+    [InlineData(1, "gpt-5.6-luna", ReasoningEffort.High)]
+    [InlineData(2, "gemini-3.8-flash", ReasoningEffort.High)]
+    [InlineData(3, "gpt-5.6-terra", ReasoningEffort.Medium)]
+    [InlineData(4, "gpt-5.6-terra", ReasoningEffort.Xhigh)]
+    [InlineData(5, "gpt-5.6-sol", ReasoningEffort.High)]
+    [InlineData(6, "gpt-6-astra", ReasoningEffort.High)]
+    public void Appsettings_EachTierResolvesToTheOwnerApprovedModelAndEffort(
+        int tier,
+        string expectedModel,
+        ReasoningEffort expectedEffort
+    )
+    {
+        // Pins the owner-approved mapping (2026-09-22) end to end: checked-in appsettings.json, the real
+        // loader and the real resolver. Tiers 3 and 4 share a model and differ only by effort, so this is
+        // also the guard that the effort map is read at all.
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
+            .Build();
+        var options = SubAgentIntelligenceOptions.Load(
+            configuration,
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
+        var resolver = CreateResolver(
+            options,
+            new CapturingLogger<SubAgentModelResolver>(),
+            Model("gpt-5.6-luna", CopilotModelTransport.Responses),
+            Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
+            Model("gpt-5.6-terra", CopilotModelTransport.Responses),
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6-astra", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, tier).Should().Be(new SubAgentTierSelection(expectedModel, expectedEffort));
+    }
+
     /// <summary>The Copilot model id this deployment reviews on today. Named once so the guard above reads
     /// as "the model in use", not as an arbitrary literal.</summary>
     private const string InUseModelId = "gpt-5.6-luna";
+
+    /// <summary>The model a climb picked, or null. Model-only assertions use this so they still fail when
+    /// the selection itself is null.</summary>
+    private static string? ClimbedModel(SubAgentModelResolver resolver, string? explicitModel, int? tier) =>
+        resolver.ResolveClimbing(explicitModel, tier)?.ModelId;
 
     private static SubAgentModelResolver CreateResolver(
         Dictionary<int, string[]> tiers,

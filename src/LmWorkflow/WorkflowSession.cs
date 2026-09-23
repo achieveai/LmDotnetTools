@@ -409,7 +409,7 @@ public static class WorkflowSession
             return null;
         }
 
-        var model = resolveTier(0);
+        var model = resolveTier(0)?.ModelId;
         if (string.IsNullOrWhiteSpace(model))
         {
             return null;

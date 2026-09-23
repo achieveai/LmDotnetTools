@@ -173,7 +173,16 @@ public record ChatCompletionRequest
                     )
                 )
                 {
-                    return compositeMsg.Messages.SelectMany(FromMessage);
+                    // Reasoning in a tool-call turn must ride on the assistant message as reasoning
+                    // fields. Converting each part on its own would replay the thinking as spoken
+                    // assistant text and turn encrypted reasoning into an empty assistant message.
+                    return MergeReasoningIntoAssistant(compositeMsg.Messages);
+                }
+
+                if (compositeMsg.Messages.All(m => m is ReasoningMessage))
+                {
+                    // A reasoning-only turn has no content parts; an empty content array is rejected.
+                    return MergeReasoningIntoAssistant(compositeMsg.Messages);
                 }
 
                 List<ChatMessage> chatMessages =
@@ -200,36 +209,8 @@ public record ChatCompletionRequest
                     },
                 ];
 
-                var hasEncryptedReasoning = compositeMsg
-                    .Messages.OfType<ReasoningMessage>()
-                    .Any(r => r.Visibility == ReasoningVisibility.Encrypted);
-
-                var reasoningMessage = compositeMsg
-                    .Messages.OfType<ReasoningMessage>()
-                    .FirstOrDefault(r =>
-                        hasEncryptedReasoning
-                            ? r.Visibility == ReasoningVisibility.Encrypted
-                            : r.Visibility == ReasoningVisibility.Plain
-                    );
-
-                if (reasoningMessage != null)
-                {
-                    if (hasEncryptedReasoning)
-                    {
-                        chatMessages[0].ReasoningDetails =
-                        [
-                            new ChatMessage.ReasoningDetail
-                            {
-                                Type = "reasoning.encrypted",
-                                Data = reasoningMessage.Reasoning,
-                            },
-                        ];
-                    }
-                    else
-                    {
-                        chatMessages[0].Reasoning = reasoningMessage.Reasoning;
-                    }
-                }
+                // Same selection as every other assistant message, so no reasoning block is dropped.
+                MergeReasoning([.. compositeMsg.Messages.OfType<ReasoningMessage>()], chatMessages[0]);
 
                 return chatMessages;
             case ImageMessage imageMessage:
@@ -359,6 +340,13 @@ public record ChatCompletionRequest
 
         foreach (var m in source)
         {
+            if (m.Role != Role.Assistant && reasoningBuffer.Count > 0)
+            {
+                // Reasoning left over from a turn that ended without output belongs to that turn,
+                // never to the next user or tool message.
+                yield return ReasoningOnlyAssistantMessage(reasoningBuffer);
+            }
+
             switch (m)
             {
                 case ReasoningMessage r:
@@ -410,15 +398,20 @@ public record ChatCompletionRequest
 
         if (reasoningBuffer.Count > 0)
         {
-            var chatMessage = new ChatMessage
-            {
-                Role = RoleEnum.Assistant,
-                Content = new Union<string, Union<TextContent, ImageContent>[]>("\n\n"),
-            };
-
-            MergeReasoning(reasoningBuffer, chatMessage);
-            yield return chatMessage;
+            yield return ReasoningOnlyAssistantMessage(reasoningBuffer);
         }
+    }
+
+    private static ChatMessage ReasoningOnlyAssistantMessage(List<ReasoningMessage> reasoningBuffer)
+    {
+        var chatMessage = new ChatMessage
+        {
+            Role = RoleEnum.Assistant,
+            Content = new Union<string, Union<TextContent, ImageContent>[]>("\n\n"),
+        };
+
+        MergeReasoning(reasoningBuffer, chatMessage);
+        return chatMessage;
     }
 
     private static void MergeReasoning(List<ReasoningMessage> reasoningBuffer, ChatMessage? ch)

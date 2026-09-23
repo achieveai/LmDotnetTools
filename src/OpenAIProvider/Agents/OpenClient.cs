@@ -382,18 +382,15 @@ public class OpenClient : BaseHttpService, IOpenClient
                         continue;
                     }
 
-                    // Add default assistant role if not present
+                    // Add default assistant role if not present. Fill the delta in place: the final chunk
+                    // can still carry tool calls or reasoning, which a replacement delta would drop.
                     if (res.Choices?.Count > 0 && res.Choices[0].FinishReason != null)
                     {
-                        if (res.Choices[0].Delta?.Role.HasValue != true)
+                        var delta = res.Choices[0].Delta ??= new ChatMessage();
+                        if (!delta.Role.HasValue)
                         {
-                            res.Choices[0].Delta = new ChatMessage
-                            {
-                                Role = RoleEnum.Assistant,
-                                Content =
-                                    res.Choices[0].Delta?.Content
-                                    ?? new Union<string, Union<TextContent, ImageContent>[]>(string.Empty),
-                            };
+                            delta.Role = RoleEnum.Assistant;
+                            delta.Content ??= new Union<string, Union<TextContent, ImageContent>[]>(string.Empty);
                         }
                     }
                 }
@@ -439,56 +436,42 @@ public class OpenClient : BaseHttpService, IOpenClient
     /// <returns>True if the response should be skipped, false otherwise</returns>
     private static bool ShouldSkipStreamingResponse(ChatCompletionResponse response)
     {
-        // Skip responses with zero-token usage ONLY if they don't have finish_reason
-        // The final usage message (with non-zero tokens) carries cost information and should be preserved
-        if (IsNoneUsage(response.Usage))
+        // Zero-token usage entries are uninformative and unnecessarily bloat the stream. Providers
+        // often emit dozens or hundreds of these fragments before the real (non-zero) usage summary
+        // arrives, so a chunk is dropped when it carries zero-token usage and nothing else. Some
+        // providers attach that zero-token usage to every chunk, so the delta must be checked first:
+        // skipping on usage alone drops the text, reasoning and tool calls riding with it.
+        if (!IsNoneUsage(response.Usage))
         {
-            // Zero-token usage entries are uninformative and unnecessarily bloat the stream.
-            // Providers often emit dozens or hundreds of these fragments before the real
-            // (non-zero) usage summary arrives.  We therefore drop **all** zero-token usage
-            // deltas regardless of finish_reason to keep the streaming output compact.
+            return false;
+        }
 
+        var delta = response.Choices?.Count > 0 ? response.Choices[0].Delta : null;
+        if (delta == null)
+        {
             return true;
         }
 
-        // Skip responses with no useful information: empty content, reasoning, and tool calls.
-        if (response.Choices?.Count > 0)
+        // Check if content is empty or null
+        var hasContent = false;
+        if (delta.Content != null)
         {
-            var delta = response.Choices[0].Delta;
-            if (delta != null)
+            if (delta.Content.Is<string>())
             {
-                // Check if content is empty or null
-                var hasContent = false;
-                if (delta.Content != null)
-                {
-                    if (delta.Content.Is<string>())
-                    {
-                        var contentStr = delta.Content.Get<string>();
-                        hasContent = !string.IsNullOrEmpty(contentStr);
-                    }
-                    else
-                    {
-                        // For non-string content (like image arrays), consider it as having content
-                        hasContent = true;
-                    }
-                }
-
-                // Check if reasoning is empty or null
-                var hasReasoning =
-                    !string.IsNullOrEmpty(delta.Reasoning) || !string.IsNullOrEmpty(delta.ReasoningContent);
-
-                // Check if there are tool calls present
-                var hasToolCalls = delta.ToolCalls?.Count > 0;
-
-                // Skip if both content and reasoning are empty
-                if (!hasContent && !hasReasoning && !hasToolCalls)
-                {
-                    return IsNoneUsage(response.Usage);
-                }
+                var contentStr = delta.Content.Get<string>();
+                hasContent = !string.IsNullOrEmpty(contentStr);
+            }
+            else
+            {
+                // For non-string content (like image arrays), consider it as having content
+                hasContent = true;
             }
         }
 
-        return false; // Don't skip this response
+        var hasReasoning = !string.IsNullOrEmpty(delta.Reasoning) || delta.ReasoningDetails?.Count > 0;
+        var hasToolCalls = delta.ToolCalls?.Count > 0;
+
+        return !hasContent && !hasReasoning && !hasToolCalls;
     }
 
     private static bool IsNoneUsage(OpenAIProviderUsage? usage)

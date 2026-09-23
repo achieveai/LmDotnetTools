@@ -44,7 +44,7 @@ public sealed class CopilotModelsClientTests
 
         var models = await client.GetModelsAsync();
 
-        models.Select(m => m.Id).Should().BeEquivalentTo("claude-sonnet-5", "gpt-5.5");
+        models.Select(m => m.Id).Should().BeEquivalentTo("claude-sonnet-5", "gpt-5.5", "gemini-3.5-flash");
     }
 
     [Fact]

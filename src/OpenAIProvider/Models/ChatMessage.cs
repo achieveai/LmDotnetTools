@@ -52,6 +52,15 @@ public record ChatMessage
     private IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null, bool isStreaming = false)
     {
         role = Role ?? role ?? RoleEnum.Assistant;
+
+        // Reasoning comes first: replay attaches buffered reasoning to the next assistant message,
+        // so in a tool-call turn it must precede the calls it belongs to.
+        var reasoning = ToReasoningMessages(name, role.Value, isStreaming).ToList();
+        foreach (var reasoningMessage in reasoning)
+        {
+            yield return reasoningMessage;
+        }
+
         if (ToolCalls?.Count > 0)
         {
             if (isStreaming)
@@ -68,37 +77,99 @@ public record ChatMessage
 
                 yield return new ToolsCallUpdateMessage
                 {
-                    Role = ToRole(role!.Value),
+                    Role = ToRole(role.Value),
                     ToolCallUpdates = [.. toolCallUpdates],
                     FromAgent = name,
                     GenerationId = Id,
                 };
+            }
+            else
+            {
+                var toolCalls = ToolCalls
+                    .Select(
+                        (tc, idx) =>
+                            new ToolCall
+                            {
+                                FunctionName = tc.Function.Name,
+                                FunctionArgs = tc.Function.Arguments,
+                                ToolCallId = tc.Id,
+                                ToolCallIdx = idx, // Assign sequential tool call index
+                            }
+                    )
+                    .ToArray();
 
+                yield return new ToolsCallMessage
+                {
+                    Role = ToRole(role.Value),
+                    ToolCalls = [.. toolCalls],
+                    FromAgent = name,
+                    GenerationId = Id,
+                };
+            }
+        }
+
+        // `content: null` is valid next to tool calls or reasoning (OpenAI sends it with tool calls)
+        // and in any streaming delta; only a message that carries nothing at all is malformed.
+        var hasOtherOutput = isStreaming || ToolCalls?.Count > 0 || reasoning.Count > 0;
+        if (Content == null || (Content.Is<string>() && Content.Get<string>() == null))
+        {
+            if (hasOtherOutput)
+            {
                 yield break;
             }
 
-            var toolCalls = ToolCalls
-                .Select(
-                    (tc, idx) =>
-                        new ToolCall
-                        {
-                            FunctionName = tc.Function.Name,
-                            FunctionArgs = tc.Function.Arguments,
-                            ToolCallId = tc.Id,
-                            ToolCallIdx = idx, // Assign sequential tool call index
-                        }
-                )
-                .ToArray();
+            throw new InvalidOperationException("Content is null");
+        }
 
-            yield return new ToolsCallMessage
+        if (Content.Is<string>())
+        {
+            var contentText = Content.Get<string>();
+
+            // Skip empty content in streaming (noise) and next to tool calls, where it would replay as
+            // an empty assistant message between the calls and their results.
+            if (string.IsNullOrEmpty(contentText) && (isStreaming || ToolCalls?.Count > 0))
             {
-                Role = ToRole(role!.Value),
-                ToolCalls = [.. toolCalls],
+                yield break;
+            }
+
+            yield return new TextMessage
+            {
+                Role = ToRole(role.Value),
+                Text = contentText,
                 FromAgent = name,
                 GenerationId = Id,
             };
         }
+        else if (Content.Is<Union<TextContent, ImageContent>[]>())
+        {
+            var content = Content.Get<Union<TextContent, ImageContent>[]>();
+            foreach (var item in content)
+            {
+                yield return item.Is<TextContent>()
+                    ? new TextMessage
+                    {
+                        Role = ToRole(role.Value),
+                        Text = item.Get<TextContent>().Text,
+                        FromAgent = name,
+                        GenerationId = Id,
+                    }
+                    : new ImageMessage
+                    {
+                        Role = ToRole(role.Value),
+                        ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
+                        FromAgent = name,
+                        GenerationId = Id,
+                    };
+            }
+        }
+        else if (!isStreaming) // Only throw for non-streaming path
+        {
+            throw new InvalidOperationException("Invalid content type");
+        }
+    }
 
+    private IEnumerable<IMessage> ToReasoningMessages(string? name, RoleEnum role, bool isStreaming)
+    {
         // Reasoning handling – emit all reasoning blocks, but prioritize reasoning_details visibility when text matches.
         var processedReasoningTexts = new HashSet<string>(StringComparer.Ordinal);
 
@@ -126,7 +197,7 @@ public record ChatMessage
                 yield return isStreaming && visibility != ReasoningVisibility.Encrypted
                     ? new ReasoningUpdateMessage
                     {
-                        Role = ToRole(role!.Value),
+                        Role = ToRole(role),
                         Reasoning = detailText!,
                         FromAgent = name,
                         GenerationId = Id,
@@ -134,7 +205,7 @@ public record ChatMessage
                     }
                     : new ReasoningMessage
                     {
-                        Role = ToRole(role!.Value),
+                        Role = ToRole(role),
                         Reasoning = detailText!,
                         FromAgent = name,
                         GenerationId = Id,
@@ -151,7 +222,7 @@ public record ChatMessage
             yield return isStreaming
                 ? new ReasoningUpdateMessage
                 {
-                    Role = ToRole(role!.Value),
+                    Role = ToRole(role),
                     Reasoning = Reasoning!,
                     FromAgent = name,
                     GenerationId = Id,
@@ -159,67 +230,12 @@ public record ChatMessage
                 }
                 : new ReasoningMessage
                 {
-                    Role = ToRole(role!.Value),
+                    Role = ToRole(role),
                     Reasoning = Reasoning!,
                     FromAgent = name,
                     GenerationId = Id,
                     Visibility = ReasoningVisibility.Plain,
                 };
-        }
-
-        if (Content == null)
-        {
-            throw new InvalidOperationException("Content is null");
-        }
-
-        if (Content.Is<string>())
-        {
-            if (Content.Get<string>() == null || role == null)
-            {
-                throw new InvalidOperationException("Content is null");
-            }
-
-            var contentText = Content.Get<string>()!;
-
-            // For streaming messages, skip empty content to reduce noise
-            if (isStreaming && string.IsNullOrEmpty(contentText))
-            {
-                yield break; // Don't emit anything for empty streaming content
-            }
-
-            yield return new TextMessage
-            {
-                Role = ToRole(role!.Value),
-                Text = contentText,
-                FromAgent = name,
-                GenerationId = Id,
-            };
-        }
-        else if (Content.Is<Union<TextContent, ImageContent>[]>())
-        {
-            var content = Content.Get<Union<TextContent, ImageContent>[]>()!;
-            foreach (var item in content)
-            {
-                yield return item.Is<TextContent>()
-                    ? new TextMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        Text = item.Get<TextContent>().Text,
-                        FromAgent = name,
-                        GenerationId = Id,
-                    }
-                    : new ImageMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
-                        FromAgent = name,
-                        GenerationId = Id,
-                    };
-            }
-        }
-        else if (!isStreaming) // Only throw for non-streaming path
-        {
-            throw new InvalidOperationException("Invalid content type");
         }
     }
 

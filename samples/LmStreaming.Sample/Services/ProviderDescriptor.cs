@@ -13,7 +13,7 @@ namespace LmStreaming.Sample.Services;
 /// </param>
 /// <param name="Group">
 /// Optional partition label the client renders as a non-selectable section header (e.g.
-/// <c>Copilot · Anthropic</c>, <c>Copilot · OpenAI</c>). <c>null</c> for ungrouped providers, which
+/// <c>Copilot · Anthropic</c>, <c>Copilot · Google</c>). <c>null</c> for ungrouped providers, which
 /// the client renders as a flat list ahead of the grouped sections.
 /// </param>
 public sealed record ProviderDescriptor(

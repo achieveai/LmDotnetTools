@@ -108,6 +108,15 @@ public record SubAgentTemplate
     public ReasoningEffort? Effort { get; init; }
 
     /// <summary>
+    /// Reasoning effort the host's tier ladder configures for the tier this template's model was resolved
+    /// from (<see cref="IsModelTierResolved"/>). It applies only while that tier model is the one running,
+    /// and ranks below an authored <see cref="Effort"/>: effort = <see cref="Effort"/>, else the higher of
+    /// the tier effort and <see cref="SubAgentOptions.ConversationEffortFloor"/>. A per-spawn tier replaces
+    /// it with its own effort.
+    /// </summary>
+    public ReasoningEffort? TierEffort { get; init; }
+
+    /// <summary>
     /// Tool filter: null = inherit ALL parent tools.
     /// If specified, only the listed tool names are available to the sub-agent.
     /// </summary>

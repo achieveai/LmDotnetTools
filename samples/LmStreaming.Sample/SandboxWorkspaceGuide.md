@@ -338,6 +338,9 @@ effort: high
   "SubAgentIntelligence": {
     "Tiers": {
       "3": ["first-choice-model", "fallback-model"]
+    },
+    "Efforts": {
+      "3": "medium"
     }
   }
   ```
@@ -345,9 +348,13 @@ effort: high
   The first candidate present and routable in the host's discovered Copilot model catalog wins;
   candidates later in the array are ordered fallbacks. An absent map, missing tier, or tier with
   no routable candidate falls through to the parent model and logs a warning. The checked-in
-  `appsettings.json` contains empty arrays for tiers 0–6, so it documents the schema without
-  selecting a model. Malformed or out-of-range configuration keys are logged as errors and their
-  mappings are ignored without preventing application startup.
+  `appsettings.json` maps every tier 0–6 to a model. Malformed or out-of-range configuration keys
+  are logged as errors and their mappings are ignored without preventing application startup.
+
+  `Efforts` optionally gives a tier its own reasoning effort, using the `effort` vocabulary below.
+  It applies only while that tier's model runs; when a request climbs to a higher tier, the
+  landed tier's effort applies. An authored `effort` wins. Otherwise the tier effort is raised to
+  the conversation's effort floor when the floor is higher.
 
 - **`effort`** accepts **`low`**, **`medium`**, **`high`**, **`extra-high`**, or **`xhigh`**
   (`extra-high` and `xhigh` are equivalent). The request is clamped to the highest selectable effort

@@ -228,15 +228,17 @@ public record SubAgentOptions
 
     /// <summary>
     /// Host-supplied resolver that maps a spawn's model-intelligence tier (the <c>modelIntelligence</c>
-    /// argument of the <c>Agent</c> tool, or a workflow task's tier) to a concrete model id, or null to
-    /// leave the sub-agent on its parent-inherited model. The library is model-catalog-agnostic, so the
-    /// host owns the tier ladder and passes this delegate in; the manager only calls it (with the raw
-    /// tier) when a spawn requested a tier AND set no explicit model override. A non-null return is treated
-    /// as a tier-resolved model (<see cref="SubAgentCharacteristics.IsModelTierResolved"/>), so the
-    /// characteristics factory builds a real provider for it rather than handing back the parent. Null
-    /// (default) disables tier resolution, so every non-host consumer keeps the previous behavior.
+    /// argument of the <c>Agent</c> tool, or a workflow task's tier) to a concrete model and that tier's
+    /// reasoning effort, or null to leave the sub-agent on its parent-inherited model. The library is
+    /// model-catalog-agnostic, so the host owns the tier ladder and passes this delegate in; the manager
+    /// only calls it (with the raw tier) when a spawn requested a tier AND set no explicit model override.
+    /// A non-null return is treated as a tier-resolved model
+    /// (<see cref="SubAgentCharacteristics.IsModelTierResolved"/>), so the characteristics factory builds a
+    /// real provider for it rather than handing back the parent; its effort applies unless the template
+    /// authored one (see <see cref="SubAgentTemplate.TierEffort"/> for the precedence). Null (default)
+    /// disables tier resolution, so every non-host consumer keeps the previous behavior.
     /// </summary>
-    public Func<int, string?>? TierModelResolver { get; init; }
+    public Func<int, SubAgentTierSelection?>? TierModelResolver { get; init; }
 
     /// <summary>
     /// Host-supplied factory that builds a provider agent for a tier-resolved model on the PLAIN path (a
