@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -175,6 +177,38 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             .ContainSingle("only the damaged index is moved aside")
             .Subject;
         File.ReadAllBytes(quarantined).Should().Equal(damaged);
+    }
+
+    /// <summary>
+    /// An outside process holding the index open (an antivirus or indexer scanning the file just written)
+    /// makes the replacing rename fail on Windows with access denied, not an IO error, even when the holder
+    /// allows deletion. It once escaped a loaded test run as UnauthorizedAccessException. The write is
+    /// best-effort, so that poll skips persisting, warns, and leaves the old index intact; the next poll
+    /// persists. On a platform whose rename succeeds anyway the write simply lands, and the test still
+    /// holds.
+    /// </summary>
+    [Fact]
+    public void AnIndexHeldOpenByAnotherProcess_SkipsThatPoll_AndTheNextPollPersists()
+    {
+        var logger = new CapturingLogger<WorkflowRunRegistry>();
+        var registry = new WorkflowRunRegistry(_dir, logger: logger);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            var act = () => registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+
+            act.Should().NotThrow("a failed persist must never fail the poll the caller is servicing");
+            if (OperatingSystem.IsWindows())
+            {
+                logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Warning);
+            }
+        }
+
+        Directory.GetFiles(_dir, "*.tmp-*").Should().BeEmpty("a skipped write leaves no temp file behind");
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        registry.GetPersistedTabs("t1").Select(t => t.AgentId).Should().BeEquivalentTo(["wf1", "wf2"]);
     }
 
     /// <summary>
