@@ -61,6 +61,10 @@ public sealed class WorkflowRunRegistry
     private readonly string? _indexDirectory;
     private readonly ILogger<WorkflowRunRegistry> _logger;
 
+    // Conversations whose last persist failed. The index is re-persisted on every poll (about every three
+    // seconds), so a directory that stays unwritable would otherwise log the same warning on every poll.
+    private readonly ConcurrentDictionary<string, byte> _persistFailing = new(StringComparer.Ordinal);
+
     private static readonly JsonSerializerOptions IndexJson = new(JsonSerializerDefaults.Web) { WriteIndented = false };
 
     /// <summary>
@@ -182,6 +186,10 @@ public sealed class WorkflowRunRegistry
                     }
 
                     File.Move(temp, path, overwrite: true);
+                    if (_persistFailing.TryRemove(threadId, out _))
+                    {
+                        _logger.LogInformation("Workflow-tab index for {ThreadId} is persisting again", threadId);
+                    }
                 }
                 finally
                 {
@@ -191,10 +199,31 @@ public sealed class WorkflowRunRegistry
                     }
                 }
             }
-            catch (IOException)
+            catch (Exception writeFailure) when (writeFailure is IOException or UnauthorizedAccessException)
             {
                 // Best-effort durability: a transient write failure just means this poll's snapshot isn't
                 // persisted; the next poll re-attempts. Never fail the read the caller is servicing.
+                // Access denied is transient too: on Windows, replacing an index that another process holds
+                // open (an antivirus or indexer scanning the file just written) fails that way even when the
+                // holder allows deletion. Every in-process reader is behind this gate, so only an outside
+                // holder gets here. Logged so a directory that is never writable doesn't fail silently, but
+                // only the first failure in a run warns; the retries that follow it log at debug.
+                if (_persistFailing.TryAdd(threadId, 0))
+                {
+                    _logger.LogWarning(
+                        writeFailure,
+                        "Workflow-tab index for {ThreadId} was not persisted this poll; the next poll retries",
+                        threadId
+                    );
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        writeFailure,
+                        "Workflow-tab index for {ThreadId} is still not persisting; the next poll retries",
+                        threadId
+                    );
+                }
             }
         }
     }

@@ -255,10 +255,16 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         receivedCharacteristics.Effort.Should().Be(expected);
     }
 
-    [Fact]
-    public async Task SpawnAsync_ModelOverrideDropsTheTierEffort()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SpawnAsync_AResolvedTierBeatsTheModelOverride_AndOnlyTheTierModelCarriesTheTierEffort(
+        bool tierResolves
+    )
     {
-        // A named model is not the tier's model, so the tier's effort must not ride along with it.
+        // The tier is the primary routing mechanism: when it resolves, its model runs with its effort and the
+        // named model is ignored. When it resolves nothing, the named model runs, and since that is not the
+        // tier's model the tier's effort must not ride along with it.
         SubAgentCharacteristics? receivedCharacteristics = null;
         var providerAgent = CreateRespondingAgent();
         var template = new SubAgentTemplate
@@ -274,14 +280,20 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         await using var manager = CreateManager(
             template,
             parentModelId: "parent-model",
-            tierModelResolver: tier => tier == 3 ? "tier-model" : null,
+            tierModelResolver: tier => tier == 3 && tierResolves ? "tier-model" : null,
             tierEffort: ReasoningEffort.Xhigh
         );
 
         _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
 
-        receivedCharacteristics!.ModelId.Should().Be("spawn-model");
-        receivedCharacteristics.Effort.Should().BeNull();
+        receivedCharacteristics!.ModelId.Should().Be(tierResolves ? "tier-model" : "spawn-model");
+        receivedCharacteristics.Effort.Should().Be(tierResolves ? ReasoningEffort.Xhigh : null);
+        manager
+            .ListAgents()
+            .Should()
+            .ContainSingle()
+            .Subject.ModelSelectionSource.Should()
+            .Be(tierResolves ? "spawn-tier" : "spawn-model");
     }
 
     [Theory]
@@ -695,9 +707,9 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task SpawnAsync_ExplicitModelWithTier_PlainPath_SkipsResolverButBuildsTransportCorrectProviderViaTierAgentFactory()
+    public async Task SpawnAsync_ExplicitModelWithUnresolvedTier_PlainPath_BuildsTransportCorrectProviderViaTierAgentFactory()
     {
-        // An explicit model override wins over a tier, so the tier RESOLVER is never consulted. But the
+        // The tier is consulted first; it resolves nothing here, so the explicit model override runs. The
         // override still needs a provider whose TRANSPORT matches it: on the plain path the override is
         // built via TierAgentFactory for the override id (transport-correct) rather than the plain
         // template.AgentFactory() (which builds the controller's transport — a cross-transport override
@@ -723,7 +735,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             tierModelResolver: _ =>
             {
                 resolverCalls++;
-                return "tier-model";
+                return null;
             },
             tierAgentFactory: model =>
             {
@@ -734,7 +746,9 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
 
         _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
 
-        resolverCalls.Should().Be(0, "an explicit model override short-circuits tier resolution");
+        resolverCalls
+            .Should()
+            .Be(1, "the tier is always tried first; the override applies only when it resolves nothing");
         tierFactoryRequestedModel
             .Should()
             .Be("spawn-model", "the override is built transport-correctly for its own id");
@@ -1074,12 +1088,12 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     // A calling LLM commonly restates its OWN (parent) model id as the explicit `model` argument while
     // ALSO supplying `modelIntelligence` for a tier it actually wants honored — the model id is the one
     // thing the LLM already knows about itself, so it fills the field rather than leaving it blank.
-    // Spawn-model has the strongest precedence, so left as-is this redundant self-reference silently
+    // Spawn-model used to have the strongest precedence, so this redundant self-reference silently
     // overrode the requested tier and any template tier/model choice — the defect that made every child of
     // a review conversation resolve to the primary agent's own (mechanical-tier) model regardless of the
     // tier it authored. Only a same-as-parent override supplied ALONGSIDE a tier is redundant filler; a
     // same-as-parent override with no tier still expresses a deliberate "run this one on my own model"
-    // choice and a genuinely different override always wins outright.
+    // choice. A tier that resolves wins over any override, same-as-parent or not.
 
     [Fact]
     public async Task SpawnAsync_ExplicitModelEqualToParentWithTier_NormalizesToSpawnTier()
@@ -1153,11 +1167,10 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task SpawnAsync_ExplicitDifferentModelWithTier_StillOutranksTheTier()
+    public async Task SpawnAsync_ExplicitDifferentModelWithTier_TheResolvedTierWins()
     {
-        // A genuinely different explicit model must still win outright: normalization only applies when
-        // the override equals the parent's own model. The tier resolver must not even be consulted, since
-        // an explicit model always short-circuits tier resolution regardless of this normalization.
+        // The tier is the primary routing mechanism: even a genuinely different explicit model (not the
+        // parent's own) is ignored once the requested tier resolves to a model.
         SubAgentCharacteristics? receivedCharacteristics = null;
         var providerAgent = CreateRespondingAgent();
         var resolverCalls = 0;
@@ -1183,11 +1196,12 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
 
         _ = await manager.SpawnAsync("test-agent", "test task", model: "gpt-5.6-sol", modelIntelligence: 5);
 
-        resolverCalls.Should().Be(0, "an explicit non-self-referential model still short-circuits tier resolution");
-        receivedCharacteristics!.ModelId.Should().Be("gpt-5.6-sol");
-        receivedCharacteristics.IsModelExplicitlySelected.Should().BeTrue();
+        resolverCalls.Should().Be(1);
+        receivedCharacteristics!.ModelId.Should().Be("gpt-5.6-terra");
+        receivedCharacteristics.IsModelTierResolved.Should().BeTrue();
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeFalse();
 
-        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-model");
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-tier");
     }
 
     [Fact]

@@ -337,7 +337,7 @@ effort: high
   ```json
   "SubAgentIntelligence": {
     "Tiers": {
-      "3": ["first-choice-model", "fallback-model"]
+      "3": ["first-choice-model", "fallback-model:xhigh"]
     },
     "Efforts": {
       "3": "medium"
@@ -356,6 +356,11 @@ effort: high
   landed tier's effort applies. An authored `effort` wins. Otherwise the tier effort is raised to
   the conversation's effort floor when the floor is higher.
 
+  A candidate written as `"model:effort"` carries its own effort, which replaces the tier's when
+  that candidate is the one the tier resolves to. Above, tier 3 runs `first-choice-model` at
+  medium, but falls back to `fallback-model` at xhigh. The suffix is stripped on load, so the
+  model menu and the override allow-list still see plain ids.
+
 - **`effort`** accepts **`low`**, **`medium`**, **`high`**, **`extra-high`**, or **`xhigh`**
   (`extra-high` and `xhigh` are equivalent). The request is clamped to the highest selectable effort
   advertised by the resolved model at or below the request. If every advertised selectable
@@ -364,9 +369,10 @@ effort: high
   cannot shape effort, the setting is omitted. LmStreaming uses the provider-specific request
   shape: Anthropic `output_config.effort` or OpenAI Responses `reasoning.effort`.
 
-Model precedence is **explicit `model:` > tier-resolved model > inherited parent model** (a
-per-spawn model override, when supplied by a caller, remains highest). An explicit model therefore
-disables tier selection. The characteristics-aware factory builds the sub-agent on the resolved
+Model precedence is **explicit `model:` > tier-resolved model > inherited parent model**, so in
+frontmatter an explicit model disables tier selection. A spawn's own arguments rank above the
+frontmatter, and there the order is reversed: a per-spawn `modelIntelligence` tier that resolves to a
+model wins, and a per-spawn `model` applies only when the tier resolves to nothing. The characteristics-aware factory builds the sub-agent on the resolved
 model's routable transport and applies effort only after that model is known.
 The 0–6 model-intelligence tier space and the reasoning-effort values are deliberately independent;
 there is no ordinal or one-to-one mapping between them.

@@ -275,7 +275,8 @@ public sealed class WorkspaceSubAgentLoader
             );
         }
 
-        var effectiveModel = _modelResolver?.Resolve(parsed.Model, parsed.ModelIntelligence);
+        var selection = _modelResolver?.ResolveWithEffort(parsed.Model, parsed.ModelIntelligence);
+        var effectiveModel = selection?.ModelId;
         var hasAuthorPinnedModel =
             !string.IsNullOrWhiteSpace(parsed.Model)
             && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
@@ -292,9 +293,9 @@ public sealed class WorkspaceSubAgentLoader
         {
             CharacteristicsAgentFactory = characteristicsAgentFactory,
             ModelIntelligence = parsed.ModelIntelligence,
-            // Resolve does not climb, so the tier that picked the model is the authored one.
-            TierEffort =
-                isTierResolved && parsed.ModelIntelligence is { } tier ? _modelResolver?.TierEffort(tier) : null,
+            // ResolveWithEffort does not climb, so the tier that picked the model is the authored one. A
+            // candidate's own "model:effort" wins over the tier's effort.
+            TierEffort = isTierResolved ? selection?.Effort : null,
         };
     }
 

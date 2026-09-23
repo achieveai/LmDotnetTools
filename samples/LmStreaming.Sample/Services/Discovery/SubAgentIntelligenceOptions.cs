@@ -11,7 +11,8 @@ internal sealed class SubAgentIntelligenceOptions
     public const string SectionName = "SubAgentIntelligence";
 
     /// <summary>
-    /// Ordered model candidates keyed by intelligence tier.
+    /// Ordered model candidates keyed by intelligence tier. Always plain model ids: a configured
+    /// <c>"model:effort"</c> candidate is split on load, its effort going to <see cref="ModelEfforts"/>.
     /// </summary>
     public Dictionary<int, string[]> Tiers { get; init; } = [];
 
@@ -22,15 +23,25 @@ internal sealed class SubAgentIntelligenceOptions
     /// </summary>
     public Dictionary<int, ReasoningEffort> Efforts { get; init; } = [];
 
+    /// <summary>
+    /// Reasoning effort for one candidate within one tier, written in configuration as
+    /// <c>"gpt-5.6-terra:xhigh"</c>. It replaces the tier's <see cref="Efforts"/> entry when that candidate
+    /// is the one the tier resolves to, so a fallback model can run at an effort that suits it rather than
+    /// the primary's. Model ids match case-insensitively.
+    /// </summary>
+    public Dictionary<int, Dictionary<string, ReasoningEffort>> ModelEfforts { get; init; } = [];
+
     internal static SubAgentIntelligenceOptions Load(IConfiguration configuration, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(logger);
 
+        var (tiers, modelEfforts) = LoadTiers(configuration, logger);
         return new SubAgentIntelligenceOptions
         {
-            Tiers = LoadTiers(configuration, logger),
+            Tiers = tiers,
             Efforts = LoadEfforts(configuration, logger),
+            ModelEfforts = modelEfforts,
         };
     }
 
@@ -85,9 +96,13 @@ internal sealed class SubAgentIntelligenceOptions
         return false;
     }
 
-    private static Dictionary<int, string[]> LoadTiers(IConfiguration configuration, ILogger logger)
+    private static (
+        Dictionary<int, string[]> Tiers,
+        Dictionary<int, Dictionary<string, ReasoningEffort>> ModelEfforts
+    ) LoadTiers(IConfiguration configuration, ILogger logger)
     {
         var tiers = new Dictionary<int, string[]>();
+        var modelEfforts = new Dictionary<int, Dictionary<string, ReasoningEffort>>();
         foreach (var entry in configuration.GetSection(SectionName).GetSection(nameof(Tiers)).GetChildren())
         {
             if (!TryParseTier(entry.Key, nameof(Tiers), logger, out var tier))
@@ -126,16 +141,40 @@ internal sealed class SubAgentIntelligenceOptions
                 continue;
             }
 
-            if (!tiers.TryAdd(tier, candidates))
+            var efforts = new Dictionary<string, ReasoningEffort>(StringComparer.OrdinalIgnoreCase);
+            var modelIds = candidates.Select(candidate => SplitEffort(candidate, efforts)).ToArray();
+
+            if (!tiers.TryAdd(tier, modelIds))
             {
                 logger.LogError(
                     "Ignoring duplicate normalized {SectionName}:Tiers key {TierKey}",
                     SectionName,
                     entry.Key
                 );
+                continue;
+            }
+
+            if (efforts.Count > 0)
+            {
+                modelEfforts[tier] = efforts;
             }
         }
 
-        return tiers;
+        return (tiers, modelEfforts);
+    }
+
+    // "gpt-5.6-terra:xhigh" -> "gpt-5.6-terra", recording xhigh. Only a suffix that names an effort is split
+    // off, so a candidate without one (or a model id that itself contains a colon) passes through whole.
+    private static string SplitEffort(string candidate, Dictionary<string, ReasoningEffort> efforts)
+    {
+        var separator = string.IsNullOrWhiteSpace(candidate) ? -1 : candidate.LastIndexOf(':');
+        if (separator <= 0 || SubAgentMarkdownParser.ParseEffortToken(candidate[(separator + 1)..]) is not { } effort)
+        {
+            return candidate;
+        }
+
+        var modelId = candidate[..separator].Trim();
+        efforts[modelId] = effort;
+        return modelId;
     }
 }

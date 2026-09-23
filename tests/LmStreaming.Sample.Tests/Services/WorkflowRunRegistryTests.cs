@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -175,6 +177,75 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             .ContainSingle("only the damaged index is moved aside")
             .Subject;
         File.ReadAllBytes(quarantined).Should().Equal(damaged);
+    }
+
+    /// <summary>
+    /// An outside process holding the index open (an antivirus or indexer scanning the file just written)
+    /// makes the replacing rename fail on Windows with access denied, not an IO error, even when the holder
+    /// allows deletion. It once escaped a loaded test run as UnauthorizedAccessException. The write is
+    /// best-effort, so that poll skips persisting, warns, and leaves the old index intact; the next poll
+    /// persists. On a platform whose rename succeeds anyway the write simply lands, and the test still
+    /// holds.
+    /// </summary>
+    [Fact]
+    public void AnIndexHeldOpenByAnotherProcess_SkipsThatPoll_AndTheNextPollPersists()
+    {
+        var logger = new CapturingLogger<WorkflowRunRegistry>();
+        var registry = new WorkflowRunRegistry(_dir, logger: logger);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            var act = () => registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+
+            act.Should().NotThrow("a failed persist must never fail the poll the caller is servicing");
+            if (OperatingSystem.IsWindows())
+            {
+                logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Warning);
+            }
+        }
+
+        Directory.GetFiles(_dir, "*.tmp-*").Should().BeEmpty("a skipped write leaves no temp file behind");
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        registry.GetPersistedTabs("t1").Select(t => t.AgentId).Should().BeEquivalentTo(["wf1", "wf2"]);
+    }
+
+    [Fact]
+    public void RepeatedPersistFailures_WarnOncePerRun_AndWarnAgainAfterARecovery()
+    {
+        // Only Windows refuses to replace a file another handle holds open, so only there can this fail.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var logger = new CapturingLogger<WorkflowRunRegistry>();
+        var registry = new WorkflowRunRegistry(_dir, logger: logger);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+        int Warnings() => logger.Entries.Count(entry => entry.Level == LogLevel.Warning);
+
+        void PersistWhileHeldOpen(int polls)
+        {
+            using var holder = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete
+            );
+            for (var poll = 0; poll < polls; poll++)
+            {
+                registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+            }
+        }
+
+        PersistWhileHeldOpen(polls: 3);
+        Warnings().Should().Be(1, "the polls that keep failing after the first are the same failure");
+
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        PersistWhileHeldOpen(polls: 1);
+        Warnings().Should().Be(2, "a failure after a successful persist starts a new run and warns again");
     }
 
     /// <summary>

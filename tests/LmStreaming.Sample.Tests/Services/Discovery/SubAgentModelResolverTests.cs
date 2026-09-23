@@ -355,7 +355,7 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
@@ -393,7 +393,7 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
@@ -412,21 +412,22 @@ public sealed class SubAgentModelResolverTests
     }
 
     [Theory]
-    [InlineData(1, "gpt-5.6-luna", ReasoningEffort.High)]
+    [InlineData(0, "gpt-6-luna", ReasoningEffort.High)]
+    [InlineData(1, "gpt-6-luna", ReasoningEffort.Xhigh)]
     [InlineData(2, "gemini-3.8-flash", ReasoningEffort.High)]
-    [InlineData(3, "gpt-5.6-terra", ReasoningEffort.Medium)]
-    [InlineData(4, "gpt-5.6-terra", ReasoningEffort.Xhigh)]
-    [InlineData(5, "gpt-5.6-sol", ReasoningEffort.High)]
+    [InlineData(3, "gpt-6-sol", ReasoningEffort.Medium)]
+    [InlineData(4, "gpt-6-sol", ReasoningEffort.High)]
+    [InlineData(5, "gpt-6-sol", ReasoningEffort.Xhigh)]
     [InlineData(6, "gpt-6-astra", ReasoningEffort.High)]
     public void Appsettings_EachTierResolvesToTheOwnerApprovedModelAndEffort(
         int tier,
         string expectedModel,
-        ReasoningEffort expectedEffort
+        ReasoningEffort? expectedEffort
     )
     {
-        // Pins the owner-approved mapping (2026-09-22) end to end: checked-in appsettings.json, the real
-        // loader and the real resolver. Tiers 3 and 4 share a model and differ only by effort, so this is
-        // also the guard that the effort map is read at all.
+        // Pins the owner-approved mapping (2026-09-23) end to end: checked-in appsettings.json, the real
+        // loader and the real resolver. Tiers 3, 4 and 5 share a model and differ only by its "model:effort"
+        // suffix, and tier 6 takes its effort from Efforts, so both effort sources are guarded here.
         var configuration = new ConfigurationBuilder()
             .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
             .Build();
@@ -437,19 +438,49 @@ public sealed class SubAgentModelResolverTests
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
-            Model("gpt-5.6-luna", CopilotModelTransport.Responses),
+            Model("gpt-6-luna", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6-sol", CopilotModelTransport.Responses),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
 
         resolver.ResolveClimbing(null, tier).Should().Be(new SubAgentTierSelection(expectedModel, expectedEffort));
     }
 
+    [Theory]
+    [InlineData(3, "gpt-5.6-terra,gemini-3.8-flash,gpt-6-astra", "gpt-5.6-terra", ReasoningEffort.High)]
+    [InlineData(3, "gemini-3.8-flash,gpt-6-astra", "gemini-3.8-flash", ReasoningEffort.Xhigh)]
+    [InlineData(4, "gpt-5.6-terra,gemini-3.8-flash,gpt-6-astra", "gpt-6-astra", ReasoningEffort.High)]
+    public void Appsettings_WithoutGpt6Sol_TierRunsItsFallbackAtThatCandidatesOwnEffort(
+        int tier,
+        string servedModels,
+        string expectedModel,
+        ReasoningEffort expectedEffort
+    )
+    {
+        // Each fallback carries its own effort ("gpt-5.6-terra:high", "gemini-3.8-flash:xhigh"), not the tier's
+        // medium. Tier 4 has no fallback, so it climbs past tier 5 (also sol) to astra at tier 6's effort.
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
+            .Build();
+        var options = SubAgentIntelligenceOptions.Load(
+            configuration,
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
+        var resolver = CreateResolver(
+            options,
+            new CapturingLogger<SubAgentModelResolver>(),
+            [.. servedModels.Split(',').Select(id => Model(id, CopilotModelTransport.Responses))]
+        );
+
+        resolver.ResolveClimbing(null, tier).Should().Be(new SubAgentTierSelection(expectedModel, expectedEffort));
+        resolver.IsKnownModel(expectedModel).Should().BeTrue("the effort suffix is not part of the sanctioned id");
+    }
+
     /// <summary>The Copilot model id this deployment reviews on today. Named once so the guard above reads
     /// as "the model in use", not as an arbitrary literal.</summary>
-    private const string InUseModelId = "gpt-5.6-luna";
+    private const string InUseModelId = "gpt-6-luna";
 
     /// <summary>The model a climb picked, or null. Model-only assertions use this so they still fail when
     /// the selection itself is null.</summary>

@@ -87,4 +87,47 @@ public sealed class CopilotChatCompletionsAgentFactoryTests
             .Equal("view", "view");
         string.Concat(messages.OfType<TextUpdateMessage>().Select(t => t.Text)).Should().StartWith("I'll read both");
     }
+
+    [Fact]
+    public void Disposing_the_agent_disposes_the_factory_built_http_pipeline_exactly_once()
+    {
+        var transport = new DisposeCountingHandler();
+        var agent = CopilotChatCompletionsAgentFactory.Create(
+            "gemini",
+            new StubTokenProvider(),
+            timeout: null,
+            session: null,
+            options: null,
+            logger: null,
+            retryOptions: null,
+            innerHandler: transport
+        );
+
+        transport.DisposeCount.Should().Be(0);
+
+        agent.Dispose();
+        agent.Dispose();
+
+        transport.DisposeCount.Should().Be(1);
+    }
+
+    private sealed class DisposeCountingHandler : HttpMessageHandler
+    {
+        public int DisposeCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("No request is expected.");
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 }

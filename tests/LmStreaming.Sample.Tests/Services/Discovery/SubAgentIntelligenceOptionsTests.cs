@@ -191,6 +191,34 @@ public sealed class SubAgentIntelligenceOptionsTests
     }
 
     [Fact]
+    public void Load_SplitsAModelEffortSuffixOffTheCandidate_AndPassesOtherColonsThrough()
+    {
+        // "model:effort" gives one candidate its own effort. Tiers must still hold the plain id, because the
+        // same lists feed the override allow-list and the Agent-tool model menu. A suffix that is not an
+        // effort is part of the id and stays.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Tiers:3:0"] = "model-a",
+                    ["SubAgentIntelligence:Tiers:3:1"] = "model-b:XHIGH",
+                    ["SubAgentIntelligence:Tiers:4:0"] = "family:8b",
+                }
+            )
+            .Build();
+        var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
+
+        var options = SubAgentIntelligenceOptions.Load(configuration, logger);
+
+        options.Tiers[3].Should().Equal("model-a", "model-b");
+        options.Tiers[4].Should().Equal("family:8b");
+        options.ModelEfforts.Should().ContainSingle().Which.Key.Should().Be(3);
+        options.ModelEfforts[3].Should().ContainSingle();
+        options.ModelEfforts[3]["MODEL-B"].Should().Be(ReasoningEffort.Xhigh, "model ids match case-insensitively");
+        logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Error);
+    }
+
+    [Fact]
     public void Load_WithoutAnEffortsSectionLeavesEveryTierWithoutEffort()
     {
         var configuration = new ConfigurationBuilder()

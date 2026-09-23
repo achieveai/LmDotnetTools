@@ -81,6 +81,37 @@ public class OpenClientHttpTests : LoggingTestBase
         Assert.Contains("Base URL must be a valid HTTP or HTTPS URL", exception.Message);
     }
 
+    [Fact]
+    public void Dispose_WithInjectedHttpClientByDefault_ShouldNotDisposeTheClient()
+    {
+        // Arrange
+        var handler = new DisposeCountingHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger);
+
+        // Act
+        client.Dispose();
+
+        // Assert: the injected client still belongs to its owner.
+        Assert.Equal(0, handler.DisposeCount);
+    }
+
+    [Fact]
+    public void PublishedFiveParameterHttpClientConstructor_StillExists()
+    {
+        // Callers compiled against the published signature bind to it by exact parameter list; an optional
+        // parameter added to it would change that list and make them fail with MissingMethodException.
+        var constructor = typeof(OpenClient).GetConstructor([
+            typeof(HttpClient),
+            typeof(string),
+            typeof(IPerformanceTracker),
+            typeof(ILogger),
+            typeof(RetryOptions),
+        ]);
+
+        Assert.NotNull(constructor);
+    }
+
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
@@ -306,5 +337,25 @@ public class OpenClientHttpTests : LoggingTestBase
     private static string GetApiBaseUrl()
     {
         return "http://test-mode/v1";
+    }
+
+    private sealed class DisposeCountingHandler : HttpMessageHandler
+    {
+        public int DisposeCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("No request is expected.");
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }

@@ -83,11 +83,14 @@ All USD per million tokens. Verified 2026-09-02 against the vendor page. Re-veri
 | `claude-sonnet-4-20250514` | `claude-sonnet-4` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5`, `claude-sonnet-4.5` (the `copilot` provider's default when `COPILOT_MODEL` is unset) | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 
-Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
+Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18; `gpt-6-sol`, `gpt-6-luna` and `gemini-3.8-flash` 2026-09-23). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
 
 | Model id | Aliases | Input | Cache read | Cache write 5m | Cache write 1h | Output | Accounting | Source |
 |---|---|---|---|---|---|---|---|---|
 | `gpt-6-astra` | — | 10.00 | 1.00 | — | — | 50.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-6-sol` | — | 2.00 | 0.20 | — | — | 10.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-6-luna` | — | 0.10 | 0.01 | — | — | 0.50 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gemini-3.8-flash` | — | 0.75 | 0.075 | — | — | 3.75 | SubsetOfInput | https://ai.google.dev/gemini-api/docs/pricing |
 | `gpt-5.6-sol` | — | 4.00 | 0.40 | — | — | 20.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-terra` | — | 2.00 | 0.20 | — | — | 12.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-luna` | — | 0.20 | 0.02 | — | — | 1.20 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
@@ -99,6 +102,8 @@ Copilot-served ids, priced at the vendor's retail API list price as a public-equ
 | `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
+- OpenAI lists cache writes for the GPT-6 family at 1.25x input (`gpt-6-astra` 12.50, `gpt-6-sol` 2.50, `gpt-6-luna` 0.125). They are not in the catalog. `UsageRecordMapper` reads cache writes only from Anthropic's `cache_creation_input_tokens`, so an OpenAI rate would never apply. If OpenAI usage starts reporting cache writes, those tokens already sit inside the prompt count under SubsetOfInput, so only the 0.25x surcharge would be missing; a full 1.25x rate would double-bill them.
+- `gemini-3.8-flash`'s rate is promotional through 2026-12-31. From 2027-01-01 Google lists 1.50 input, 0.15 cache read and 7.50 output. Re-verify then.
 - OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 196K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.
 - `claude-fable-5-1` cache hits are 0.025x input, not the usual 0.1x (Anthropic's footnote).
