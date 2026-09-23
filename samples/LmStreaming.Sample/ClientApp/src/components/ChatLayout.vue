@@ -18,7 +18,9 @@ import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
 import QuestionInbox from './QuestionInbox.vue';
+import QuestionToast from './QuestionToast.vue';
 import { useQuestionInbox, type QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { PendingQuestionEvent } from '@/api/eventsWsClient';
 import ConversationInspector from './ConversationInspector.vue';
 import PanelSplitter from './PanelSplitter.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
@@ -38,6 +40,8 @@ import {
   type AgentRoutingLookup,
 } from '@/utils/agentColors';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
+import { IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
+import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import { GET_CHECKPOINT_STATE, type CheckpointStateLookup } from '@/composables/messageDisplay';
 import ModeSelector from './ModeSelector.vue';
@@ -46,7 +50,6 @@ import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
-import FileBrowserModal from './FileBrowserModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
 import HeaderActionsMenu from './HeaderActionsMenu.vue';
 
@@ -145,6 +148,7 @@ const {
   markStreamLoading,
   getResultForToolCall,
   hasPendingClientQuestion,
+  isQuestionAnswered,
   submitClientToolResult,
   threadId: chatThreadId,
 } = useChat({
@@ -247,6 +251,7 @@ const {
   sendToFocusedChild,
   submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
+  isQuestionAnswered: isSubAgentQuestionAnswered,
   refreshChildren: refreshSubAgentChildren,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
@@ -414,7 +419,39 @@ function handleSubAgentSend(text: string): void {
   sendToFocusedChild(text);
 }
 
-const questionInbox = useQuestionInbox(() => currentThreadId.value);
+/**
+ * The question a toast is currently announcing, or null. Identified by (root, tool call) rather
+ * than by an inbox key so nothing here has to re-derive the inbox's key composition; `reviewToastQuestion`
+ * looks the entry back up and reuses `openInboxQuestion`.
+ */
+const toastQuestion = ref<{
+  rootThreadId: string;
+  toolCallId: string;
+  source: string;
+  prompt: string;
+} | null>(null);
+
+/**
+ * Announce a question that has just parked SOMEWHERE ELSE. Called once per genuinely new question
+ * pushed over `/ws/events` — never from a poll and never from a reconnect's snapshot, so a dropped
+ * socket does not re-toast what the user has already seen.
+ *
+ * A question in the conversation on screen is deliberately silent: `PendingQuestionDock` already
+ * has it, and a toast over the form the user is looking at is noise.
+ */
+function announceRemoteQuestion(question: PendingQuestionEvent): void {
+  if (question.rootThreadId === currentThreadId.value) return;
+  toastQuestion.value = {
+    rootThreadId: question.rootThreadId,
+    toolCallId: question.toolCallId,
+    source: `${question.conversationTitle || 'Conversation'} · ${question.agentName || (question.agentId ? 'Agent' : 'Main agent')}`,
+    prompt: question.prompt,
+  };
+}
+
+const questionInbox = useQuestionInbox(() => currentThreadId.value, {
+  onQuestionRaised: announceRemoteQuestion,
+});
 const questionInboxEntries = computed(() => questionInbox.entries.value.map((entry) => ({
   ...entry,
   agentName: entry.agentName || 'Main agent',
@@ -468,7 +505,7 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
     }
     await nextTick();
     const result = entry.agentId ? getSubAgentResultForToolCall(entry.toolCallId) : getResultForToolCall(entry.toolCallId);
-    if (!result?.is_deferred) {
+    if (!isQuestionAwaitingAnswer(result, entry.agentId ? isSubAgentQuestionAnswered : isQuestionAnswered)) {
       questionNavigationError.value = 'This question is no longer waiting for an answer.';
       void questionInbox.refresh();
       return;
@@ -485,10 +522,59 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
   }
 }
 
+/**
+ * The toast's Review button: the same destination as the "elsewhere" row, so navigation, the
+ * "no longer waiting" guard and the error surface all stay in one place.
+ */
+function reviewToastQuestion(): void {
+  const target = toastQuestion.value;
+  toastQuestion.value = null;
+  if (!target) return;
+  const entry = questionInbox.entries.value.find(
+    (candidate) =>
+      candidate.rootThreadId === target.rootThreadId && candidate.toolCallId === target.toolCallId
+  );
+  if (entry) void openInboxQuestion(entry);
+}
+
 function selectInboxQuestion(key: string): void {
   const entry = questionInbox.entries.value.find((candidate) => candidate.key === key);
   if (entry) void openInboxQuestion(entry);
 }
+
+/**
+ * Questions raised somewhere OTHER than the conversation on screen (BUG 8). `useQuestionInbox`
+ * already sweeps every conversation and every readable child, but the only thing that surfaced a
+ * remote one was the header icon's count — which the user misses — because both the automatic open
+ * below and `PendingQuestionDock` are scoped to the current conversation by construction.
+ *
+ * Deliberately a notice and not an automatically opened form: answering resolves a deferred client
+ * tool over THAT conversation's socket, so opening the form means navigating there, and doing that
+ * unasked would drag the user out of whatever they were reading. Review is one click away and the
+ * label says exactly which conversation and which agent is waiting.
+ */
+const questionsElsewhere = computed(() =>
+  questionInbox.entries.value
+    .filter((entry) => entry.rootThreadId !== currentThreadId.value)
+    .map((entry) => ({
+      key: entry.key,
+      source: `${entry.conversationTitle || 'Conversation'} · ${entry.agentName || 'Main agent'}`,
+      prompt: entry.prompt,
+    }))
+);
+
+// Retire the toast as soon as its question stops being a REMOTE pending one: settled anywhere (it
+// leaves `entries`), or the user moved into that conversation, where the dock owns it. Without this
+// the notice outlives the thing it announces.
+watch([questionInbox.entries, currentThreadId], () => {
+  const target = toastQuestion.value;
+  if (!target) return;
+  const stillWaiting = questionInbox.entries.value.some(
+    (candidate) =>
+      candidate.rootThreadId === target.rootThreadId && candidate.toolCallId === target.toolCallId
+  );
+  if (!stillWaiting || target.rootThreadId === currentThreadId.value) toastQuestion.value = null;
+});
 
 watch([questionInbox.entries, currentThreadId, questionOpen, questionBusy], () => {
   if (questionOpen.value || questionBusy.value || questionNavigating.value || document.visibilityState === 'hidden') return;
@@ -503,6 +589,7 @@ watch(questionScope, () => { questionOpen.value = false; questionBusy.value = fa
 // Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
 // shadows this with the child's own resolver for its subtree.
 provide('getResultForToolCall', getResultForToolCall);
+provide(IS_QUESTION_ANSWERED, isQuestionAnswered);
 // Provide the client-tool submit function (#246, e.g. AskUserQuestion) so a descendant question
 // component can resolve a deferred tool call over the shared WebSocket without prop-drilling
 // through MessageList/SubAgentTranscript.
@@ -613,13 +700,13 @@ const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
-const fileBrowserModalOpen = ref(false);
 const shareModalOpen = ref(false);
 const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
-const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'files' | 'share' | null>(null);
+const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'share' | null>(null);
 const inspectorOpen = ref(false);
-const inspectorSection = ref<'work' | 'agents'>('work');
+const inspectorSection = ref<'work' | 'files' | 'agents'>('work');
 const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
+const inspectorRef = ref<InstanceType<typeof ConversationInspector> | null>(null);
 let inspectorInitialized = false;
 
 function openInspector(): void {
@@ -663,25 +750,30 @@ function closeMarketplaceModal(): void {
   restoreHeaderActionsFocus('marketplace');
 }
 
-function closeFileBrowserModal(): void {
-  fileBrowserModalOpen.value = false;
-  restoreHeaderActionsFocus('files');
-}
-
 function closeShareModal(): void {
   shareModalOpen.value = false;
   restoreHeaderActionsFocus('share');
 }
 
-function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+function openHeaderActionModal(modal: 'marketplace' | 'egress' | 'share'): void {
   modalOpenedFromHeaderActions.value = modal;
   if (modal === 'marketplace') marketplaceModalOpen.value = true;
   else if (modal === 'egress') egressAuthModalOpen.value = true;
-  else if (modal === 'files') fileBrowserModalOpen.value = true;
   else shareModalOpen.value = true;
 }
 
-function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'files' | 'share'): void {
+/**
+ * "More > Files" is no longer a modal: it opens the right panel and reveals its Files disclosure,
+ * which is where the browser now lives. Focus therefore lands on that disclosure rather than being
+ * restored to the More trigger (there is nothing to close and come back from).
+ */
+function openFilesPanel(): void {
+  inspectorOpen.value = true;
+  modalOpenedFromHeaderActions.value = null;
+  void nextTick(() => inspectorRef.value?.revealSection('files'));
+}
+
+function restoreHeaderActionsFocus(modal: 'marketplace' | 'egress' | 'share'): void {
   if (modalOpenedFromHeaderActions.value !== modal) return;
   modalOpenedFromHeaderActions.value = null;
   void nextTick(() => headerActionsMenuRef.value?.focusTrigger());
@@ -1256,6 +1348,7 @@ onBeforeUnmount(() => {
       <div v-if="!focusMode" class="app-header-right">
         <QuestionInbox :entries="questionInboxEntries" :refreshing="questionInbox.isRefreshing.value"
           :error="questionInbox.error.value" :disabled="questionBusy || questionNavigating"
+          :elsewhere="questionsElsewhere.length"
           @select="selectInboxQuestion" @refresh="questionInbox.refresh()" />
         <HeaderActionsMenu
           ref="headerActionsMenuRef"
@@ -1264,7 +1357,7 @@ onBeforeUnmount(() => {
           :clear-disabled="chatLoading"
           @open-marketplaces="openHeaderActionModal('marketplace')"
           @open-egress="openHeaderActionModal('egress')"
-          @open-files="openHeaderActionModal('files')"
+          @open-files="openFilesPanel"
           @open-share="openHeaderActionModal('share')"
           @clear="clearMessages"
         />
@@ -1352,12 +1445,6 @@ onBeforeUnmount(() => {
           @close="handleCloseEgressModal"
         />
 
-        <FileBrowserModal
-          v-if="fileBrowserModalOpen"
-          :thread-id="currentThreadId"
-          @close="closeFileBrowserModal"
-        />
-
         <!--
           Gated on a thread id rather than accepting null: every share route is addressed by
           thread, so with no conversation open there is nothing to share and nothing to list.
@@ -1386,6 +1473,28 @@ onBeforeUnmount(() => {
           :pending-question-agent-ids="pendingQuestionAgentIds"
           @select="selectTab"
         />
+
+        <!-- Questions waiting in OTHER conversations (BUG 8). Above the tab views, so it is on
+             screen whichever conversation and whichever tab the user is in. -->
+        <div v-if="questionsElsewhere.length" class="elsewhere-questions" data-testid="elsewhere-question-dock">
+          <div v-for="question in questionsElsewhere" :key="question.key" class="elsewhere-question">
+            <svg class="elsewhere-question__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.8 9a2.3 2.3 0 1 1 3.5 2c-.8.5-1.3 1-1.3 2" />
+              <path d="M12 16.8h.01" />
+            </svg>
+            <span class="elsewhere-question__copy">
+              <span class="elsewhere-question__source">
+                <strong>Needs your answer</strong> · {{ question.source }}
+              </span>
+              <span class="elsewhere-question__prompt">{{ question.prompt }}</span>
+            </span>
+            <button type="button" class="elsewhere-question__review" data-testid="elsewhere-question-review"
+              :disabled="questionBusy || questionNavigating" @click="selectInboxQuestion(question.key)">
+              Review
+            </button>
+          </div>
+        </div>
 
         <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
              tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
@@ -1507,6 +1616,7 @@ onBeforeUnmount(() => {
           :is-streaming="isFocusedStreaming"
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
+          :is-question-answered="isSubAgentQuestionAnswered"
           :submit-client-tool-result="submitToFocusedChild"
           :view-preference="viewPreference"
           @send="handleSubAgentSend"
@@ -1523,6 +1633,7 @@ onBeforeUnmount(() => {
     />
     <ConversationInspector
       v-if="!focusMode"
+      ref="inspectorRef"
       :open="inspectorOpen"
       :active-section="inspectorSection"
       :desktop-width="renderedInspectorWidth"
@@ -1536,6 +1647,7 @@ onBeforeUnmount(() => {
       :has-work="hasTodoBoard"
       :children="subAgentChildren"
       :active-conversation-tab-id="activeTabId"
+      :files-thread-id="subAgentParentThreadId"
       external-close-control-id="conversation-inspector-toggle"
       @close="closeInspector"
       @select-section="inspectorSection = $event"
@@ -1557,11 +1669,30 @@ onBeforeUnmount(() => {
       </template>
     </ConversationInspector>
     </div>
+
+    <!-- Transient arrival notice for a question parked in ANOTHER conversation. The header count and
+         the elsewhere row still hold it after this expires; this is what makes the arrival land. -->
+    <QuestionToast
+      v-if="toastQuestion"
+      :key="`${toastQuestion.rootThreadId}:${toastQuestion.toolCallId}`"
+      :source="toastQuestion.source"
+      :prompt="toastQuestion.prompt"
+      @review="reviewToastQuestion"
+      @dismiss="toastQuestion = null"
+    />
   </div>
 </template>
 
 <style scoped>
 .question-navigation-error { margin: 8px 16px; padding: 10px 12px; color: #795719; background: #fff8ed; border-radius: 6px; font-size: 13px; }
+.elsewhere-questions { display: flex; flex-direction: column; gap: 6px; margin: 8px 16px 0; }
+.elsewhere-question { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #c3d3e9; border-radius: 8px; background: #edf3fc; color: #315c92; }
+.elsewhere-question__icon { flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.elsewhere-question__copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 13px; }
+.elsewhere-question__source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.elsewhere-question__prompt { overflow: hidden; color: #4a5b70; text-overflow: ellipsis; white-space: nowrap; }
+.elsewhere-question__review { flex: 0 0 auto; margin-left: auto; padding: 5px 10px; border: 1px solid #b3c6de; border-radius: 6px; background: #fff; color: #315c92; font: inherit; cursor: pointer; }
+.elsewhere-question__review:disabled { cursor: default; opacity: .55; }
 .chat-layout {
   position: relative;
   display: flex;

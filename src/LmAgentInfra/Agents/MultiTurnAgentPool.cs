@@ -132,6 +132,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <c>CallerCredential</c> deliberately: a factory that must scope observation to the calling
     /// owner has both halves of that decision in one place.
     /// </para>
+    /// <para>
+    /// <c>Existing</c> is the conversation's LIVE agent and its current configuration, present only on
+    /// a mode/provider switch that found one pooled. It is the factory's opportunity to serve the
+    /// switch without a teardown: see <see cref="AgentSwitchContext"/>. It is an init-only property
+    /// rather than a positional parameter so the positional constructor and <c>Deconstruct</c> keep
+    /// the CLR shape published in 1.0.x (a second positional overload would make every call that
+    /// omits the trailing optionals ambiguous).
+    /// </para>
     /// </summary>
     public sealed record AgentCreationContext(
         string ThreadId,
@@ -141,7 +149,78 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string? WorkspaceId,
         SandboxCredential? CallerCredential = null,
         MultiTurnLifecycleServices? LifecycleServices = null
+    )
+    {
+        /// <summary>
+        /// The conversation's live agent and its current configuration on a mode/provider switch;
+        /// <c>null</c> on first creation and on a recreate after eviction.
+        /// </summary>
+        public AgentSwitchContext? Existing { get; init; }
+    }
+
+    /// <summary>
+    /// The conversation's live agent, offered to the factory on a mode/provider switch so it can
+    /// reconfigure that agent instead of building a replacement.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The factory answers by what it RETURNS: hand <see cref="Agent"/> back in the
+    /// <see cref="AgentCreationResult"/> and the pool keeps the live entry — its run loop, its input
+    /// queue and every accepted-but-unstarted turn on it; return anything else and the pool recreates
+    /// exactly as it always has. The pool deliberately does not test the agent for a "reconfigurable"
+    /// interface: whether a particular switch can be served in place depends on the arms involved
+    /// (a CLI-backed provider cannot become an API-backed one by reassignment), which only the factory
+    /// knows.
+    /// </para>
+    /// <para>
+    /// <c>Existing</c> is null for a first creation and for a switch on a thread whose entry has been
+    /// evicted, which is why every consumer must handle its absence rather than assume a switch is
+    /// always offered one.
+    /// </para>
+    /// </remarks>
+    /// <param name="Agent">The live pooled agent.</param>
+    /// <param name="Mode">The mode it is currently configured for.</param>
+    /// <param name="ProviderId">The provider it is currently configured for.</param>
+    /// <param name="Resources">
+    /// What the previous configuration published as reusable, by its own stable key (empty when it
+    /// published none). Returning an entry of this map under the same key in the new
+    /// <see cref="AgentCreationResult.ReusableResources"/> is what keeps that instance alive; leaving
+    /// it out is what ends it.
+    /// </param>
+    /// <param name="IsBusy">
+    /// Whether a run is executing right now (<see cref="IsRunInProgress"/>, not the accepted-input
+    /// ledger). A queued turn is NOT busy: it survives an in-place switch and runs under the new
+    /// configuration, which is the whole reason a factory may refuse the busy case
+    /// (<see cref="AgentBusyException"/>) without refusing the queued one.
+    /// </param>
+    public sealed record AgentSwitchContext(
+        IMultiTurnAgent Agent,
+        AgentProfile Mode,
+        string ProviderId,
+        IReadOnlyDictionary<string, IAsyncDisposable> Resources,
+        bool IsBusy
     );
+
+    /// <summary>Which of the two branches a mode/provider switch actually took.</summary>
+    public enum AgentSwitchKind
+    {
+        /// <summary>
+        /// The factory handed the live agent back and the pool reconfigured its entry. The agent, its
+        /// run loop, its queued turns and everything it owns are the same objects they were.
+        /// </summary>
+        ReconfiguredInPlace,
+
+        /// <summary>
+        /// The factory built a new agent; the pool swapped it in and disposed the old entry. In-flight
+        /// and queued work on the old agent is gone with it.
+        /// </summary>
+        Recreated,
+    }
+
+    /// <summary>The agent a switch left the thread with, and how it got there.</summary>
+    /// <param name="Agent">The thread's pooled agent after the switch.</param>
+    /// <param name="Kind">Which branch ran — the fact a caller needs to decide what to warn about.</param>
+    public sealed record AgentSwitchResult(IMultiTurnAgent Agent, AgentSwitchKind Kind);
 
     /// <summary>
     /// Result from the agent factory, including the agent and any owned resources
@@ -168,6 +247,26 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         /// the read path a reference to the RUNNING instance instead of a discarded one.
         /// </summary>
         public ITodoBoardSource? TodoBoard { get; init; }
+
+        /// <summary>
+        /// The resources this configuration wants OFFERED BACK on a later mode/provider switch, under
+        /// stable keys of the factory's own choosing — a sandbox MCP client, a workflow manager, a
+        /// hosted search session. Null when the factory keeps none.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Independent of <see cref="OwnedResources"/>, and not a replacement for it: owned resources
+        /// are "dispose these with the agent", these are "hand these to whoever configures this
+        /// conversation next". A resource that is both may appear in both.
+        /// </para>
+        /// <para>
+        /// The pool never decides what should survive a switch. It disposes whatever the OLD entry held
+        /// (owned or reusable) that is not, by reference, in the NEW result — so a factory keeps an
+        /// instance alive by returning it and ends it by leaving it out. Keeping a tool alive but hidden
+        /// from the model across a switch is therefore expressible, and is the factory's call to make.
+        /// </para>
+        /// </remarks>
+        public IReadOnlyDictionary<string, IAsyncDisposable>? ReusableResources { get; init; }
     }
 
     /// <summary>
@@ -227,18 +326,32 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         /// <summary>The thread this entry serves, for naming it in a failed-drain report.</summary>
         public required string ThreadId { get; init; }
-        public required AgentProfile Mode { get; init; }
-        public required string ProviderId { get; init; }
+
+        /// <inheritdoc cref="ApplySwitchedConfiguration" />
+        public required AgentProfile Mode { get; set; }
+
+        /// <inheritdoc cref="ApplySwitchedConfiguration" />
+        public required string ProviderId { get; set; }
         public string? WorkspaceId { get; init; }
         public string? RequestResponseDumpFileName { get; init; }
-        public IReadOnlyList<IAsyncDisposable>? OwnedResources { get; init; }
+
+        /// <inheritdoc cref="ApplySwitchedConfiguration" />
+        public IReadOnlyList<IAsyncDisposable>? OwnedResources { get; set; }
+
+        /// <summary>
+        /// What the current configuration published for reuse by the next one, by stable key — see
+        /// <see cref="AgentCreationResult.ReusableResources"/>. Disposed with the entry, after
+        /// <see cref="OwnedResources"/> and de-duplicated against it.
+        /// </summary>
+        /// <inheritdoc cref="ApplySwitchedConfiguration" path="/remarks" />
+        public IReadOnlyDictionary<string, IAsyncDisposable>? ReusableResources { get; set; }
 
         /// <summary>
         /// This conversation's live todo board, or <c>null</c> when the agent ships no task tooling.
         /// Not owned by the entry and never disposed through it: the board is plain in-memory state
         /// belonging to the tool instance in the agent's function registry, and it dies with the entry.
         /// </summary>
-        public ITodoBoardSource? TodoBoard { get; init; }
+        public ITodoBoardSource? TodoBoard { get; set; }
 
         /// <summary>
         /// The sandbox credential of the caller that created this thread's agent — <c>null</c> for
@@ -267,7 +380,42 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         /// per-thread lock. A mode switch either restages a fresh binding (workspace target) or stages none
         /// (non-workspace target, leaving the prior binding untouched).
         /// </summary>
-        public SandboxEstablishedBinding? EstablishedBinding { get; init; }
+        public SandboxEstablishedBinding? EstablishedBinding { get; set; }
+
+        /// <summary>
+        /// Moves this LIVE entry onto a new mode/provider configuration, without touching the agent,
+        /// its run task, its cancellation source or its accepted-input ledger.
+        /// </summary>
+        /// <param name="mode">The mode switched to.</param>
+        /// <param name="providerId">The provider switched to.</param>
+        /// <param name="result">What the factory returned for the switch.</param>
+        /// <remarks>
+        /// <para>
+        /// The entry is MUTATED rather than replaced, because it is its own identity: it is what a
+        /// handoff's <see cref="AgentHandoffState.EntryToken"/> names, what the sandbox refresh
+        /// compares by reference, and where the accepted-but-unstarted input ids live. A copy would
+        /// reset that ledger and silently invalidate a decision another caller took about the very same
+        /// agent a moment earlier - for a switch that changed nothing about which agent is pooled.
+        /// </para>
+        /// <para>
+        /// Only the mode/provider-dependent half moves. The todo board and the established binding are
+        /// carried forward when the factory staged neither, because the agent still holds the same
+        /// board and the same sandbox session: staging nothing is "unchanged", not "gone".
+        /// </para>
+        /// <para>
+        /// Called only under the pool's per-thread lock, which is what every other write to this entry
+        /// already takes.
+        /// </para>
+        /// </remarks>
+        public void ApplySwitchedConfiguration(AgentProfile mode, string providerId, AgentCreationResult result)
+        {
+            Mode = mode;
+            ProviderId = providerId;
+            OwnedResources = result.OwnedResources;
+            ReusableResources = result.ReusableResources;
+            TodoBoard = result.TodoBoard ?? TodoBoard;
+            EstablishedBinding = result.StagedBinding ?? EstablishedBinding;
+        }
 
         /// <summary>
         /// The accepted-input ledger (#418): the ids of inputs this entry's agent has accepted and
@@ -365,23 +513,38 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 Logger.LogWarning(ex, "Agent run task for thread {ThreadId} ended in a fault", ThreadId);
             }
 
-            if (OwnedResources != null)
+            // Owned first, then anything the configuration published for reuse that is not already an
+            // owned one. The de-duplication is by REFERENCE and not by key: a factory is free to list
+            // the same instance in both collections (owned by this agent AND offered to the next
+            // configuration), and disposing it twice is a contract violation this entry would be the
+            // one committing.
+            var disposed = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            foreach (var resource in EnumerateResources())
             {
-                foreach (var resource in OwnedResources)
+                if (!disposed.Add(resource))
                 {
-                    try
-                    {
-                        await resource.DisposeAsync();
-                    }
-                    catch
-                    {
-                        // Ignore cleanup errors for owned resources
-                    }
+                    continue;
+                }
+
+                try
+                {
+                    await resource.DisposeAsync();
+                }
+                catch
+                {
+                    // Ignore cleanup errors for owned resources
                 }
             }
 
             Cts.Dispose();
         }
+
+        /// <summary>
+        /// Everything this entry holds that is disposable, owned resources first. Shared with the
+        /// switch path, which subtracts the survivors from it to find what a reconfiguration dropped.
+        /// </summary>
+        public IEnumerable<IAsyncDisposable> EnumerateResources() =>
+            (OwnedResources ?? []).Concat(ReusableResources?.Values ?? []);
     }
 
     /// <summary>
@@ -1122,9 +1285,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <summary>
     /// Returns true when the pooled agent for <paramref name="threadId"/> currently has an armed,
     /// unresolved <c>Wait</c> — i.e. a deferred tool call named <see cref="WaitToolProvider.WaitToolName"/>.
-    /// A mode/provider switch recreates the agent (discarding its trigger runtime), so callers use this
-    /// to warn that a pending wait will be lost. Returns false when no agent is pooled or the pooled
-    /// agent type does not expose deferred-call inspection (e.g. a CLI-backed loop).
+    /// A mode/provider switch the factory serves in place keeps the trigger runtime, so the wait
+    /// survives; only a switch that recreates the agent discards it, and callers use this together
+    /// with <see cref="AgentSwitchResult.Kind"/> to warn that a pending wait was lost. Returns false
+    /// when no agent is pooled or the pooled agent type does not expose deferred-call inspection
+    /// (e.g. a CLI-backed loop).
     /// </summary>
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -1414,6 +1579,27 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             throw new PrincipalConflictException(threadId, entry.OwnerUserId, ownerUserId);
         }
     }
+
+    /// <summary>
+    /// The run task the pool started for <paramref name="threadId"/>, or null when nothing is pooled.
+    /// </summary>
+    /// <remarks>
+    /// Internal and test-only. "The in-place branch did not restart the run loop" is a fact about the
+    /// task OBJECT — a new task parked on a new token is indistinguishable from the old one through
+    /// every public surface — and no production caller has any business holding it.
+    /// </remarks>
+    internal Task? GetRunTaskForTest(string threadId) =>
+        _agents.TryGetValue(threadId, out var entry) ? entry.RunTask : null;
+
+    /// <summary>
+    /// The keyed resources the entry's current configuration offered back for reuse, or empty. A test
+    /// proves a switch kept a conversation-owned tool by finding the SAME instance under the same key
+    /// afterwards; the factory's own logs say "reused" but a log line is not an identity.
+    /// </summary>
+    internal IReadOnlyDictionary<string, IAsyncDisposable> GetReusableResourcesForTest(string threadId) =>
+        _agents.TryGetValue(threadId, out var entry)
+            ? entry.ReusableResources ?? NoReusableResources
+            : NoReusableResources;
 
     private static bool IsEntryInProgress(AgentEntry entry)
     {
@@ -1992,12 +2178,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// app-only caller. Validated against the user the conversation was frozen to at creation; the
     /// frozen owner itself is preserved across the swap - this parameter only authorizes the switch.
     /// </param>
-    /// <returns>The new agent for this thread</returns>
+    /// <returns>The thread's agent after the switch, and which branch produced it</returns>
     /// <exception cref="SandboxCredentialConflictException">
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
     /// conversation is bound to.
     /// </exception>
-    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(
+    public async Task<AgentSwitchResult> SwitchModeAsync(
         string threadId,
         AgentProfile mode,
         SandboxCredential? callerCredential = null,
@@ -2009,7 +2195,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         ArgumentNullException.ThrowIfNull(mode);
 
         _logger.LogInformation(
-            "Recreating agent for thread {ThreadId} with mode {ModeId} ({ModeName})",
+            "Switching agent for thread {ThreadId} to mode {ModeId} ({ModeName})",
             threadId,
             mode.Id,
             mode.Name
@@ -2021,7 +2207,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         var resolvedProviderId = ResolveProviderId(threadId, requestedProviderId: null);
         var resolvedWorkspaceId = ResolveWorkspaceId(threadId, requestedWorkspaceId: null);
 
-        var entry = await SwapAgentUnderLockAsync(
+        var switched = await SwapAgentUnderLockAsync(
             threadId,
             mode,
             resolvedProviderId,
@@ -2032,10 +2218,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         );
 
         // A mode switch is deliberate and mutable: overwrite the persisted mode so a later refresh
-        // restores the switched-to mode (provider/workspace are untouched by a mode switch).
+        // restores the switched-to mode (provider/workspace are untouched by a mode switch). Both
+        // branches persist: an in-place switch changes the conversation's mode just as thoroughly as a
+        // recreate does, it simply does not change which object serves it.
         await PersistModeAsync(threadId, mode.Id);
 
-        return entry.Agent;
+        return switched;
     }
 
     /// <summary>
@@ -2062,12 +2250,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// app-only caller. Validated against the user the conversation was frozen to at creation; the
     /// frozen owner itself is preserved across the swap - this parameter only authorizes the switch.
     /// </param>
-    /// <returns>The new agent for this thread</returns>
+    /// <returns>The thread's agent after the switch, and which branch produced it</returns>
     /// <exception cref="SandboxCredentialConflictException">
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
     /// conversation is bound to.
     /// </exception>
-    public async Task<IMultiTurnAgent> RecreateAgentWithProviderAsync(
+    public async Task<AgentSwitchResult> SwitchProviderAsync(
         string threadId,
         string newProviderId,
         AgentProfile currentMode,
@@ -2085,7 +2273,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         EnsureAvailableOrThrow(newProviderId, source: "requested");
 
         _logger.LogInformation(
-            "Recreating agent for thread {ThreadId} with provider {ProviderId} (mode {ModeId} preserved)",
+            "Switching agent for thread {ThreadId} to provider {ProviderId} (mode {ModeId} preserved)",
             threadId,
             newProviderId,
             currentMode.Id
@@ -2095,7 +2283,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         // the lock to avoid blocking other threadIds on file I/O.
         var resolvedWorkspaceId = ResolveWorkspaceId(threadId, requestedWorkspaceId: null);
 
-        var entry = await SwapAgentUnderLockAsync(
+        var switched = await SwapAgentUnderLockAsync(
             threadId,
             currentMode,
             newProviderId,
@@ -2106,11 +2294,41 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         );
 
         // A provider switch is deliberate and mutable: overwrite the persisted provider so a later
-        // refresh restores it (mode/workspace untouched).
+        // refresh restores it (mode/workspace untouched). Persisted on both branches, for the same
+        // reason the mode is.
         await PersistProviderAsync(threadId, newProviderId);
 
-        return entry.Agent;
+        return switched;
     }
+
+    /// <summary>
+    /// <see cref="SwitchModeAsync"/> returning only the resulting agent. Kept for 1.0.x source and
+    /// binary compatibility: the name is historical — since the in-place switch the agent returned
+    /// may be the very instance the thread already had. New callers use <see cref="SwitchModeAsync"/>,
+    /// which also reports which branch ran.
+    /// </summary>
+    /// <inheritdoc cref="SwitchModeAsync"/>
+    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(
+        string threadId,
+        AgentProfile mode,
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
+    ) => (await SwitchModeAsync(threadId, mode, callerCredential, ownerUserId)).Agent;
+
+    /// <summary>
+    /// <see cref="SwitchProviderAsync"/> returning only the resulting agent. Kept for 1.0.x source and
+    /// binary compatibility: the name is historical — since the in-place switch the agent returned
+    /// may be the very instance the thread already had. New callers use
+    /// <see cref="SwitchProviderAsync"/>, which also reports which branch ran.
+    /// </summary>
+    /// <inheritdoc cref="SwitchProviderAsync"/>
+    public async Task<IMultiTurnAgent> RecreateAgentWithProviderAsync(
+        string threadId,
+        string newProviderId,
+        AgentProfile currentMode,
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
+    ) => (await SwitchProviderAsync(threadId, newProviderId, currentMode, callerCredential, ownerUserId)).Agent;
 
     /// <summary>
     /// Swaps a thread's pooled agent for a freshly-built one under the per-thread creation lock,
@@ -2125,32 +2343,53 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>A switch discards in-flight work, deliberately, and that includes an accepted-but-unstarted
-    /// input.</b> This is the third place the "does the entry have work in hand?" question could be
-    /// asked (the other two - the grantee handoff and the sandbox session refresh - both ask it and
-    /// both refuse). This one does not ask: it builds the replacement, swaps it in and disposes the
-    /// old entry, and the old agent's input channel goes with it.
+    /// <b>There are two branches, and the factory picks.</b> It is handed the live agent
+    /// (<see cref="AgentSwitchContext"/>) and either hands that same instance back — the conversation
+    /// keeps its agent, its run loop and everything it owns, and only the mode/provider-dependent
+    /// configuration moves — or builds a replacement, which is the construct-before-evict path below.
+    /// The pool does not judge which is possible; it recognises the answer by reference and reports it
+    /// as <see cref="AgentSwitchResult.Kind"/>.
     /// </para>
     /// <para>
-    /// That is a decision rather than an oversight, and the reason is the kind of caller. A handoff
-    /// and a session refresh are INCIDENTAL to the person whose turn is queued - another actor, or
-    /// infrastructure - so silently dropping their turn is a loss they neither asked for nor can see.
-    /// A mode or provider switch is the same conversation's own explicit request, and it already
-    /// discards a STREAMING run without asking (there is no in-progress check here either). Refusing
-    /// only for a queued input would make the pool stricter about a turn that has not started than
-    /// about one actively producing tokens, which is not a line worth drawing.
+    /// <b>Where they differ on work in hand.</b> This is the third place the "does the entry have work
+    /// in hand?" question could be asked (the other two - the grantee handoff and the sandbox session
+    /// refresh - both ask it and both refuse), and neither branch here asks it.
+    /// </para>
+    /// <para>
+    /// IN PLACE, it does not need to be asked. The agent, its input channel and any
+    /// accepted-but-unstarted turn in it are the same objects afterwards, so
+    /// <see cref="AgentEntry.OutstandingInputIds"/> is not "inherited" - it never moved, and a run of
+    /// that same agent retires those ids on the evidence it always would. The entry is mutated rather
+    /// than replaced precisely so this holds. A switch the live agent genuinely cannot take (one
+    /// arriving mid-run) is refused by the factory with <see cref="AgentBusyException"/>, which reaches
+    /// the caller with the thread untouched - not silently downgraded to a recreate, because that would
+    /// destroy the very state this branch exists to keep.
+    /// </para>
+    /// <para>
+    /// ON A RECREATE, the switch DISCARDS in-flight work, deliberately, including an
+    /// accepted-but-unstarted input: it builds the replacement, swaps it in and disposes the old entry,
+    /// and the old agent's input channel goes with it. That is a decision rather than an oversight, and
+    /// the reason is the kind of caller. A handoff and a session refresh are INCIDENTAL to the person
+    /// whose turn is queued - another actor, or infrastructure - so silently dropping their turn is a
+    /// loss they neither asked for nor can see. A mode or provider switch is the same conversation's own
+    /// explicit request, and it already discards a STREAMING run without asking. Refusing only for a
+    /// queued input would make the pool stricter about a turn that has not started than about one
+    /// actively producing tokens, which is not a line worth drawing.
     /// </para>
     /// <para>
     /// The replacement deliberately does NOT inherit <see cref="AgentEntry.OutstandingInputIds"/>.
     /// Carrying them would be a lie: the replacement's input channel does not hold those inputs, so
     /// the ids could never be retired by evidence and the new entry would read busy for the whole
     /// grace and then clear - with the turn just as lost, and thirty seconds of refused handoffs
-    /// added on top. Pinned by
-    /// <c>SwitchingMode_DiscardsAQueuedTurn_AndDoesNotCarryItToTheReplacement</c> so the behaviour
-    /// has to be changed on purpose rather than drifted into.
+    /// added on top.
+    /// </para>
+    /// <para>
+    /// Both halves are pinned, so neither can drift into the other:
+    /// <c>SwitchingModeInPlace_CarriesAQueuedTurn_BecauseTheAgentStillHoldsIt</c> and
+    /// <c>SwitchingMode_ByRecreation_DiscardsAQueuedTurn_AndDoesNotCarryItToTheReplacement</c>.
     /// </para>
     /// </remarks>
-    private async Task<AgentEntry> SwapAgentUnderLockAsync(
+    private async Task<AgentSwitchResult> SwapAgentUnderLockAsync(
         string threadId,
         AgentProfile mode,
         string providerId,
@@ -2162,8 +2401,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     {
         // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
         var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
-        AgentEntry? oldEntry;
+        AgentEntry? oldEntry = null;
         AgentEntry entry;
+        EntryBuild build;
         lock (lockObj)
         {
             // Preserve the credential the conversation was frozen to at creation — a mode/provider
@@ -2200,18 +2440,30 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             }
 
             // Construct BEFORE evicting — a throw here leaves the current agent registered (the thread
-            // is untouched) rather than stranding the conversation with no pooled agent.
-            entry = CreateAgentEntry(
+            // is untouched) rather than stranding the conversation with no pooled agent. The same
+            // guarantee is what covers an AgentBusyException: the factory's refusal arrives before
+            // anything has been removed or disposed.
+            build = BuildOrReconfigureAgentEntry(
                 threadId,
                 mode,
                 providerId,
                 requestResponseDumpFileName: null,
                 workspaceId,
                 frozenCredential,
-                frozenOwnerUserId
+                frozenOwnerUserId,
+                existingEntry
             );
-            _ = _agents.TryRemove(threadId, out oldEntry);
-            _agents[threadId] = entry;
+            entry = build.Entry;
+
+            // In place, the entry is ALREADY the one in the map and there is nothing to evict. Removing
+            // and re-adding it would open a window in which the thread has no pooled agent, and would
+            // hand the "old entry" to the disposal below - which is the live agent.
+            if (build.Kind == AgentSwitchKind.Recreated)
+            {
+                _ = _agents.TryRemove(threadId, out oldEntry);
+                _agents[threadId] = entry;
+            }
+
             PublishBindingIfStaged(threadId, entry);
         }
 
@@ -2237,8 +2489,53 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             }
         }
 
-        return entry;
+        // The in-place equivalent of that teardown, and non-fatal for the same reason: the switch has
+        // already happened, so a resource that refuses to close must not turn a completed switch into a
+        // 500. Only what the new configuration dropped is closed — everything it kept is in use by the
+        // agent that is serving the conversation right now.
+        foreach (var resource in build.DroppedResources)
+        {
+            try
+            {
+                await resource.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose a resource dropped by the in-place {SwitchKind} switch for thread {ThreadId}; the switch itself succeeded",
+                    switchKind,
+                    threadId
+                );
+            }
+        }
+
+        return new AgentSwitchResult(entry.Agent, build.Kind);
     }
+
+    /// <summary>
+    /// The live entry as the factory sees it on a switch, or null when there is nothing pooled to
+    /// offer (a first creation, or a switch on a thread whose entry was evicted).
+    /// </summary>
+    /// <remarks>
+    /// Read under the per-thread lock with everything else the switch decides on, so the busy flag and
+    /// the resource map describe ONE observation of the entry rather than three.
+    /// </remarks>
+    private static AgentSwitchContext? DescribeSwitch(AgentEntry? entry) =>
+        entry is null
+            ? null
+            : new AgentSwitchContext(
+                entry.Agent,
+                entry.Mode,
+                entry.ProviderId,
+                entry.ReusableResources ?? NoReusableResources,
+                IsEntryInProgress(entry)
+            );
+
+    private static readonly IReadOnlyDictionary<string, IAsyncDisposable> NoReusableResources = new Dictionary<
+        string,
+        IAsyncDisposable
+    >(0);
 
     /// <summary>
     /// Tears down an agent the pool refused to register, and anything the factory created alongside
@@ -2277,6 +2574,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
     }
 
+    /// <summary>What one factory invocation on the switch path produced.</summary>
+    /// <param name="Entry">
+    /// The thread's entry afterwards — the SAME object that went in when the factory reconfigured in
+    /// place, a brand-new one when it built a replacement.
+    /// </param>
+    /// <param name="Kind">Which of the two happened.</param>
+    /// <param name="DroppedResources">
+    /// Resources the previous configuration held and the new one does not, for the caller to dispose
+    /// once it is outside the lock. Always empty for a recreate, where the evicted entry disposes its
+    /// own.
+    /// </param>
+    private readonly record struct EntryBuild(
+        AgentEntry Entry,
+        AgentSwitchKind Kind,
+        IReadOnlyList<IAsyncDisposable> DroppedResources
+    );
+
     private AgentEntry CreateAgentEntry(
         string threadId,
         AgentProfile mode,
@@ -2285,6 +2599,44 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string? workspaceId,
         SandboxCredential? callerCredential = null,
         string? ownerUserId = null
+    ) =>
+        BuildOrReconfigureAgentEntry(
+            threadId,
+            mode,
+            providerId,
+            requestResponseDumpFileName,
+            workspaceId,
+            callerCredential,
+            ownerUserId,
+            existingEntry: null
+        ).Entry;
+
+    /// <summary>
+    /// Invokes the factory for <paramref name="threadId"/> and either reconfigures the live entry the
+    /// factory handed back, or wires up the replacement it built.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>existingEntry</c> is the conversation's live entry on a switch, and null on a first creation
+    /// or a sandbox refresh. Non-null is what makes the in-place branch reachable at all: the pool can
+    /// only keep an entry it was given, and only the switch path has one to give.
+    /// </para>
+    /// The two branches share the factory call and nothing else, and that is the point. The in-place
+    /// branch must NOT re-run the parts that make an agent poolable — the <c>IAcceptanceReportingAgent</c>
+    /// refusal, the run loop, the drain watcher, the observer assignment — because the agent it was
+    /// handed already went through all of them when it was created. Re-running them would start a
+    /// SECOND run loop over one agent's input channel, which is a far worse outcome than the teardown
+    /// this branch exists to avoid.
+    /// </remarks>
+    private EntryBuild BuildOrReconfigureAgentEntry(
+        string threadId,
+        AgentProfile mode,
+        string providerId,
+        string? requestResponseDumpFileName,
+        string? workspaceId,
+        SandboxCredential? callerCredential,
+        string? ownerUserId,
+        AgentEntry? existingEntry
     )
     {
         _logger.LogInformation(
@@ -2307,8 +2659,31 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 callerCredential,
                 _lifecycleServices
             )
+            {
+                Existing = DescribeSwitch(existingEntry),
+            }
         );
         var agent = result.Agent;
+
+        // THE BRANCH. Reference equality of the agent, and nothing else: the factory answers "I served
+        // this switch on the live agent" by handing that exact instance back. An equal-but-different
+        // agent is a replacement, whatever it is made of.
+        if (existingEntry is not null && ReferenceEquals(agent, existingEntry.Agent))
+        {
+            var dropped = FindDroppedResources(existingEntry, result);
+            existingEntry.ApplySwitchedConfiguration(mode, providerId, result);
+
+            _logger.LogInformation(
+                "Reconfigured the live agent for thread {ThreadId} in place to mode {ModeId}, provider "
+                    + "{ProviderId}; {DroppedResourceCount} resource(s) dropped",
+                threadId,
+                mode.Id,
+                providerId,
+                dropped.Count
+            );
+
+            return new EntryBuild(existingEntry, AgentSwitchKind.ReconfiguredInPlace, dropped);
+        }
 
         // FAIL CLOSED on an agent that cannot report its own accepts (#442). This is the ONLY moment
         // the pool can detect the condition. Nothing calls the pool at accept time any more — the four
@@ -2376,6 +2751,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             WorkspaceId = workspaceId,
             RequestResponseDumpFileName = requestResponseDumpFileName,
             OwnedResources = result.OwnedResources,
+            ReusableResources = result.ReusableResources,
             TodoBoard = result.TodoBoard,
             CallerCredential = callerCredential,
             OwnerUserId = ownerUserId,
@@ -2413,7 +2789,46 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         // absence of; since #442 it is the ledger's only source, so it is a condition of being pooled.
         ((IAcceptanceReportingAgent)agent).InputAcceptanceObserver = this;
 
-        return entry;
+        return new EntryBuild(entry, AgentSwitchKind.Recreated, []);
+    }
+
+    /// <summary>
+    /// What the previous configuration held and the new one does not: every resource in
+    /// <paramref name="existing"/>'s owned or reusable sets that is not, BY REFERENCE, in
+    /// <paramref name="result"/>'s.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// By reference and not by key, in both directions. A factory that rebuilt a resource under the
+    /// same key has genuinely replaced it and the old instance must be torn down; a factory that moved
+    /// the same instance to a different key has not. Keys are the factory's way of FINDING what it may
+    /// reuse, not a claim about identity.
+    /// </para>
+    /// <para>
+    /// De-duplicated, because an instance listed as both owned and reusable would otherwise be disposed
+    /// twice.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<IAsyncDisposable> FindDroppedResources(AgentEntry existing, AgentCreationResult result)
+    {
+        var survivors = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var resource in (result.OwnedResources ?? []).Concat(result.ReusableResources?.Values ?? []))
+        {
+            _ = survivors.Add(resource);
+        }
+
+        List<IAsyncDisposable>? dropped = null;
+        foreach (var resource in existing.EnumerateResources())
+        {
+            if (survivors.Add(resource))
+            {
+                // Added rather than found: it is not among the survivors, and adding it here also makes
+                // a duplicate in the old sets a no-op on the next pass.
+                (dropped ??= []).Add(resource);
+            }
+        }
+
+        return dropped ?? [];
     }
 
     /// <inheritdoc />

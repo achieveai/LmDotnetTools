@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Controllers;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 
@@ -75,6 +76,20 @@ public static class IdentityServiceCollectionExtensions
         // one, and the interactive door is not in the list at all because the bearer handler has
         // already stashed its outcome by the time the middleware runs.
         _ = services.AddSingleton<IRequestPrincipalSource, ServiceCallerPrincipalSource>();
+
+        // Bug#15's raw workspace route. Registered here, beside the other door, rather than beside the
+        // grant service in Program.cs: this is the list IdentityMiddleware consults, and the boot gate
+        // below has to know about every entry in it. It matches one GET path shape and returns null for
+        // everything else, so its position relative to the service door does not change any outcome.
+        //
+        // The grant service comes with it, and TryAdd so a host that registers its own wins. Splitting
+        // the two would mean any host calling AddSampleIdentity without also registering the service
+        // fails when the boot gate below enumerates the sources - a boot-time crash for a dependency
+        // this method introduced. Program.cs still owns the data-protection CONFIGURATION (application
+        // name, key persistence), which is a deployment decision rather than a wiring one.
+        _ = services.AddDataProtection();
+        services.TryAddSingleton<FileBrowser.WorkspaceGrantService>();
+        _ = services.AddSingleton<IRequestPrincipalSource, WorkspaceGrantPrincipalSource>();
 
         _ = services.AddSingleton<IPrincipalAccessor, HttpContextPrincipalAccessor>();
         _ = services.AddSingleton<ConversationAuthorizer>();
@@ -193,10 +208,19 @@ public static class IdentityServiceCollectionExtensions
             return;
         }
 
-        // Any source the host registered itself. ServiceCallerPrincipalSource is excluded because it
-        // is registered unconditionally, so counting it would make this test always true; whether IT
-        // can authenticate anyone is the configuration question asked below.
-        if (services.GetServices<IRequestPrincipalSource>().Any(source => source is not ServiceCallerPrincipalSource))
+        // Any source the host registered itself. Two are excluded, for two DIFFERENT reasons.
+        // ServiceCallerPrincipalSource is registered unconditionally, so counting it would make this
+        // test always true; whether IT can authenticate anyone is the configuration question asked
+        // below. WorkspaceGrantPrincipalSource is also registered unconditionally, and additionally
+        // could never be an answer to this question even if it were optional: every principal it
+        // yields was serialised into a grant by this host FOR a caller some other front door had
+        // already authenticated. A host whose only door is that one can authenticate nobody, so
+        // counting it would boot exactly the dead host this gate exists to refuse.
+        if (
+            services
+                .GetServices<IRequestPrincipalSource>()
+                .Any(source => source is not ServiceCallerPrincipalSource and not WorkspaceGrantPrincipalSource)
+        )
         {
             return;
         }

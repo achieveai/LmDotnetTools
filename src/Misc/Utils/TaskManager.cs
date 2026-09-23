@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
@@ -83,9 +84,17 @@ public class TaskManager : ITodoBoardSource
     ///     and what a host with no name to offer keeps getting.
     /// </param>
     /// <param name="KnownNames">
-    ///     When nothing resolved, the names the host COULD have matched — the live agents of this
-    ///     conversation. The refusal lists them so a caller that guessed a name learns the real ones
-    ///     without a roster call. Null or empty when the host has none to offer.
+    ///     When nothing resolved, the names the host COULD have matched. The refusal lists them so a
+    ///     caller that guessed a name learns the real ones without a roster call. Null or empty when the
+    ///     host has none to offer.
+    ///     <para>
+    ///         These are the names this board would ACCEPT, which is not the same as the agents that are
+    ///         running: an assignee that has finished still owns work and is still recorded (only
+    ///         <see cref="AssigneeLiveness.Unknown" /> is refused). A host that can tell the two apart is
+    ///         expected to say so in the string it supplies, because a caller reading this sentence is
+    ///         choosing a target and the two kinds are not interchangeable. The board renders whatever it
+    ///         is given verbatim and draws no distinction of its own.
+    ///     </para>
     /// </param>
     /// <remarks>
     ///     Deliberately carries no failure-code string: the codes below are this board's contract and
@@ -121,6 +130,13 @@ public class TaskManager : ITodoBoardSource
     private const string TaskHasIncompleteDescendantsCode = "task_has_incomplete_descendants";
     private const string AssigneeAmbiguousCode = "assignee_ambiguous";
     private const string AssigneeUnknownCode = "assignee_unknown";
+    private const string BoardClearNotPermittedCode = "board_clear_not_permitted";
+
+    /// <summary>What the clear diagnostics call a board whose host never stamped a thread id.</summary>
+    private const string UnstampedThreadId = "(unstamped)";
+
+    /// <summary>What the clear diagnostics call the absence of an ambient sub-agent actor.</summary>
+    private const string RootActorLabel = "root";
 
     /// <summary>
     ///     One nesting level of indentation in <c>bulk-initialize</c>'s result echo. Two spaces per
@@ -203,6 +219,29 @@ public class TaskManager : ITodoBoardSource
     public event Action? OnChanged;
 
     /// <summary>
+    ///     Raised with the board as it stood immediately BEFORE a <c>bulk-initialize</c> clear dropped
+    ///     it, so the host can archive it somewhere recoverable. Never raised for a clear that found an
+    ///     empty board, for <c>clearExisting: false</c>, or for a refused clear.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Bug 19: a clear used to be a silent, total and unrecoverable removal — completed rows,
+    ///         notes and artifacts included. The board itself cannot fix that, because it holds no
+    ///         durable store; all it can do is hand the doomed rows to whoever does, before dropping
+    ///         them. The capture is taken under the same lock hold as the clear, so what the subscriber
+    ///         receives is exactly what was lost and not a board a concurrent tool call already moved on.
+    ///     </para>
+    ///     <para>
+    ///         Invoked AFTER the lock is released and per subscriber inside its own catch, for the same
+    ///         reasons <see cref="OnChanged" /> is: a host archiving to a conversation store must not run
+    ///         under the board's lock, and a failing archive must not turn the call into a tool error
+    ///         the model then retries. It fires BEFORE <see cref="OnChanged" /> does, so a host that
+    ///         wires both has the old board in hand before it is told the new one exists.
+    ///     </para>
+    /// </remarks>
+    public event Action<TodoBoardSnapshot>? OnCleared;
+
+    /// <summary>
     ///     Optional logger for this board's own diagnostics: the change hook's last-resort catch, and the
     ///     <c>TodoBoardIdVanished</c> warning. Wired by the same host that wires <see cref="OnChanged" />;
     ///     when null, a throwing subscriber is swallowed silently — which is why subscribers own their own
@@ -280,6 +319,96 @@ public class TaskManager : ITodoBoardSource
         }
 
         return result;
+    }
+
+    /// <summary>
+    ///     Hands <paramref name="archived" /> to every <see cref="OnCleared" /> subscriber, each inside
+    ///     its own catch for the same reason <see cref="NotifyIfChanged" /> isolates its own: the rows
+    ///     are already gone, and a broken archiver must neither fail the tool call nor starve a second
+    ///     archiver behind it.
+    /// </summary>
+    private void RaiseCleared(TodoBoardSnapshot archived)
+    {
+        if (OnCleared is not { } subscribers)
+        {
+            return;
+        }
+
+        foreach (var subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<TodoBoardSnapshot>)subscriber)(archived);
+            }
+            catch (Exception ex)
+            {
+                Logger?.LogError(
+                    ex,
+                    "An OnCleared subscriber threw; the pre-clear todo board for thread {ThreadId} may not have been archived",
+                    ThreadId ?? UnstampedThreadId
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Names an acting sub-agent for a human reader: the display name it is addressed by, plus the
+    ///     canonical identifier, because the identifier is the only part guaranteed unique within the
+    ///     conversation and is what every other surface keys on.
+    /// </summary>
+    private static string DescribeActor(AgentActor actor) =>
+        actor.DisplayName is { } name && !string.Equals(name, actor.AgentId, StringComparison.Ordinal)
+            ? $"'{name}' ({actor.AgentId})"
+            : $"'{actor.AgentId}'";
+
+    /// <summary>
+    ///     Records what a clear removed, so a wipe leaves a trace in the host's own logs and not only in
+    ///     whatever the archive hook managed to persist. A census rather than the rows themselves: the
+    ///     rows are in the archive, and the counts are what makes an accidental wipe recognisable at a
+    ///     glance in a log stream.
+    /// </summary>
+    private void LogBoardCleared(TodoBoardSnapshot archived)
+    {
+        if (Logger is null)
+        {
+            return;
+        }
+
+        var rows = 0;
+        var completed = 0;
+        var notes = 0;
+        var artifacts = 0;
+
+        var pending = new Stack<TodoTaskNode>(archived.Tasks);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            rows++;
+            if (node.Status == TodoTaskStatus.Completed)
+            {
+                completed++;
+            }
+
+            notes += node.Notes.Count;
+            artifacts += node.Artifacts.Count;
+
+            foreach (var child in node.SubTasks)
+            {
+                pending.Push(child);
+            }
+        }
+
+        Logger.LogWarning(
+            "Todo board for thread {ThreadId} cleared by {Actor} on thread {ManagedThreadId} via bulk-initialize(clearExisting=true): {RootRowCount} root rows, {RowCount} rows total, {CompletedRowCount} completed, {NoteCount} notes, {ArtifactCount} artifacts archived",
+            ThreadId ?? UnstampedThreadId,
+            AgentActorScope.Current is { } actor ? DescribeActor(actor) : RootActorLabel,
+            Environment.CurrentManagedThreadId,
+            archived.Tasks.Count,
+            rows,
+            completed,
+            notes,
+            artifacts
+        );
     }
 
     [Function(
@@ -440,7 +569,12 @@ Philosophy:
 • Start with your best understanding, then evolve
 • Initial structure is a hypothesis - expect to modify it
 • Better to start with fewer, broader tasks and decompose as needed
-• Use clearExisting=true for fresh starts, false to extend
+• Leave clearExisting=false (the default) and EXTEND the board — that is the normal
+  path, including when your plan has changed. Use delete-task for the specific rows
+  that are genuinely obsolete.
+• clearExisting=true destroys every row on the shared board, completed work, notes
+  and artifacts included. It archives the board first, and the conversation's ROOT
+  agent is the only one allowed to ask for it: a sub-agent's clear is refused.
 
 Structure and ids:
 • Creates ONE nesting level only: each task plus a flat list of subtask titles.
@@ -456,19 +590,62 @@ After initialization:
 • Expect 30-50% modification from initial plan - this is healthy!
 
 Examples:
-- Project start: {""tasks"": [{""task"": ""Research"", ""subTasks"": [""Review docs"", ""Analyze codebase""], ""notes"": [""2-day timebox""]}], ""clearExisting"": true}
+- Project start: {""tasks"": [{""task"": ""Research"", ""subTasks"": [""Review docs"", ""Analyze codebase""], ""notes"": [""2-day timebox""]}]}
 - Add phase: {""tasks"": [{""task"": ""Testing"", ""subTasks"": [""Unit tests"", ""Integration tests""]}], ""clearExisting"": false}"
     )]
     public FunctionResult BulkInitialize(
         [Description("List of tasks with their subtasks and notes")] List<BulkTaskItem> tasks,
-        [Description("Clear all existing tasks before adding new ones")] bool clearExisting = false
+        [Description(
+            "Destroy every existing row before adding the new ones. Root agent only; archived first. "
+                + "Leave false to extend the board."
+        )]
+            bool clearExisting = false
     )
     {
-        return NotifyIfChanged(BulkInitializeCore(tasks, clearExisting));
+        var result = BulkInitializeCore(tasks, clearExisting, out var archived);
+
+        // Archive first, then announce the change: a host wired to both hooks must hold the old board
+        // before the new one is published and persisted over it.
+        if (archived is not null)
+        {
+            RaiseCleared(archived);
+        }
+
+        return NotifyIfChanged(result);
     }
 
-    private FunctionResult BulkInitializeCore(List<BulkTaskItem> tasks, bool clearExisting)
+    /// <summary>
+    ///     The body of <c>bulk-initialize</c>. <paramref name="archived" /> receives the pre-clear board
+    ///     when this call actually dropped rows, and null otherwise — the caller raises
+    ///     <see cref="OnCleared" /> with it once the lock is released.
+    /// </summary>
+    private FunctionResult BulkInitializeCore(
+        List<BulkTaskItem> tasks,
+        bool clearExisting,
+        out TodoBoardSnapshot? archived
+    )
     {
+        archived = null;
+
+        // Bug 19. Every agent in the conversation calls THIS instance, and a clear is the one tool
+        // call here that destroys another agent's work rather than adding to it: the root's plan, its
+        // completed rows, its notes and its artifacts. So the board refuses it for anyone but the
+        // conversation's root agent, and says what to do instead — a sub-agent that wanted to record
+        // new work never needed the clear in the first place. Checked before the argument validation
+        // below so the caller reads the reason it cannot do this at all, rather than being sent to fix
+        // an argument list that would still be refused.
+        if (clearExisting && AgentActorScope.Current is { } actor)
+        {
+            return FunctionResult.Error(
+                BoardClearNotPermittedCode,
+                $"Error: only the conversation's root agent may clear the todo board, and this call came from "
+                    + $"sub-agent {DescribeActor(actor)}. The board is shared: clearing it would "
+                    + "destroy the root's plan along with every completed row, note and artifact on it. Extend the "
+                    + "board instead — call bulk-initialize again with clearExisting=false, or add-task for "
+                    + "individual rows — and use delete-task for the specific rows that are genuinely obsolete."
+            );
+        }
+
         if (tasks == null || tasks.Count == 0)
         {
             return FunctionResult.Error(InvalidArgumentsCode, "Error: No tasks provided for initialization.");
@@ -479,6 +656,15 @@ Examples:
             // Clear existing tasks if requested
             if (clearExisting)
             {
+                // Capture before dropping, under this same lock hold, so the archive is exactly the
+                // board that is about to disappear. An empty board is skipped: there is nothing to
+                // recover, and archiving it would push a real entry out of the host's bounded list.
+                if (_state.RootTasks.Count > 0)
+                {
+                    archived = GetTodoBoardSnapshot(ThreadId ?? string.Empty);
+                    LogBoardCleared(archived);
+                }
+
                 _state.RootTasks.Clear();
                 _state.NextId = 1;
 

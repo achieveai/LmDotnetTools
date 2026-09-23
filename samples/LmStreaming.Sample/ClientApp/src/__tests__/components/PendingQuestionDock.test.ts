@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { enableAutoUnmount, mount } from "@vue/test-utils";
 import PendingQuestionDock from "@/components/PendingQuestionDock.vue";
-import { GET_RESULT_FOR_TOOL_CALL } from "@/composables/useToolResult";
+import { GET_RESULT_FOR_TOOL_CALL, IS_QUESTION_ANSWERED } from "@/composables/useToolResult";
 import { SUBMIT_CLIENT_TOOL_RESULT } from "@/composables/useClientToolSubmit";
 import type { ClientToolSubmitFn } from "@/composables/useClientToolSubmit";
 import { MessageType } from "@/types";
@@ -59,6 +59,7 @@ describe("PendingQuestionDock", () => {
       scopeKey?: string;
       requestedQuestionId?: string | null;
       submit?: ClientToolSubmitFn;
+      isQuestionAnswered?: (id: string) => boolean;
     } = {},
   ) {
     const results = options.results ?? {};
@@ -75,6 +76,7 @@ describe("PendingQuestionDock", () => {
         provide: {
           [GET_RESULT_FOR_TOOL_CALL]: (id: string | null | undefined) =>
             (id ? results[id] : null) ?? null,
+          [IS_QUESTION_ANSWERED]: options.isQuestionAnswered ?? (() => false),
           [SUBMIT_CLIENT_TOOL_RESULT]:
             options.submit ??
             vi.fn(async () => ({ status: "acked", duplicate: false })),
@@ -82,6 +84,28 @@ describe("PendingQuestionDock", () => {
       },
     });
   }
+
+  // Bug #5: a question the server settled EARLY keeps a non-deferred placeholder result. It must
+  // still dock until its answer is delivered — by the injected user-answer message or this client's
+  // own acked submission (reported through IS_QUESTION_ANSWERED).
+  it("docks an early-settled question and drops it once it is reported answered", () => {
+    const earlySettled: ToolCallResultMessage = {
+      ...deferred("q1"),
+      is_deferred: false,
+      result: JSON.stringify({ status: "deferred_to_notification", message: "Question sent to user" }),
+    };
+    const open = mountDock({ displayItems: [pill("p1", call("q1"))], results: { q1: earlySettled } });
+    expect(open.get('[data-testid="question-dock"]').text()).toContain("Needs your answer");
+    open.unmount();
+
+    const closed = mountDock({
+      displayItems: [pill("p1", call("q1"))],
+      results: { q1: earlySettled },
+      isQuestionAnswered: (id) => id === "q1",
+    });
+    expect(closed.find('[data-testid="question-dock"]').exists()).toBe(false);
+    closed.unmount();
+  });
 
   it("renders nothing when no question is pending", () => {
     const wrapper = mountDock();

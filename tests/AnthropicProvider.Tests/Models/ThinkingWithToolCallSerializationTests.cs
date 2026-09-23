@@ -474,4 +474,141 @@ public class ThinkingWithToolCallSerializationTests
             $"tool_use must come after all text/thinking blocks; got: [{string.Join(", ", assistant.Content.Select(c => c.Type))}]"
         );
     }
+
+    /// <summary>
+    ///     Regression for the production 400 <c>"thinking blocks in the latest assistant message cannot
+    ///     be modified"</c> (path <c>messages.N.content.M</c>): an assistant turn that emitted TWO
+    ///     thinking/text pairs before a single tool_use must be replayed with the thinking and text
+    ///     blocks in their ORIGINAL interleaved order, and without the duplicate plain-reasoning row
+    ///     that persisted history carries beside each signature re-appearing as an extra text block.
+    ///
+    ///     Two defects produced the rejected turn:
+    ///     (1) the assistant reorder hoisted ALL thinking ahead of ALL text, moving the thinking blocks
+    ///     relative to the text Anthropic signed them next to; and
+    ///     (2) the verbatim duplicate plain-reasoning row stayed unsigned after the merge and was
+    ///     demoted to a <c>text</c> block the model never emitted.
+    /// </summary>
+    [Fact]
+    public void FromMessages_TwoThinkingTextPairsBeforeToolUse_PreservesOriginalBlockOrder()
+    {
+        // Persisted history stores each thinking segment as THREE reasoning rows:
+        // Plain(text), Encrypted(signature), Plain(text again — a verbatim duplicate).
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Set up the repos." },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "Thought A",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "sig-A",
+                Visibility = ReasoningVisibility.Encrypted,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "Thought A",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Narration one." },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "Thought B",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "sig-B",
+                Visibility = ReasoningVisibility.Encrypted,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "Thought B",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Narration two." },
+            new ToolCallMessage
+            {
+                FunctionName = "Skill",
+                FunctionArgs = "{}",
+                ToolCallId = "toolu_skill_1",
+                ToolCallIdx = 0,
+            },
+        };
+
+        var request = AnthropicRequest.FromMessages(messages);
+
+        var assistant = request.Messages.Single(m => m.Role == "assistant");
+        var shape = string.Join(
+            ", ",
+            assistant.Content.Select(c => c.Type == "thinking" ? $"thinking({c.Thinking})" : $"{c.Type}({c.Text})")
+        );
+
+        Assert.Equal(
+            "thinking(Thought A), text(Narration one.), thinking(Thought B), text(Narration two.), tool_use()",
+            shape
+        );
+
+        Assert.Equal("sig-A", assistant.Content[0].ThinkingSignature);
+        Assert.Equal("sig-B", assistant.Content[2].ThinkingSignature);
+        Assert.Equal("toolu_skill_1", assistant.Content[4].Id);
+
+        // The duplicate plain-reasoning rows must be dropped outright, never demoted to text.
+        Assert.DoesNotContain(assistant.Content, c => c.Type == "text" && c.Text == "Thought A");
+        Assert.DoesNotContain(assistant.Content, c => c.Type == "text" && c.Text == "Thought B");
+    }
+
+    /// <summary>
+    ///     The companion to <see cref="FromMessages_TwoThinkingTextPairsBeforeToolUse_PreservesOriginalBlockOrder"/>:
+    ///     keeping the thinking/text interleave must NOT weaken the tool_use-trailing rule. A tool_use
+    ///     that history placed BEFORE trailing thinking and text still moves to the end of the turn,
+    ///     and the blocks it jumps over keep their relative order.
+    /// </summary>
+    [Fact]
+    public void FromMessages_ToolUseBeforeTrailingThinkingAndText_StillMovesToolUseLast()
+    {
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Set up the repos." },
+            new TextMessage { Role = Role.Assistant, Text = "Narration one." },
+            new ToolCallMessage
+            {
+                FunctionName = "Skill",
+                FunctionArgs = "{}",
+                ToolCallId = "toolu_skill_1",
+                ToolCallIdx = 0,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "Thought B",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "sig-B",
+                Visibility = ReasoningVisibility.Encrypted,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Narration two." },
+        };
+
+        var request = AnthropicRequest.FromMessages(messages);
+
+        var assistant = request.Messages.Single(m => m.Role == "assistant");
+        var shape = string.Join(
+            ", ",
+            assistant.Content.Select(c => c.Type == "thinking" ? $"thinking({c.Thinking})" : $"{c.Type}({c.Text})")
+        );
+
+        Assert.Equal("text(Narration one.), thinking(Thought B), text(Narration two.), tool_use()", shape);
+        Assert.Equal("sig-B", assistant.Content[1].ThinkingSignature);
+    }
 }

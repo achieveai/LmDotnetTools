@@ -157,11 +157,12 @@ public static class CorpusScenarios
             Id = "g",
             Item = "deferred AskUserQuestion outstanding (must skip)",
             Title =
-                "A question is parked with the client: no request is built and no cut lands until the human answers (R6).",
+                "A question is parked with the client: the run that arrives meanwhile settles it early with the "
+                + "placeholder, so the pair is closed before any cut can land and the human's answer arrives later (R6).",
             Steps =
             [
                 CorpusStep.Say("Work through the plan."),
-                CorpusStep.Say("Any progress?", expectError: true),
+                CorpusStep.Say("Any progress?"),
                 CorpusStep.Resolve("g-ask-1", """{"answers":{"q0":"Yes"}}"""),
             ],
             Root = new CorpusScript
@@ -180,13 +181,9 @@ public static class CorpusScenarios
             Id = "h",
             Item = "parked Wait (must skip)",
             Title =
-                "A timer Wait is parked: a run that arrives meanwhile is refused, no cut lands, the timer resumes the run (R6).",
-            Steps =
-            [
-                CorpusStep.Say("Work, then wait."),
-                CorpusStep.Say("Any progress?", expectError: true),
-                CorpusStep.AwaitRuns(1),
-            ],
+                "A timer Wait is parked: the run that arrives meanwhile settles it early with the placeholder, "
+                + "no cut lands, and the timer's result arrives afterwards as its own turn (R6).",
+            Steps = [CorpusStep.Say("Work, then wait."), CorpusStep.Say("Any progress?"), CorpusStep.AwaitRuns(1)],
             Root = new CorpusScript
             {
                 Replies =

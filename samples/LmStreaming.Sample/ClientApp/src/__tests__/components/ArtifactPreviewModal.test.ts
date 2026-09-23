@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { ref } from 'vue';
 import ArtifactPreviewModal from '@/components/ArtifactPreviewModal.vue';
 import { jsonResponse, textPreview, binaryPreview } from '../fixtures/fileBrowser';
+import { clearAllWorkspaceGrants } from '@/api/fileBrowserApi';
 import { ComponentLogger } from '@/utils/logger';
 import type { DirectoryListing, FileEntry } from '@/types/fileBrowser';
 import { WORKSPACE_FILE_LINKS } from '@/utils/workspaceLinks';
@@ -20,7 +21,18 @@ vi.mock('@/components/DiagramViewer.vue', () => ({
  * states: rendered markdown, plain text, not-previewable, and the error/no-session message.
  */
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // The grant cache is a module-level map that outlives a test. Without this, the first test to mint
+  // one would silently supply every later test in this file, and a test asserting the FALLBACK path
+  // would quietly exercise the raw-URL path instead.
+  clearAllWorkspaceGrants();
+});
+
+/** A `POST .../files/grant` answer. The expiry is far enough ahead that it is never near-expiry. */
+function grantResponse(token = 'g-1'): Response {
+  return jsonResponse({ grant: token, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+}
 
 const imageEntry = (name: string, size: number | null): FileEntry => ({ name, type: 'file', size, nameLossy: false });
 
@@ -266,17 +278,23 @@ describe('ArtifactPreviewModal — embedded Markdown', () => {
     expect(wrapper.get('code.language-typescript').text()).toContain('const answer = 42;');
   });
 
-  it('keeps workspace links disabled and removes unsafe raw SVG', async () => {
+  /**
+   * A link inside a previewed document is written relative to THAT document, not the workspace root, so the
+   * preview opts into workspace links AND supplies the previewed file's own directory as the base. Before
+   * this, the modal inherited `workspaceLinks: false` from the `TextMessage` default (#784 moved the branch
+   * onto `TextMessage` and carried the default over) and every such link rendered as an inert bare anchor.
+   */
+  it('opens a relative link against the previewed file directory, and removes unsafe raw SVG', async () => {
     const open = vi.fn();
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       jsonResponse({
         previewable: true,
-        text: '[Other file](docs/other.md)\n\n<svg onload="alert(1)"><script>alert(2)</script></svg>',
+        text: '[Other file](evidence/other.md)\n\n<svg onload="alert(1)"><script>alert(2)</script></svg>',
         lineCount: 3,
       })
     );
     const wrapper = mount(ArtifactPreviewModal, {
-      props: { threadId: 'thread-1', path: 'docs/spec.md', embedded: true },
+      props: { threadId: 'thread-1', path: 'docs/rdb/spec.md', embedded: true },
       global: {
         provide: {
           [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open },
@@ -286,12 +304,52 @@ describe('ArtifactPreviewModal — embedded Markdown', () => {
     });
     await flushPromises();
 
-    expect(wrapper.get('a').classes()).not.toContain('workspace-link');
-    await wrapper.get('a').trigger('click');
-    expect(open).not.toHaveBeenCalled();
+    expect(wrapper.get('a').classes()).toContain('workspace-link');
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/rdb/evidence/other.md' });
+
     const markdown = wrapper.get('[data-testid="artifact-preview-markdown"]');
     expect(markdown.find('svg').exists()).toBe(false);
     expect(markdown.find('script').exists()).toBe(false);
+  });
+
+  /** A file at the workspace root has no directory to join, so its links stay root-relative. */
+  it('leaves a link in a root-level file workspace-root relative', async () => {
+    const open = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse({ previewable: true, text: '[Other](docs/other.md)', lineCount: 1 })
+    );
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'README.md', embedded: true },
+      global: { provide: { [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open } } },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/other.md' });
+  });
+
+  /**
+   * The base must come from the SERVER-resolved path, not from the raw opener: a `target` opener carries a
+   * host path (or a `sandbox:` URI), which says nothing about where the file sits in the workspace.
+   */
+  it('bases links on the resolved path when the file was opened by a raw target', async () => {
+    const open = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ path: 'docs/rdb/spec.md', type: 'file', size: 20 }));
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ previewable: true, text: '[Other](evidence/other.md)', lineCount: 1 })
+    );
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', target: 'sandbox:/workspace/docs/rdb/spec.md', embedded: true },
+      global: { provide: { [WORKSPACE_FILE_LINKS]: { threadId: ref('thread-1'), open } } },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    wrapper.get('a').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-1', target: 'docs/rdb/evidence/other.md' });
   });
 });
 
@@ -359,9 +417,15 @@ describe('ArtifactPreviewModal — viewers', () => {
       'data/items.csv'
     );
 
+    // The header/body cells are addressed past the row-number gutter that `DataTablePreview` adds —
+    // it is presentation, not a data column, so it is excluded rather than expected.
     const table = wrapper.get('[data-testid="artifact-preview-table"]');
-    expect(table.findAll('th').map((th) => th.text())).toEqual(['name', 'qty']);
-    expect(table.findAll('tbody tr').map((tr) => tr.findAll('td').map((td) => td.text()))).toEqual([
+    expect(table.findAll('[data-testid="data-table-header"]').map((th) => th.text())).toEqual(['name', 'qty']);
+    expect(
+      table
+        .findAll('tbody tr')
+        .map((tr) => tr.findAll('td:not(.data-table-gutter)').map((td) => td.text()))
+    ).toEqual([
       ['Widget, large', '3'],
       ['Bolt', '10'],
     ]);
@@ -372,16 +436,82 @@ describe('ArtifactPreviewModal — viewers', () => {
       jsonResponse({ previewable: true, text: 'a\tb\n1\t2', lineCount: 2 }),
       'out.tsv'
     );
-    expect(wrapper.get('[data-testid="artifact-preview-table"]').findAll('th')).toHaveLength(2);
+    expect(
+      wrapper.get('[data-testid="artifact-preview-table"]').findAll('[data-testid="data-table-header"]')
+    ).toHaveLength(2);
   });
 
-  it('shows an image from the download bytes as a typed object URL, and revokes it on close', async () => {
+  it('renders an XLSX from the table the SERVER parsed, without any client-side text parsing', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({
+        previewable: true,
+        table: {
+          sheets: [
+            { name: 'Summary', rows: [['region', 'total'], ['north', '12']], truncated: false },
+            { name: 'Detail', rows: [['sku'], ['A-1']], truncated: false },
+          ],
+          truncated: false,
+        },
+      }),
+      'reports/q3.xlsx'
+    );
+
+    expect(wrapper.findAll('[data-testid="data-table-sheet-tab"]').map((t) => t.text())).toEqual([
+      'Summary',
+      'Detail',
+    ]);
+    expect(
+      wrapper.get('[data-testid="artifact-preview-table"]').findAll('[data-testid="data-table-header"]').map((th) => th.text())
+    ).toEqual(['region', 'total']);
+    // There is no `text` in that response at all: a viewer that still went through the delimited-text
+    // path would render nothing here.
+    expect(wrapper.find('[data-testid="artifact-preview-text"]').exists()).toBe(false);
+  });
+
+  it('shows the server reason when a workbook cannot be read', async () => {
+    const { wrapper } = await mountModal(
+      jsonResponse({ previewable: false, reason: 'corrupt_spreadsheet' }),
+      'broken.xlsx'
+    );
+
+    expect(wrapper.get('[data-testid="artifact-preview-unavailable"]').text()).toContain('corrupt_spreadsheet');
+    expect(wrapper.find('[data-testid="artifact-preview-table"]').exists()).toBe(false);
+  });
+
+  it('shows an image straight from the raw workspace URL, holding no bytes in the page', async () => {
+    const createObjectURL = vi.fn((_: Blob) => 'blob:preview-1');
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(listing('img', [imageEntry('chart.png', 4)])))
+      .mockResolvedValueOnce(grantResponse());
+
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'img/chart.png', embedded: true },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    // The chip's bare path carries no size, so the parent listing is still read before anything else.
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/conversations/thread-1/files?path=img');
+    expect(fetchSpy.mock.calls[1][0]).toBe('/api/conversations/thread-1/files/grant');
+    expect(wrapper.get('[data-testid="artifact-preview-image"]').attributes('src')).toBe(
+      '/api/conversations/thread-1/workspace/g-1/img/chart.png'
+    );
+    // Nothing was downloaded into this page: no Blob, no object URL, and the server's own media type
+    // is what the <img> gets rather than a re-typed octet-stream.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the download bytes as a typed object URL when no grant can be minted', async () => {
     const createObjectURL = vi.fn((_: Blob) => 'blob:preview-1');
     const revokeObjectURL = vi.fn();
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse(listing('img', [imageEntry('chart.png', 4)])))
+      .mockResolvedValueOnce(jsonResponse({ code: 'gateway_error' }, 502))
       .mockResolvedValueOnce(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200 }));
 
     const wrapper = mount(ArtifactPreviewModal, {
@@ -390,9 +520,7 @@ describe('ArtifactPreviewModal — viewers', () => {
     });
     await flushPromises();
 
-    // The chip's bare path carries no size, so the parent listing is read before any bytes.
-    expect(fetchSpy.mock.calls[0][0]).toBe('/api/conversations/thread-1/files?path=img');
-    expect(fetchSpy.mock.calls[1][0]).toBe(
+    expect(fetchSpy.mock.calls[2][0]).toBe(
       '/api/conversations/thread-1/files/download?path=img%2Fchart.png'
     );
     // The server answers application/octet-stream + nosniff, so the blob is re-typed from the extension.
@@ -476,6 +604,113 @@ describe('ArtifactPreviewModal — viewers', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(wrapper.get('[data-testid="artifact-preview-error"]').text()).toContain(message);
+  });
+
+  // ---- Rendered HTML / PDF over the raw workspace URL (Bug#15) ----
+
+  /**
+   * Mounts the modal on a file that renders through the raw URL: first the grant mint, then whatever
+   * the viewer needs after it (the text preview, for the Source view).
+   */
+  function mountRendered(path: string, after: Response[] = []) {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(grantResponse());
+    for (const r of after) fetchSpy.mockResolvedValueOnce(r);
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path, embedded: true },
+      attachTo: document.body,
+    });
+    return { wrapper, fetchSpy };
+  }
+
+  it('renders an .html artifact in an iframe addressed by PATH, so its relative links resolve', async () => {
+    const { wrapper } = mountRendered('report/index.html', [
+      jsonResponse({ previewable: true, text: '<img src="img/dot.png">', lineCount: 1 }),
+    ]);
+    await flushPromises();
+
+    const frame = wrapper.get('[data-testid="artifact-preview-html-frame"]');
+    // The document's own directory is its base URL, which is the entire point: `img/dot.png` inside it
+    // resolves to `.../workspace/g-1/report/img/dot.png`, a sibling workspace file.
+    expect(frame.attributes('src')).toBe('/api/conversations/thread-1/workspace/g-1/report/index.html');
+    expect(wrapper.find('[data-testid="artifact-preview-text"]').exists()).toBe(false);
+  });
+
+  /**
+   * The single most important assertion in this file. `allow-same-origin` would put untrusted workspace
+   * HTML into THIS app's origin, where it could read localStorage, cookies and the bearer token and call
+   * /api/* as the signed-in user. The server sends the same restriction as a CSP `sandbox` directive;
+   * this pins the attribute half.
+   */
+  it('sandboxes the iframe and never grants it same-origin', async () => {
+    const { wrapper } = mountRendered('report/index.html', [jsonResponse(textPreview)]);
+    await flushPromises();
+
+    const sandbox = wrapper.get('[data-testid="artifact-preview-html-frame"]').attributes('sandbox');
+    expect(sandbox).toBeDefined();
+    expect(sandbox).not.toContain('allow-same-origin');
+    // The frame's own src carries the grant, so a popup could carry it off-origin. Open-in-new-tab is a
+    // button this app renders outside the frame instead.
+    expect(sandbox).not.toContain('allow-popups');
+    expect(sandbox).toContain('allow-scripts');
+    // A rendered page must not leak the grant-bearing URL to any host it loads a resource from.
+    expect(wrapper.get('[data-testid="artifact-preview-html-frame"]').attributes('referrerpolicy')).toBe(
+      'no-referrer'
+    );
+  });
+
+  it('switches between the rendered document and its source', async () => {
+    const { wrapper } = mountRendered('report/index.html', [
+      jsonResponse({ previewable: true, text: '<h1>hello</h1>', lineCount: 1 }),
+    ]);
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="artifact-preview-html-frame"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="artifact-preview-mode-source"]').trigger('click');
+    expect(wrapper.find('[data-testid="artifact-preview-html-frame"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="artifact-preview-text"]').text()).toBe('<h1>hello</h1>');
+
+    await wrapper.get('[data-testid="artifact-preview-mode-rendered"]').trigger('click');
+    expect(wrapper.find('[data-testid="artifact-preview-html-frame"]').exists()).toBe(true);
+  });
+
+  it('shows no Rendered/Source toggle when the grant could not be minted, and falls back to source', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ code: 'gateway_error' }, 502))
+      .mockResolvedValueOnce(jsonResponse({ previewable: true, text: '<h1>hello</h1>', lineCount: 1 }));
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'report/index.html', embedded: true },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="artifact-preview-modebar"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="artifact-preview-html-frame"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="artifact-preview-text"]').text()).toBe('<h1>hello</h1>');
+  });
+
+  it('shows a PDF through the raw URL without asking for a text preview at all', async () => {
+    const { wrapper, fetchSpy } = mountRendered('docs/paper.pdf');
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="artifact-preview-pdf-frame"]').attributes('src')).toBe(
+      '/api/conversations/thread-1/workspace/g-1/docs/paper.pdf'
+    );
+    // Only the grant. A PDF has no text preview to ask for, and the old path would have answered
+    // `binary` after a round trip.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="artifact-preview-modebar"]').exists()).toBe(false);
+  });
+
+  it('offers an Open in new tab link at the same raw URL', async () => {
+    const { wrapper } = mountRendered('report/index.html', [jsonResponse(textPreview)]);
+    await flushPromises();
+
+    const link = wrapper.get('[data-testid="artifact-preview-open-tab"]');
+    expect(link.attributes('href')).toBe('/api/conversations/thread-1/workspace/g-1/report/index.html');
+    expect(link.attributes('rel')).toContain('noopener');
   });
 
   it('offers a download for a non-previewable file', async () => {

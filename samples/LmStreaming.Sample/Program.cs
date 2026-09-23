@@ -55,6 +55,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Client;
 using Serilog;
@@ -192,6 +193,21 @@ try
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
 
+    // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
+    // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
+    // workspace page) address the raw workspace route. The grant SERVICE and its principal source are
+    // registered by AddSampleIdentity above, because under Identity:Enforce the grant is a credential; what
+    // is configured here is the deployment half.
+    //
+    // SetApplicationName pins the key-ring isolation purpose, so it does not silently change with the entry
+    // assembly name and invalidate every outstanding grant. IMPORTANT for anything containerised or scaled
+    // out: with no PersistKeysTo… configured, keys live in the local profile (or in memory when there is no
+    // profile), so each replica has its own ring and every restart invalidates cached grants for up to
+    // WorkspaceGrantRefreshMargin short of the full lifetime — the client re-mints on the next open, so the
+    // symptom is a burst of 401s on subresources rather than an outage, but a real deployment should
+    // configure PersistKeysToFileSystem/AzureBlobStorage plus ProtectKeysWith….
+    _ = builder.Services.AddDataProtection().SetApplicationName("LmStreaming.Sample");
+
     // The operator secret is set through a flat env var for the same reason the S2S inbound secret
     // is: the standard env-var provider maps only `Identity__OperatorSecret` into that section key,
     // and operators reach for the flat name.
@@ -242,7 +258,8 @@ try
     // snapshot dropped, so the ceiling is what keeps a long-lived conversation's file from growing forever.
     _ = builder.Services.AddSingleton(sp => new WorkflowRunRegistry(
         Path.Combine(AppContext.BaseDirectory, "workflow-index"),
-        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries,
+        sp.GetRequiredService<ILogger<WorkflowRunRegistry>>()
     ));
 
     // Process-lifetime cache of the persisted Agent-tool child roster AgentHierarchyService's cold path
@@ -793,7 +810,7 @@ try
         // while any model with a configured rate gets a category-complete estimate (#682).
         var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         // #681: the same Pricing:Models entries may carry MaxContextTokens; AddConfiguredPricing registers this
-        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 156K, which is also the window
+        // resolver over that catalog, clamped to ContextWindow:MaxTokens (default 196K, which is also the window
         // of any model the catalog does not list). Null only for a container that never registered it.
         var capacityResolver = sp.GetService<IModelCapacityResolver>();
         // #721: Off (no section) builds no setup, so loops are constructed exactly as before; see
@@ -1350,6 +1367,32 @@ try
                     }
                 }
 
+                // ---- THE IN-PLACE SWITCH GATE ----
+                //
+                // Reaching here already proves the TARGET provider is on this (API/middleware) arm: the
+                // six CLI-backed arms above each return from their own branch. So a switch that arrives
+                // with a live MultiTurnAgentLoop is one this arm can serve BY RECONFIGURING that loop,
+                // and a switch that crosses onto a CLI arm returned above without ever looking at
+                // `Existing` — which is exactly the approved split (in place along this arm, today's
+                // construct-before-evict recreate across arms). MultiTurnAgentLoop is the one
+                // IReconfigurableAgent this host builds; the local is typed to the concrete loop because
+                // every late-bound closure below is.
+                var liveLoop = context.Existing?.Agent as MultiTurnAgentLoop;
+                if (liveLoop is not null && context.Existing!.IsBusy)
+                {
+                    // Recreating instead would "succeed" by destroying the running turn and every child,
+                    // armed wait and tool session the live loop owns — precisely what this branch exists
+                    // to preserve. Refuse, and let the host answer 409. The pool has removed nothing at
+                    // this point, so the thread is left exactly as it was.
+                    throw new AgentBusyException(threadId);
+                }
+
+                // Instances this configuration TOOK OVER from the live one rather than building. They
+                // belong to the conversation, not to this attempt, so the construction-failure path at
+                // the bottom must leave them alone — the loop still serving the conversation is holding
+                // them, and disposing them there would break a switch that was correctly refused.
+                var carriedOver = new HashSet<object>(ReferenceEqualityComparer.Instance);
+
                 var providerAgent = agentFactory(normalizedProviderId);
 
                 // Per-conversation tool registry: clone the shared (stateless) sample tools and
@@ -1379,13 +1422,39 @@ try
                 // once one row exists, and the projection's monotonic guard accepts it because the
                 // fresh capture genuinely is newer. Sync-over-async matches the sandbox and books
                 // wiring in this same factory.
-                var persistedBoard = ConversationTodoProjection
-                    .LoadAsync(conversationStore, threadId)
-                    .GetAwaiter()
-                    .GetResult();
-                var taskManager = persistedBoard is { IsEmpty: false }
-                    ? TaskManager.FromSnapshot(persistedBoard)
-                    : new TaskManager();
+                //
+                // Held on the CONVERSATION's scope rather than rebuilt per configuration: an in-place
+                // switch must hand the model the same board it was looking at a moment ago, and every
+                // OnChanged subscriber wired further below (frame publisher, durable writer, nudges,
+                // digests) would otherwise be added a second time by the second switch. The collaboration
+                // handle is resolved here, with it, for the same reason — the loop keeps its own across a
+                // reconfigure, so a second one minted for the new mode would be a directory nothing reads.
+                var scope = ReusedResource<ConversationToolScope>(context.Existing, ConversationToolScope.ResourceKey);
+                if (scope is null)
+                {
+                    var persistedBoard = ConversationTodoProjection
+                        .LoadAsync(conversationStore, threadId)
+                        .GetAwaiter()
+                        .GetResult();
+                    scope = new ConversationToolScope(loggerFactory.CreateLogger<ConversationToolScope>())
+                    {
+                        Board = persistedBoard is { IsEmpty: false }
+                            ? TaskManager.FromSnapshot(persistedBoard)
+                            : new TaskManager(),
+                        Collaboration = CreateRootCollaboration(
+                            collaborationHostOptions,
+                            caps,
+                            threadId,
+                            mode.RootAgentName
+                        ),
+                    };
+                }
+                else
+                {
+                    _ = carriedOver.Add(scope);
+                }
+
+                var taskManager = scope.Board;
                 _ = conversationRegistry.AddFunctionsFromObject(taskManager, providerName: "TaskManager");
 
                 // Clone the per-conversation registry per-agent to avoid mutation, filtering by mode
@@ -1394,6 +1463,11 @@ try
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
                 var ownedResources = new List<IAsyncDisposable>();
+                // What this configuration wants OFFERED BACK to whoever configures this conversation
+                // next, by stable key. Filled on a FRESH create too — that is what makes the FIRST
+                // switch able to reuse anything at all — and holding an instance back from it is how a
+                // resource is deliberately ended by the next switch.
+                var reusableResources = new Dictionary<string, IAsyncDisposable>(StringComparer.Ordinal);
                 // StartWorkflowAgent + friends: each launch spins up an ISOLATED controller loop with
                 // its own model and restricted tool surface, wired further below once the conversation
                 // loop exists (so an async workflow's completion notification can reach it). A
@@ -1401,32 +1475,81 @@ try
                 // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false. That switch now applies to EVERY mode that
                 // asks for these tools, not only Workspace Agent, so "LmWorkflow off" means off
                 // everywhere rather than off in one mode.
-                var workspaceWorkflowEnabled =
-                    caps.StartWorkflowTools
-                    && !string.Equals(
-                        Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
-                        "false",
-                        StringComparison.OrdinalIgnoreCase
-                    );
+                // Read through configuration rather than the environment directly: the environment
+                // provider sits inside it, so a deployment's variable applies exactly as before, and a
+                // host test can flip the switch between two switches of one conversation without
+                // touching process-global state.
+                var lmWorkflowSwitchedOff = string.Equals(
+                    sp.GetRequiredService<IConfiguration>()["WORKSPACE_AGENT_LMWORKFLOW_ENABLED"],
+                    "false",
+                    StringComparison.OrdinalIgnoreCase
+                );
+                var workspaceWorkflowEnabled = caps.StartWorkflowTools && !lmWorkflowSwitchedOff;
                 // Deterministic mock-workflow testing: expose the workflow tool family for scripted providers
                 // even in a mode that did not select it. Resolve this before the sub-agent catalog gate below,
-                // because workflow delegates need that catalog's type routing and effort policy too.
-                if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
+                // because workflow delegates need that catalog's type routing and effort policy too. The
+                // deployment kill switch still wins: "off" means off everywhere, scripted providers included.
+                if (
+                    !workspaceWorkflowEnabled
+                    && !lmWorkflowSwitchedOff
+                    && normalizedProviderId is "test" or "test-anthropic"
+                )
                 {
                     workspaceWorkflowEnabled = true;
                 }
+
+                // Kept alive without being registered. A conversation-owned resource a child spawned
+                // earlier may still be calling through, so a configuration that does not select it
+                // leaves it DORMANT — alive, hidden from the model, and there again on switching back —
+                // rather than letting the pool dispose it under that child.
+                void KeepDormant(string key, IAsyncDisposable resource)
+                {
+                    _ = carriedOver.Add(resource);
+                    ownedResources.Add(resource);
+                    reusableResources[key] = resource;
+                }
+
+                // Every live resource under a key prefix this configuration did not itself publish.
+                void KeepDormantByPrefix(string keyPrefix)
+                {
+                    if (context.Existing is null)
+                    {
+                        return;
+                    }
+
+                    foreach (var (key, resource) in context.Existing.Resources)
+                    {
+                        if (key.StartsWith(keyPrefix, StringComparison.Ordinal) && !reusableResources.ContainsKey(key))
+                        {
+                            KeepDormant(key, resource);
+                        }
+                    }
+                }
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
+                    // Keyed by what the connection is made of. A switch that keeps those reuses the SAME
+                    // client, so a child spawned earlier keeps a working search handler rather than one
+                    // over a disposed session; a changed exam type is a different connection and replaces it.
+                    var booksClientKey =
+                        $"{LlmQueryMcpClientResourceKeyPrefix}{mcpBaseUrl}|{llmQueryMcpExamType ?? "NeetPG"}";
+                    var keptBooksClient = ReusedResource<McpClient>(context.Existing, booksClientKey);
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
                         filteredRegistry,
                         threadId,
                         mcpBaseUrl,
                         llmQueryMcpExamType,
-                        loggerFactory
+                        loggerFactory,
+                        existingClient: keptBooksClient
                     );
                     if (mcpClients.Count > 0)
                     {
+                        if (keptBooksClient is not null && mcpClients.Contains(keptBooksClient))
+                        {
+                            _ = carriedOver.Add(keptBooksClient);
+                        }
+
                         ownedResources.AddRange(mcpClients.Cast<IAsyncDisposable>());
+                        reusableResources[booksClientKey] = mcpClients[0];
                     }
                 }
 
@@ -1436,13 +1559,17 @@ try
                 // Selected per mode; Workflow Author takes the whole family.
                 if (caps.WorkflowAuthoringTools)
                 {
-                    var workflowRuntime = WorkflowRuntime.CreateNew(
+                    // On the conversation's scope: this runtime IS the graph the model is editing, so a
+                    // switch that rebuilt it would silently discard the workflow in progress. A later mode
+                    // that does not select the authoring tools leaves it DORMANT — alive, hidden from the
+                    // model, and there again on switching back — rather than ending it.
+                    scope.AuthoringRuntime ??= WorkflowRuntime.CreateNew(
                         logger: loggerFactory.CreateLogger<WorkflowRuntime>()
                     );
                     // Narrowed to the names the mode selected, so the editor's per-tool checkboxes
                     // mean what they say; null allow-list (workflow:*) passes the family through.
                     _ = filteredRegistry.AddProvider(
-                        ScopeWorkflowProvider(new WorkflowToolProvider(workflowRuntime), caps)
+                        ScopeWorkflowProvider(new WorkflowToolProvider(scope.AuthoringRuntime), caps)
                     );
                 }
 
@@ -1474,6 +1601,15 @@ try
                     // in every production run (nothing registers this key), so both connectors fall
                     // through to their real-HttpClient path exactly as before the seam existed.
                     var sandboxTransportHandler = sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey);
+                    // The client is the session plus the identity it connects as; the allow-list is a
+                    // SELECTION over the tools it serves, so a switch that only narrows or widens that
+                    // selection reuses the same client and re-registers from it. A child spawned under the
+                    // old mode keeps calling Bash/Read/Edit through a live session rather than a disposed one.
+                    var sandboxClientKey = SandboxMcpClientResourceKey(
+                        sandboxSession!.SessionId,
+                        (callerCredential ?? sandboxCredential).AppId
+                    );
+                    var keptSandboxClient = ReusedResource<McpClient>(context.Existing, sandboxClientKey);
                     var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
                         ? ConnectFilteredHttpMcpClient(
                             filteredRegistry,
@@ -1484,7 +1620,8 @@ try
                             toolNames: sandboxAllowList,
                             omitServerPrefix: true,
                             handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler
+                            transportHandler: sandboxTransportHandler,
+                            existingClient: keptSandboxClient
                         )
                         : ConnectHttpMcpClient(
                             filteredRegistry,
@@ -1494,12 +1631,19 @@ try
                             loggerFactory,
                             omitServerPrefix: true,
                             handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler
+                            transportHandler: sandboxTransportHandler,
+                            existingClient: keptSandboxClient
                         );
 
                     if (sandboxClients.Count > 0)
                     {
+                        if (keptSandboxClient is not null && sandboxClients.Contains(keptSandboxClient))
+                        {
+                            _ = carriedOver.Add(keptSandboxClient);
+                        }
+
                         ownedResources.AddRange(sandboxClients.Cast<IAsyncDisposable>());
+                        reusableResources[sandboxClientKey] = sandboxClients[0];
                     }
                     else
                     {
@@ -1528,6 +1672,10 @@ try
                     }
                 }
 
+                // A sandbox client this configuration did not take over — the mode has no sandbox, or
+                // the session or identity changed — stays dormant for the children still holding it.
+                KeepDormantByPrefix(SandboxMcpClientResourceKeyPrefix);
+
                 // WebFetch/WebSearch fallback tools for providers without a native web capability.
                 // Applied AFTER the MCP additions so collision detection sees the final per-conversation
                 // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
@@ -1550,6 +1698,9 @@ try
                     mode.EnabledTools,
                     mode.EnabledBuiltInTools
                 );
+                // One hosted-search session per conversation: the same MCP client serves every Copilot
+                // model, so a switch between them re-registers from the client it already has.
+                var keptHostedSearch = ReusedResource<IAsyncDisposable>(context.Existing, HostedSearchResourceKey);
                 var hostedSearch = isCopilotBackedModel
                     ? CopilotWebSearchRegistration.TryRegister(
                         filteredRegistry,
@@ -1557,12 +1708,23 @@ try
                         s_copilotTokenProvider.Value,
                         s_copilotSession.Value,
                         new CopilotOptions(),
-                        loggerFactory
+                        loggerFactory,
+                        existingResource: keptHostedSearch
                     )
                     : new CopilotWebSearchRegistrationResult(false, null, string.Empty);
                 if (hostedSearch.Resource is not null)
                 {
+                    if (ReferenceEquals(hostedSearch.Resource, keptHostedSearch))
+                    {
+                        _ = carriedOver.Add(keptHostedSearch);
+                    }
+
                     ownedResources.Add(hostedSearch.Resource);
+                    reusableResources[HostedSearchResourceKey] = hostedSearch.Resource;
+                }
+                else if (keptHostedSearch is not null)
+                {
+                    KeepDormant(HostedSearchResourceKey, keptHostedSearch);
                 }
 
                 try
@@ -1660,16 +1822,14 @@ try
                     // active; otherwise it completes synchronously.
                     IStreamingAgent subAgentFactory() => agentFactory(normalizedProviderId);
 
-                    // Root collaboration for THIS conversation (#244), or null when it resolves to off
-                    // for this chat mode. Every descendant (ordinary sub-agent, workflow controller,
-                    // workflow delegate) receives THIS handle by reference, so there is exactly one
-                    // directory and one ledger per conversation.
-                    var rootCollaboration = CreateRootCollaboration(
-                        collaborationHostOptions,
-                        caps,
-                        threadId,
-                        mode.RootAgentName
-                    );
+                    // Root collaboration for THIS conversation (#244), or null when it resolved to off
+                    // for the chat mode the conversation was created under. Every descendant (ordinary
+                    // sub-agent, workflow controller, workflow delegate) receives THIS handle by
+                    // reference, so there is exactly one directory and one ledger per conversation — and
+                    // that is why it is resolved once on the scope rather than per mode: the loop keeps
+                    // its own handle across a reconfigure, so a switch cannot turn collaboration on or
+                    // off for an existing conversation without splitting the directory in two.
+                    var rootCollaboration = scope.Collaboration;
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
@@ -1792,8 +1952,12 @@ try
                     // subagents into the same source the loop is reading. Without a session there
                     // is no webhook path, so the loop falls back to wrapping the static templates
                     // in a private source inside its ctor.
+                    // Skipped on an in-place switch: the loop KEEPS its template source across a
+                    // reconfigure, so a fresh one built here could never be adopted — and re-binding
+                    // would leave the session registry handing the context-discovery webhook a source
+                    // the loop no longer reads, which is a silently one-sided catalog.
                     MutableSubAgentTemplateSource? sharedSubAgentSource = null;
-                    if (sandboxSession is not null && subAgentOptions is not null)
+                    if (liveLoop is null && sandboxSession is not null && subAgentOptions is not null)
                     {
                         var binding = BindConversationSubAgents(
                             sp.GetRequiredService<SandboxSessionRegistry>(),
@@ -1810,7 +1974,13 @@ try
                     // just-built loop's SubAgentManager: the loop consumes AdditionalRegistrations
                     // inside its own ctor, so a subagent-kind source can't be handed the manager
                     // directly — it resolves it lazily once the loop (and thus the manager) exists.
-                    MultiTurnAgentLoop agent = null!;
+                    //
+                    // On an in-place switch this is ALREADY the conversation's live loop, assigned here
+                    // rather than below so the late-bound closures built between this point and the loop
+                    // construction — the trigger sources' SubAgentManager accessor, the workflow
+                    // completion notifier, the root usage sink, the inherited tool snapshot — resolve to
+                    // the real loop on both branches instead of staying null forever on this one.
+                    MultiTurnAgentLoop agent = liveLoop!;
                     // #145: attach the durable notify-wait store + this thread's id so notify-mode waits
                     // survive a process restart (TriggerRuntime restores/reconciles them on thread
                     // recovery). Set via a record `with` on Build's result so SampleTriggerRegistrations.Build
@@ -1843,6 +2013,18 @@ try
                     // mode). Declared before the loop ctor so the launch tools are registered before the
                     // sub-agent snapshot is taken; the completion notifier is late-bound to `agent` (assigned
                     // just below). This replaces #130's direct SetWorkflow/GetWorkflow wiring.
+                    // Looked up BEFORE the mode gate. The manager owns the running workflow runs and their
+                    // controller loops, so a mode that does not select the launch tools leaves it dormant
+                    // (the else branch below) rather than ending every run in flight.
+                    var keptWorkflowManager = ReusedResource<WorkflowManager>(
+                        context.Existing,
+                        WorkflowManagerResourceKey
+                    );
+                    if (keptWorkflowManager is not null)
+                    {
+                        _ = carriedOver.Add(keptWorkflowManager);
+                    }
+
                     if (workspaceWorkflowEnabled)
                     {
                         // Q2: the controller runs on a single, FIXED, pre-configured model — a configured
@@ -1956,109 +2138,119 @@ try
                             );
                         }
 
-                        var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
-
-                        var workflowManager = new WorkflowManager(
-                            controllerAgentFactory: subAgentFactory,
-                            controllerSubAgentOptions: controllerSubAgentOptions,
-                            completionNotifier: async (notify, notifyCt) =>
-                            {
-                                // Late-bound to `agent` (assigned just below). Re-injects the async workflow's
-                                // completion as a NotifyMessage into the conversation. WorkflowManager wraps
-                                // this call in its own try/catch, so a SendAsync on an already-disposed loop
-                                // (conversation torn down before the workflow finished) is tolerated — logged,
-                                // never fatal.
-                                var conversation = agent;
-                                if (conversation is not null)
+                        // Reused across an in-place switch, because this manager OWNS the conversation's
+                        // running workflows and their controller loops — the state the whole branch
+                        // exists to keep. Its tool surface is re-wrapped over the new registry below, so
+                        // the model still sees exactly what the new mode selects.
+                        //
+                        // KNOWN STALENESS, accepted deliberately: the controller model and the delegate
+                        // options below are fixed at construction, so after a MODEL switch a new
+                        // StartWorkflowAgent run defaults to the pre-switch controller model unless the
+                        // call names a preferred provider. Rebuilding to refresh them would end the runs
+                        // in flight, which is strictly the worse trade.
+                        var workflowManager =
+                            keptWorkflowManager
+                            ?? new WorkflowManager(
+                                controllerAgentFactory: subAgentFactory,
+                                controllerSubAgentOptions: BuildControllerOptions(normalizedProviderId),
+                                completionNotifier: async (notify, notifyCt) =>
                                 {
-                                    // The delivery itself lives in WorkflowCompletionNotifier rather than
-                                    // here (#418). It is the accept path least likely to be looked for — a
-                                    // workflow finishing long after the turn that started it, onto an idle
-                                    // conversation — and a lambda in the composition root is a path no test
-                                    // can reach. The pool is resolved lazily rather than captured: this
-                                    // delegate is built INSIDE the pool's own agent factory, so a direct
-                                    // dependency would close a DI construction cycle (same reason, and same
-                                    // shape, as the transcript mirror's pool lookup above). It only runs once
-                                    // a workflow has completed, long after both singletons exist.
-                                    await WorkflowCompletionNotifier.DeliverAsync(
-                                        sp.GetRequiredService<MultiTurnAgentPool>(),
-                                        threadId,
-                                        conversation,
-                                        notify,
-                                        notifyCt
-                                    );
-                                }
-                            },
-                            maxConcurrentWorkflows: maxConcurrentWorkflows,
-                            controllerDefaultOptions: outputTokenPolicy.ApplyDelegated(
-                                new GenerateReplyOptions
-                                {
-                                    ModelId = controllerModelId,
-                                    // Same caching as the root loop; the controller's delegates inherit it.
-                                    PromptCaching = PromptCachingMode.Auto,
-                                    // The controller loop inherits the parent's reasoning (Option A: fixed High
-                                    // floor), shaped for its OWN model so the orchestrator thinks instead of
-                                    // running un-nudged. A per-run preferred-model override reshapes this in
-                                    // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
-                                    ExtraProperties = BuildControllerReasoningExtraProperties(
-                                        providerRegistry,
-                                        controllerModelId,
-                                        normalizedProviderId
-                                    ),
-                                }
-                            ),
-                            logger: loggerFactory.CreateLogger<WorkflowManager>(),
-                            // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
-                            // total. Late-bound because the WorkflowManager is created before the root `agent`
-                            // loop (whose UsageSink is the conversation's ledger) exists.
-                            rootUsageSink: () =>
-                            {
-                                var conversation = agent;
-                                return conversation?.UsageSink;
-                            },
-                            // Transparency (Rules 1 & 2): a run's delegate sub-agents inherit THIS conversation's
-                            // tools — the launching conversation is the first non-WorkflowAgent ancestor, and its
-                            // SubAgentManager snapshot is already the sandbox tools MINUS the workflow/launch
-                            // tools. Late-bound for the same reason as rootUsageSink.
-                            inheritedToolSnapshot: () => agent?.SubAgentManager?.GetInheritableToolSnapshot(),
-                            // Persist the controller loop's OWN conversation (the workflow agent's orchestration
-                            // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
-                            // viewable after the run completes. Non-owning so controller teardown never disposes
-                            // the shared store.
-                            controllerConversationStore: new NonOwningConversationStore(conversationStore),
-                            // A StartWorkflowAgent run may pass a preferred provider; build its controller agent
-                            // AND delegate templates on that provider. Validation happens on the tool (below);
-                            // this factory trusts the id. Must be agentFactory-buildable (openai/anthropic/test/
-                            // test-anthropic/discovered Copilot) — CLI providers throw ProviderUnavailableException,
-                            // surfaced as invalid_provider by the validator.
-                            controllerProfileByProvider: providerId => new WorkflowControllerProfile(
-                                () => agentFactory(providerId),
-                                BuildControllerOptions(providerId),
-                                // Shape the parent's inherited thinking (Option A: High floor) for THIS run's
-                                // provider/model so a preferred-provider controller reasons on the correct
-                                // transport. For Copilot, providerId == model id; non-Copilot falls back to the
-                                // provider-id reasoning mapping.
-                                BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId),
-                                // Provider switch must also replace the launching provider's default model.
-                                // For discovered Copilot providers the provider id is the raw model id; for
-                                // family providers this is the same id the host's agent factory accepts.
-                                outputTokenPolicy.ApplyDelegated(
+                                    // Late-bound to `agent` (assigned just below). Re-injects the async workflow's
+                                    // completion as a NotifyMessage into the conversation. WorkflowManager wraps
+                                    // this call in its own try/catch, so a SendAsync on an already-disposed loop
+                                    // (conversation torn down before the workflow finished) is tolerated — logged,
+                                    // never fatal.
+                                    var conversation = agent;
+                                    if (conversation is not null)
+                                    {
+                                        // The delivery itself lives in WorkflowCompletionNotifier rather than
+                                        // here (#418). It is the accept path least likely to be looked for — a
+                                        // workflow finishing long after the turn that started it, onto an idle
+                                        // conversation — and a lambda in the composition root is a path no test
+                                        // can reach. The pool is resolved lazily rather than captured: this
+                                        // delegate is built INSIDE the pool's own agent factory, so a direct
+                                        // dependency would close a DI construction cycle (same reason, and same
+                                        // shape, as the transcript mirror's pool lookup above). It only runs once
+                                        // a workflow has completed, long after both singletons exist.
+                                        await WorkflowCompletionNotifier.DeliverAsync(
+                                            sp.GetRequiredService<MultiTurnAgentPool>(),
+                                            threadId,
+                                            conversation,
+                                            notify,
+                                            notifyCt
+                                        );
+                                    }
+                                },
+                                maxConcurrentWorkflows: maxConcurrentWorkflows,
+                                controllerDefaultOptions: outputTokenPolicy.ApplyDelegated(
                                     new GenerateReplyOptions
                                     {
-                                        ModelId = providerId,
+                                        ModelId = controllerModelId,
+                                        // Same caching as the root loop; the controller's delegates inherit it.
                                         PromptCaching = PromptCachingMode.Auto,
+                                        // The controller loop inherits the parent's reasoning (Option A: fixed High
+                                        // floor), shaped for its OWN model so the orchestrator thinks instead of
+                                        // running un-nudged. A per-run preferred-model override reshapes this in
+                                        // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
+                                        ExtraProperties = BuildControllerReasoningExtraProperties(
+                                            providerRegistry,
+                                            controllerModelId,
+                                            normalizedProviderId
+                                        ),
                                     }
-                                )
-                            ),
-                            // Scope the controller's persistence thread to THIS conversation so a human-chosen
-                            // (non-unique) workflowId can never map two different conversations onto the same
-                            // shared-store thread and inherit each other's controller history. The conversation
-                            // id is already unique/time-based, so the scoped thread is deterministic and resume
-                            // reconstructs it. Late-bound for the same reason as rootUsageSink (the manager is
-                            // built before the root `agent` loop exists).
-                            launchConversationId: () => agent?.ThreadId,
-                            lifecycleServices: lifecycleServices
-                        );
+                                ),
+                                logger: loggerFactory.CreateLogger<WorkflowManager>(),
+                                // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
+                                // total. Late-bound because the WorkflowManager is created before the root `agent`
+                                // loop (whose UsageSink is the conversation's ledger) exists.
+                                rootUsageSink: () =>
+                                {
+                                    var conversation = agent;
+                                    return conversation?.UsageSink;
+                                },
+                                // Transparency (Rules 1 & 2): a run's delegate sub-agents inherit THIS conversation's
+                                // tools — the launching conversation is the first non-WorkflowAgent ancestor, and its
+                                // SubAgentManager snapshot is already the sandbox tools MINUS the workflow/launch
+                                // tools. Late-bound for the same reason as rootUsageSink.
+                                inheritedToolSnapshot: () => agent?.SubAgentManager?.GetInheritableToolSnapshot(),
+                                // Persist the controller loop's OWN conversation (the workflow agent's orchestration
+                                // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
+                                // viewable after the run completes. Non-owning so controller teardown never disposes
+                                // the shared store.
+                                controllerConversationStore: new NonOwningConversationStore(conversationStore),
+                                // A StartWorkflowAgent run may pass a preferred provider; build its controller agent
+                                // AND delegate templates on that provider. Validation happens on the tool (below);
+                                // this factory trusts the id. Must be agentFactory-buildable (openai/anthropic/test/
+                                // test-anthropic/discovered Copilot) — CLI providers throw ProviderUnavailableException,
+                                // surfaced as invalid_provider by the validator.
+                                controllerProfileByProvider: providerId => new WorkflowControllerProfile(
+                                    () => agentFactory(providerId),
+                                    BuildControllerOptions(providerId),
+                                    // Shape the parent's inherited thinking (Option A: High floor) for THIS run's
+                                    // provider/model so a preferred-provider controller reasons on the correct
+                                    // transport. For Copilot, providerId == model id; non-Copilot falls back to the
+                                    // provider-id reasoning mapping.
+                                    BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId),
+                                    // Provider switch must also replace the launching provider's default model.
+                                    // For discovered Copilot providers the provider id is the raw model id; for
+                                    // family providers this is the same id the host's agent factory accepts.
+                                    outputTokenPolicy.ApplyDelegated(
+                                        new GenerateReplyOptions
+                                        {
+                                            ModelId = providerId,
+                                            PromptCaching = PromptCachingMode.Auto,
+                                        }
+                                    )
+                                ),
+                                // Scope the controller's persistence thread to THIS conversation so a human-chosen
+                                // (non-unique) workflowId can never map two different conversations onto the same
+                                // shared-store thread and inherit each other's controller history. The conversation
+                                // id is already unique/time-based, so the scoped thread is deterministic and resume
+                                // reconstructs it. Late-bound for the same reason as rootUsageSink (the manager is
+                                // built before the root `agent` loop exists).
+                                launchConversationId: () => agent?.ThreadId,
+                                lifecycleServices: lifecycleServices
+                            );
 
                         // Narrowed to the names the mode selected, so a mode that asks for
                         // StartWorkflowAgent alone does not also receive the three status tools.
@@ -2079,6 +2271,7 @@ try
                             )
                         );
                         ownedResources.Add(workflowManager);
+                        reusableResources[WorkflowManagerResourceKey] = workflowManager;
 
                         // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket
                         // can surface its runs as tabs. Safe to leave a stale entry: WorkflowManager.DisposeAsync
@@ -2093,6 +2286,18 @@ try
                         {
                             subAgentOptions = AddWorkflowNonInheritedTools(subAgentOptions);
                         }
+                    }
+                    else if (keptWorkflowManager is not null)
+                    {
+                        KeepDormant(WorkflowManagerResourceKey, keptWorkflowManager);
+                        loggerFactory
+                            .CreateLogger<Program>()
+                            .LogInformation(
+                                "Mode {ModeName} does not select the workflow launch tools; thread {ThreadId} keeps "
+                                    + "its WorkflowManager dormant with its runs intact",
+                                mode.Name,
+                                threadId
+                            );
                     }
 
                     // Let THIS conversation's agent read the transcript of an agent it is above (#244) —
@@ -2150,257 +2355,363 @@ try
                         ownedResources.Add(publicationProvider);
                     }
 
-                    agent = new MultiTurnAgentLoop(
-                        providerAgent,
-                        filteredRegistry,
-                        threadId,
-                        // The designated constructor (the only one taking `compaction:`); both client tools
-                        // stay registered exactly as before unless ClientTools:AskUserQuestion turns the
-                        // question tool off for an unattended host.
-                        includeAskUserQuestionTool: askUserQuestionToolEnabled,
-                        includeNotifyClientTool: true,
-                        // The caller's own instructions (the code-review daemon's methodology, output
-                        // contract and sub-agent-dispatch protocol), recorded at provision and appended
-                        // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
-                        // is built: the degraded-sandbox branch above rebuilds effectiveMode from the bare
-                        // `mode`, so anything folded in earlier is silently dropped on exactly the runs that
-                        // are already going wrong.
-                        systemPrompt: SystemPromptAugmenter
-                            .ComposeAsync(
-                                conversationStore,
-                                threadId,
-                                effectiveMode.SystemPrompt,
-                                logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose")
-                            )
-                            .GetAwaiter()
-                            .GetResult(),
-                        defaultOptions: outputTokenPolicy.ApplyPrimary(
-                            new GenerateReplyOptions
-                            {
-                                ModelId = modelId,
-                                BuiltInTools = filteredBuiltInTools,
-                                RequestResponseDumpFileName = requestResponseDumpFileName,
-                                PromptCaching = PromptCachingMode.Auto,
-                                ExtraProperties = extraProperties,
-                            },
-                            useDelegatedFallback: normalizedProviderId is "openai"
-                        ),
-                        // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
-                        // default: workspace/tool-heavy conversations routinely need more turns before
-                        // the run hits its cap.
-                        maxTurnsPerRun: 150,
-                        outputChannelCapacity: outputChannelCapacity,
-                        store: conversationStore,
-                        logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
-                        subAgentOptions: subAgentOptions,
-                        subAgentTemplateSource: sharedSubAgentSource,
-                        loggerFactory: loggerFactory,
-                        persistRunLedger: true,
-                        // Estimated public cost per model for conversation-wide usage accounting (#196).
-                        // Null-resolving for models without a configured rate (cost shows "unavailable").
-                        pricingResolver: pricingResolver,
-                        // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
-                        // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
-                        // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
-                        // OpenAI/Anthropic/Copilot behavior stays byte-for-byte unchanged and the sample
-                        // exercises deferred-tool park/resume deterministically via the mock
-                        // instruction-chain. Broader rollout (enabling triggers for real providers behind a
-                        // flag) is tracked in #161.
-                        triggerOptions: isTestMode ? triggerOptions : null,
-                        lifecycleServices: lifecycleServices,
-                        // Null unless the host opted in (#244). Passing it here is the entire opt-in for the
-                        // subtree: the loop registers itself as the root node and forwards the same handle to
-                        // the SubAgentManager it builds, so every descendant shares one directory and one
-                        // ledger. Null keeps the legacy tool schemas and per-manager limits.
-                        collaboration: rootCollaboration,
-                        // Null unless the Compaction section puts some route above Off (#721). The window
-                        // comes from the same capacity resolver the context panel reads; spawned children
-                        // inherit this setup through SubAgentOptions.Compaction.
-                        compaction: CompactionHostSetup.Create(
-                            compactionOptions,
-                            capacityResolver,
-                            normalizedProviderId
-                        ),
-                        // Experimental: null when the ElapsedTimeNotice section is disabled, which leaves
-                        // the turn loop exactly as before. ConversationsController.GetMessages hides the
-                        // persisted notice rows from the browser on reload.
-                        elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
-                    );
-
-                    // #676: whatever the LAST process wrote about this root's agents is reconciled into
-                    // this collaboration, and the roster plus its open reply-bearing obligations are then
-                    // written down as the directory changes. Attached HERE, after the loop's constructor
-                    // has registered the root as live, so the restart trace cannot report the live root
-                    // as a casualty. In ownedResources so the same teardown that flushes the board —
-                    // eviction, provider/mode swap, shutdown — flushes the last roster too. Sync-over-
-                    // async matches the board hydration and sandbox wiring in this same factory.
-                    if (rootCollaboration is not null)
-                    {
-                        ownedResources.Add(
-                            CollaborationIdentityWiring
-                                .AttachAsync(
-                                    rootCollaboration,
-                                    conversationStore,
-                                    loggerFactory.CreateLogger("LmStreaming.Sample.CollaborationIdentity")
-                                )
-                                .GetAwaiter()
-                                .GetResult()
-                        );
-                    }
-
-                    // #672: the board stops taking an assignee's word for who they are. Every path that
-                    // writes an owner asks the collaboration directory to turn the name into an agent
-                    // identifier, so ownership is compared on one stable string rather than on whatever
-                    // text a model typed. Attached AFTER the reconciliation above, so an agent a restart
-                    // took away is already tombstoned and reads as not-live rather than as never having
-                    // existed — and after board hydration, which restores owners directly and must not be
-                    // re-validated against a directory that no longer holds last process's agents.
-                    // Nothing is wired when the host has not opted into collaboration: with no resolver
-                    // the board behaves exactly as it did before.
-                    if (rootCollaboration is not null)
-                    {
-                        TodoBoardIdentityWiring.Attach(taskManager, rootCollaboration, threadId);
-                    }
-
-                    // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
-                    // live conversation_todo frame to this conversation's subscribers, exactly as the
-                    // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after
-                    // the loop exists, because the TaskManager was registered on the conversation
-                    // registry long before the loop it publishes through could be constructed. The
-                    // snapshot is stamped with the ROOT conversation's threadId (and the loop re-stamps
-                    // its own regardless): sub-agents mutate this same shared instance, and a frame
-                    // carrying a subagent-* id would be silently dropped by the client. Coalescing is
-                    // structural — one frame per tool call — so a bulk-initialize of 30 tasks is one
-                    // frame, not 30, with no timer, matching the usage push's no-timer pattern.
-                    // Durability rides the same hook (#586 review F-005): the pool's read-path
-                    // write-through only fires when someone ASKS for the board, so a board mutated and
-                    // then evicted/swapped would be lost without a change-driven save. The writer
-                    // coalesces bursts (capture-at-write-time, no timer, same engine as the usage
-                    // ledger's writer) and, because it sits in ownedResources, the pool entry's
-                    // teardown — eviction, provider/mode swap, shutdown — flushes the last change
-                    // before the entry disappears. It never persists an empty board and never mints a
-                    // metadata row for a thread that has none.
-                    var todoBoardWriter = new TodoBoardPersistenceWriter(
-                        conversationStore,
-                        threadId,
-                        () => taskManager.GetTodoBoardSnapshot(threadId),
-                        loggerFactory.CreateLogger<TodoBoardPersistenceWriter>()
-                    );
-                    ownedResources.Add(todoBoardWriter);
-
-                    var todoPublisher = agent;
-                    // The capture is passed as a DELEGATE and runs inside PublishTodoBoardFrame's
-                    // guard: #587 made GetTodoBoardSnapshot deliberately partial (an unmapped status
-                    // member throws), and a capture evaluated here would blow past the publish guard
-                    // into the task tool's last-resort catch, taking Schedule() down with it — exactly
-                    // the silent failure #587 changed the code to prevent. The logger gives that
-                    // last-resort catch a voice for whatever else a subscriber might throw.
-                    taskManager.Logger = loggerFactory.CreateLogger<TaskManager>();
-
-                    // Stamps the board with the conversation it belongs to, so the TodoBoardIdVanished
-                    // warning (#621 Part B) names the thread that lost a row. The tool methods are the
-                    // model-facing surface and cannot carry a host argument, so the id lives on the
-                    // instance rather than travelling per call the way GetTodoBoardSnapshot's does.
-                    taskManager.ThreadId = threadId;
-                    taskManager.OnChanged += () =>
-                    {
-                        todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
-                        todoBoardWriter.Schedule();
-                    };
-
-                    // PR 6 of the todo-board plan (#583): the board talks back. Assignment notices
-                    // (N1, on by default) and budgeted stalled-agent nudges (N2-N4, default OFF) ride
-                    // the SAME OnChanged multicast the frame publisher and the durable writer use —
-                    // the F-007 slot fix is what makes a third subscriber possible at all. The service
-                    // is constructed AFTER hydration on purpose: whatever FromSnapshot restored is its
-                    // baseline, so a recreate/restart cannot re-notify every pre-existing assignee.
-                    var todoNudgeOptions = TodoNudgeOptions.FromConfiguration(builder.Configuration);
-                    if (todoNudgeOptions.AnyNudgeEnabled)
-                    {
-                        var nudgeAgent = agent;
-                        var nudgeService = new TodoNudgeService(
-                            todoNudgeOptions,
-                            taskManager.GetTasks,
-                            // A name that resolves to a live sub-agent is nudged there; anything else
-                            // would land in the root conversation and is gated on the explicit opt-in.
-                            name => TodoNotificationDelivery.ResolveTargetKind(nudgeAgent.SubAgentManager, name),
-                            // #690: delivered through the manager's lifecycle path, never straight at the
-                            // child's loop — a finished child's loop still accepts input but its owned
-                            // provider is gone, so a direct send starts a run that dies on its first call.
-                            (name, message, ct) =>
-                                TodoNotificationDelivery.DeliverAsync(
-                                    nudgeAgent,
-                                    nudgeAgent.SubAgentManager,
-                                    name,
-                                    message,
-                                    ct
-                                ),
-                            TimeProvider.System,
-                            loggerFactory.CreateLogger<TodoNudgeService>()
-                        );
-                        taskManager.OnChanged += nudgeService.OnBoardChangedHook;
-
-                        // The stall tiers need run boundaries, which only the pump observes — so it
-                        // exists only when a stall tier is on (shipped default: it is not built).
-                        if (todoNudgeOptions.AnyStallNudgeEnabled)
+                    // Hoisted out of the constructor call because the two branches below must hand the
+                    // loop the SAME two values: what a switch changes is precisely the prompt and the
+                    // per-turn options, so computing them twice is how they drift.
+                    //
+                    // The caller's own instructions (the code-review daemon's methodology, output
+                    // contract and sub-agent-dispatch protocol), recorded at provision and appended
+                    // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
+                    // is built: the degraded-sandbox branch above rebuilds effectiveMode from the bare
+                    // `mode`, so anything folded in earlier is silently dropped on exactly the runs that
+                    // are already going wrong. This is the host's RAW prompt either way — the loop adds
+                    // its identity preamble and compaction note itself, on both paths.
+                    var composedSystemPrompt = SystemPromptAugmenter
+                        .ComposeAsync(
+                            conversationStore,
+                            threadId,
+                            effectiveMode.SystemPrompt,
+                            logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose")
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+                    var loopDefaultOptions = outputTokenPolicy.ApplyPrimary(
+                        new GenerateReplyOptions
                         {
-                            ownedResources.Add(
-                                new TodoNudgeEventPump(
-                                    nudgeAgent,
-                                    nudgeService,
-                                    agentId =>
-                                    {
-                                        var snapshot = nudgeAgent
-                                            .SubAgentManager?.ListAgents()
-                                            .FirstOrDefault(s =>
-                                                string.Equals(s.AgentId, agentId, StringComparison.Ordinal)
-                                            );
-                                        return snapshot is null
-                                            ? null
-                                            : new TodoNudgeSubAgentRun(
-                                                snapshot.Name ?? snapshot.AgentId,
-                                                Errored: snapshot.Status == SubAgentStatus.Error,
-                                                Cancelled: snapshot.Status == SubAgentStatus.Stopped
-                                            );
-                                    },
-                                    loggerFactory.CreateLogger<TodoNudgeEventPump>()
+                            ModelId = modelId,
+                            BuiltInTools = filteredBuiltInTools,
+                            RequestResponseDumpFileName = requestResponseDumpFileName,
+                            PromptCaching = PromptCachingMode.Auto,
+                            ExtraProperties = extraProperties,
+                        },
+                        useDelegatedFallback: normalizedProviderId is "openai"
+                    );
+
+                    if (liveLoop is not null)
+                    {
+                        // THE IN-PLACE SWITCH. Everything the conversation owns — the SubAgentManager and
+                        // its running children, the armed waits, the queued turn, the subscribers, the
+                        // history, the usage ledger, the compaction checkpoint — stays put; only the
+                        // provider, the tool surface, the prompt and the options move. The registry is
+                        // deliberately the freshly built one holding HOST tools only: the loop re-adds its
+                        // own built-ins to it exactly as its constructor did.
+                        if (
+                            liveLoop.Reconfigure(
+                                new AgentReconfiguration(
+                                    providerAgent,
+                                    filteredRegistry,
+                                    composedSystemPrompt,
+                                    loopDefaultOptions,
+                                    IncludeAskUserQuestionTool: askUserQuestionToolEnabled,
+                                    IncludeNotifyClientTool: true,
+                                    SubAgentOptions: subAgentOptions,
+                                    LoggerFactory: loggerFactory,
+                                    // This builder made providerAgent for this switch alone, and no child
+                                    // receives the instance (ApplyCharacteristicsAgentFactory and the
+                                    // template source's rebind hand children fresh agents, even on the
+                                    // parent-fallback path). Compaction rebinds to the new one and the
+                                    // busy refusal means no turn is mid-stream on the old one, so the
+                                    // loop may dispose the provider this switch supersedes.
+                                    OwnsProviderAgent: true
                                 )
+                            ) == ReconfigureOutcome.RefusedBusy
+                        )
+                        {
+                            // A run started between the pool's busy observation and this call. Same
+                            // condition, same answer: refuse rather than fall back to a recreate that
+                            // would destroy the run now in flight.
+                            throw new AgentBusyException(threadId);
+                        }
+                    }
+                    else
+                    {
+                        agent = new MultiTurnAgentLoop(
+                            providerAgent,
+                            filteredRegistry,
+                            threadId,
+                            // The designated constructor (the only one taking `compaction:`); both client tools
+                            // stay registered exactly as before unless ClientTools:AskUserQuestion turns the
+                            // question tool off for an unattended host.
+                            includeAskUserQuestionTool: askUserQuestionToolEnabled,
+                            includeNotifyClientTool: true,
+                            systemPrompt: composedSystemPrompt,
+                            defaultOptions: loopDefaultOptions,
+                            // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
+                            // default: workspace/tool-heavy conversations routinely need more turns before
+                            // the run hits its cap.
+                            maxTurnsPerRun: 150,
+                            outputChannelCapacity: outputChannelCapacity,
+                            store: conversationStore,
+                            logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
+                            subAgentOptions: subAgentOptions,
+                            subAgentTemplateSource: sharedSubAgentSource,
+                            loggerFactory: loggerFactory,
+                            persistRunLedger: true,
+                            // Estimated public cost per model for conversation-wide usage accounting (#196).
+                            // Null-resolving for models without a configured rate (cost shows "unavailable").
+                            pricingResolver: pricingResolver,
+                            // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
+                            // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
+                            // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
+                            // OpenAI/Anthropic/Copilot behavior stays byte-for-byte unchanged and the sample
+                            // exercises deferred-tool park/resume deterministically via the mock
+                            // instruction-chain. Broader rollout (enabling triggers for real providers behind a
+                            // flag) is tracked in #161.
+                            triggerOptions: isTestMode ? triggerOptions : null,
+                            lifecycleServices: lifecycleServices,
+                            // Null unless the host opted in (#244). Passing it here is the entire opt-in for the
+                            // subtree: the loop registers itself as the root node and forwards the same handle to
+                            // the SubAgentManager it builds, so every descendant shares one directory and one
+                            // ledger. Null keeps the legacy tool schemas and per-manager limits.
+                            collaboration: rootCollaboration,
+                            // Null unless the Compaction section puts some route above Off (#721). The window
+                            // comes from the same capacity resolver the context panel reads; spawned children
+                            // inherit this setup through SubAgentOptions.Compaction.
+                            compaction: CompactionHostSetup.Create(
+                                compactionOptions,
+                                capacityResolver,
+                                normalizedProviderId
+                            ),
+                            // Experimental: null when the ElapsedTimeNotice section is disabled, which leaves
+                            // the turn loop exactly as before. ConversationsController.GetMessages hides the
+                            // persisted notice rows from the browser on reload.
+                            elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
+                        )
+                        {
+                            // Push a parked AskUserQuestion to every open tab over /ws/events, from this
+                            // root and from every sub-agent it spawns at any depth. Supplied here rather
+                            // than to the pool because the loop is what this host constructs; an init
+                            // property rather than a constructor argument because LmMultiTurn ships as a
+                            // package whose constructor shape is pinned.
+                            PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            // providerAgent was built for this loop alone and no child is ever handed the
+                            // instance (see ApplyCharacteristicsAgentFactory), so the loop owns it: the first
+                            // in-place switch, or the loop's teardown if there is none, disposes it once.
+                            OwnsProviderAgent = true,
+                        };
+                    }
+
+                    // EVERYTHING BELOW RUNS ONCE PER CONVERSATION, NOT ONCE PER SWITCH. It wires the
+                    // board, the collaboration roster and the board-driven notifications onto the loop,
+                    // and every piece of it subscribes to `taskManager.OnChanged`. A reconfigured loop
+                    // already has all of it; re-running it would add a second copy of every subscriber,
+                    // so the second switch would publish, persist and nudge each board change twice. What
+                    // it builds is owned by the conversation's scope, so it lives exactly as long as the
+                    // conversation rather than as long as the configuration that happened to build it.
+                    if (liveLoop is null)
+                    {
+                        // #676: whatever the LAST process wrote about this root's agents is reconciled into
+                        // this collaboration, and the roster plus its open reply-bearing obligations are then
+                        // written down as the directory changes. Attached HERE, after the loop's constructor
+                        // has registered the root as live, so the restart trace cannot report the live root
+                        // as a casualty. In ownedResources so the same teardown that flushes the board —
+                        // eviction, provider/mode swap, shutdown — flushes the last roster too. Sync-over-
+                        // async matches the board hydration and sandbox wiring in this same factory.
+                        if (rootCollaboration is not null)
+                        {
+                            _ = scope.Own(
+                                CollaborationIdentityWiring
+                                    .AttachAsync(
+                                        rootCollaboration,
+                                        conversationStore,
+                                        loggerFactory.CreateLogger("LmStreaming.Sample.CollaborationIdentity")
+                                    )
+                                    .GetAwaiter()
+                                    .GetResult()
                             );
+                        }
+
+                        // #672: the board stops taking an assignee's word for who they are. Every path that
+                        // writes an owner asks the collaboration directory to turn the name into an agent
+                        // identifier, so ownership is compared on one stable string rather than on whatever
+                        // text a model typed. Attached AFTER the reconciliation above, so an agent a restart
+                        // took away is already tombstoned and reads as not-live rather than as never having
+                        // existed — and after board hydration, which restores owners directly and must not be
+                        // re-validated against a directory that no longer holds last process's agents.
+                        // Nothing is wired when the host has not opted into collaboration: with no resolver
+                        // the board behaves exactly as it did before.
+                        if (rootCollaboration is not null)
+                        {
+                            TodoBoardIdentityWiring.Attach(taskManager, rootCollaboration, threadId);
+                        }
+
+                        // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
+                        // live conversation_todo frame to this conversation's subscribers, exactly as the
+                        // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after
+                        // the loop exists, because the TaskManager was registered on the conversation
+                        // registry long before the loop it publishes through could be constructed. The
+                        // snapshot is stamped with the ROOT conversation's threadId (and the loop re-stamps
+                        // its own regardless): sub-agents mutate this same shared instance, and a frame
+                        // carrying a subagent-* id would be silently dropped by the client. Coalescing is
+                        // structural — one frame per tool call — so a bulk-initialize of 30 tasks is one
+                        // frame, not 30, with no timer, matching the usage push's no-timer pattern.
+                        // Durability rides the same hook (#586 review F-005): the pool's read-path
+                        // write-through only fires when someone ASKS for the board, so a board mutated and
+                        // then evicted/swapped would be lost without a change-driven save. The writer
+                        // coalesces bursts (capture-at-write-time, no timer, same engine as the usage
+                        // ledger's writer) and, because it sits in ownedResources, the pool entry's
+                        // teardown — eviction, provider/mode swap, shutdown — flushes the last change
+                        // before the entry disappears. It never persists an empty board and never mints a
+                        // metadata row for a thread that has none.
+                        var todoBoardWriter = new TodoBoardPersistenceWriter(
+                            conversationStore,
+                            threadId,
+                            () => taskManager.GetTodoBoardSnapshot(threadId),
+                            loggerFactory.CreateLogger<TodoBoardPersistenceWriter>()
+                        );
+                        _ = scope.Own(todoBoardWriter);
+
+                        var todoPublisher = agent;
+                        // The capture is passed as a DELEGATE and runs inside PublishTodoBoardFrame's
+                        // guard: #587 made GetTodoBoardSnapshot deliberately partial (an unmapped status
+                        // member throws), and a capture evaluated here would blow past the publish guard
+                        // into the task tool's last-resort catch, taking Schedule() down with it — exactly
+                        // the silent failure #587 changed the code to prevent. The logger gives that
+                        // last-resort catch a voice for whatever else a subscriber might throw.
+                        taskManager.Logger = loggerFactory.CreateLogger<TaskManager>();
+
+                        // Stamps the board with the conversation it belongs to, so the TodoBoardIdVanished
+                        // warning (#621 Part B) names the thread that lost a row. The tool methods are the
+                        // model-facing surface and cannot carry a host argument, so the id lives on the
+                        // instance rather than travelling per call the way GetTodoBoardSnapshot's does.
+                        taskManager.ThreadId = threadId;
+                        taskManager.OnChanged += () =>
+                        {
+                            todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
+                            todoBoardWriter.Schedule();
+                        };
+
+                        // Bug 19: a bulk-initialize clear used to be total and unrecoverable — completed
+                        // rows, notes and artifacts included. The board hands over what it is about to drop
+                        // and this is where it becomes durable, under its OWN metadata key so the very next
+                        // board write (scheduled by the OnChanged above, for the cleared board) cannot
+                        // overwrite it. Fire-and-forget rather than through the coalescing writer: a clear
+                        // is a one-off event with its own payload, while that writer re-captures the LIVE
+                        // board at write time and would persist the cleared one. Failures are logged and
+                        // never surfaced as a tool error — the rows are already gone, and failing the call
+                        // would only send the model round again.
+                        var todoArchiveLogger = loggerFactory.CreateLogger("TodoBoardArchive");
+                        taskManager.OnCleared += cleared =>
+                        {
+                            var entry = cleared with { ThreadId = threadId };
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await ConversationTodoArchiveProjection.AppendAsync(conversationStore, entry);
+                                }
+                                catch (Exception ex)
+                                {
+                                    todoArchiveLogger.LogWarning(
+                                        ex,
+                                        "Failed to archive the cleared todo board for thread {ThreadId}; {RowCount} root rows are not recoverable",
+                                        threadId,
+                                        entry.Tasks.Count
+                                    );
+                                }
+                            });
+                        };
+
+                        // PR 6 of the todo-board plan (#583): the board talks back. Assignment notices
+                        // (N1, on by default) and budgeted stalled-agent nudges (N2-N4, default OFF) ride
+                        // the SAME OnChanged multicast the frame publisher and the durable writer use —
+                        // the F-007 slot fix is what makes a third subscriber possible at all. The service
+                        // is constructed AFTER hydration on purpose: whatever FromSnapshot restored is its
+                        // baseline, so a recreate/restart cannot re-notify every pre-existing assignee.
+                        var todoNudgeOptions = TodoNudgeOptions.FromConfiguration(builder.Configuration);
+                        if (todoNudgeOptions.AnyNudgeEnabled)
+                        {
+                            var nudgeAgent = agent;
+                            var nudgeService = new TodoNudgeService(
+                                todoNudgeOptions,
+                                taskManager.GetTasks,
+                                // A name that resolves to a live sub-agent is nudged there; anything else
+                                // would land in the root conversation and is gated on the explicit opt-in.
+                                name => TodoNotificationDelivery.ResolveTargetKind(nudgeAgent.SubAgentManager, name),
+                                // #690: delivered through the manager's lifecycle path, never straight at the
+                                // child's loop — a finished child's loop still accepts input but its owned
+                                // provider is gone, so a direct send starts a run that dies on its first call.
+                                (name, message, ct) =>
+                                    TodoNotificationDelivery.DeliverAsync(
+                                        nudgeAgent,
+                                        nudgeAgent.SubAgentManager,
+                                        name,
+                                        message,
+                                        ct
+                                    ),
+                                TimeProvider.System,
+                                loggerFactory.CreateLogger<TodoNudgeService>()
+                            );
+                            taskManager.OnChanged += nudgeService.OnBoardChangedHook;
+
+                            // The stall tiers need run boundaries, which only the pump observes — so it
+                            // exists only when a stall tier is on (shipped default: it is not built).
+                            if (todoNudgeOptions.AnyStallNudgeEnabled)
+                            {
+                                _ = scope.Own(
+                                    new TodoNudgeEventPump(
+                                        nudgeAgent,
+                                        nudgeService,
+                                        agentId =>
+                                        {
+                                            var snapshot = nudgeAgent
+                                                .SubAgentManager?.ListAgents()
+                                                .FirstOrDefault(s =>
+                                                    string.Equals(s.AgentId, agentId, StringComparison.Ordinal)
+                                                );
+                                            return snapshot is null
+                                                ? null
+                                                : new TodoNudgeSubAgentRun(
+                                                    snapshot.Name ?? snapshot.AgentId,
+                                                    Errored: snapshot.Status == SubAgentStatus.Error,
+                                                    Cancelled: snapshot.Status == SubAgentStatus.Stopped
+                                                );
+                                        },
+                                        loggerFactory.CreateLogger<TodoNudgeEventPump>()
+                                    )
+                                );
+                            }
+                        }
+
+                        // #609 (part of #606 item 3): subtree-scoped change digests. A separate service
+                        // from the nudges ON PURPOSE — digests are informational fan-out with no budget,
+                        // and the NudgeRootConversation gate must NOT apply (the root always hears; that
+                        // is the feature). It rides the same OnChanged multicast and reuses the nudge
+                        // wiring's target-resolution and delivery idioms, but shares none of its state.
+                        // Constructed AFTER hydration for the same reason the nudge service is: whatever
+                        // FromSnapshot restored is baseline, so a recreate/restart digests nothing.
+                        var todoDigestOptions = TodoDigestOptions.FromConfiguration(builder.Configuration);
+                        if (todoDigestOptions.AnyDigestEnabled)
+                        {
+                            var digestAgent = agent;
+                            var digestService = new TodoDigestService(
+                                todoDigestOptions,
+                                taskManager.GetTasks,
+                                name => TodoNotificationDelivery.ResolveTargetKind(digestAgent.SubAgentManager, name),
+                                // A null name is the primary digest's address: the root conversation. Same
+                                // manager-routed delivery as the nudges (#690) for a sub-agent target.
+                                (name, message, ct) =>
+                                    TodoNotificationDelivery.DeliverAsync(
+                                        digestAgent,
+                                        digestAgent.SubAgentManager,
+                                        name,
+                                        message,
+                                        ct
+                                    ),
+                                TimeProvider.System,
+                                loggerFactory.CreateLogger<TodoDigestService>()
+                            );
+                            taskManager.OnChanged += digestService.OnBoardChangedHook;
+                            // Owned so teardown disposes the debounce timer with the conversation.
+                            _ = scope.Own(digestService);
                         }
                     }
 
-                    // #609 (part of #606 item 3): subtree-scoped change digests. A separate service
-                    // from the nudges ON PURPOSE — digests are informational fan-out with no budget,
-                    // and the NudgeRootConversation gate must NOT apply (the root always hears; that
-                    // is the feature). It rides the same OnChanged multicast and reuses the nudge
-                    // wiring's target-resolution and delivery idioms, but shares none of its state.
-                    // Constructed AFTER hydration for the same reason the nudge service is: whatever
-                    // FromSnapshot restored is baseline, so a recreate/restart digests nothing.
-                    var todoDigestOptions = TodoDigestOptions.FromConfiguration(builder.Configuration);
-                    if (todoDigestOptions.AnyDigestEnabled)
-                    {
-                        var digestAgent = agent;
-                        var digestService = new TodoDigestService(
-                            todoDigestOptions,
-                            taskManager.GetTasks,
-                            name => TodoNotificationDelivery.ResolveTargetKind(digestAgent.SubAgentManager, name),
-                            // A null name is the primary digest's address: the root conversation. Same
-                            // manager-routed delivery as the nudges (#690) for a sub-agent target.
-                            (name, message, ct) =>
-                                TodoNotificationDelivery.DeliverAsync(
-                                    digestAgent,
-                                    digestAgent.SubAgentManager,
-                                    name,
-                                    message,
-                                    ct
-                                ),
-                            TimeProvider.System,
-                            loggerFactory.CreateLogger<TodoDigestService>()
-                        );
-                        taskManager.OnChanged += digestService.OnBoardChangedHook;
-                        // Owned so teardown disposes the debounce timer with the conversation.
-                        ownedResources.Add(digestService);
-                    }
+                    // Owned so the pool's entry teardown ends the conversation's board wiring, AND
+                    // offered back by key so the NEXT configuration of this conversation takes it over
+                    // instead. The pool disposes only what the next result leaves out.
+                    ownedResources.Add(scope);
+                    reusableResources[ConversationToolScope.ResourceKey] = scope;
 
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,
@@ -2412,12 +2723,14 @@ try
                         // the same one every sub-agent inherits through the parent handler map — one
                         // board per conversation, attributed later (PR 4) rather than split per agent.
                         TodoBoard = taskManager,
+                        ReusableResources = reusableResources,
                     };
                 }
                 catch
                 {
-                    // Dispose owned resources (MCP clients) if agent construction fails
-                    DisposeOwnedResources(ownedResources);
+                    // Dispose owned resources (MCP clients) if agent construction fails — but never the
+                    // ones this attempt only borrowed from the live conversation (see `carriedOver`).
+                    DisposeOwnedResources([.. ownedResources.Where(resource => !carriedOver.Contains(resource))]);
 
                     throw;
                 }
@@ -2488,6 +2801,13 @@ try
     _ = builder.Services.AddSingleton<WebSocketConnectionRegistry>();
     _ = builder.Services.AddSingleton<ChatWebSocketManager>();
 
+    // The app-wide pending-question channel behind /ws/events. Registered unconditionally: it is
+    // inert until an agent loop reports a parked AskUserQuestion, and a client that never opens the
+    // socket costs it one idle pump. Conversation sockets are per-thread, so a question raised in a
+    // conversation the user is not looking at has no socket of its own to arrive on — this is that
+    // socket. See PendingQuestionHub for why polling could not close the same gap.
+    _ = builder.Services.AddSingleton<PendingQuestionHub>();
+
     var app = builder.Build();
 
     // Log startup information
@@ -2498,14 +2818,24 @@ try
     );
 
     // Use Serilog request logging for HTTP requests
+    // The message template is overridden for ONE reason (Bug#15): Serilog's default logs {RequestPath}, and
+    // the raw workspace route carries its grant — a bearer credential for an hour of read access to one
+    // conversation's workspace — as a path SEGMENT. Left alone, every iframe, image and stylesheet fetch
+    // would write a live credential to the console and to logs/lmstreaming-{date}.jsonl, which are kept for
+    // seven days and are routinely copied into bug reports. {SafeRequestPath} is the same path with that one
+    // segment replaced; every other path is unchanged, character for character.
     _ = app.UseSerilogRequestLogging(options =>
+    {
+        options.MessageTemplate =
+            "HTTP {RequestMethod} {SafeRequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
         options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
         {
+            diagnosticContext.Set("SafeRequestPath", RedactWorkspaceGrant(httpContext.Request.Path.Value));
             diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value ?? string.Empty);
             diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme ?? string.Empty);
             diagnosticContext.Set("UserAgent", httpContext.Request.Headers.UserAgent.ToString() ?? string.Empty);
-        }
-    );
+        };
+    });
 
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
@@ -2779,6 +3109,81 @@ try
         }
     );
 
+    // An APP-WIDE event socket, deliberately not attached to any one conversation. It carries only
+    // pending-question events today:
+    //
+    //   {"$type":"snapshot","questions":[ <pending>, ... ]}     on connect
+    //   {"$type":"question_pending", rootThreadId, agentId, childThreadId, toolCallId, prompt,
+    //                                conversationTitle, agentName, raisedAtUtc}
+    //   {"$type":"question_settled", rootThreadId, toolCallId}
+    //
+    // Why a separate route: "/ws" and "/ws/subagent" each bind ONE thread, so a question raised in a
+    // conversation the user is not looking at has no open socket to arrive on. The client used to
+    // find those by re-reading transcripts on a 30s/5m timer, which is as good as polling can get —
+    // `lastUpdated` moves when a run COMPLETES, and a run parked on a question has not completed.
+    //
+    // Authorization: this route sits under the "/ws" segment, so IdentityMiddleware already demands a
+    // principal exactly as it does for the other two. What it CANNOT do is gate the socket on one
+    // conversation, because the socket names none — so the principal is captured at the handshake and
+    // every event is filtered against it per subscriber (PendingQuestionHub.MayReadAsync) using the
+    // same ConversationAuthorizer the REST routes use. Read, not Write: this channel says a question
+    // exists and where to answer it; answering still goes through "/ws", which demands Write.
+    _ = app.Map(
+        "/ws/events",
+        async (HttpContext context, PendingQuestionHub hub, ILogger<Program> wsLogger, CancellationToken ct) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", ct);
+                return;
+            }
+
+            var principal =
+                context.Items[IdentityHttpItems.PrincipalKey] as AchieveAi.LmDotnetTools.LmCore.Identity.Principal;
+
+            var webSocket = await AcceptNegotiatedWebSocketAsync(context);
+            var subscriber = await hub.SubscribeAsync(webSocket, principal, ct);
+            wsLogger.LogInformation(
+                "Event WebSocket connection established ({ConnectionId}).",
+                subscriber.ConnectionId
+            );
+
+            try
+            {
+                // Read-only channel. Draining inbound frames is how the socket learns it was closed:
+                // without a receive in flight a client close is never observed and the subscriber
+                // would be held until the host shuts down.
+                var buffer = new byte[1024];
+                while (webSocket.State == System.Net.WebSockets.WebSocketState.Open && !ct.IsCancellationRequested)
+                {
+                    var received = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    if (received.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (System.Net.WebSockets.WebSocketException) { }
+            finally
+            {
+                hub.Unsubscribe(subscriber);
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation("Event WebSocket connection closed ({ConnectionId}).", subscriber.ConnectionId);
+            }
+        }
+    );
+
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
 
@@ -2813,6 +3218,57 @@ finally
 
 public partial class Program
 {
+    /// <summary>
+    /// The request path with Bug#15's workspace grant replaced by <c>[grant]</c>, for the request log.
+    /// Every other path is returned unchanged, character for character.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant is a bearer credential: anyone holding it can read that conversation's workspace for the
+    /// rest of its lifetime. It lives in a path SEGMENT because a relative reference drops the query
+    /// (RFC 3986 section 5.3), which is what makes a rendered page's own <c>img/x.png</c> resolve — so the
+    /// credential is unavoidably in the path, and the place to stop it is where the path is written down.
+    /// </para>
+    /// <para>
+    /// Matching is anchored on the whole route shape (<c>/api/conversations/{id}/workspace/{grant}/…</c>),
+    /// not on a bare <c>workspace</c> segment, so no other route that happens to contain that word has its
+    /// path rewritten. The first match wins and the rest of the path is untouched: nothing after the grant
+    /// segment is a credential, and a workspace file's own path is what makes the log line useful at all.
+    /// </para>
+    /// <para>
+    /// This closes the log channel only. The URL still reaches browser history, the address bar of an
+    /// "open in new tab", and any reverse proxy or CDN access log in front of this host - all accepted
+    /// residual, bounded by the grant's one-hour lifetime. See the note beside
+    /// <c>FileBrowserController.ApplyRawHeaders</c>.
+    /// </para>
+    /// </remarks>
+    internal static string RedactWorkspaceGrant(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path ?? string.Empty;
+        }
+
+        var segments = path.Split('/');
+
+        // "" / api / conversations / {threadId} / workspace / {grant} / {**path}
+        for (var i = 3; i + 1 < segments.Length; i++)
+        {
+            if (
+                string.Equals(segments[i], "workspace", StringComparison.Ordinal)
+                && string.Equals(segments[i - 3], "api", StringComparison.Ordinal)
+                && string.Equals(segments[i - 2], "conversations", StringComparison.Ordinal)
+                && segments[i + 1].Length > 0
+            )
+            {
+                segments[i + 1] = "[grant]";
+                return string.Join('/', segments);
+            }
+        }
+
+        return path;
+    }
+
     /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
     ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format
@@ -3138,8 +3594,9 @@ public partial class Program
 
     /// <summary>
     ///     Maps a discovered Copilot model's transport to the matching agent factory. Anthropic-shaped
-    ///     models route through the Copilot Messages backend; OpenAI-shaped models through the Copilot
-    ///     Responses backend.
+    ///     models route through the Copilot Messages backend; OpenAI-shaped models (and Grok) through the
+    ///     Copilot Responses backend; Chat-Completions-only models (Gemini) through Copilot's
+    ///     <c>/chat/completions</c>.
     /// </summary>
     internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
     {
@@ -3147,6 +3604,10 @@ public partial class Program
         {
             CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
             CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
+            CopilotModelTransport.ChatCompletions => CreateCopilotChatCompletionsAgent(
+                model.DisplayName,
+                loggerFactory
+            ),
             _ => throw new ProviderUnavailableException(model.Id, $"unsupported Copilot transport {model.Transport}"),
         };
     }
@@ -3194,6 +3655,21 @@ public partial class Program
             CopilotResponsesTransport.Sse,
             s_copilotSession.Value,
             logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>()
+        );
+    }
+
+    /// <summary>
+    ///     Creates an OpenAI Chat Completions agent (Gemini) routed through the GitHub Copilot backend.
+    /// </summary>
+    private static IStreamingAgent CreateCopilotChatCompletionsAgent(string name, ILoggerFactory loggerFactory)
+    {
+        Log.Information("Creating Copilot-backed Chat Completions agent: {Name}", name);
+        return CopilotChatCompletionsAgentFactory.Create(
+            name,
+            s_copilotTokenProvider.Value,
+            timeout: CopilotResponseTimeout,
+            session: s_copilotSession.Value,
+            logger: loggerFactory.CreateLogger<OpenClientAgent>()
         );
     }
 
@@ -3535,6 +4011,45 @@ public partial class Program
         };
     }
 
+    /// <summary>
+    ///     The stable key this host publishes a conversation's <see cref="WorkflowManager"/> under, so a
+    ///     later mode/model switch can take over the SAME manager — and with it the workflow runs it is
+    ///     currently executing — instead of building a second one beside them.
+    /// </summary>
+    internal const string WorkflowManagerResourceKey = "workflow-manager";
+
+    /// <summary>Reuse-key prefix of the LlmQuery book-search MCP client; the suffix is base URL and exam type.</summary>
+    internal const string LlmQueryMcpClientResourceKeyPrefix = "mcp:llmquery:";
+
+    /// <summary>Reuse-key prefix of the sandbox MCP client; see <see cref="SandboxMcpClientResourceKey"/>.</summary>
+    internal const string SandboxMcpClientResourceKeyPrefix = "mcp:sandbox:";
+
+    /// <summary>Reuse key of the Copilot hosted web-search MCP session.</summary>
+    internal const string HostedSearchResourceKey = "hosted-search";
+
+    /// <summary>
+    ///     The sandbox MCP client's reuse key: the session it is bound to and the app identity it
+    ///     connects as. Both are connect-time-frozen on the client, so either changing is a different
+    ///     client; the mode's tool allow-list is not part of it (a selection over the same client).
+    /// </summary>
+    internal static string SandboxMcpClientResourceKey(string sessionId, string appId) =>
+        $"{SandboxMcpClientResourceKeyPrefix}{sessionId}:{appId}";
+
+    /// <summary>
+    ///     What the conversation's PREVIOUS configuration published under <paramref name="key"/>, or
+    ///     <c>null</c> when there is no switch in flight (a first creation), nothing was published under
+    ///     that key, or what was is not a <typeparamref name="T"/>.
+    /// </summary>
+    /// <remarks>
+    ///     Returning an instance from here and putting it back in the new
+    ///     <c>AgentCreationResult.ReusableResources</c> is the whole reuse protocol: the pool disposes
+    ///     exactly what the old entry held and the new result does not, so keeping a tool alive is
+    ///     returning it and ending one is leaving it out.
+    /// </remarks>
+    internal static T? ReusedResource<T>(MultiTurnAgentPool.AgentSwitchContext? existing, string key)
+        where T : class, IAsyncDisposable =>
+        existing is not null && existing.Resources.TryGetValue(key, out var resource) ? resource as T : null;
+
     internal static GenerateReplyOptions ApplyPrimaryOutputTokens(
         GenerateReplyOptions options,
         AgentOutputTokenPolicy policy,
@@ -3611,6 +4126,12 @@ public partial class Program
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
     /// </summary>
+    /// <remarks>
+    /// A spawn that ends up on the parent's model — inherited, or an explicit/tier model the factory could
+    /// not route and fell back on (<see cref="SubAgentProviderAgent.UseParentModel"/>) — gets a FRESH,
+    /// owned agent from the template rather than the parent's provider instance. No child ever holds the
+    /// parent loop's provider, which is what lets the loop own and dispose it on an in-place switch.
+    /// </remarks>
     internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
         SubAgentOptions options,
         Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory
@@ -3629,7 +4150,9 @@ public partial class Program
                         CharacteristicsAgentFactory = characteristics =>
                         {
                             var provider = characteristicsAgentFactory(characteristics);
-                            return characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved
+                            return
+                                (characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved)
+                                && !provider.UseParentModel
                                 ? provider
                                 : provider with
                                 {
@@ -4545,37 +5068,54 @@ public partial class Program
         string threadId,
         string baseUrl,
         string? examType,
-        ILoggerFactory loggerFactory
+        ILoggerFactory loggerFactory,
+        McpClient? existingClient = null
     )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
         try
         {
-            var headers = new Dictionary<string, string>
+            McpClient booksClient;
+            if (existingClient is not null)
             {
-                ["X-Exam-Type"] = examType ?? "NeetPG",
-                ["X-Session-Id"] = threadId,
-            };
-
-            var booksTransport = new HttpClientTransport(
-                new HttpClientTransportOptions
+                // A live client from the configuration being switched away from: register its tools on
+                // the new registry without a second connection, so the handlers a child captured earlier
+                // and the ones this registry hands out share one session.
+                booksClient = existingClient;
+            }
+            else
+            {
+                var headers = new Dictionary<string, string>
                 {
-                    Name = "books",
-                    Endpoint = new Uri($"{baseUrl}/mcp/query"),
-                    AdditionalHeaders = headers,
-                }
-            );
+                    ["X-Exam-Type"] = examType ?? "NeetPG",
+                    ["X-Session-Id"] = threadId,
+                };
 
-            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
-            var booksClient = McpClient.CreateAsync(booksTransport).GetAwaiter().GetResult();
+                var booksTransport = new HttpClientTransport(
+                    new HttpClientTransportOptions
+                    {
+                        Name = "books",
+                        Endpoint = new Uri($"{baseUrl}/mcp/query"),
+                        AdditionalHeaders = headers,
+                    }
+                );
+
+                // Sync-over-async: acceptable in sample app (no SynchronizationContext)
+                booksClient = McpClient.CreateAsync(booksTransport).GetAwaiter().GetResult();
+            }
+
             createdClients.Add(booksClient);
 
             var mcpClients = new Dictionary<string, McpClient> { ["books"] = booksClient };
 
             _ = registry.AddMcpClientsAsync(mcpClients, "LlmQuery").GetAwaiter().GetResult();
 
-            logger.LogInformation("Connected to LlmQuery book search MCP server for thread {ThreadId}", threadId);
+            logger.LogInformation(
+                "{Verb} LlmQuery book search MCP server for thread {ThreadId}",
+                existingClient is null ? "Connected to" : "Reused the connection to",
+                threadId
+            );
         }
         catch (Exception ex)
         {
@@ -4806,6 +5346,11 @@ public partial class Program
     ///     transport sends over this handler instead of opening its own real <see cref="HttpClient"/>.
     ///     Null in every production call.
     /// </param>
+    /// <param name="existingClient">
+    ///     A live client from the configuration being switched away from (the pool's reuse protocol,
+    ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
+    ///     handlers a child captured earlier and the ones registered here share one session.
+    /// </param>
     private static List<McpClient> ConnectHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -4814,34 +5359,17 @@ public partial class Program
         ILoggerFactory loggerFactory,
         bool omitServerPrefix = false,
         Func<ToolHandler, ToolHandler>? handlerDecorator = null,
-        HttpMessageHandler? transportHandler = null
+        HttpMessageHandler? transportHandler = null,
+        McpClient? existingClient = null
     )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
         try
         {
-            var transportOptions = new HttpClientTransportOptions
-            {
-                Name = name,
-                Endpoint = new Uri(endpoint),
-                // AdditionalHeaders is IDictionary; copy the read-only input into a mutable map.
-                AdditionalHeaders = new Dictionary<string, string>(headers),
-            };
-
-            // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
-            // the SDK opens its own real HttpClient exactly as before this seam existed.
-            var transport = transportHandler is null
-                ? new HttpClientTransport(transportOptions)
-                : new HttpClientTransport(
-                    transportOptions,
-                    new HttpClient(transportHandler, disposeHandler: false),
-                    loggerFactory: null,
-                    ownsHttpClient: true
-                );
-
-            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
-            var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
+            // An existing client (the configuration being switched away from) is registered from as
+            // is: one session serves the handlers a child captured earlier and the ones registered here.
+            var client = existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler);
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
@@ -4875,7 +5403,12 @@ public partial class Program
                 }
             }
 
-            logger.LogInformation("Connected to MCP server '{Name}' at {Endpoint}", name, endpoint);
+            logger.LogInformation(
+                "{Verb} MCP server '{Name}' at {Endpoint}",
+                existingClient is null ? "Connected to" : "Reused the connection to",
+                name,
+                endpoint
+            );
         }
         catch (Exception ex)
         {
@@ -4888,6 +5421,37 @@ public partial class Program
         }
 
         return createdClients;
+    }
+
+    /// <summary>Opens a streamable-HTTP MCP client; the shared half of the two connectors above and below.</summary>
+    private static McpClient OpenHttpMcpClient(
+        string name,
+        string endpoint,
+        IReadOnlyDictionary<string, string> headers,
+        HttpMessageHandler? transportHandler
+    )
+    {
+        var transportOptions = new HttpClientTransportOptions
+        {
+            Name = name,
+            Endpoint = new Uri(endpoint),
+            // AdditionalHeaders is IDictionary; copy the read-only input into a mutable map.
+            AdditionalHeaders = new Dictionary<string, string>(headers),
+        };
+
+        // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
+        // the SDK opens its own real HttpClient exactly as before this seam existed.
+        var transport = transportHandler is null
+            ? new HttpClientTransport(transportOptions)
+            : new HttpClientTransport(
+                transportOptions,
+                new HttpClient(transportHandler, disposeHandler: false),
+                loggerFactory: null,
+                ownsHttpClient: true
+            );
+
+        // Sync-over-async: acceptable in sample app (no SynchronizationContext)
+        return McpClient.CreateAsync(transport).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -4913,6 +5477,11 @@ public partial class Program
     ///     transport sends over this handler instead of opening its own real <see cref="HttpClient"/>.
     ///     Null in every production call.
     /// </param>
+    /// <param name="existingClient">
+    ///     A live client from the configuration being switched away from (the pool's reuse protocol,
+    ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
+    ///     handlers a child captured earlier and the ones registered here share one session.
+    /// </param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -4922,33 +5491,16 @@ public partial class Program
         IReadOnlySet<string> toolNames,
         bool omitServerPrefix,
         Func<ToolHandler, ToolHandler> handlerDecorator,
-        HttpMessageHandler? transportHandler = null
+        HttpMessageHandler? transportHandler = null,
+        McpClient? existingClient = null
     )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
         try
         {
-            var transportOptions = new HttpClientTransportOptions
-            {
-                Name = name,
-                Endpoint = new Uri(endpoint),
-                AdditionalHeaders = new Dictionary<string, string>(headers),
-            };
-
-            // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
-            // the SDK opens its own real HttpClient exactly as before this seam existed.
-            var transport = transportHandler is null
-                ? new HttpClientTransport(transportOptions)
-                : new HttpClientTransport(
-                    transportOptions,
-                    new HttpClient(transportHandler, disposeHandler: false),
-                    loggerFactory: null,
-                    ownsHttpClient: true
-                );
-
-            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
-            var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
+            // See ConnectHttpMcpClient: an existing client is registered from, not reconnected.
+            var client = existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler);
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
@@ -4967,7 +5519,8 @@ public partial class Program
             }
 
             logger.LogInformation(
-                "Connected to MCP server '{Name}' at {Endpoint}, filtered to {ToolNames}",
+                "{Verb} MCP server '{Name}' at {Endpoint}, filtered to {ToolNames}",
+                existingClient is null ? "Connected to" : "Reused the connection to",
                 name,
                 endpoint,
                 string.Join(", ", toolNames)

@@ -126,7 +126,8 @@ internal interface ITaskChecker
 /// Runs a task's <c>check.ps1</c> through PowerShell, per tasks/README.md:
 /// <c>pwsh check.ps1 -Workspace &lt;dir&gt; -Out &lt;score.json&gt;</c>.
 /// </summary>
-internal sealed class PwshTaskChecker(TextWriter log, TimeSpan? timeout = null) : ITaskChecker
+internal sealed class PwshTaskChecker(TextWriter log, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
+    : ITaskChecker
 {
     /// <summary>The score file every checker writes, inside the run's own output directory.</summary>
     public const string ScoreFileName = "score.json";
@@ -141,6 +142,13 @@ internal sealed class PwshTaskChecker(TextWriter log, TimeSpan? timeout = null) 
     /// on the branch that happens to be reachable is a contract asserted on half the code.
     /// </remarks>
     private readonly TimeSpan _timeout = timeout ?? TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The clock the timeout is measured on. Injected so a test can spend the budget deterministically
+    /// once the checker exists, instead of racing pwsh's start-up against a wall-clock budget that a
+    /// loaded machine spends before the script has run a line.
+    /// </summary>
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task<J1Result?> JudgeAsync(
         EvalTaskAsset task,
@@ -181,11 +189,11 @@ internal sealed class PwshTaskChecker(TextWriter log, TimeSpan? timeout = null) 
 
             var stdout = process.StandardOutput.ReadToEndAsync(ct);
             var stderr = process.StandardError.ReadToEndAsync(ct);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(_timeout);
+            using var timeout = new CancellationTokenSource(_timeout, _timeProvider);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
             try
             {
-                await process.WaitForExitAsync(timeout.Token);
+                await process.WaitForExitAsync(linked.Token);
             }
             // Both cancellations land here, and both must kill the tree before this method returns.
             // A checker holds the run's workspace open, and the sweep deletes that workspace as soon

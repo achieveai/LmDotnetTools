@@ -187,6 +187,24 @@ Expected behavior:
    `routing.routed` counter increment.
 3. After ~30s the timer fires and `ctx-probe` resumes — proof it was genuinely parked, not finished.
 
+### Backgrounded sub-agent parked long enough to outlive a mode/model switch
+
+Same shape as the fixture above, with a **10-minute** wait instead of 30 seconds, so the child is
+still `Running` for the whole of a manual switch sequence rather than resuming halfway through it.
+Used by `playwright-scripts/mode-switch-keeps-subagent.mjs` to check that a mode or model switch on
+the API-backed arm keeps the live sub-agent: it is served on the live loop, so the `SubAgentManager`
+and its children are never disposed and the child is never stamped `host_shutdown`. Requires `test`
+/ `test-anthropic` mode with the `Agent` + `Wait` tools wired.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-survivor","id_message":"Background-spawn switch-survivor parked on a 10m wait","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"switch-survivor","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"survivor-arm\",\"messages\":[{\"tool_call\":[{\"name\":\"Wait\",\"args\":{\"kind\":\"timer\",\"args\":{\"delay\":\"10m\"},\"timeout\":\"20m\",\"label\":\"switch-survivor-park\"}}]}]},{\"id\":\"survivor-done\",\"messages\":[{\"text\":\"switch-survivor resumed after its wait\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent-ack","id_message":"Parent continues while switch-survivor is parked","messages":[{"text":"switch-survivor spawned in the background and parked on its wait."}]}]}<|instruction_end|>
+
+Expected behavior:
+1. The parent's run finishes while `switch-survivor` is still parked, so the conversation is idle and
+   a mode/provider switch is allowed.
+2. `GET /api/conversations/{id}/subagents` lists `switch-survivor` as `Running`.
+3. After a mode switch and after a provider switch between two API-backed providers, the SAME
+   `agentId` is still listed and still `Running` — never `host_shutdown`, which is disposal's stamp.
+
 ### Multi-level nested delegation (every `Agent` wrapped in the next chain)
 
 > ⚠ **Only the FIRST level actually executes.** A sub-agent does **not** inherit the `Agent` tool —

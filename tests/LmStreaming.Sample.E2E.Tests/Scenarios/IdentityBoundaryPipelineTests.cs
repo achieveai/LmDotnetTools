@@ -143,7 +143,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         _ = nonApiRoutes
             .Should()
             .BeEquivalentTo(
-                ["auth/m365/callback", "auth/{providerId}", "ws", "ws/subagent", "{*path:nonfile}"],
+                ["auth/m365/callback", "auth/{providerId}", "ws", "ws/events", "ws/subagent", "{*path:nonfile}"],
                 "a route family outside /api joins this list by an author editing it, never by nobody "
                     + "looking - #342 is what the absence of this enumeration cost"
             );
@@ -151,6 +151,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // The transports are inside the boundary now, asked of the real predicate.
         _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws")).Should().BeTrue();
         _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws/subagent")).Should().BeTrue();
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws/events")).Should().BeTrue();
 
         // The rest stay outside, each for a reason that survives being written down:
         //  - the SPA fallback serves the very screen that explains a refusal, so gating it would

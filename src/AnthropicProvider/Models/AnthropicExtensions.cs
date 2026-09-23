@@ -71,11 +71,12 @@ public static class AnthropicExtensions
                         : null,
             };
 
+            // Always stamped, 0 included — see AnthropicStreamParser.CreateUsageMessage for why a full
+            // cache hit must still carry it.
+            usage = usage.SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens);
             if (response.Usage.CacheCreationInputTokens > 0)
             {
-                usage = usage
-                    .SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens)
-                    .SetExtraProperty("ephemeral_1h_input_tokens", response.Usage.CacheWrite1hTokens);
+                usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", response.Usage.CacheWrite1hTokens);
             }
 
             messages.Add(

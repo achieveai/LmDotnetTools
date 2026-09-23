@@ -2313,6 +2313,44 @@ public class CompactionLoopTests
         string? requestId
     ) => [.. live.OfType<CompactionStatusMessage>().Where(s => s.RequestId == requestId)];
 
+    /// <summary>
+    /// A manual compaction runs between turns, so no run id marks the loop busy while its summary call is in
+    /// flight. A reconfigure there would move, and for an owned provider dispose, the provider under that
+    /// call. It is refused as busy until the compaction ends, then applies.
+    /// </summary>
+    [Fact]
+    public async Task Reconfigure_WhileAManualCompactionIsInFlight_IsRefusedBusy_ThenApplies()
+    {
+        await using var h = new Harness(EchoThenDone(3), Options(CompactionMode.Compact), _ => Window);
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        (await h.RunAsync("again")).IsError.Should().BeFalse();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Summarizer.Hold = ct => release.Task.WaitAsync(ct);
+        AgentReconfiguration Spec() =>
+            new(
+                h.Agent,
+                new FunctionRegistry(),
+                SystemPrompt: null,
+                new GenerateReplyOptions { ModelId = Model, MaxToken = 100 },
+                IncludeAskUserQuestionTool: false,
+                IncludeNotifyClientTool: false,
+                SubAgentOptions: null
+            );
+
+        (await h.Loop.RequestCompactionAsync()).Accepted.Should().BeTrue();
+        await WaitUntilAsync(() => Task.FromResult(h.Summarizer.Requests.Count > 0), "the summary call to start");
+
+        h.Loop.Reconfigure(Spec())
+            .Should()
+            .Be(ReconfigureOutcome.RefusedBusy, "the manual compaction's summary call is still in flight");
+
+        release.SetResult();
+        await WaitUntilAsync(
+            () => Task.FromResult(h.Loop.Reconfigure(Spec()) == ReconfigureOutcome.Applied),
+            "the reconfigure to apply once the compaction ended"
+        );
+    }
+
     [Fact]
     public async Task ManualCompaction_OnAnIdleLoop_CompactsWithoutAModelTurn_AndCarriesTheFocus()
     {

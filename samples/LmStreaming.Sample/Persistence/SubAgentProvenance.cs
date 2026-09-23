@@ -14,7 +14,7 @@ namespace LmStreaming.Sample.Persistence;
 /// <remarks>
 /// <para>
 /// A sub-agent's TRANSCRIPT already survives the run — children persist under the reserved
-/// <c>subagent-{agentId}</c> thread convention — but the roster that names them does not:
+/// <c>subagent-{scope}-{agentId}</c> thread convention — but the roster that names them does not:
 /// <c>SubAgentManager</c> holds the parent→child mapping in memory only, so
 /// <c>GET /api/conversations/{threadId}/subagents</c> could answer solely for a parent still in the
 /// agent pool. Once a run ends and the parent leaves the pool (or the host restarts), the child

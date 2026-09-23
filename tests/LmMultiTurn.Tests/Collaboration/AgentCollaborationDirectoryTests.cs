@@ -179,6 +179,31 @@ public class AgentCollaborationDirectoryTests
     }
 
     [Fact]
+    public void TryRegister_WithANameThatDiffersOnlyInCase_CollidesLikeAnyOtherRepeat()
+    {
+        // A name is addressed by a model writing prose, and "Reviewer" and "reviewer" are the same
+        // word to whoever typed them. Treating them as two agents made the SPELLING of a message
+        // decide which agent heard it — the retargeting hazard this whole file is built around,
+        // reached by a route no collision rule was watching.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        _ = directory.TryRegister(root.CreateChild("agent-1", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+
+        var second = directory.TryRegister(
+            root.CreateChild("agent-2", AgentKind.SubAgent, "r", "d"),
+            "Reviewer",
+            "running"
+        );
+
+        second.Succeeded.Should().BeTrue();
+        second.Entry!.Name.Should().Be("Reviewer-2", "the requested spelling is kept, the collision is not");
+
+        // Both stay addressable, in either spelling, exactly as an ordinary collision leaves them.
+        directory.Resolve("REVIEWER").Entry!.AgentId.Should().Be("agent-1");
+        directory.Resolve("reviewer-2").Entry!.AgentId.Should().Be("agent-2");
+    }
+
+    [Fact]
     public void Resolve_AfterASuffixedRegistration_AddressesEachAgentUnambiguously()
     {
         // The point of suffixing rather than latching: BOTH agents stay reachable by name. The old
@@ -420,6 +445,39 @@ public class AgentCollaborationDirectoryTests
         entry.Status.Should().Be("completed");
         entry.IsTerminal.Should().BeTrue();
         entry.IsLive.Should().BeFalse();
+        entry
+            .RetirementSequence.Should()
+            .NotBeNull("a listing that cannot show every retained row has " + "to know which rows are recent");
+    }
+
+    [Fact]
+    public void TryMarkRetained_OrdersRetirementsAndDoesNotRenumberOnARepeat()
+    {
+        // Retirement is idempotent and genuinely repeated: SubAgentManager.DisposeAsync retires every
+        // admission again at teardown. Renumbering there would stamp the whole conversation's history
+        // as having finished at shutdown, in reverse of the order it actually did — so the listing
+        // that trims by this field would keep the wrong rows in precisely the long conversation the
+        // trim exists for.
+        var directory = CreateDirectory();
+        var root = RegisterRoot(directory);
+        foreach (var id in new[] { "agent-first", "agent-second" })
+        {
+            _ = directory.TryRegister(root.CreateChild(id, AgentKind.SubAgent, "r", "d"), id, "running");
+        }
+
+        directory.TryMarkRetained("agent-first").Should().BeTrue();
+        directory.TryMarkRetained("agent-second").Should().BeTrue();
+
+        var firstSequence = directory.FindById("agent-first")!.RetirementSequence;
+        var secondSequence = directory.FindById("agent-second")!.RetirementSequence;
+        secondSequence.Should().BeGreaterThan(firstSequence!.Value);
+
+        // The teardown sweep, in the order DisposeAsync would take it.
+        directory.TryMarkRetained("agent-first").Should().BeTrue();
+        directory.TryMarkRetained("agent-second").Should().BeTrue();
+
+        directory.FindById("agent-first")!.RetirementSequence.Should().Be(firstSequence);
+        directory.FindById("agent-second")!.RetirementSequence.Should().Be(secondSequence);
     }
 
     [Fact]
@@ -447,6 +505,47 @@ public class AgentCollaborationDirectoryTests
             .Should()
             .Equal("agent-a", "agent-b", "agent-c", "agent-root");
     }
+
+    [Fact]
+    public void InvalidatedRecords_ListsTheTombstones_WithoutTouchingTheSnapshotOrThePermit()
+    {
+        // A tombstone (#676) is deliberately kept out of Snapshot and SnapshotRecords: the first is
+        // what every listing and capacity decision reads, the second is what the next process
+        // inherits, and a ghost in either would be charged for or re-persisted forever. A listing
+        // that wants to SAY the agent is gone therefore needs its own accessor — and the accessor
+        // must not change what the other two answer, or the guard it was added beside is gone too.
+        var directory = CreateDirectory(new AgentCollaborationOptions { MaxTotalAgents = 1 });
+        _ = RegisterRoot(directory);
+        directory.MarkInvalidated(Tombstone("agent-9", "late")).Should().BeTrue();
+        directory.MarkInvalidated(Tombstone("agent-10", "early")).Should().BeTrue();
+
+        // Same order Snapshot imposes — ordinal on the identifier — so the two lists read alike.
+        directory.InvalidatedRecords().Select(record => record.AgentId).Should().Equal("agent-10", "agent-9");
+
+        directory.Snapshot().Select(entry => entry.AgentId).Should().Equal("agent-root");
+        directory.SnapshotRecords().Select(record => record.AgentId).Should().Equal("agent-root");
+        directory.Count.Should().Be(1);
+        directory
+            .TryAcquireCapacity("agent-11")
+            .Should()
+            .NotBeNull("a tombstone holds no permit, so two of them cannot exhaust a cap of one");
+    }
+
+    private static CollaborationNodeRecord Tombstone(string agentId, string name) =>
+        new()
+        {
+            AgentId = agentId,
+            CollaborationId = CollaborationId,
+            Name = name,
+            ParentAgentId = "agent-root",
+            AncestorAgentIds = ["agent-root"],
+            Kind = AgentKind.SubAgent,
+            Role = "r",
+            Description = "d",
+            StructuralDepth = 1,
+            DelegationDepth = 1,
+            Status = AgentCollaborationStatuses.Running,
+        };
 
     [Fact]
     public void GetInbox_IsSizedByOptions_AndScopedToOneAgent()

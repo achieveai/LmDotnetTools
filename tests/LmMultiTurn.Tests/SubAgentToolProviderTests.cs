@@ -551,7 +551,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             TierModelResolver = tier =>
             {
                 observed = new SubAgentSpawnModelSelection(null, tier);
-                return "tier-model";
+                return new SubAgentTierSelection("tier-model", Effort: null);
             },
         };
         var source = new MutableSubAgentTemplateSource(options.Templates);
@@ -609,7 +609,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             TierModelResolver = tier =>
             {
                 observedTier = tier;
-                return "gpt-5.6-sol";
+                return new SubAgentTierSelection("gpt-5.6-sol", Effort: null);
             },
         };
         var source = new MutableSubAgentTemplateSource(options.Templates);
@@ -659,7 +659,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             TierModelResolver = tier =>
             {
                 observedTier = tier;
-                return "tier-model";
+                return new SubAgentTierSelection("tier-model", Effort: null);
             },
         };
         var source = new MutableSubAgentTemplateSource(options.Templates);
@@ -732,7 +732,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             TierModelResolver = tier =>
             {
                 observedTier = tier;
-                return "tier-model";
+                return new SubAgentTierSelection("tier-model", Effort: null);
             },
         };
         var source = new MutableSubAgentTemplateSource(options.Templates);

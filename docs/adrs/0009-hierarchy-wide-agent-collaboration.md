@@ -152,7 +152,7 @@ Contact and read permission are separate axes, and that separation is load-beari
 member of a collaboration can address every other member; only the transcript policy decides
 who may *read* one. Because the same policy result must serve the tool, the REST projection,
 and the UI, the raw agent-thread endpoints must be brought under it too — a caller who can
-derive `subagent-{agentId}` from `GetAgents` must not be able to read past the policy with a
+derive a child's transcript thread id from `GetAgents` must not be able to read past the policy
 direct GET, or write past sender identity, correlation, inbox bounds, and envelope safety
 with a direct POST.
 

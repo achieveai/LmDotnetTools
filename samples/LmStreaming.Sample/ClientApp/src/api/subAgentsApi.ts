@@ -25,7 +25,7 @@ export type CollaborationAgentKind = 'Root' | 'SubAgent' | 'WorkflowController' 
 /**
  * A conversation's sub-agent as summarized by
  * `GET /api/conversations/{parentThreadId}/subagents`. `threadId` is the child's own conversation
- * thread (`subagent-{agentId}`, or `workflow-{agentId}` for a workflow run) — pass it to
+ * thread (`subagent-{scope}-{agentId}`, or `workflow-{agentId}` for a workflow run) — pass it to
  * `loadConversationMessages` to load the child's persisted transcript. Workflow runs arrive in the
  * SAME flat list with `kind: 'workflow'` and `agentId` = the workflowId; the sub-agent WebSocket for
  * that agentId is routed server-side to the workflow's controller loop, so the client streams it with

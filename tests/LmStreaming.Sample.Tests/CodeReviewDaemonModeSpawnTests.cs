@@ -97,13 +97,18 @@ public sealed class CodeReviewDaemonModeSpawnTests : IAsyncLifetime
             },
             MaxConcurrentSubAgents = 5,
             TierModelResolver = tier =>
-                tier switch
-                {
-                    1 => "gpt-5.6-luna",
-                    3 => "gpt-5.6-terra",
-                    5 => "gpt-5.6-sol",
-                    _ => null,
-                },
+                (
+                    tier switch
+                    {
+                        1 => "gpt-5.6-luna",
+                        3 => "gpt-5.6-terra",
+                        5 => "gpt-5.6-sol",
+                        _ => null,
+                    }
+                )
+                    is { } model
+                    ? new SubAgentTierSelection(model, Effort: null)
+                    : null,
         };
         options = global::Program.ApplyModeSubAgentPolicy(options, mode);
         var source = new MutableSubAgentTemplateSource(options.Templates);

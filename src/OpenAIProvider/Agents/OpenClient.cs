@@ -22,8 +22,10 @@ public class OpenClient : BaseHttpService, IOpenClient
         OpenAIJsonSerializerOptionsFactory.CreateForProduction();
 
     private readonly string _baseUrl;
+    private readonly bool _disposeHttpClient;
     private readonly IPerformanceTracker _performanceTracker;
     private readonly RetryOptions _retryOptions;
+    private bool _httpClientDisposed;
 
     public OpenClient(
         string apiKey,
@@ -50,6 +52,19 @@ public class OpenClient : BaseHttpService, IOpenClient
         );
     }
 
+    /// <summary>
+    ///     Sends requests through an injected <paramref name="httpClient"/> that this instance does not own,
+    ///     so disposing it leaves the client (for example one managed by DI) to its owner.
+    /// </summary>
+    /// <param name="httpClient">The client to send requests through.</param>
+    /// <param name="baseUrl">The API base URL.</param>
+    /// <param name="performanceTracker">Optional performance tracker.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="retryOptions">Optional retry configuration.</param>
+    /// <remarks>
+    ///     Kept with this exact signature so assemblies compiled against it still bind; the ownership opt-in
+    ///     is a separate overload rather than an optional parameter here.
+    /// </remarks>
     public OpenClient(
         HttpClient httpClient,
         string baseUrl,
@@ -57,11 +72,31 @@ public class OpenClient : BaseHttpService, IOpenClient
         ILogger? logger = null,
         RetryOptions? retryOptions = null
     )
+        : this(httpClient, baseUrl, performanceTracker, logger, retryOptions, disposeHttpClient: false) { }
+
+    /// <param name="httpClient">The client to send requests through.</param>
+    /// <param name="baseUrl">The API base URL.</param>
+    /// <param name="performanceTracker">Optional performance tracker.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="retryOptions">Optional retry configuration.</param>
+    /// <param name="disposeHttpClient">
+    ///     <c>true</c> when this instance owns <paramref name="httpClient"/> and must dispose it; <c>false</c>
+    ///     leaves an injected client (for example one managed by DI) to its owner.
+    /// </param>
+    public OpenClient(
+        HttpClient httpClient,
+        string baseUrl,
+        IPerformanceTracker? performanceTracker,
+        ILogger? logger,
+        RetryOptions? retryOptions,
+        bool disposeHttpClient
+    )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
         ArgumentNullException.ThrowIfNull(baseUrl);
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
+        _disposeHttpClient = disposeHttpClient;
         _baseUrl = baseUrl.TrimEnd('/');
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _retryOptions = retryOptions ?? RetryOptions.Default;
@@ -260,6 +295,19 @@ public class OpenClient : BaseHttpService, IOpenClient
         return HttpClientFactory.CreateForOpenAI(apiKey, baseUrl);
     }
 
+    /// <inheritdoc />
+    protected override void Dispose(bool disposing)
+    {
+        // The base never disposes HttpClient, so an owned client is released here, exactly once.
+        if (disposing && _disposeHttpClient && !_httpClientDisposed)
+        {
+            _httpClientDisposed = true;
+            HttpClient.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     /// <summary>
     ///     Determines provider name based on base URL
     /// </summary>
@@ -382,18 +430,15 @@ public class OpenClient : BaseHttpService, IOpenClient
                         continue;
                     }
 
-                    // Add default assistant role if not present
+                    // Add default assistant role if not present. Fill the delta in place: the final chunk
+                    // can still carry tool calls or reasoning, which a replacement delta would drop.
                     if (res.Choices?.Count > 0 && res.Choices[0].FinishReason != null)
                     {
-                        if (res.Choices[0].Delta?.Role.HasValue != true)
+                        var delta = res.Choices[0].Delta ??= new ChatMessage();
+                        if (!delta.Role.HasValue)
                         {
-                            res.Choices[0].Delta = new ChatMessage
-                            {
-                                Role = RoleEnum.Assistant,
-                                Content =
-                                    res.Choices[0].Delta?.Content
-                                    ?? new Union<string, Union<TextContent, ImageContent>[]>(string.Empty),
-                            };
+                            delta.Role = RoleEnum.Assistant;
+                            delta.Content ??= new Union<string, Union<TextContent, ImageContent>[]>(string.Empty);
                         }
                     }
                 }
@@ -439,56 +484,42 @@ public class OpenClient : BaseHttpService, IOpenClient
     /// <returns>True if the response should be skipped, false otherwise</returns>
     private static bool ShouldSkipStreamingResponse(ChatCompletionResponse response)
     {
-        // Skip responses with zero-token usage ONLY if they don't have finish_reason
-        // The final usage message (with non-zero tokens) carries cost information and should be preserved
-        if (IsNoneUsage(response.Usage))
+        // Zero-token usage entries are uninformative and unnecessarily bloat the stream. Providers
+        // often emit dozens or hundreds of these fragments before the real (non-zero) usage summary
+        // arrives, so a chunk is dropped when it carries zero-token usage and nothing else. Some
+        // providers attach that zero-token usage to every chunk, so the delta must be checked first:
+        // skipping on usage alone drops the text, reasoning and tool calls riding with it.
+        if (!IsNoneUsage(response.Usage))
         {
-            // Zero-token usage entries are uninformative and unnecessarily bloat the stream.
-            // Providers often emit dozens or hundreds of these fragments before the real
-            // (non-zero) usage summary arrives.  We therefore drop **all** zero-token usage
-            // deltas regardless of finish_reason to keep the streaming output compact.
+            return false;
+        }
 
+        var delta = response.Choices?.Count > 0 ? response.Choices[0].Delta : null;
+        if (delta == null)
+        {
             return true;
         }
 
-        // Skip responses with no useful information: empty content, reasoning, and tool calls.
-        if (response.Choices?.Count > 0)
+        // Check if content is empty or null
+        var hasContent = false;
+        if (delta.Content != null)
         {
-            var delta = response.Choices[0].Delta;
-            if (delta != null)
+            if (delta.Content.Is<string>())
             {
-                // Check if content is empty or null
-                var hasContent = false;
-                if (delta.Content != null)
-                {
-                    if (delta.Content.Is<string>())
-                    {
-                        var contentStr = delta.Content.Get<string>();
-                        hasContent = !string.IsNullOrEmpty(contentStr);
-                    }
-                    else
-                    {
-                        // For non-string content (like image arrays), consider it as having content
-                        hasContent = true;
-                    }
-                }
-
-                // Check if reasoning is empty or null
-                var hasReasoning =
-                    !string.IsNullOrEmpty(delta.Reasoning) || !string.IsNullOrEmpty(delta.ReasoningContent);
-
-                // Check if there are tool calls present
-                var hasToolCalls = delta.ToolCalls?.Count > 0;
-
-                // Skip if both content and reasoning are empty
-                if (!hasContent && !hasReasoning && !hasToolCalls)
-                {
-                    return IsNoneUsage(response.Usage);
-                }
+                var contentStr = delta.Content.Get<string>();
+                hasContent = !string.IsNullOrEmpty(contentStr);
+            }
+            else
+            {
+                // For non-string content (like image arrays), consider it as having content
+                hasContent = true;
             }
         }
 
-        return false; // Don't skip this response
+        var hasReasoning = !string.IsNullOrEmpty(delta.Reasoning) || delta.ReasoningDetails?.Count > 0;
+        var hasToolCalls = delta.ToolCalls?.Count > 0;
+
+        return !hasContent && !hasReasoning && !hasToolCalls;
     }
 
     private static bool IsNoneUsage(OpenAIProviderUsage? usage)

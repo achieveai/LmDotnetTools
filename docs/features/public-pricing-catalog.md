@@ -69,7 +69,7 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
 - `EffectiveDate`: `yyyy-MM-dd`.
 - `_source`: vendor URL, ignored by the binder.
 - `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Present-but-not-positive rejects the whole entry.
-- `ContextWindow:MaxTokens` (top-level, not per model; default `156000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (Claude CLI, Codex, any Copilot id not listed below) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
+- `ContextWindow:MaxTokens` (top-level, not per model; default `196000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (Claude CLI, Codex, any Copilot id not listed below) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
 
 LmConfig JSON catalogs (`PricingConfig`) carry the same fields as `cache_read_per_million`, `cache_write_5m_per_million`, `cache_write_1h_per_million`, `reasoning_per_million`, `cache_accounting`, `effective_date`. Two routes sharing a model name must agree on every field or the name is dropped as conflicting.
 
@@ -83,11 +83,14 @@ All USD per million tokens. Verified 2026-09-02 against the vendor page. Re-veri
 | `claude-sonnet-4-20250514` | `claude-sonnet-4` | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5`, `claude-sonnet-4.5` (the `copilot` provider's default when `COPILOT_MODEL` is unset) | 3.00 | 0.30 | 3.75 | 6.00 | 15.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 
-Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
+Copilot-served ids, priced at the vendor's retail API list price as a public-equivalent estimate (verified 2026-09-18; `gpt-6-sol`, `gpt-6-luna` and `gemini-3.8-flash` 2026-09-23). This is what the same usage would cost on the vendor API, not what the Copilot subscription bills:
 
 | Model id | Aliases | Input | Cache read | Cache write 5m | Cache write 1h | Output | Accounting | Source |
 |---|---|---|---|---|---|---|---|---|
 | `gpt-6-astra` | — | 10.00 | 1.00 | — | — | 50.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-6-sol` | — | 2.00 | 0.20 | — | — | 10.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gpt-6-luna` | — | 0.10 | 0.01 | — | — | 0.50 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
+| `gemini-3.8-flash` | — | 0.75 | 0.075 | — | — | 3.75 | SubsetOfInput | https://ai.google.dev/gemini-api/docs/pricing |
 | `gpt-5.6-sol` | — | 4.00 | 0.40 | — | — | 20.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-terra` | — | 2.00 | 0.20 | — | — | 12.00 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
 | `gpt-5.6-luna` | — | 0.20 | 0.02 | — | — | 1.20 | SubsetOfInput | https://developers.openai.com/api/docs/pricing |
@@ -95,17 +98,20 @@ Copilot-served ids, priced at the vendor's retail API list price as a public-equ
 | `claude-opus-5` | — | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-sonnet-5` | — | 2.00 | 0.20 | 2.50 | 4.00 | 10.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
 | `claude-haiku-4.5` | `claude-haiku-4-5`, `claude-haiku-4-5-20251001` | 1.00 | 0.10 | 1.25 | 2.00 | 5.00 | Additive | https://platform.claude.com/docs/en/about-claude/pricing |
-| `deepseek-v4-pro` | — | 0.66 | 0.022 | — | — | 1.98 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
-| `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | SubsetOfInput | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-v4-pro` | — | 0.66 | 0.022 | — | — | 1.98 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
+| `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
-- OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 156K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
+- OpenAI lists cache writes for the GPT-6 family at 1.25x input (`gpt-6-astra` 12.50, `gpt-6-sol` 2.50, `gpt-6-luna` 0.125). They are not in the catalog. `UsageRecordMapper` reads cache writes only from Anthropic's `cache_creation_input_tokens`, so an OpenAI rate would never apply. If OpenAI usage starts reporting cache writes, those tokens already sit inside the prompt count under SubsetOfInput, so only the 0.25x surcharge would be missing; a full 1.25x rate would double-bill them.
+- `gemini-3.8-flash`'s rate is promotional through 2026-12-31. From 2027-01-01 Google lists 1.50 input, 0.15 cache read and 7.50 output. Re-verify then.
+- OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 196K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.
 - `claude-fable-5-1` cache hits are 0.025x input, not the usual 0.1x (Anthropic's footnote).
 - DeepSeek ids carry the off-peak rate. Peak hours (01:00-04:00 and 06:00-10:00 UTC, weekdays) bill double, so peak-hour runs read low.
+- DeepSeek ids are Additive because the sample reaches DeepSeek through its Anthropic-compatible API, whose `input_tokens` excludes cache reads. Priced as SubsetOfInput (the state until 2026-09-21), every cache-hit turn had its uncached input clamped to 0 and was flagged `cache_accounting_mismatch`.
 - `deepseek-flash` is DeepSeek-V4.1-Flash. `deepseek-v4-flash` is a retired name DeepSeek still accepts and bills at the Flash price, so it is an alias.
 - Claude cache reads through Copilot are recorded only when the request asks for caching. Before sub-agents inherited `PromptCaching`, every Claude sub-agent sent without it and recorded 0 cache reads; those older records price all input at the uncached rate.
-- The vendor windows (200K to 1.05M) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 156K.
+- The vendor windows (200K to 1.05M) are recorded as cited. `ContextWindow:MaxTokens` clamps them to 196K.
 
 Notes:
 

@@ -52,6 +52,34 @@ LmStreaming Chat Client via the MCP Playwright tools in Claude Code.
 | Delete conversation | `.conversation-item .delete-btn` | |
 | Manage modes | `.manage-item` | `text=Manage Modes...` |
 
+### Workspace panel and file explorer
+
+The file explorer is a **section of the right-hand workspace panel**, not a modal. `More ▸ Files`
+(`file-browser-button`) opens the panel and expands its Files disclosure; opening a file from a row
+renders it as a tab in the panel's shared preview region (the same surface a board artifact chip and a
+chat file link use). Select by `data-testid`.
+
+| Element | `data-testid` | Notes |
+|---|---|---|
+| Workspace panel | `conversation-inspector` | Launcher: `conversation-inspector-launcher`. `Escape` inside it closes it. |
+| Preview region / surface | `workspace-preview-region`, `artifact-preview-surface` | Tabs: `role="tab"` under "Open files". Content: `artifact-preview-filename`, `artifact-preview-path`, `artifact-preview-text`, `artifact-preview-markdown`, `artifact-preview-image`, `artifact-preview-table`. |
+| Preview expand / close | `artifact-preview-expand`, `artifact-preview-close` | Expand = preview fills the panel (the file list hides); pressing it again restores the split. |
+| Files section | `workspace-files-section` | Disclosure button `#inspector-tab-files`, panel `#inspector-panel-files`. Collapsed by default; mounts the browser on first expand and keeps it mounted afterwards. |
+| Browser root | `file-browser` | Inside `conversation-inspector`. |
+| Empty states | `file-browser-no-thread`, `file-browser-no-session` | No conversation yet / no sandbox session yet. |
+| Breadcrumb / workspace chip | `file-browser-breadcrumb`, `file-browser-crumb-<i>`, `file-browser-workspace` | The chip shows a truncated id; the full one is in its `title`. |
+| Toolbar | `file-browser-toolbar` | Icon buttons: `file-browser-new-folder`, `file-browser-upload`, `file-browser-folder-upload`, `file-browser-refresh`. Hidden inputs: `file-browser-file-input`, `file-browser-folder-input`. |
+| Filter | `file-browser-filter` | Client-side over the current listing; no refetch, cleared on navigation. |
+| List / drop target | `file-browser-list` (inside `file-browser-dropzone`) | Fixed height, scrolls internally. The whole list wrapper is the drag-drop target. States: `file-browser-loading`, `file-browser-empty`, `file-browser-more`. |
+| Row | `file-entry-<name>` | Name button `file-entry-name-<name>` (folder = navigate, file = open a preview tab). Badge: `file-entry-lossy-<name>`. |
+| Row actions | `file-entry-preview-<name>`, `file-entry-download-<name>`, `file-entry-delete-<name>` | Revealed on hover / `:focus-within` (opacity only) — always in the DOM, so `ClickAsync` works without hovering first. Delete is withheld on dot-directories. |
+| Dialogs | `file-browser-delete-confirm`, `file-browser-overwrite-confirm`, `file-browser-new-folder-dialog` | Each with `-cancel` / `-confirm-btn` (`file-browser-new-folder-confirm` / `-cancel` / `-input`). `Escape` inside one cancels it WITHOUT closing the panel. |
+| Notices | `file-browser-error`, `file-browser-upload-progress`, `file-browser-upload-summary`, `file-browser-upload-errors`, `file-browser-folder-unsupported` | |
+
+Automated coverage lives in `tests/LmStreaming.Sample.Browser.E2E.Tests/Scenarios/FileBrowserTests.cs`
+(no-session state, fixed-height list + New folder + Refresh, loading state, preview-in-panel) — copy a
+scenario there rather than driving this by hand.
+
 ### Keyboard Shortcuts
 | Key | Context | Action |
 |-----|---------|--------|

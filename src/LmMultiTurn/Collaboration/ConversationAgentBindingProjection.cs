@@ -78,10 +78,22 @@ public static class ConversationAgentBindingProjection
                     return existing;
                 }
 
-                // Monotonic in capture time. Equal instants are ACCEPTED, not rejected: at coarse clock
-                // resolution successive captures routinely share a tick, and treating those as stale
-                // would silently drop every write landing inside one tick of the previous one.
-                if (FromMetadata(existing) is { } persisted && persisted.CapturedAtUtc > binding.CapturedAtUtc)
+                var persisted = FromMetadata(existing);
+
+                // Monotonic in session first. A later session's document is never overwritten by an
+                // earlier session's, whatever their capture times say — a replaced loop flushes AFTER
+                // its replacement has reconciled and rewritten (see AgentIdentityBindingSet.Session).
+                // An unnumbered capture (0) is always accepted: it comes from a build that predates
+                // the numbering, and refusing it would freeze the document for the whole of a rollback.
+                if (persisted is not null && binding.Session > 0 && persisted.Session > binding.Session)
+                {
+                    return existing;
+                }
+
+                // Then monotonic in capture time. Equal instants are ACCEPTED, not rejected: at coarse
+                // clock resolution successive captures routinely share a tick, and treating those as
+                // stale would silently drop every write landing inside one tick of the previous one.
+                if (persisted is not null && persisted.CapturedAtUtc > binding.CapturedAtUtc)
                 {
                     return existing;
                 }

@@ -378,6 +378,31 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal(expectedOneHour, usage.GetExtraProperty<int>("ephemeral_1h_input_tokens"));
     }
 
+    [Fact]
+    public void NonStreaming_ACacheHitWithNoWrite_StillStampsCacheCreationTokens()
+    {
+        // Same contract as the streaming parser: the field is present on every response so the accounting
+        // layer can tell an additive provider apart from the subset kind even on a full cache hit.
+        const string json = """
+            {
+              "id": "msg_hit", "type": "message", "role": "assistant", "model": "deepseek-flash",
+              "content": [ { "type": "text", "text": "hello" } ], "stop_reason": "end_turn",
+              "usage": { "input_tokens": 244, "output_tokens": 335, "cache_read_input_tokens": 110336 }
+            }
+            """;
+        var response =
+            JsonSerializer.Deserialize<AnthropicResponse>(json)
+            ?? throw new InvalidOperationException("Failed to deserialize response");
+
+        var usage = Assert.IsType<UsageMessage>(response.ToMessages("test-agent").Single(m => m is UsageMessage)).Usage;
+
+        Assert.Equal(244, usage.PromptTokens);
+        Assert.Equal(110336, usage.TotalCachedTokens);
+        Assert.True(usage.ExtraProperties.ContainsKey("cache_creation_input_tokens"));
+        Assert.Equal(0, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
+        Assert.False(usage.ExtraProperties.ContainsKey("ephemeral_1h_input_tokens"));
+    }
+
     // Simple class to represent an SSE event
     private class SseEvent
     {

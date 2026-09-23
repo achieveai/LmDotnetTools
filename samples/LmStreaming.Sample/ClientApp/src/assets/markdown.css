@@ -337,3 +337,36 @@
 .markdown-content del {
   opacity: 0.7;
 }
+
+/*
+ * Math (utils/mathMarkdown.ts). KaTeX's own stylesheet does the typesetting; these rules only cover
+ * the two things it cannot know about -- that a wide equation must scroll inside a chat bubble
+ * rather than widen it, and how a formula looks in the brief moment before KaTeX has replaced the
+ * placeholder (during streaming, or when KaTeX itself failed).
+ */
+.markdown-content .md-math-display {
+  /* `display` is explicit because a `$$…$$` written mid-sentence stays a <span> (a block element
+     there would split the paragraph), while one on its own line is a <p>. Both must lay out the
+     same, and a wide equation must scroll inside the bubble rather than widen it. */
+  display: block;
+  margin: 0.9em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.markdown-content .md-math-inline {
+  overflow-wrap: anywhere;
+}
+
+.markdown-content .md-math:not(:has(.katex)) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  opacity: 0.8;
+}
+
+.markdown-content .katex-error {
+  color: #b42318;
+  text-decoration: underline wavy #b42318;
+  text-underline-offset: 3px;
+}

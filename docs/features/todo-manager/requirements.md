@@ -315,3 +315,41 @@ pins that rendering byte for byte.
 8. **Multicast Change Hook**: `TaskManager.OnChanged` SHALL be a real multicast event —
    subscribing the nudge bookkeeping SHALL NOT displace the live-frame publisher or the
    durable writer, and one subscriber throwing SHALL NOT starve the subscribers behind it
+
+### Requirement 11: Clearing the Board (bulk-initialize `clearExisting`)
+
+- **User Story**: As the agent that owns a conversation's plan, I need a board reset to be
+  something only I can ask for and something that can be undone, so that a collaborator
+  starting fresh cannot take my completed work, notes and artifacts with it.
+
+#### Acceptance Criteria:
+1. **Extend by Default**: WHEN `bulk-initialize` is called without `clearExisting` THEN it
+   SHALL extend the existing board, and the tool description SHALL present that as the normal
+   path rather than recommending a clear for "fresh starts"
+   - *Amended (bug 19).* The description previously read "Use clearExisting=true for fresh
+     starts, false to extend" and its first worked example passed `"clearExisting": true`. A
+     sub-agent followed that guidance on the shared conversation board and destroyed hours of
+     the root agent's work. The recommendation is withdrawn; the example no longer passes the
+     flag; `delete-task` is named as the way to remove the rows that are genuinely obsolete.
+2. **Root-Agent Only**: WHEN `clearExisting=true` is requested while an ambient sub-agent actor
+   is set (`AgentActorScope.Current`) THEN the call SHALL be refused with error code
+   `board_clear_not_permitted`, the board SHALL be left byte-for-byte unchanged, and the
+   message SHALL name the acting agent and direct it to `clearExisting=false` / `add-task`
+   - The board is one shared instance per conversation and its tool methods carry no caller
+     argument, so the acting agent is read from an ambient async-flow scope
+     (`AchieveAi.LmDotnetTools.LmCore.Agents.AgentActorScope`) that `SubAgentManager` opens
+     around each sub-agent's run loop. Absence of a scope means the root agent, so a host that
+     never opts in behaves exactly as it did before
+3. **Archive Before Clear**: WHEN a permitted `clearExisting=true` finds a non-empty board THEN
+   the board as it stood immediately before the rows were dropped SHALL be handed to
+   `TaskManager.OnCleared`, captured under the same lock hold as the clear. The hook SHALL NOT
+   fire for `clearExisting=false`, for a clear that found an empty board, or for a refused clear
+4. **Durable, Bounded Archive**: WHEN the host receives a cleared board THEN it SHALL persist it
+   through `ConversationTodoArchiveProjection` under the metadata key `todo.board.archive`,
+   newest first, retaining at most 5 entries. The archive is a SEPARATE key from the live board
+   (`todo.board`) so the write that follows the clear cannot overwrite it, and it inherits the
+   live projection's tolerant reads and its no-mint policy — a conversation with no metadata row
+   is skipped rather than given one
+5. **Audible Clear**: WHEN a clear drops rows THEN the board SHALL log a Warning naming the
+   thread, the acting agent, the managed thread id, and the census of what was archived (root
+   rows, total rows, completed rows, notes, artifacts)

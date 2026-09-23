@@ -225,7 +225,7 @@ public class ContextDiscoveryInjectorTests
         _ = harness.RegisterThread(SessionId, "thread-mode-swap");
 
         var newMode = SystemChatModes.All[0];
-        var recreated = await harness.Pool.RecreateAgentWithModeAsync("thread-mode-swap", newMode);
+        var recreated = await harness.Pool.SwitchModeAsync("thread-mode-swap", newMode);
 
         var sent = await harness.Injector.InjectAsync(
             BuildPayload(sessionId: SessionId, content: Content),
@@ -233,7 +233,7 @@ public class ContextDiscoveryInjectorTests
         );
 
         sent.Should().Be(1);
-        ((RecordingMultiTurnAgent)recreated).SentMessages.Should().ContainSingle();
+        ((RecordingMultiTurnAgent)recreated.Agent).SentMessages.Should().ContainSingle();
     }
 
     [Fact]

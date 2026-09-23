@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { findPendingQuestions } from '@/utils/pendingQuestions';
+import {
+  collectAnsweredQuestionIds,
+  findPendingQuestions,
+  isQuestionAwaitingAnswer,
+  parseUserAnswerMessage,
+} from '@/utils/pendingQuestions';
 import { MessageType } from '@/types';
 import type { DisplayItem, ToolCall, ToolCallResultMessage } from '@/types';
 
@@ -111,5 +116,71 @@ describe('findPendingQuestions', () => {
 
   it('returns nothing for an empty transcript', () => {
     expect(findPendingQuestions([], lookup({}))).toEqual([]);
+  });
+
+  // Bug #5: when something else arrives while the run is parked on a question, the server settles
+  // the call EARLY with a non-deferred placeholder and delivers the real answer later as a
+  // `<user-answer …>` user message. The placeholder must not read as "answered".
+  describe('early-settled questions', () => {
+    function earlySettled(id: string): ToolCallResultMessage {
+      return {
+        ...result(id, false),
+        result: JSON.stringify({ status: 'deferred_to_notification', message: 'Question sent to user' }),
+      };
+    }
+
+    function userAnswer(id: string): DisplayItem {
+      return {
+        type: 'user-message',
+        id: `u-${id}`,
+        content: { $type: MessageType.Text, role: 'user', text: '<user-answer tool="AskUserQuestion" tool-call-id="' + id + '">\n<request>\nctx\n- (q) Pick one\n  options: A | B\n</request>\n<answer>\n{"answers":[{"questionId":"q","selectedValues":["A"]}]}\n</answer>\n</user-answer>' },
+      } as DisplayItem;
+    }
+
+    it('keeps a question whose placeholder result was settled early — the user still owes an answer', () => {
+      const found = findPendingQuestions([pill('p1', call('q1'))], lookup({ q1: earlySettled('q1') }));
+      expect(found.map((f) => f.id)).toEqual(['q1']);
+    });
+
+    it('drops it once a later user-answer message for the same tool_call_id is in the transcript', () => {
+      const items = [pill('p1', call('q1')), userAnswer('q1')];
+      expect(findPendingQuestions(items, lookup({ q1: earlySettled('q1') }))).toEqual([]);
+    });
+
+    it('does not let an answer to a different question close it', () => {
+      const items = [pill('p1', call('q1')), userAnswer('q2')];
+      expect(findPendingQuestions(items, lookup({ q1: earlySettled('q1') })).map((f) => f.id)).toEqual(['q1']);
+    });
+
+    it('drops it when the caller reports it answered (optimistic close after an acked submit)', () => {
+      const items = [pill('p1', call('q1'))];
+      expect(findPendingQuestions(items, lookup({ q1: earlySettled('q1') }), (id) => id === 'q1')).toEqual([]);
+    });
+
+    it('isQuestionAwaitingAnswer: deferred → open; early-settled → open until answered; real answer → closed', () => {
+      expect(isQuestionAwaitingAnswer(result('q1', true))).toBe(true);
+      expect(isQuestionAwaitingAnswer(earlySettled('q1'))).toBe(true);
+      expect(isQuestionAwaitingAnswer(earlySettled('q1'), (id) => id === 'q1')).toBe(false);
+      expect(isQuestionAwaitingAnswer(result('q1', false))).toBe(false);
+      expect(isQuestionAwaitingAnswer(null)).toBe(false);
+      // A cancellation shaped like text, not the placeholder, is closed.
+      expect(isQuestionAwaitingAnswer({ ...result('q1', false), result: 'cancelled', is_error: true })).toBe(false);
+    });
+
+    it('parses the injected user-answer envelope into request and answer, and collects answered ids', () => {
+      const parsed = parseUserAnswerMessage((userAnswer('q1') as { content: { text: string } }).content.text);
+      expect(parsed).toEqual({
+        tool: 'AskUserQuestion',
+        toolCallId: 'q1',
+        request: 'ctx\n- (q) Pick one\n  options: A | B',
+        answer: '{"answers":[{"questionId":"q","selectedValues":["A"]}]}',
+      });
+      expect(parseUserAnswerMessage('hello <user-answer tool-call-id="x">')).toBeNull();
+      expect(parseUserAnswerMessage('<user-answer tool-call-id="x">truncated')).toBeNull();
+      expect([...collectAnsweredQuestionIds([pill('p1', call('q1')), userAnswer('q1'), userAnswer('q3')])]).toEqual([
+        'q1',
+        'q3',
+      ]);
+    });
   });
 });

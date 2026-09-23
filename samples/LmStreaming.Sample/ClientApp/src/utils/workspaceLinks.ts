@@ -73,3 +73,41 @@ export function isWorkspaceLinkCandidate(href: string): boolean {
   if (trimmed.startsWith('#')) return trimmed.startsWith(WORKSPACE_LINK_PREFIX);
   return true;
 }
+
+/**
+ * An href that already names its own location, so a base directory must never be prefixed to it: a rooted
+ * POSIX or Windows path, a drive-qualified path, any URI scheme (`file:`, `sandbox:`, …), or an in-page
+ * anchor. Everything else is a plain relative path.
+ *
+ * A single letter before the colon is a DRIVE, and the scheme alternative needs two or more characters, so
+ * `B:/ws/a.md` matches as a drive rather than as a scheme. A colon later in the string is an ordinary POSIX
+ * file-name character (`notes/a:b.md`) and is not matched at all -- the pattern is anchored.
+ */
+const ALREADY_ROOTED = /^(?:[/\\]|[A-Za-z]:|[A-Za-z][A-Za-z0-9+.-]+:|#)/;
+
+/**
+ * Joins `baseDir` onto a PLAIN RELATIVE `href`, which is how a link written inside a previewed file is meant
+ * to be read -- `evidence/x.md` inside `docs/rdb/spec.md` names `docs/rdb/evidence/x.md`, not a file at the
+ * workspace root. Only the client knows which file a rendered link came from, so the join has to happen here;
+ * the server resolves whatever it is handed against the workspace root.
+ *
+ * The join is deliberately naive concatenation: `..` segments are left in place for the server's
+ * `WorkspaceLinkResolver`, which normalises them and REFUSES one that climbs above the workspace root. So the
+ * containment rule stays server-side and the worst a misjudgement here can do is fail to resolve.
+ *
+ * `baseDir` is a server-resolved path rather than model text, while `href` arrives percent-encoded from
+ * `marked` and the server decodes the joined string exactly once -- so the base's segments are encoded on the
+ * way in, or a directory whose real name contains `%20` would come back out as a space.
+ */
+export function resolveAgainstBaseDir(href: string, baseDir?: string): string {
+  if (!baseDir) return href;
+  let relative = href.trim();
+  if (ALREADY_ROOTED.test(relative)) return href;
+  while (relative.startsWith('./')) relative = relative.slice(2);
+  const base = baseDir
+    .split('/')
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+  return base.length === 0 ? relative : `${base}/${relative}`;
+}

@@ -5,7 +5,7 @@ using LmStreaming.Sample.Tests.TestDoubles;
 namespace LmStreaming.Sample.Tests.Identity;
 
 /// <summary>
-/// Pins that every existence-hiding refusal <see cref="ConversationAuthorizer.AuthorizeAsync"/> can
+/// Pins that every existence-hiding refusal <c>ConversationAuthorizer.AuthorizeAsync</c> can
 /// produce does the same SHAPE of work (#389).
 /// </summary>
 /// <remarks>

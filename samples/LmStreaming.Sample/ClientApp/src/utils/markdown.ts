@@ -2,11 +2,13 @@ import { Marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/core';
+import { markedMath, renderMathInHtml } from './mathMarkdown';
 import {
   WORKSPACE_LINK_CLASS,
   buildWorkspaceLinkHref,
   isWebUrl,
   isWorkspaceLinkCandidate,
+  resolveAgainstBaseDir,
 } from './workspaceLinks';
 
 import bash from 'highlight.js/lib/languages/bash';
@@ -101,7 +103,11 @@ function createMarked(highlightCode: (code: string, lang: string) => string): Ma
       langPrefix: 'hljs language-',
       emptyLangClass: 'hljs',
       highlight: highlightCode,
-    })
+    }),
+    // Math/chemistry tokenizing only. It emits an allowlisted placeholder; KaTeX itself runs after
+    // sanitization, under its own policy (utils/mathMarkdown.ts). Added AFTER marked-highlight so
+    // its block tokenizer claims a ```math fence before the highlighting `code` path sees it.
+    markedMath
   );
 }
 
@@ -137,6 +143,10 @@ const ALLOWED_TAGS = [
   'p', 'br', 'hr',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'strong', 'em', 'del', 'ins',
+  // NOT emitted by marked -- raw HTML only. Kept because `H<sub>2</sub>O` and `mc<sup>2</sup>` are
+  // how models write chemistry and physics outside a `$…$`, and dropping the tags used to merge
+  // the digits into the surrounding text ("mc2"), i.e. silently changed the meaning.
+  'sub', 'sup',
   'blockquote',
   'ul', 'ol', 'li',
   'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
@@ -158,9 +168,13 @@ export interface ParseMarkdownOptions {
   /**
    * Rewrite links to workspace files (anything that is not web/mailto/tel or an in-page anchor) into
    * in-page `#workspace-file?` links carrying this conversation id -- see `utils/workspaceLinks.ts`.
-   * Only assistant bubbles pass it; everywhere else such a link renders as before.
+   * Only assistant bubbles and the file preview pass it; everywhere else such a link renders as before.
+   *
+   * `baseDir` is the workspace directory a PLAIN RELATIVE link should be read against: the directory of the
+   * file whose rendered content this is. A chat message is not a file, so it omits it and its relative links
+   * stay workspace-root relative; the preview supplies the previewed file's own directory.
    */
-  workspaceLinks?: { threadId: string };
+  workspaceLinks?: { threadId: string; baseDir?: string };
 }
 
 /**
@@ -196,7 +210,7 @@ function sanitize(html: string, workspaceLinks: ParseMarkdownOptions['workspaceL
     ) {
       data.attrValue = buildWorkspaceLinkHref({
         threadId: workspaceLinks.threadId,
-        target: data.attrValue.trim(),
+        target: resolveAgainstBaseDir(data.attrValue.trim(), workspaceLinks.baseDir),
       });
       rewrittenAnchors.add(node);
     }
@@ -240,9 +254,17 @@ function sanitize(html: string, workspaceLinks: ParseMarkdownOptions['workspaceL
  * growing fence per chunk is quadratic on the main thread (measured: 500 incremental parses of
  * a 10 KB JS fence took 2.02 s highlighted vs 8.5 ms plain). Callers rendering a message that
  * is still streaming should pass `false` and re-render highlighted once it completes.
+ *
+ * Math is NOT skipped while streaming, unlike highlighting, because it does not have highlighting's
+ * cost shape: a formula is rendered once and memoized by its source, so the repeated parses of a
+ * growing message cost one map lookup each. Measured the same way as the figure above -- 500
+ * incremental parses of a 10 KB message holding 3 formulas: 1.03 s without math, 1.66 s with, i.e.
+ * 1.26 ms per delta of overhead, and 1443 cache hits against 3 KaTeX renders. Formulas therefore
+ * appear as they complete rather than snapping in at the end. (SMILES fences do NOT follow this
+ * rule -- they are a component render, gated on completion like diagrams; see TextMessage.vue.)
  */
 export function parseMarkdown(text: string, options?: ParseMarkdownOptions): string {
   if (!text) return '';
   const instance = options?.highlight === false ? markedPlain : markedHighlighted;
-  return sanitize(instance.parse(text) as string, options?.workspaceLinks);
+  return renderMathInHtml(sanitize(instance.parse(text) as string, options?.workspaceLinks));
 }

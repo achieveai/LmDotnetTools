@@ -1052,9 +1052,9 @@ public class MultiTurnAgentPoolTests
             );
         old.ThrowOnDispose = true; // tearing down the old agent will throw
 
-        var newAgent = await pool.RecreateAgentWithProviderAsync("thread-dispose-throw", "openai", mode);
+        var newAgent = await pool.SwitchProviderAsync("thread-dispose-throw", "openai", mode);
 
-        newAgent.Should().NotBeSameAs(old);
+        newAgent.Agent.Should().NotBeSameAs(old);
         (await WaitForPersistedProviderAsync(store, "thread-dispose-throw")).Should().Be("openai");
         pool.GetEffectiveProviderId("thread-dispose-throw", null).Should().Be("openai");
     }

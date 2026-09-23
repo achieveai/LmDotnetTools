@@ -179,18 +179,54 @@ public static class AgentHierarchyProjection
     }
 
     /// <summary>
-    ///     Finds the projected row for <paramref name="agentId"/>, accepting either identifier the row
-    ///     publishes: its tab id or its collaboration node id (see <see cref="SubAgentSummary.AgentNodeId"/>).
+    ///     Finds the projected row for <paramref name="target"/>, accepting anything the row publishes
+    ///     about itself: its tab id, its collaboration node id (see
+    ///     <see cref="SubAgentSummary.AgentNodeId"/>), or its name.
     /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Identifiers are matched across EVERY row before any name is considered. That ordering is
+    ///         the whole safety of accepting names here: a row named <c>agent-3</c> must never win over
+    ///         the row whose id is <c>agent-3</c> merely by appearing earlier in the list, because the
+    ///         caller asking for an id is asking for that agent and nobody else.
+    ///     </para>
+    ///     <para>
+    ///         A name shared by two rows resolves to nothing rather than to the first of them - the same
+    ///         answer <c>AgentCollaborationDirectory.Resolve</c> gives an ambiguous name, and for the
+    ///         same reason. Names are granted case-insensitively and uniquely per collaboration, so a
+    ///         duplicate here is a row from another process or another roster, where guessing would hand
+    ///         a reader a different agent's transcript.
+    ///     </para>
+    ///     <para>
+    ///         Names matter most where there is no directory to fall back on. The retained-transcript
+    ///         read runs entirely off persisted rows, so before this it answered "no such agent" for the
+    ///         very name every roster had just published for that row.
+    ///     </para>
+    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="rows"/> is null.</exception>
-    public static SubAgentSummary? Find(IReadOnlyList<SubAgentSummary> rows, string agentId)
+    public static SubAgentSummary? Find(IReadOnlyList<SubAgentSummary> rows, string target)
     {
         ArgumentNullException.ThrowIfNull(rows);
 
-        return rows.FirstOrDefault(row =>
-            string.Equals(row.AgentId, agentId, StringComparison.Ordinal)
-            || string.Equals(row.AgentNodeId, agentId, StringComparison.Ordinal)
+        var byIdentifier = rows.FirstOrDefault(row =>
+            string.Equals(row.AgentId, target, StringComparison.Ordinal)
+            || string.Equals(row.AgentNodeId, target, StringComparison.Ordinal)
         );
+
+        if (byIdentifier is not null)
+        {
+            return byIdentifier;
+        }
+
+        // Take(2) is the whole ambiguity check: one match resolves, two or more refuse, and nothing
+        // past the second is worth enumerating.
+        var named = rows.Where(row =>
+                !string.IsNullOrEmpty(row.Name) && string.Equals(row.Name, target, StringComparison.OrdinalIgnoreCase)
+            )
+            .Take(2)
+            .ToArray();
+
+        return named.Length == 1 ? named[0] : null;
     }
 
     /// <summary>

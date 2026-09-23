@@ -291,26 +291,29 @@ public static class SubAgentMarkdownParser
             return null;
         }
 
-        if (raw is string scalar)
+        if (raw is string scalar && ParseEffortToken(scalar) is { } effort)
         {
-            var effort = scalar.Trim().ToLowerInvariant() switch
-            {
-                "low" => ReasoningEffort.Low,
-                "medium" => ReasoningEffort.Medium,
-                "high" => ReasoningEffort.High,
-                "extra-high" or "xhigh" => ReasoningEffort.Xhigh,
-                _ => (ReasoningEffort?)null,
-            };
-
-            if (effort is not null)
-            {
-                return effort;
-            }
+            return effort;
         }
 
         diagnostics.Add("effort must be one of low, medium, high, extra-high, or xhigh; the field was ignored.");
         return null;
     }
+
+    /// <summary>
+    /// Maps an authored effort token (low, medium, high, extra-high or xhigh; case-insensitive) to a
+    /// <see cref="ReasoningEffort"/>, or null for anything else. Shared by frontmatter and host
+    /// configuration so the two accept the same vocabulary.
+    /// </summary>
+    public static ReasoningEffort? ParseEffortToken(string? token) =>
+        token?.Trim().ToLowerInvariant() switch
+        {
+            "low" => ReasoningEffort.Low,
+            "medium" => ReasoningEffort.Medium,
+            "high" => ReasoningEffort.High,
+            "extra-high" or "xhigh" => ReasoningEffort.Xhigh,
+            _ => null,
+        };
 
     /// <summary>
     /// Mutable DTO used only as the YAML deserialisation target. Public so YamlDotNet's

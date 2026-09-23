@@ -6,7 +6,16 @@ export type DiagramLanguage = 'mermaid' | 'plantuml';
 const MAX_SOURCE_LENGTH = 50_000;
 const MAX_SVG_LENGTH = 2_000_000;
 const RENDER_TIMEOUT_MS = 12_000;
-const EXTERNAL_REFERENCE = /(?:https?:|ftp:|file:|data:|blob:|\/\/)/i;
+// Schemes that only ever appear in order to embed or fetch a resource. Rejected everywhere.
+const RESOURCE_SCHEME = /(?:ftp:|file:|data:|blob:)/i;
+// Remote locations. Rejected outside quoted strings, and inside the configuration surface even when
+// quoted — see validateSource.
+const REMOTE_LOCATION = /(?:https?:|\/\/)/i;
+const MERMAID_FRONTMATTER = /^\uFEFF?[ \t]*---[ \t]*\r?\n[\s\S]*?\r?\n[ \t]*---[ \t]*(?:\r?\n|$)/;
+const MERMAID_DIRECTIVE = /%%\{[\s\S]*?\}%%/g;
+const DOUBLE_QUOTED = /"(?:\\.|[^"\\])*"/g;
+const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink';
+const ABSOLUTE_LENGTH = /^\d+(?:\.\d+)?(?:px)?$/i;
 const PLANTUML_INCLUDE = /^\s*!(?:include|include_once|include_many|import)\b/im;
 const PLANTUML_REMOTE_THEME = /^\s*!theme\s+\S+\s+from\b/im;
 const SAFE_FRAGMENT_REFERENCE = /^#[A-Za-z_][\w:.-]*$/;
@@ -35,7 +44,31 @@ function validateSource(source: string, language: DiagramLanguage): void {
   }
   // Both engines support constructs that can reference remote images or resources. Rendering is
   // intentionally offline, so reject those before an engine gets a chance to initiate a request.
-  if (EXTERNAL_REFERENCE.test(source)) {
+  //
+  // A blanket scan for any URL-looking text also rejected diagrams that merely *mention* one, which
+  // is common and harmless: `A["See https://example.com"]`, `click A href "https://…"`, or a path
+  // like `"src//legacy"`. What actually causes a fetch is a URL in a position the engine resolves —
+  // above all Mermaid's configuration surface, where `themeCSS`/`fontFamily` reach the stylesheet.
+  // So the rule is positional:
+  //   * ftp:/file:/data:/blob: are rejected anywhere — they exist only to embed or fetch.
+  //   * http:/https:/protocol-relative // are rejected anywhere in YAML frontmatter or a %%{…}%%
+  //     directive, quoted or not, because quoting is not a safety property there.
+  //   * elsewhere they are allowed only inside a double-quoted Mermaid string. Such a URL renders as
+  //     label text; sanitizeDiagramSvg still strips every non-fragment href/xlink:href/src from the
+  //     output, so it can neither load a resource nor become a live link.
+  if (RESOURCE_SCHEME.test(source)) {
+    throw new DiagramRenderError('External URLs are not allowed in diagrams.');
+  }
+  if (language === 'mermaid') {
+    const configuration =
+      (MERMAID_FRONTMATTER.exec(source)?.[0] ?? '') + (source.match(MERMAID_DIRECTIVE)?.join('\n') ?? '');
+    if (REMOTE_LOCATION.test(configuration)) {
+      throw new DiagramRenderError('External URLs are not allowed in diagram configuration.');
+    }
+    if (REMOTE_LOCATION.test(source.replace(MERMAID_DIRECTIVE, '').replace(DOUBLE_QUOTED, '""'))) {
+      throw new DiagramRenderError('External URLs are only allowed inside quoted diagram text.');
+    }
+  } else if (REMOTE_LOCATION.test(source)) {
     throw new DiagramRenderError('External URLs are not allowed in diagrams.');
   }
   if (language === 'plantuml' && (PLANTUML_INCLUDE.test(source) || PLANTUML_REMOTE_THEME.test(source))) {
@@ -89,7 +122,15 @@ export function sanitizeDiagramSvg(svg: string): string {
     ALLOW_DATA_ATTR: false,
     ALLOW_ARIA_ATTR: true,
   });
-  const document = new DOMParser().parseFromString(clean, 'image/svg+xml');
+  // DOMPurify serializes as HTML, which keeps an `xlink:href` attribute but drops the root's
+  // `xmlns:xlink` declaration. Mermaid's C4 renderer emits one on its <image> sprites, so the strict
+  // XML re-parse below rejected every C4Context/C4Container diagram. Re-declare the prefix; the
+  // attribute scrub further down still removes the reference itself.
+  const markup =
+    /\sxlink:[a-z]/i.test(clean) && !/xmlns:xlink\s*=/i.test(clean)
+      ? clean.replace(/^(\s*<svg\b)/i, `$1 xmlns:xlink="${XLINK_NAMESPACE}"`)
+      : clean;
+  const document = new DOMParser().parseFromString(markup, 'image/svg+xml');
   if (document.querySelector('parsererror')) {
     throw new DiagramRenderError('The diagram renderer returned invalid SVG.');
   }
@@ -141,6 +182,19 @@ export function sanitizeDiagramSvg(svg: string): string {
       }
     }
   }
+
+  // Mermaid emits width="100%" and no height. The viewer shows the SVG through an <img>, where a
+  // percentage width means "no intrinsic size", so the browser falls back to the 300x150 default
+  // object size and then scales that to the viewer's box — a 326x68 diagram was being blown up to
+  // 1834x380. Publish the viewBox as the intrinsic size so small diagrams render at their own scale.
+  if (!ABSOLUTE_LENGTH.test(root.getAttribute('width') ?? '') ||
+      !ABSOLUTE_LENGTH.test(root.getAttribute('height') ?? '')) {
+    const box = (root.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
+    if (box.length === 4 && box.every(Number.isFinite) && box[2] > 0 && box[3] > 0) {
+      root.setAttribute('width', String(box[2]));
+      root.setAttribute('height', String(box[3]));
+    }
+  }
   return new XMLSerializer().serializeToString(root);
 }
 
@@ -152,9 +206,22 @@ function prepareMermaid(): Promise<(typeof import('mermaid'))['default']> {
       htmlLabels: false,
       flowchart: { htmlLabels: false },
       suppressErrorRendering: true,
-      // Diagram frontmatter/directives cannot weaken the HTML-free rendering boundary.
-      secure: ['securityLevel', 'htmlLabels', 'flowchart'],
+      // Diagram frontmatter/directives cannot weaken the HTML-free rendering boundary, nor replace
+      // the stylesheet repair below with CSS of their own. Mermaid merges this with its own secure
+      // list rather than replacing it.
+      secure: ['securityLevel', 'htmlLabels', 'flowchart', 'themeCSS'],
       theme: 'base',
+      // With htmlLabels off, an edge/relationship label is
+      // `<g class="label"><rect class="background"/><text/></g>`, and several diagram stylesheets
+      // set a single `fill` on `.label` — which the background rect inherits too, painting the text
+      // in exactly its own colour. ER relationship labels and requirement relationship labels were
+      // rendering as solid unreadable bars. Give the box and the glyphs separate colours.
+      themeCSS: [
+        '.edgeLabel .label rect.background { fill: #ffffff; }',
+        '.edgeLabel .label text, .edgeLabel .label tspan { fill: #34404d; }',
+        '.reqLabelBox { fill: #ffffff; }',
+        '.relationshipLabel, .reqLabel { fill: #34404d; }',
+      ].join('\n'),
       themeVariables: {
         fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         background: '#ffffff',

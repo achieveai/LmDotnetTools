@@ -9,20 +9,21 @@ public sealed class CopilotModelCatalogParserTests
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "copilot-models-real-response.json"));
 
     [Fact]
-    public void Parse_real_response_keeps_only_routable_anthropic_and_openai_models()
+    public void Parse_real_response_keeps_only_routable_partitioned_models()
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        // 34 models upstream → 13 routable Anthropic/OpenAI (7 Claude + 5 OpenAI + 1 Azure-OpenAI).
-        models.Should().HaveCount(13);
-        models
-            .Should()
-            .OnlyContain(m => m.Vendor == CopilotModelVendor.Anthropic || m.Vendor == CopilotModelVendor.OpenAI);
+        // 34 models upstream → 16 routable (7 Claude + 5 OpenAI + 1 Azure-OpenAI + 2 Gemini + 1 MAI).
+        models.Should().HaveCount(16);
         models
             .Should()
             .OnlyContain(m =>
-                m.Transport == CopilotModelTransport.Anthropic || m.Transport == CopilotModelTransport.Responses
+                m.Vendor == CopilotModelVendor.Anthropic
+                || m.Vendor == CopilotModelVendor.OpenAI
+                || m.Vendor == CopilotModelVendor.Google
+                || m.Vendor == CopilotModelVendor.Microsoft
             );
+        models.Should().NotContain(m => m.Transport == CopilotModelTransport.Unsupported);
     }
 
     [Fact]
@@ -62,21 +63,77 @@ public sealed class CopilotModelCatalogParserTests
     }
 
     [Fact]
-    public void Parse_excludes_google_and_chat_completions_only_models()
+    public void Parse_maps_gemini_models_to_google_partition_with_chat_completions_transport()
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        models.Select(m => m.Id).Should().NotContain(["gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-pro"]);
+        var google = models.Where(m => m.Vendor == CopilotModelVendor.Google).ToList();
+
+        // gemini-2.5-pro declares no supported_endpoints, so it stays unroutable.
+        google.Select(m => m.Id).Should().BeEquivalentTo("gemini-3.1-pro-preview", "gemini-3.5-flash");
+        google.Should().OnlyContain(m => m.Transport == CopilotModelTransport.ChatCompletions);
+    }
+
+    [Fact]
+    public void Parse_maps_xai_models_to_xai_partition_with_responses_transport()
+    {
+        const string json = """
+            { "data": [
+              { "id": "grok-4.7", "name": "Grok 4.7", "vendor": "xAI", "supported_endpoints": ["/responses"] }
+            ] }
+            """;
+
+        var model = CopilotModelCatalogParser.Parse(json).Should().ContainSingle().Subject;
+
+        model.Vendor.Should().Be(CopilotModelVendor.XAi);
+        model.Transport.Should().Be(CopilotModelTransport.Responses);
+    }
+
+    [Fact]
+    public void Parse_prefers_native_endpoints_over_chat_completions()
+    {
+        // Claude and GPT also list /chat/completions; the native endpoint must keep winning.
+        const string json = """
+            { "data": [
+              { "id": "claude-x", "vendor": "Anthropic", "supported_endpoints": ["/chat/completions", "/v1/messages"] },
+              { "id": "gpt-x", "vendor": "OpenAI", "supported_endpoints": ["/chat/completions", "/responses"] }
+            ] }
+            """;
+
+        var models = CopilotModelCatalogParser.Parse(json);
+
+        models
+            .Select(m => m.Transport)
+            .Should()
+            .Equal(CopilotModelTransport.Anthropic, CopilotModelTransport.Responses);
+    }
+
+    [Fact]
+    public void Parse_maps_microsoft_models_to_microsoft_partition_with_responses_transport()
+    {
+        var models = CopilotModelCatalogParser.Parse(RealResponseJson);
+
+        // The real catalog lists MAI under vendor "Microsoft" with /responses as its only endpoint.
+        var model = models.Should().ContainSingle(m => m.Id == "mai-code-1-flash-picker").Subject;
+        model.Vendor.Should().Be(CopilotModelVendor.Microsoft);
+        model.Transport.Should().Be(CopilotModelTransport.Responses);
     }
 
     [Fact]
     public void Parse_excludes_non_partition_vendors_even_when_transport_is_routable()
     {
-        var models = CopilotModelCatalogParser.Parse(RealResponseJson);
+        // Copilot's Fireworks-served internal model supports /chat/completions but is not a partition
+        // we surface — vendor filtering is independent of transport, so it must not appear.
+        const string json = """
+            { "data": [
+              { "id": "trajectory-compaction", "vendor": "Fireworks", "supported_endpoints": ["/chat/completions"] },
+              { "id": "gpt-x", "vendor": "OpenAI", "supported_endpoints": ["/responses"] }
+            ] }
+            """;
 
-        // mai-code-1-flash-picker supports /responses but is vendor "Microsoft" — vendor filtering
-        // is independent of transport, so it must not appear.
-        models.Select(m => m.Id).Should().NotContain("mai-code-1-flash-picker");
+        var models = CopilotModelCatalogParser.Parse(json);
+
+        models.Select(m => m.Id).Should().Equal("gpt-x");
     }
 
     [Fact]

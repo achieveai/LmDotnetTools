@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -76,10 +77,14 @@ public sealed record SubAgentModelRouting(
 public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
-    private readonly string? _parentModelId;
-    private readonly int? _parentMaxToken;
-    private readonly IReadOnlyList<FunctionContract> _parentContracts;
-    private readonly IDictionary<string, ToolHandler> _parentHandlers;
+
+    // The parent-derived inputs to a spawn. Not readonly because the owning loop can be moved onto
+    // another model and tool surface in place (see UpdateParentConfiguration); the parent AGENT never
+    // changes, so nothing already spawned is affected.
+    private string? _parentModelId;
+    private int? _parentMaxToken;
+    private IReadOnlyList<FunctionContract> _parentContracts;
+    private IDictionary<string, ToolHandler> _parentHandlers;
 
     /// <summary>
     /// Every tool name the parent exposes, in contract order. This is the roster an <c>add_tools</c>
@@ -87,7 +92,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// against — both of which must see the IDENTICAL list or the two resolutions could disagree
     /// about what "before removal" contained.
     /// </summary>
-    private readonly string[] _parentToolNames;
+    private string[] _parentToolNames;
 
     /// <summary>
     /// <see cref="_parentToolNames"/> as an ordinal set, so deciding whether an <c>add_tools</c> or
@@ -100,15 +105,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="SpawnCapabilityRecord.UnmatchedAddTools"/> reports, even though the child never
     /// inherits the parent's copy. <see cref="_inheritableToolCount"/> is the other, narrower count.
     /// </remarks>
-    private readonly HashSet<string> _parentToolNameSet;
+    private HashSet<string> _parentToolNameSet;
 
     /// <summary>
     /// The inheritable half of the parent's surface. #638 F-002: AskUserQuestion/NotifyClient can
     /// never be inherited, so counting them both overstated the loss and let the empty-toolset signal
     /// fire on a parent from which nothing was inheritable in the first place.
     /// </summary>
-    private readonly int _inheritableToolCount;
-    private readonly SubAgentOptions _options;
+    private int _inheritableToolCount;
+    private SubAgentOptions _options;
 
     /// <summary>
     /// The options handed to each spawned child's own loop: this manager's options minus the spawn
@@ -164,7 +169,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static readonly TimeSpan PerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromSeconds(10);
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
-    private readonly ConcurrentDictionary<string, string> _namesToIds = new();
+
+    // OrdinalIgnoreCase, deliberately the same rule as AgentCollaborationDirectory's _byName. The
+    // two grant paths agree by design (see GrantLegacyName), and applying the comparer to only one
+    // of them would make the name an agent is given depend on whether collaboration is switched on.
+    private readonly ConcurrentDictionary<string, string> _namesToIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
 
@@ -224,7 +233,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// The options a child's own loop (and therefore its own manager) is built on — exposed so a test
     /// can stand up a nested manager exactly the way a spawned child would.
     /// </summary>
-    internal SubAgentOptions ChildOptions { get; }
+    internal SubAgentOptions ChildOptions { get; private set; }
 
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
@@ -255,7 +264,30 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// overload would make legacy source calls that omit optional arguments ambiguous.
     /// <c>SubAgentManagerPublicSurfaceTests</c> pins the published constructor shape.
     /// </remarks>
-    public PromptCachingMode ParentPromptCaching { get; init; }
+    public PromptCachingMode ParentPromptCaching
+    {
+        get => _parentPromptCaching;
+        init => _parentPromptCaching = value;
+    }
+
+    // Backing field for ParentPromptCaching, so UpdateParentConfiguration can replace it without the
+    // property growing a public setter it has never had.
+    private PromptCachingMode _parentPromptCaching;
+
+    /// <summary>
+    /// Host hook told when a descendant's <c>AskUserQuestion</c> parks or settles, or null when the
+    /// host wired none. Already scoped to the parent loop's thread by whoever set it; this level only
+    /// adds the child's display name at spawn time, so the host learns WHICH agent is asking without
+    /// the child loop having to know the name it was given.
+    /// </summary>
+    /// <remarks>
+    /// Internal and settable rather than a public init property, because the only thing that sets it is
+    /// <see cref="MultiTurnAgentLoop.PendingQuestionObserver"/>, and a loop builds its manager inside
+    /// its own constructor — before any of its init accessors have run. Not a constructor parameter for
+    /// the reason <see cref="ParentPromptCaching"/> documents. Read at spawn time, so assigning it
+    /// after construction is what the design expects rather than a race.
+    /// </remarks>
+    internal IPendingQuestionObserver? PendingQuestionObserver { get; set; }
 
     /// <summary>
     /// Per-agent admission bookkeeping, keyed by agent id.
@@ -582,13 +614,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         _parentAgent = parentAgent;
-        _parentContracts = parentContracts;
-        _parentHandlers = parentHandlers;
-        // The parent's surface is fixed for this manager's lifetime, so its three derived views are
-        // taken once here rather than rebuilt on every spawn. See the field docs for what each is for.
-        _parentToolNames = [.. parentContracts.Select(c => c.Name)];
-        _parentToolNameSet = new HashSet<string>(_parentToolNames, StringComparer.Ordinal);
-        _inheritableToolCount = parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+        AdoptParentToolSurface(parentContracts, parentHandlers);
         _options = options;
         _source = source;
         _logger = logger ?? NullLogger.Instance;
@@ -637,6 +663,91 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Start the defer-queue pump. Its first action parks on _queueSignal (initialized above via its
         // field initializer), so this call returns to the ctor immediately without consuming a thread.
         _pumpTask = RunSpawnPumpAsync(_pumpCts.Token);
+    }
+
+    /// <summary>
+    /// Takes the parent's tool surface and the three views derived from it, which are taken once per
+    /// surface rather than rebuilt on every spawn. See the field docs for what each is for.
+    /// </summary>
+    [MemberNotNull(
+        nameof(_parentContracts),
+        nameof(_parentHandlers),
+        nameof(_parentToolNames),
+        nameof(_parentToolNameSet)
+    )]
+    private void AdoptParentToolSurface(
+        IReadOnlyList<FunctionContract> parentContracts,
+        IDictionary<string, ToolHandler> parentHandlers
+    )
+    {
+        _parentContracts = parentContracts;
+        _parentHandlers = parentHandlers;
+        _parentToolNames = [.. parentContracts.Select(c => c.Name)];
+        _parentToolNameSet = new HashSet<string>(_parentToolNames, StringComparer.Ordinal);
+        _inheritableToolCount = parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+    }
+
+    /// <summary>
+    /// Re-points the parent-derived inputs to a spawn after the owning loop was reconfigured onto a new
+    /// mode or model in place (<see cref="IReconfigurableAgent"/>).
+    /// </summary>
+    /// <param name="parentContracts">The new inheritable tool snapshot, already filtered by the loop.</param>
+    /// <param name="parentHandlers">Handlers matching <paramref name="parentContracts"/>.</param>
+    /// <param name="parentModelId">The parent's new model, inherited by a child whose template sets none.</param>
+    /// <param name="parentMaxToken">The parent's new per-turn output budget, inherited the same way.</param>
+    /// <param name="parentPromptCaching">The parent's new caching mode, inherited the same way.</param>
+    /// <param name="options">
+    ///     The new mode's spawn configuration: provider factories, model catalog, required tools and the
+    ///     rest of what a spawn resolves at spawn time. The capacities this manager was BUILT with (the
+    ///     concurrency gate, the retained and queued limits, the ordinal sequence) are kept: they size
+    ///     live state that a switch cannot resize. <see cref="ChildOptions"/> is re-derived from it too,
+    ///     so a child spawned from now on hands ITS children the switched-to factories.
+    /// </param>
+    /// <remarks>
+    /// <b>Future spawns only.</b> Every child already registered here — running, queued or terminal —
+    /// keeps the model, budget and tools it was spawned with; a child's configuration is resolved once,
+    /// at spawn time, and this changes nothing that has already been resolved. The parent AGENT is the
+    /// same loop, so there is no re-parenting either: children keep relaying to the conversation they
+    /// have always belonged to.
+    /// <para>
+    /// Called only from a loop that has just confirmed no run is in progress, so no new spawn can be
+    /// requested concurrently. A spawn already sitting in the defer queue can start
+    /// alongside this and read a mix of old and new values; it is bounded to that one child's inherited
+    /// tool list, and the alternative — a lock on the spawn path for a once-per-mode-switch write —
+    /// costs every spawn to protect a case the host cannot even reach.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    internal void UpdateParentConfiguration(
+        IReadOnlyList<FunctionContract> parentContracts,
+        IDictionary<string, ToolHandler> parentHandlers,
+        string? parentModelId,
+        int? parentMaxToken,
+        PromptCachingMode parentPromptCaching,
+        SubAgentOptions options
+    )
+    {
+        ArgumentNullException.ThrowIfNull(parentContracts);
+        ArgumentNullException.ThrowIfNull(parentHandlers);
+        ArgumentNullException.ThrowIfNull(options);
+
+        AdoptParentToolSurface(parentContracts, parentHandlers);
+        _parentModelId = parentModelId;
+        _parentMaxToken = parentMaxToken;
+        _parentPromptCaching = parentPromptCaching;
+        _options = options with
+        {
+            MaxConcurrentSubAgents = _options.MaxConcurrentSubAgents,
+            MaxRetainedSubAgents = _options.MaxRetainedSubAgents,
+            MaxQueuedSubAgents = _options.MaxQueuedSubAgents,
+            OrdinalAllocator = _options.OrdinalAllocator,
+        };
+        // The derived copy a child is built on, or a child spawned after the switch would still hand
+        // its own children the pre-switch factories.
+        ChildOptions = _options.ForChildLoop() with
+        {
+            OrdinalAllocator = _ordinals,
+        };
     }
 
     /// <summary>
@@ -1031,7 +1142,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             ConfigureRunAdmission(state, gateGuard);
             SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
-            state.RunTask = agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(agent, agentId, effectiveName, cts.Token);
 
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
@@ -1090,6 +1201,37 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="QueuedSpawn.StateReady"/>. The pump holds no permit while parked, so it can never
     /// deadlock a permit-holder.
     /// </summary>
+    /// <summary>
+    ///     Runs a sub-agent's loop with <see cref="AgentActorScope" /> set to that agent, so tools this
+    ///     child shares with the rest of the conversation can tell who is calling them.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The conversation's todo board is the reason this exists (bug 19): one
+    ///         <c>TaskManager</c> instance serves the root and every sub-agent, its tool methods are the
+    ///         model-facing surface and cannot carry a caller argument, and a sub-agent's
+    ///         <c>bulk-initialize(clearExisting: true)</c> wiped the root's board. The scope is what lets
+    ///         the board refuse that clear without refusing the root's.
+    ///     </para>
+    ///     <para>
+    ///         A dedicated <c>async</c> method rather than a <c>using</c> around the bare
+    ///         <c>RunAsync</c> call: both read the same on the page, but only this one keeps the scope
+    ///         open for the run's whole lifetime instead of relying on the execution context captured at
+    ///         the loop's first await. The scope covers the run loop, which is where every tool call for
+    ///         this agent is dispatched from — <c>SendAsync</c> only enqueues.
+    ///     </para>
+    /// </remarks>
+    private static async Task RunUnderActorScopeAsync(
+        IMultiTurnAgent agent,
+        string agentId,
+        string? displayName,
+        CancellationToken ct
+    )
+    {
+        using var scope = AgentActorScope.Begin(agentId, displayName);
+        await agent.RunAsync(ct);
+    }
+
     private async Task RunSpawnPumpAsync(CancellationToken pumpCt)
     {
         while (!pumpCt.IsCancellationRequested)
@@ -2104,7 +2246,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             var runGeneration = state.BeginRunGeneration();
             ConfigureRunAdmission(state, gateGuard);
 
-            state.RunTask = state.Agent.RunAsync(cts.Token);
+            state.RunTask = RunUnderActorScopeAsync(state.Agent, state.AgentId, state.Name, cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
@@ -2932,6 +3074,24 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        // What each agent had actually done, read before the registry is cleared. Retiring everything as
+        // `stopped` was wrong for the agents that had already finished: disposal stops nothing about
+        // them, and the identity wiring flushes the roster AFTER this sweep, so the word persisted for a
+        // completed agent was never `completed`. That word is what the next process has to say about
+        // the agent, and `stopped` is the one that says nothing. Only an agent still in flight — or one
+        // that never ran, which is not in _agents at all — is stopped by disposal.
+        var terminalStatuses = _agents.Values.ToDictionary(
+            state => state.AgentId,
+            state =>
+                state.Status switch
+                {
+                    SubAgentStatus.Completed => AgentCollaborationStatuses.Completed,
+                    SubAgentStatus.Error => AgentCollaborationStatuses.Error,
+                    _ => AgentCollaborationStatuses.Stopped,
+                },
+            StringComparer.Ordinal
+        );
+
         _agents.Clear();
         _namesToIds.Clear();
 
@@ -2939,7 +3099,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
         foreach (var agentId in _admissions.Keys.ToArray())
         {
-            RetireAgent(agentId, AgentCollaborationStatuses.Stopped);
+            RetireAgent(agentId, terminalStatuses.GetValueOrDefault(agentId, AgentCollaborationStatuses.Stopped));
         }
 
         // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
@@ -3317,10 +3477,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         // A calling LLM commonly re-states its OWN (parent) model id as the explicit `model` argument
         // while ALSO supplying `modelIntelligence` for a tier it actually wants honored — the model id is
         // the one thing the LLM already knows about itself, so it fills the field rather than leaving it
-        // blank. Spawn-model has the strongest precedence (see BuildRouting), so left as-is this
-        // redundant self-reference silently overrides the requested tier and any template tier/model
-        // choice, which is exactly how every high-judgment template ended up running on the primary
-        // agent's own (mechanical-tier) model. Only clear the override when a tier was ALSO requested:
+        // blank. A resolvable spawn tier already beats the model (below); this also covers a tier that
+        // resolves nothing, where the redundant self-reference would otherwise override any template
+        // tier/model choice, which is exactly how every high-judgment template ended up running on the
+        // primary agent's own (mechanical-tier) model. Only clear the override when a tier was ALSO requested:
         // that is the signal the model id is redundant filler rather than a deliberate "run this one on
         // my own model" choice, which a same-as-parent override with no tier still expresses and this
         // must not disturb. Comparison is case-insensitive, matching the tolerant handling already used
@@ -3343,24 +3503,35 @@ public sealed class SubAgentManager : IAsyncDisposable
             modelOverride = null;
         }
 
-        // A per-spawn model-intelligence tier resolves to a concrete model ONLY when the spawn set no
-        // explicit model override (an explicit model always wins over a tier) AND the host supplied a
-        // tier resolver. The resolved id is then fed into option resolution as if it were the requested
-        // model, so model + budget inheritance treats it like any pinned model (override > tier > template
-        // > parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the
-        // sub-agent on its parent-inherited model, exactly as if no tier had been requested.
+        // A per-spawn model-intelligence tier is the PRIMARY routing mechanism: when the host supplied a tier
+        // resolver and the tier resolves to a concrete model, that model runs and any explicit `model` is
+        // dropped. A calling LLM names models it guessed or copied; the tier is the operator-sanctioned
+        // ladder, so it wins. The resolved id is then fed into option resolution as if it were the requested
+        // model, so model + budget inheritance treats it like any pinned model (tier > override > template >
+        // parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the explicit
+        // model in charge, or with none the parent-inherited model, exactly as if no tier had been requested.
+        var tierSelection =
+            modelIntelligence is { } tier && _options.TierModelResolver is { } tierResolver ? tierResolver(tier) : null;
         var tierResolvedModel =
-            string.IsNullOrWhiteSpace(modelOverride)
-            && modelIntelligence is { } tier
-            && _options.TierModelResolver is { } tierResolver
-                ? tierResolver(tier)
-                : null;
+            tierSelection is { } selection && !string.IsNullOrWhiteSpace(selection.ModelId) ? selection.ModelId : null;
+        if (tierResolvedModel is not null && !string.IsNullOrWhiteSpace(modelOverride))
+        {
+            _logger.LogDebug(
+                "Sub-agent {AgentId} requested model {ModelOverride} alongside tier {ModelIntelligence}; the "
+                    + "tier resolved to {TierModel}, which wins, so the requested model is ignored",
+                agentId,
+                modelOverride,
+                modelIntelligence,
+                tierResolvedModel
+            );
+            modelOverride = null;
+        }
 
         // The operator's conversation-wide default applies only when THIS SPAWN named neither a model nor a
         // resolvable tier. Folding it into effectiveModel is what places it above the template: everything
         // downstream (ResolveSubAgentOptions' model inheritance, the plain path's transport-correct provider
         // choice) already treats effectiveModel as "the model chosen for this spawn", so the ordering
-        // spawn-model > spawn-tier > conversation-default > template > parent falls out of one assignment
+        // spawn-tier > spawn-model > conversation-default > template > parent falls out of one assignment
         // rather than a second, separately-maintained ladder.
         var conversationDefaultModel =
             string.IsNullOrWhiteSpace(modelOverride)
@@ -3372,14 +3543,22 @@ public sealed class SubAgentManager : IAsyncDisposable
             ? modelOverride
             : tierResolvedModel ?? conversationDefaultModel;
         var isModelTierResolved = template.IsModelTierResolved || tierResolvedModel is not null;
-        // A template-authored effort remains the most specific choice. The conversation floor is
-        // orthogonal to model routing and therefore survives spawn/template model and tier selection;
-        // the characteristics factory capability-shapes it for whichever model won. Only when neither
-        // exists do we apply the older parent-inheritance rule, which is intentionally suppressed by a
-        // task-specific model choice (see SubAgentOptions.InheritedEffort).
+        // The tier effort belongs to the model its tier picked, so it applies only while that model runs:
+        // a spawn tier's model always runs; a tier-authored template's model runs only when this spawn chose
+        // no model of its own (override, spawn tier, or conversation default).
+        var tierEffort =
+            tierResolvedModel is not null ? tierSelection?.Effort
+            : template.IsModelTierResolved && effectiveModel is null ? template.TierEffort
+            : null;
+        // A template-authored effort remains the most specific choice. Next comes the tier's effort, raised
+        // to the conversation floor when the floor is higher. The floor is orthogonal to model routing and
+        // therefore survives spawn/template model and tier selection; the characteristics factory
+        // capability-shapes whichever effort wins for whichever model won. Only when none exists do we
+        // apply the older parent-inheritance rule, which is intentionally suppressed by a task-specific
+        // model choice (see SubAgentOptions.InheritedEffort).
         var requestedReasoningEffort =
             template.Effort
-            ?? _options.ConversationEffortFloor
+            ?? AtLeast(tierEffort, _options.ConversationEffortFloor)
             ?? (
                 !string.IsNullOrWhiteSpace(modelOverride) || template.IsModelExplicitlySelected || isModelTierResolved
                     ? null
@@ -3413,7 +3592,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        // Resolve the sub-agent's options with model + budget + caching inheritance (override > tier > template > parent).
+        // Resolve the sub-agent's options with model + budget + caching inheritance (tier > override > template > parent).
         var defaultOptions = ResolveSubAgentOptions(
             template.DefaultOptions,
             effectiveModel,
@@ -3699,7 +3878,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                 collaboration: childCollaboration,
                 descendantQuestionSink: _descendantQuestionSink,
                 compaction: ChildOptions.Compaction
-            );
+            )
+            {
+                // The child's own name, filled in only when the notice carries none — so a
+                // GRANDCHILD's name, already stamped one level down, survives this hop. Set here
+                // rather than as a constructor argument to keep the published constructor's CLR
+                // signature intact for already-compiled package consumers.
+                PendingQuestionObserver = PendingQuestionObserver is null
+                    ? null
+                    : new ScopedPendingQuestionObserver(PendingQuestionObserver, agentName: spawnName ?? template.Name),
+            };
 
             // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
             // withheld nothing or that the child holds anyway, or a filter that resolved the whole
@@ -3791,6 +3979,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             disposable.Dispose();
         }
     }
+
+    // The higher of two efforts, either of which may be absent. ReasoningEffort is declared weakest-first,
+    // so comparing its values orders it; this is a request-side choice, not a provider rank.
+    private static ReasoningEffort? AtLeast(ReasoningEffort? effort, ReasoningEffort? floor) =>
+        effort is { } e && floor is { } f ? (e >= f ? e : f) : effort ?? floor;
 
     /// <summary>
     /// Resolves the sub-agent's <see cref="GenerateReplyOptions"/> with model inheritance: an explicit
@@ -5328,6 +5521,41 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Completes with the first input queued on the OWNING agent that <paramref name="wakes"/> accepts,
+    /// leaving it queued for the run loop to act on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wait tools block inside a turn, so while one is blocked the owning agent cannot start the
+    /// next turn and nothing it has been sent is looked at. That is the whole of bug 6 on this side:
+    /// a person typing while <c>WaitForAgents</c> was blocked was queued behind a wait that could run
+    /// for minutes, or forever when no timeout was passed. The wait needs a third racer beside the
+    /// completion tasks and the collaboration ledger, and it is this - the input the agent is already
+    /// holding.
+    /// </para>
+    /// <para>
+    /// Exposed here rather than reached for directly because a provider holds this manager and nothing
+    /// else; the parent is this class's own collaborator. An agent that is not a
+    /// <see cref="MultiTurnAgentBase"/> has no input queue to peek, so the race simply never resolves
+    /// from this side and the wait behaves exactly as it did before.
+    /// </para>
+    /// </remarks>
+    /// <param name="wakes">Decides which queued input is worth ending a wait for.</param>
+    /// <param name="ct">Cancels the waiting, not the input.</param>
+    internal Task<QueuedInput> WaitForOwnerInputAsync(Func<QueuedInput, bool> wakes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(wakes);
+
+        return _parentAgent is MultiTurnAgentBase owner ? owner.WaitForMatchingInputAsync(wakes, ct) : NeverAsync(ct);
+
+        static async Task<QueuedInput> NeverAsync(CancellationToken ct)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new OperationCanceledException(ct);
         }
     }
 

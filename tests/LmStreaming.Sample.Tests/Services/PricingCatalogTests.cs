@@ -460,14 +460,43 @@ public class PricingCatalogTests
             entry["_source"].Should().NotBeNullOrWhiteSpace($"shipped entry '{entry.Key}' must cite its vendor page");
         }
 
-        // The Anthropic ids report input EXCLUDING cache tokens, so they must not carry the subset default.
+        // Every id the sample serves over an Anthropic-shaped endpoint reports input EXCLUDING cache reads,
+        // so none of them may carry the subset default. DeepSeek is in this set: the sample reaches it
+        // through the Anthropic-compatible API (ANTHROPIC_COMPAT_PROVIDERS), whose usage is additive.
         foreach (var entry in configuration.GetSection("Pricing:Models").GetChildren())
         {
-            if (entry.Key.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+            if (IsServedOverAnAnthropicShapedEndpoint(entry.Key))
             {
                 resolver.Resolve(entry.Key)!.CacheAccounting.Should().Be(CacheAccounting.Additive, entry.Key);
             }
         }
+    }
+
+    private static bool IsServedOverAnAnthropicShapedEndpoint(string modelId) =>
+        modelId.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)
+        || modelId.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void ADeepSeekTurnServedOverTheAnthropicCompatibleApi_IsPricedAdditively_AndComplete()
+    {
+        // A real deepseek-flash record from the sample's ledger: 244 cache-miss input tokens beside a
+        // 110,336-token cache read. Under the subset default that read exceeds the input, so uncached
+        // input was clamped to 0, the $0.15/M term was dropped and the record was flagged Partial.
+        // 244 × 0.15 + 110,336 × 0.003 + 335 × 0.6 = 36.6 + 331.008 + 201 = 568.6 → 569 micro-dollars.
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var pricing = ResolverFrom(configuration).Resolve("deepseek-flash");
+        pricing.Should().NotBeNull();
+
+        var estimate = pricing!.Estimate(
+            Observation("deepseek-flash", input: 244, output: 335) with
+            {
+                CacheReadTokens = 110_336,
+            }
+        );
+
+        estimate.Micros.Should().Be(569);
+        estimate.Completeness.Should().Be(CostCompleteness.Complete);
+        estimate.MissingCategories.Should().NotContain(CostEstimate.CacheAccountingMismatch);
     }
 
     private static string FindSampleAppsettings()
@@ -562,13 +591,13 @@ public class PricingCatalogTests
     // does not know (Claude CLI / Codex / unlisted Copilot ids), so the gauge and compaction work for them. ---
 
     [Fact]
-    public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault156KWindow()
+    public void WithNoContextWindowSection_AnUnknownModel_GetsTheDefault196KWindow()
     {
         var capacity = CapacityFrom(Config()).Resolve("gpt-5.6-sol");
 
         capacity.Should().NotBeNull("an unknown model falls back to the host cap rather than no window");
         capacity!.WindowTokens.Should().Be(PricingCatalog.DefaultMaxContextTokens);
-        PricingCatalog.DefaultMaxContextTokens.Should().Be(156_000);
+        PricingCatalog.DefaultMaxContextTokens.Should().Be(196_000);
         capacity.MaxOutputTokens.Should().BeNull("the cap states a window, not an output ceiling");
     }
 
@@ -585,7 +614,7 @@ public class PricingCatalogTests
             )
             .Resolve("claude-sonnet-4-5-20250929");
 
-        capacity!.WindowTokens.Should().Be(156_000);
+        capacity!.WindowTokens.Should().Be(196_000);
         capacity.MaxOutputTokens.Should().Be(64_000);
     }
 
@@ -621,15 +650,18 @@ public class PricingCatalogTests
     }
 
     [Fact]
-    public void TheShippedAppsettings_CapsContextAt156K()
+    public void TheShippedAppsettings_CapsContextAt196K()
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        configuration.GetValue<long?>("ContextWindow:MaxTokens").Should().Be(156_000);
+        configuration.GetValue<long?>("ContextWindow:MaxTokens").Should().Be(196_000);
     }
 
     [Theory]
     [InlineData("gpt-6-astra")]
+    [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6-luna")]
+    [InlineData("gemini-3.8-flash")]
     [InlineData("gpt-5.6-sol")]
     [InlineData("gpt-5.6-terra")]
     [InlineData("gpt-5.6-luna")]
@@ -649,7 +681,7 @@ public class PricingCatalogTests
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
         ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
-        CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(156_000);
+        CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(196_000);
     }
 
     [Theory]

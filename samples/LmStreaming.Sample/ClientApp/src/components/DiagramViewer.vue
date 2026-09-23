@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import BaseModal from './BaseModal.vue';
 import { renderDiagram, type DiagramLanguage } from '@/utils/diagramRenderer';
+import {
+  observeApproach,
+  queueRender,
+  viewportDistance,
+  type QueuedRender,
+} from '@/utils/renderQueue';
 
 const props = defineProps<{
   source: string;
@@ -14,8 +20,17 @@ const loading = ref(false);
 const error = ref('');
 const svgUrl = ref<string | null>(null);
 const zoom = ref(1);
+const viewerElement = ref<HTMLElement | null>(null);
+/*
+ * Rendering is deferred until the diagram comes within a viewport of being seen, and the flag is
+ * one-way: a diagram that has been drawn stays drawn when it scrolls away. Mermaid layout is a
+ * main-thread cost, so drawing every diagram of a long page up front froze the whole app.
+ */
+const approached = ref(false);
 let generation = 0;
 let disposed = false;
+let stopObserving: (() => void) | null = null;
+let queued: QueuedRender<string> | null = null;
 
 const formatLabel = computed(() => (props.language === 'mermaid' ? 'Mermaid' : 'PlantUML'));
 const downloadName = computed(() => `diagram-${props.language}.svg`);
@@ -31,9 +46,17 @@ async function updateDiagram(): Promise<void> {
   const currentGeneration = ++generation;
   loading.value = true;
   error.value = '';
+  queued?.cancel();
+  // Shared queue: one diagram renders at a time and the event loop gets a turn between two of
+  // them, ordered by how close each one is to the viewport when its turn comes up.
+  const job = queueRender(
+    () => renderDiagram(props.source, props.language),
+    () => viewportDistance(viewerElement.value)
+  );
+  queued = job;
 
   try {
-    const svg = await renderDiagram(props.source, props.language);
+    const svg = await job.promise;
     if (disposed || currentGeneration !== generation) return;
 
     const nextUrl = URL.createObjectURL(
@@ -61,17 +84,38 @@ function adjustZoom(change: number): void {
   zoom.value = Math.min(3, Math.max(0.5, zoom.value + change));
 }
 
-watch(() => [props.source, props.language] as const, updateDiagram, { immediate: true });
+/** Called once, by the observer or by the no-observer fallback inside `observeApproach`. */
+function markApproached(): void {
+  if (approached.value) return;
+  approached.value = true;
+  void updateDiagram();
+}
+
+watch(() => [props.source, props.language] as const, () => {
+  if (approached.value) void updateDiagram();
+});
+
+onMounted(() => {
+  const element = viewerElement.value;
+  if (!element) {
+    markApproached();
+    return;
+  }
+  stopObserving = observeApproach(element, markApproached);
+});
 
 onBeforeUnmount(() => {
   disposed = true;
   generation += 1;
+  stopObserving?.();
+  // A diagram the reader scrolled past before its turn came up must not cost a render at all.
+  queued?.cancel();
   revokeCurrentUrl();
 });
 </script>
 
 <template>
-  <section class="diagram-viewer" :aria-label="`${formatLabel} diagram`">
+  <section ref="viewerElement" class="diagram-viewer" :aria-label="`${formatLabel} diagram`">
     <div class="diagram-toolbar">
       <span class="diagram-format" data-testid="diagram-format">{{ formatLabel }}</span>
       <div class="diagram-view-options" aria-label="Diagram view">
@@ -119,6 +163,9 @@ onBeforeUnmount(() => {
 
     <div class="diagram-canvas">
       <pre v-if="showingSource" data-testid="diagram-source" tabindex="0"><code>{{ source }}</code></pre>
+      <p v-else-if="!approached" class="diagram-placeholder" data-testid="diagram-placeholder">
+        {{ formatLabel }} diagram
+      </p>
       <p v-else-if="loading" class="diagram-status" role="status">Rendering diagram…</p>
       <div v-else-if="error" class="diagram-error" data-testid="diagram-error" role="alert">
         <strong>Could not render diagram</strong>
@@ -324,6 +371,27 @@ pre {
   margin: 0;
   color: #667085;
   font-size: 13px;
+}
+
+/*
+ * The placeholder reserves height so that a page of not-yet-drawn diagrams does not collapse and
+ * then jolt the reader's scroll position as each one appears. It cannot be exact -- the height is
+ * only known once the diagram is drawn -- so it sits between the canvas minimum (96px) and the
+ * 380px image cap rather than pretending to a precision it does not have.
+ */
+.diagram-placeholder {
+  display: grid;
+  min-height: 228px;
+  place-items: center;
+  align-self: stretch;
+  justify-self: stretch;
+  margin: 0;
+  border-radius: 8px;
+  background: repeating-linear-gradient(-45deg, #f6f8fb 0 10px, #f1f4f9 10px 20px);
+  color: #98a2b3;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .diagram-error button {

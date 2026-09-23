@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import ConversationTabs from '@/components/ConversationTabs.vue';
 import type { ConversationTab } from '@/composables/useConversationTabs';
 
@@ -11,6 +12,29 @@ const TABS: ConversationTab[] = [
   tab('a1'), tab('a2', 'completed'), tab('a3', 'error', { failureCode: 'view_exceeds_window' }),
   tab('a4', 'interrupted'), tab('wf', 'running', { kind: 'workflow', label: 'Nightly report' }),
 ];
+
+// Models a real pointer click the way Chromium sequences one, because the popover's close-on-blur
+// race only exists in that sequencing. The browser moves focus as the DEFAULT ACTION of `mousedown`
+// (so `preventDefault` suppresses it), fires `blur`/`focusout` on the old element first — leaving
+// `document.activeElement === document.body` — and performs a microtask checkpoint between listener
+// invocations, so anything a `focusout` handler defers to `nextTick` runs BEFORE focus lands on the
+// clicked control. jsdom's own `focus()` runs that whole sequence in one stack frame with no
+// checkpoint in between, so the interleaving has to be spelled out here. Recorded against Chromium:
+// `.claude/scratchpad/conversation_memories/bug-batch-agent-picker/investigation.md`.
+async function pointerClick(element: HTMLElement): Promise<void> {
+  const previous = document.activeElement as HTMLElement | null;
+  const focusMoves = element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  if (focusMoves && previous && previous !== element) {
+    previous.blur();
+    await nextTick();
+    if (element.isConnected) element.focus();
+  }
+  // Chromium never delivers the click when the target was detached mid-gesture, which is exactly
+  // what happens when the popover closes on mousedown — so don't hand the handler a click it would
+  // not have received.
+  if (element.isConnected) element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  await nextTick();
+}
 
 describe('ConversationTabs agent picker', () => {
   it('keeps stable Main and current-agent anchors for existing navigation', async () => {
@@ -135,6 +159,63 @@ describe('ConversationTabs agent picker', () => {
     expect(wrapper.emitted('select')).toBeUndefined();
     expect(document.activeElement).toBe(picker.element);
     wrapper.unmount();
+  });
+
+  it('stays open and applies the filter when a pill is clicked with a real pointer', async () => {
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main', pendingQuestionAgentIds: [] } });
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="agent-picker-search"]').element);
+
+    await pointerClick(wrapper.get('[data-testid="agent-filter-running"]').element as HTMLElement);
+
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="agent-filter-running"]').attributes('aria-pressed')).toBe('true');
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]').map((row) => row.attributes('data-agent-id')))
+      .toEqual(['a1', 'wf']);
+    // Focus never left the search box, which is the mechanism that keeps the popover open.
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="agent-picker-search"]').element);
+    wrapper.unmount();
+  });
+
+  it('stays open when picking an option is preceded by a pointer press and when typing', async () => {
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main' } });
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    await nextTick();
+    const search = wrapper.get('[data-testid="agent-picker-search"]');
+    await search.setValue('nightly');
+    await nextTick();
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="agent-picker-option"]')).toHaveLength(1);
+
+    await search.setValue('');
+    await pointerClick(wrapper.get('[data-agent-id="a2"]').element as HTMLElement);
+    expect(wrapper.emitted('select')).toEqual([['a2']]);
+    wrapper.unmount();
+  });
+
+  it('still closes on a pointer press outside the picker', async () => {
+    const wrapper = mount(ConversationTabs, { attachTo: document.body, props: { tabs: TABS, activeTabId: 'main' } });
+    await wrapper.findAll('[data-testid="conversation-tab"]')[1].trigger('click');
+    await nextTick();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await nextTick();
+    expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
+    wrapper.unmount();
+    outside.remove();
+  });
+
+  // Layout itself is not assertable here (scoped CSS is not applied under jsdom); the right-aligned
+  // popover was verified in a real browser. This pins only the markup half: a real icon, not a glyph.
+  it('renders the chevron as an inline svg icon rather than a literal glyph', () => {
+    const wrapper = mount(ConversationTabs, { props: { tabs: TABS, activeTabId: 'main' } });
+    const chevron = wrapper.get('.agent-picker__chevron');
+    expect(chevron.element.tagName.toLowerCase()).toBe('svg');
+    expect(chevron.attributes('aria-hidden')).toBe('true');
+    expect(wrapper.find('.agent-picker__chevron path').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain('⌄');
   });
 
   it('updates the stable trigger when routing changes externally without opening or stealing focus', async () => {

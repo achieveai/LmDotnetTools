@@ -49,6 +49,33 @@ public enum AgentMessageType
 }
 
 /// <summary>
+///     The wire spelling of an <see cref="AgentMessageType"/>: the snake_case vocabulary the sending
+///     tool advertises and accepts.
+/// </summary>
+/// <remarks>
+///     The envelope a receiver reads used to carry the C# member name, so a model told to reply with
+///     the type it was sent copied back <c>DelegateTask</c> or <c>TaskUpdate</c> - two spellings the
+///     tool refused, while <c>Question</c>, <c>Steer</c> and <c>Response</c> happened to survive
+///     lower-casing. The envelope now states the same vocabulary the tool takes, so what a model reads
+///     is what it can send.
+/// </remarks>
+public static class AgentMessageTypeWire
+{
+    /// <summary>The wire name for <paramref name="type"/>.</summary>
+    public static string ToWireName(this AgentMessageType type) =>
+        type switch
+        {
+            AgentMessageType.Question => "question",
+            AgentMessageType.DelegateTask => "delegate_task",
+            AgentMessageType.TaskUpdate => "task_update",
+            AgentMessageType.Steer => "steer",
+            AgentMessageType.Response => "response",
+            AgentMessageType.DeliveryFailure => "delivery_failure",
+            _ => type.ToString(),
+        };
+}
+
+/// <summary>
 ///     A message sent from one agent to another inside a collaboration, delivered to the receiver as a
 ///     self-describing envelope naming the sender, the message type, and — when the type expects an
 ///     answer — exactly how to reply.
@@ -242,7 +269,7 @@ public record AgentMessage : IMessage, ICanGetText
             .Append("\" from-agent-id=\"")
             .Append(EscapeAttribute(message.FromAgentId))
             .Append("\" type=\"")
-            .Append(EscapeAttribute(message.AgentMessageType.ToString()))
+            .Append(EscapeAttribute(message.AgentMessageType.ToWireName()))
             .Append('"');
 
         if (!string.IsNullOrEmpty(message.InResponseTo))
@@ -294,11 +321,11 @@ public record AgentMessage : IMessage, ICanGetText
         _ =
             message.AgentMessageType == AgentMessageType.DelegateTask
                 ? sb.Append(" progress-msg-type=\"")
-                    .Append(nameof(AgentMessageType.TaskUpdate))
+                    .Append(AgentMessageType.TaskUpdate.ToWireName())
                     .Append("\" final-msg-type=\"")
-                    .Append(nameof(AgentMessageType.Response))
+                    .Append(AgentMessageType.Response.ToWireName())
                     .Append('"')
-                : sb.Append(" reply-msg-type=\"").Append(nameof(AgentMessageType.Response)).Append('"');
+                : sb.Append(" reply-msg-type=\"").Append(AgentMessageType.Response.ToWireName()).Append('"');
 
         _ = sb.Append("/>\n");
     }

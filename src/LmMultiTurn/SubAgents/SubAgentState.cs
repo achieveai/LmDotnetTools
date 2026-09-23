@@ -217,8 +217,8 @@ internal class SubAgentState
     /// The spawn's requested model-intelligence tier (the <c>modelIntelligence</c> Agent-tool argument /
     /// workflow task tier), or null when none was requested. Captured at spawn so an owned-provider
     /// restart re-resolves the same tier through the host's <see cref="SubAgentOptions.TierModelResolver"/>
-    /// rather than dropping back to the parent model. Ignored when <see cref="ModelOverride"/> is set (an
-    /// explicit model always wins over a tier).
+    /// rather than dropping back to the parent model. When it resolves, it wins over
+    /// <see cref="ModelOverride"/>; the override applies only when the tier resolves to no model.
     /// </summary>
     public int? ModelIntelligence { get; init; }
 

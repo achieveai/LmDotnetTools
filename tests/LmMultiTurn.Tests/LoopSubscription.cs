@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -66,7 +67,7 @@ internal static class LoopSubscription
             .Range(0, expectedCount)
             .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
             .ToList();
-        var completed = 0;
+        var completed = new StrongBox<int>(0);
 
         var drain = StartDraining(
             agent,
@@ -74,8 +75,8 @@ internal static class LoopSubscription
             {
                 if (msg is RunCompletedMessage)
                 {
-                    var idx = completed;
-                    completed++;
+                    var idx = completed.Value;
+                    completed.Value = idx + 1;
                     if (idx < sources.Count)
                     {
                         _ = sources[idx].TrySetResult(true);
@@ -85,15 +86,25 @@ internal static class LoopSubscription
             ct
         );
 
-        return new RunCompletions(drain, sources);
+        return new RunCompletions(drain, sources, completed);
     }
 }
 
 /// <summary>Run-completion signals fed by a <see cref="Drain"/>, waited on by run index.</summary>
-internal sealed class RunCompletions(Drain drain, IReadOnlyList<TaskCompletionSource<bool>> sources)
+internal sealed class RunCompletions(
+    Drain drain,
+    IReadOnlyList<TaskCompletionSource<bool>> sources,
+    StrongBox<int> completed
+)
 {
     /// <summary>Waits for the <paramref name="index"/>-th run completion (0-based).</summary>
     public Task WaitAsync(int index) => drain.WaitAsync(sources[index].Task, TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// How many runs have completed so far. For asserting that a run did NOT happen, which a wait by
+    /// index can only express as a timeout.
+    /// </summary>
+    public int Completed => completed.Value;
 }
 
 /// <summary>

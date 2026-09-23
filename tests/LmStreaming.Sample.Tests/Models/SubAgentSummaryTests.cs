@@ -170,6 +170,45 @@ public sealed class SubAgentSummaryTests
             );
     }
 
+    [Theory]
+    [InlineData("general-purpose", "agent-3", "general-purpose-3")]
+    [InlineData("code-reviewer:performance-review", "agent-12", "performance-review-12")]
+    public void ToNodeRecord_OnANamelessRow_RepublishesTheNameTheAgentWasGiven(
+        string template,
+        string agentId,
+        string expected
+    )
+    {
+        // A nameless spawn is not an anonymous agent: SubAgentManager derives {template}-{ordinal} for
+        // it at spawn, and that is the name its transcript and telemetry carry. Republishing the
+        // AgentId here put an identifier in the one field every roster presents as a NAME, so the
+        // agent's real name appeared nowhere in the listing a reader addresses from.
+        var row = LegacyTab().WithCollaboration(Entry()) with
+        {
+            Name = null,
+            AgentId = agentId,
+            AgentNodeId = agentId,
+            Template = template,
+        };
+
+        row.ToNodeRecord()!.Name.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ToNodeRecord_OnANamelessRowWithNoOrdinalToRebuildFrom_FallsBackToTheIdentifier()
+    {
+        // A workflow handle or a pre-#705 row carries no ordinal, so there is nothing to derive from.
+        // An identifier is a poor name; an invented ordinal would be a wrong one.
+        var row = LegacyTab().WithCollaboration(Entry()) with
+        {
+            Name = null,
+            AgentId = "wf-7f3a",
+            AgentNodeId = "wf-7f3a",
+        };
+
+        row.ToNodeRecord()!.Name.Should().Be("wf-7f3a");
+    }
+
     [Fact]
     public void ToNodeRecord_StampsTheCurrentSchemaVersion()
     {

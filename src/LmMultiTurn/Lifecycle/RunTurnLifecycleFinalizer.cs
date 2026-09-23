@@ -92,6 +92,7 @@ public sealed class RunTurnLifecycleFinalizer
         _threadId = threadId;
         _services = services;
         _logger = logger ?? NullLogger.Instance;
+        ModelId = services.ModelId;
         PublishesEvents = services.PublishesEvents;
 
         var optedIn = PublishesEvents || services.LifecycleStore != null;
@@ -111,6 +112,15 @@ public sealed class RunTurnLifecycleFinalizer
     /// would have to do real work to build an event nobody would receive.
     /// </summary>
     public bool PublishesEvents { get; }
+
+    /// <summary>
+    /// The model stamped on <c>run_started</c>. Seeded from the bundle, and settable because a loop
+    /// can be moved onto another model in place (<see cref="IReconfigurableAgent"/>) — at which point
+    /// the bundle's copy is stale, while this finalizer's exactly-once in-flight table and its
+    /// context-dedup set are conversation state that must survive the switch. Mutating the one field
+    /// that changes is therefore strictly narrower than rebuilding the finalizer.
+    /// </summary>
+    public string? ModelId { get; set; }
 
     /// <summary>
     /// Whether a run this process started is durably recorded as having started.
@@ -212,7 +222,7 @@ public sealed class RunTurnLifecycleFinalizer
                     Cause = new LifecycleRunCause { Kind = cause, ToolCallId = causeToolCallId },
                     WasForked = wasForked,
                     AgentKind = _services.AgentKind,
-                    ModelId = _services.ModelId,
+                    ModelId = ModelId,
                 },
                 BuildCorrelation(runId, generationId, parentRunId, causeToolCallId),
                 startedAt,

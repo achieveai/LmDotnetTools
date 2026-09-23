@@ -47,7 +47,7 @@ it is not emitted as null.
 |---|---|---|---|
 | `threadId` | opaque, e.g. `thread-a1b2` | `POST /api/conversations` | One transcript. The unit of persistence, of the agent pool, and of the WebSocket session. |
 | *root thread id* | a `threadId` | as above | The conversation a **human** started. Also serves as the `collaborationId` (§2.2) — the bundle is root-owned. |
-| `subagent-{agentId}` | reserved prefix | the sub-agent manager at spawn | The transcript an **agent** owns. |
+| `subagent-{scope}-{agentId}` | reserved prefix | the sub-agent manager at spawn | The transcript an **agent** owns. `SubAgentThreadIds.For` mints it; `{scope}` is 12 hex digits identifying the root conversation, shared by every descendant. (Pre-#705 ids, which are not ordinals, keep the unscoped `subagent-{agentId}` shape.) |
 | `workflow-{workflowId}-{conversationId}` | reserved prefix | the workflow manager at run start | The transcript a **workflow controller** owns. (Legacy runs with no conversation-scoped id fall back to `workflow-{workflowId}`.) |
 
 `SubAgentSummary.IsAgentOwnedThreadId` is the single definition of the reserved

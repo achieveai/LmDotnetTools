@@ -157,6 +157,72 @@ public sealed class ContextMeasuredEmissionTests
     }
 
     [Fact]
+    public async Task AnAdditiveProvidersFullCacheHit_MeasuresInputPlusTheCacheRead()
+    {
+        // Anthropic-shaped usage counts cache reads BESIDE input_tokens. The provider stamps
+        // cache_creation_input_tokens on every response (0 on a pure hit) and that stamp is what marks the
+        // record additive; without it the 110,336 cached tokens would vanish from the measurement and
+        // compaction would calibrate against a 244-token "context".
+        SetupMockAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage
+                {
+                    PromptTokens = 244,
+                    CompletionTokens = 335,
+                    InputTokenDetails = new InputTokenDetails { CachedTokens = 110_336 },
+                }.SetExtraProperty("cache_creation_input_tokens", 0),
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var store = new InMemoryConversationStore();
+        await using var loop = CreateLoop(store, new RecordingLifecyclePublisher(), new FixedCapacity(1_000_000, null));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+        await DrainRunAsync(loop, cts.Token);
+
+        var latest = await ContextObservationProjection.LoadLatestAsync(store, Thread);
+        latest!.MeasuredInputTokens.Should().Be(244 + 110_336);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ASubsetProvidersCacheHit_MeasuresInputAlone_BecauseTheReadIsAlreadyInside()
+    {
+        // OpenAI-shaped usage counts cached_tokens INSIDE prompt_tokens and never carries the Anthropic
+        // stamp, so the measurement must not add the read a second time.
+        SetupMockAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage
+                {
+                    PromptTokens = 5_000,
+                    CompletionTokens = 40,
+                    InputTokenDetails = new InputTokenDetails { CachedTokens = 4_000 },
+                },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var store = new InMemoryConversationStore();
+        await using var loop = CreateLoop(store, new RecordingLifecyclePublisher(), new FixedCapacity(1_000_000, null));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+        await DrainRunAsync(loop, cts.Token);
+
+        var latest = await ContextObservationProjection.LoadLatestAsync(store, Thread);
+        latest!.MeasuredInputTokens.Should().Be(5_000);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
     public async Task GenerationOrdinals_ContinueAcrossARestart()
     {
         SetupMockAgentResponse([

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -28,6 +29,26 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
 
     /// <summary>Batch size ceiling: a single call may ask 1 to 4 questions.</summary>
     public const int MaxQuestions = 4;
+
+    /// <summary>
+    /// What this tool returns when the loop settles the parked call early because something else
+    /// arrived that has to run now (a user message, a peer agent message, a mixed batch).
+    /// </summary>
+    /// <remarks>
+    /// Lives here, next to the contract that describes it, because the model reads both: a
+    /// description that promises only one ending would make this text read as a failure and the model
+    /// would re-ask. See <see cref="BuildContract"/>.
+    /// </remarks>
+    public const string EarlySettlePlaceholder = "Question sent to user, will notify back when we get answer";
+
+    /// <summary>
+    /// <see cref="EarlySettlePlaceholder"/> in this tool's own envelope shape, with a named non-error
+    /// <c>status</c> — the same envelope family as the synchronous rejections below, so a model
+    /// branching on <c>status</c> sees a legitimate outcome instead of a string to parse.
+    /// </summary>
+    public static readonly string EarlySettleResultJson = JsonSerializer.Serialize(
+        new { status = EarlySettlePlaceholders.EarlySettleStatus, message = EarlySettlePlaceholder }
+    );
 
     public string ProviderName => "ClientTools";
 
@@ -89,8 +110,19 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
             Name = ToolName,
             Description =
                 "Ask the human one question, or a batch of up to 4 related questions, and pause for their "
-                + "answer. The run parks after this call and resumes automatically once the client submits "
-                + "an answer — the result becomes this tool's return value.",
+                + "answer. This call has TWO possible endings and you must handle both.\n"
+                + "1. The human answers while you are still parked: their answer becomes this tool's "
+                + "return value and you continue from it.\n"
+                + "2. Something else arrives that has to run first (a message from the human, a message "
+                + "from another agent). The call then returns "
+                + "{\"status\":\""
+                + EarlySettlePlaceholders.EarlySettleStatus
+                + "\"} with the message \""
+                + EarlySettlePlaceholder
+                + "\". This is NOT a failure and NOT a refusal. Your question was delivered and is still "
+                + "in front of the human. Do NOT re-ask it and do NOT treat it as unanswered — get on "
+                + "with whatever arrived. The answer will arrive later as its own message carrying both "
+                + "your original question and their reply.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -284,6 +316,40 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
             parsed = new AskUserQuestionArgs(contextText, questions);
             return true;
         }
+    }
+
+    /// <summary>
+    /// Restates the call's request in readable form, for the message that carries a late answer back
+    /// into the conversation after the call was settled early.
+    /// </summary>
+    /// <remarks>
+    /// The answer has to travel with the question it answers. Compaction shows the model a projected
+    /// view of history rather than all of it, so by the time the human replies the original
+    /// <c>tool_use</c>/<c>tool_result</c> pair may no longer be in that view — an answer on its own
+    /// would then be a reply to a question the model cannot see. Falls back to the raw argument JSON
+    /// rather than dropping the request: unparseable is still better than absent.
+    /// </remarks>
+    internal static string RenderRequestForInjection(string? argsJson)
+    {
+        if (!TryParseArgs(argsJson, out var parsed, out _, out _) || parsed is null)
+        {
+            return argsJson ?? string.Empty;
+        }
+
+        var sb = new StringBuilder();
+        _ = sb.Append(parsed.Context);
+        foreach (var question in parsed.Questions)
+        {
+            _ = sb.Append("\n- (").Append(question.Id).Append(") ").Append(question.Prompt);
+            if (!string.IsNullOrWhiteSpace(question.Description))
+            {
+                _ = sb.Append(" — ").Append(question.Description);
+            }
+
+            _ = sb.Append("\n  options: ").AppendJoin(" | ", question.Options.Select(o => o.Label));
+        }
+
+        return sb.ToString();
     }
 
     private static Task<ToolHandlerResult> FromError(string code, string message) =>

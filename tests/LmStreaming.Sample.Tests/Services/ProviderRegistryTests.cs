@@ -214,6 +214,19 @@ public class ProviderRegistryTests
                 CopilotModelTransport.Anthropic
             ),
             new CopilotModelInfo("gpt-5.5", "GPT-5.5", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses),
+            new CopilotModelInfo("grok-4.7", "Grok 4.7", CopilotModelVendor.XAi, CopilotModelTransport.Responses),
+            new CopilotModelInfo(
+                "gemini-3.8-flash",
+                "Gemini 3.8 Flash",
+                CopilotModelVendor.Google,
+                CopilotModelTransport.ChatCompletions
+            ),
+            new CopilotModelInfo(
+                "mai-code-1.1-flash",
+                "MAI-Code-1.1-Flash",
+                CopilotModelVendor.Microsoft,
+                CopilotModelTransport.Responses
+            ),
         };
 
         var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, copilotModels);
@@ -223,6 +236,10 @@ public class ProviderRegistryTests
         byId["claude-opus-4.8"].DisplayName.Should().Be("Claude Opus 4.8 (Copilot)");
         byId["gpt-5.5"].Group.Should().Be("Copilot · OpenAI");
         byId["gpt-5.5"].DisplayName.Should().Be("GPT-5.5 (Copilot)");
+        // Every vendor gets its own group; an unmapped one would silently fall into "Copilot · OpenAI".
+        byId["grok-4.7"].Group.Should().Be("Copilot · xAI");
+        byId["gemini-3.8-flash"].Group.Should().Be("Copilot · Google");
+        byId["mai-code-1.1-flash"].Group.Should().Be("Copilot · Microsoft");
     }
 
     [Fact]

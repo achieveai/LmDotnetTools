@@ -12,9 +12,10 @@ import type { TodoTask } from "@/types/todo";
 import { countTodoTasks } from "@/utils/todoBoard";
 import TodoBoardPanel from "./TodoBoardPanel.vue";
 import SubAgentListPanel from "./SubAgentListPanel.vue";
+import FileBrowser from "./FileBrowser.vue";
 import PanelSplitter from "./PanelSplitter.vue";
 
-type InspectorSection = "work" | "agents";
+type InspectorSection = "work" | "files" | "agents";
 type PreviewTab = { id: string; label: string; path: string };
 const props = withDefaults(
   defineProps<{
@@ -25,6 +26,12 @@ const props = withDefaults(
     children: SubAgentSummary[];
     activeConversationTabId: string;
     externalCloseControlId?: string;
+    /**
+     * Thread whose workspace the Files section lists. This is the STARTED-conversation id
+     * (ChatLayout's `subAgentParentThreadId`), the same one the embedded preview is gated on — a file
+     * opened from a thread the preview refuses to mount for could never be shown.
+     */
+    filesThreadId?: string | null;
     desktopWidth?: number;
     previewTabs?: PreviewTab[];
     activePreviewId?: string | null;
@@ -36,6 +43,7 @@ const props = withDefaults(
   }>(),
   {
     activeSection: "work",
+    filesThreadId: null,
     desktopWidth: 320,
     previewTabs: () => [],
     activePreviewId: null,
@@ -63,6 +71,13 @@ const shortViewport = ref(false);
 const viewportWidth = ref(typeof window === "undefined" ? 1200 : window.innerWidth);
 const workOpen = ref(true);
 const agentsOpen = ref(true);
+const filesButton = ref<HTMLButtonElement | null>(null);
+// Files starts COLLAPSED and mounts lazily: the inspector auto-opens in developer view for every
+// conversation, so an eagerly mounted browser would GET /files for conversations nobody looks at.
+const filesOpen = ref(false);
+// Once mounted it STAYS mounted behind v-show, so collapsing the section keeps the path, the filter,
+// the scroll position and any in-flight upload rather than aborting them.
+const filesMounted = ref(false);
 const resizing = ref(false);
 const workCounts = computed(() => countTodoTasks(props.tasks));
 const hasPreview = computed(() => props.previewTabs.length > 0);
@@ -97,9 +112,27 @@ function syncOverlay(): void {
 }
 function toggleSection(section: InspectorSection): void {
   if (section === "work") workOpen.value = !workOpen.value;
+  else if (section === "files") setFilesOpen(!filesOpen.value);
   else agentsOpen.value = !agentsOpen.value;
   emit("selectSection", section);
 }
+function setFilesOpen(open: boolean): void {
+  filesOpen.value = open;
+  if (open) filesMounted.value = true;
+}
+/**
+ * Opens `section` and moves focus to its disclosure. The "More > Files" header item calls this
+ * through the parent so choosing Files lands the user on the Files section rather than on a modal.
+ */
+function revealSection(section: InspectorSection): void {
+  if (section === "work") workOpen.value = true;
+  else if (section === "files") setFilesOpen(true);
+  else agentsOpen.value = true;
+  void nextTick(() =>
+    (section === "files" ? filesButton.value : rootEl.value?.querySelector<HTMLButtonElement>(`#inspector-tab-${section}`))?.focus(),
+  );
+}
+defineExpose({ revealSection });
 function isNestedDialog(event: KeyboardEvent): boolean {
   const dialog = (event.target as Element | null)?.closest?.('[role="dialog"]');
   return !!dialog && dialog !== rootEl.value;
@@ -339,6 +372,32 @@ onBeforeUnmount(() => {
             <p v-else class="inspector-empty">No work yet.</p>
           </div>
         </section>
+        <section class="inspector-section" data-testid="workspace-files-section">
+          <h3>
+            <button
+              id="inspector-tab-files"
+              ref="filesButton"
+              :aria-expanded="filesOpen"
+              aria-controls="inspector-panel-files"
+              @click="toggleSection('files')"
+            >
+              Files
+            </button>
+          </h3>
+          <div
+            id="inspector-panel-files"
+            v-show="filesOpen"
+            class="inspector-content inspector-content-files"
+            :inert="!filesOpen || undefined"
+          >
+            <FileBrowser
+              v-if="filesMounted"
+              embedded
+              :thread-id="filesThreadId"
+              @open-file="emit('openArtifact', $event)"
+            />
+          </div>
+        </section>
         <section class="inspector-section">
           <h3>
             <button
@@ -505,6 +564,10 @@ onBeforeUnmount(() => {
 }
 .inspector-content {
   padding: 8px 10px 12px;
+}
+/* The browser supplies its own gutter so its list can use the panel's full width. */
+.inspector-content-files {
+  padding: 0 0 8px;
 }
 .inspector-empty {
   padding: 16px;

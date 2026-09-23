@@ -4,9 +4,9 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 /// <summary>
 ///     Parses the GitHub Copilot <c>GET /models</c> response into the subset of models the sample can
-///     list and route: those published by Anthropic or OpenAI <em>and</em> reachable via a supported
-///     transport (<c>/v1/messages</c> or <c>/responses</c>). Google/Microsoft models and
-///     <c>/chat/completions</c>-only models are dropped.
+///     list and route: those published by Anthropic, OpenAI, xAI, Google or Microsoft <em>and</em> reachable
+///     via a supported transport (<c>/v1/messages</c>, <c>/responses</c> or <c>/chat/completions</c>). Any
+///     other publisher is dropped.
 /// </summary>
 /// <remarks>
 ///     Pure and side-effect free so it can be unit-tested against the captured real response fixture.
@@ -18,7 +18,7 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 public static class CopilotModelCatalogParser
 {
     /// <summary>
-    ///     Projects the Copilot <c>/models</c> JSON to the routable Anthropic/OpenAI models, preserving
+    ///     Projects the Copilot <c>/models</c> JSON to the routable models, preserving
     ///     upstream order. Malformed or partial entries are skipped rather than throwing.
     /// </summary>
     public static IReadOnlyList<CopilotModelInfo> Parse(string json)
@@ -113,7 +113,8 @@ public static class CopilotModelCatalogParser
     /// <summary>
     ///     Maps the response <c>vendor</c> to a partition. Copilot reports newer GPTs as <c>OpenAI</c>
     ///     but some hosted variants as <c>Azure OpenAI</c>; both collapse to <see cref="CopilotModelVendor.OpenAI"/>.
-    ///     Any other publisher (Google, Microsoft, ...) is not a partition we surface.
+    ///     <c>xAI</c>, <c>Google</c> and <c>Microsoft</c> map to their own partitions. Any other publisher is
+    ///     not a partition we surface.
     /// </summary>
     private static bool TryNormalizeVendor(string? vendor, out CopilotModelVendor normalized)
     {
@@ -139,14 +140,34 @@ public static class CopilotModelCatalogParser
             return true;
         }
 
+        if (trimmed.Equals("xAI", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = CopilotModelVendor.XAi;
+            return true;
+        }
+
+        if (trimmed.Equals("Google", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = CopilotModelVendor.Google;
+            return true;
+        }
+
+        if (trimmed.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = CopilotModelVendor.Microsoft;
+            return true;
+        }
+
         return false;
     }
 
     /// <summary>
     ///     Chooses the routable transport from <c>supported_endpoints</c>. <c>/v1/messages</c> wins
     ///     (Anthropic Messages) regardless of list order, else <c>/responses</c> (or its
-    ///     <c>ws:/responses</c> variant) selects the Responses transport. Absent metadata or only
-    ///     <c>/chat/completions</c> yields <see cref="CopilotModelTransport.Unsupported"/>.
+    ///     <c>ws:/responses</c> variant) selects the Responses transport, else <c>/chat/completions</c>
+    ///     selects Chat Completions. Chat Completions ranks last because Copilot speaks a non-standard
+    ///     dialect there; a model that also offers a native endpoint keeps it. Absent metadata yields
+    ///     <see cref="CopilotModelTransport.Unsupported"/>.
     /// </summary>
     private static CopilotModelTransport DeriveTransport(JsonElement item)
     {
@@ -161,6 +182,11 @@ public static class CopilotModelCatalogParser
         )
         {
             return CopilotModelTransport.Responses;
+        }
+
+        if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ChatCompletionsEndpoint))
+        {
+            return CopilotModelTransport.ChatCompletions;
         }
 
         return CopilotModelTransport.Unsupported;

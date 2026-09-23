@@ -43,6 +43,7 @@ import {
 import { sendChatMessage } from '@/api/chatClient';
 import type { ConversationUsageAggregate } from '@/api/conversationsApi';
 import { useMessageMerger } from './useMessageMerger';
+import { collectAnsweredQuestionIds, isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { getMergeKey } from './messageMergeKey';
 import { createStreamResyncCoordinator } from './streamResync';
 import { buildDisplayItems } from './messageDisplay';
@@ -177,6 +178,24 @@ export function useChat(options: UseChatOptions = {}) {
 
   // Core state
   const pendingMessages = ref<InternalChatMessage[]>([]);
+  /**
+   * Queues left behind by a conversation SWITCH, keyed by the thread they belong to (BUG 7).
+   *
+   * A queued prompt is already on the wire — `sendMessage` pushes it here for display and sends it
+   * in the same breath, and the backend holds it in `MultiTurnAgentBase.PendingInjections` until the
+   * current run ends. `pendingMessages` is therefore only the CLIENT's record of it, and
+   * `clearMessages` (which runs at the start of every switch) used to drop that record for good:
+   * switch away and back and the prompt was gone from the UI while the backend still intended to
+   * send it. Parking it here and restoring it in `loadMessagesFromBackend` keeps the two in step.
+   *
+   * `userMessageCount` is the number of user messages already promoted into the transcript at park
+   * time. On restore, the same count taken over the freshly loaded history says how many of the
+   * parked prompts the backend consumed while the user was away — those are now real history and
+   * must NOT be re-queued on top of it. Counting is what `run_assignment` activation already does
+   * (it consumes the queue positionally against `inputIds`); matching on text instead would silently
+   * swallow a prompt whose text the user had sent before.
+   */
+  const parkedPendingMessages = new Map<string, { queue: InternalChatMessage[]; userMessageCount: number }>();
   const messageIndex = ref<Map<string, InternalChatMessage>>(new Map());
   const messageOrder = ref<string[]>([]); // Order of message IDs for display
   
@@ -328,6 +347,12 @@ export function useChat(options: UseChatOptions = {}) {
 
   // Tool results map: tool_call_id -> ToolCallResultMessage
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
+
+  // Questions the server settled EARLY (bug #5: something else arrived while the run was parked on
+  // them) keep their placeholder result for good — the answer comes back as a `<user-answer …>`
+  // message instead of overwriting it. Until that message has streamed in, the only thing that
+  // knows the question was answered is this client's own acked submission, recorded here.
+  const locallyAnsweredQuestionIds = ref(new Set<string>());
   
   // Persistent WebSocket connection for full-duplex communication
   let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
@@ -727,6 +752,13 @@ export function useChat(options: UseChatOptions = {}) {
    * already returns non-pending messages in arrival order.
    */
   const displayItems = computed<DisplayItem[]>(() => buildDisplayItems(sortMessages()));
+
+  const answeredQuestionIds = computed(() => collectAnsweredQuestionIds(displayItems.value));
+
+  /** Whether an early-settled question's answer has already reached the agent (see `isQuestionAwaitingAnswer`). */
+  function isQuestionAnswered(toolCallId: string): boolean {
+    return answeredQuestionIds.value.has(toolCallId) || locallyAnsweredQuestionIds.value.has(toolCallId);
+  }
 
   /**
    * Handle RunAssignment message - activate pending messages
@@ -1784,7 +1816,7 @@ export function useChat(options: UseChatOptions = {}) {
       return { status: 'error', code: 'not_connected', message: 'No active connection' };
     }
     const { sendClientToolResult } = await loadWsClient();
-    return new Promise((resolve) => {
+    const outcome = await new Promise<import('./useClientToolSubmit').ClientToolSubmitOutcome>((resolve) => {
       pendingSubmissions.set(toolCallId, resolve);
       try {
         sendClientToolResult(wsConnection!, toolCallId, result, isError);
@@ -1797,6 +1829,15 @@ export function useChat(options: UseChatOptions = {}) {
         });
       }
     });
+    // An early-settled question is closed by its answer being DELIVERED, not by a republished
+    // result (there is none). Close it here on the ack so the form leaves the dock at once; the
+    // injected `<user-answer …>` message makes the same decision durable when it streams in.
+    if (outcome.status === 'acked' && isEarlySettledQuestionResult(toolResults.value.get(toolCallId)?.result)) {
+      const next = new Set(locallyAnsweredQuestionIds.value);
+      next.add(toolCallId);
+      locallyAnsweredQuestionIds.value = next;
+    }
+    return outcome;
   }
 
   /**
@@ -1936,11 +1977,64 @@ export function useChat(options: UseChatOptions = {}) {
     transport.value = newTransport;
   }
 
+  function countUserMessages(): number {
+    let count = 0;
+    for (const message of messageIndex.value.values()) {
+      if (message.role === 'user') count++;
+    }
+    return count;
+  }
+
+  /**
+   * Hand this conversation's queue to {@link parkedPendingMessages} before the caller wipes it, so a
+   * switch away does not destroy the client's record of prompts the backend is still holding.
+   * A draft (no thread id yet) has nothing to park it under and nothing to come back to.
+   */
+  function parkPendingMessages(): void {
+    const thread = threadId.value;
+    if (!thread) return;
+    if (pendingMessages.value.length === 0) {
+      parkedPendingMessages.delete(thread);
+      return;
+    }
+    parkedPendingMessages.set(thread, {
+      queue: [...pendingMessages.value],
+      userMessageCount: countUserMessages(),
+    });
+    log.debug('Parked the pending queue of a conversation being left', {
+      threadId: thread,
+      pendingCount: pendingMessages.value.length,
+    });
+  }
+
+  /**
+   * Put back the queue parked for `thread`, minus whatever the backend turned into real history
+   * while the user was away — see {@link parkedPendingMessages} for why that is a count and not a
+   * text match. Entries are consumed from the FRONT because the backend drains its injections in the
+   * order they were queued, exactly as `run_assignment` activation does.
+   */
+  function restoreParkedPendingMessages(thread: string): void {
+    const parked = parkedPendingMessages.get(thread);
+    if (!parked) return;
+    parkedPendingMessages.delete(thread);
+    const consumed = Math.min(
+      Math.max(countUserMessages() - parked.userMessageCount, 0),
+      parked.queue.length
+    );
+    pendingMessages.value = parked.queue.slice(consumed);
+    log.debug('Restored the pending queue of a conversation the user came back to', {
+      threadId: thread,
+      restoredCount: pendingMessages.value.length,
+      consumedCount: consumed,
+    });
+  }
+
   /**
    * Clear all messages and reset state
    */
   async function clearMessages(): Promise<void> {
     log.info('Clearing all messages');
+    parkPendingMessages();
     pendingMessages.value = [];
     messageIndex.value.clear();
     messageOrder.value = [];
@@ -1953,6 +2047,7 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
+    locallyAnsweredQuestionIds.value = new Set();
     // NB: the streaming flags (isLoading/isSending) are deliberately NOT reset here. clearMessages
     // runs at the START of every switch — BEFORE the awaited loadMessagesFromBackend +
     // resumeStreamIfActive — so lowering them here flashed a transient "idle" through a switch-back
@@ -2057,6 +2152,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageIndex.value.clear();
     messageOrder.value = [];
     toolResults.value.clear();
+    locallyAnsweredQuestionIds.value = new Set();
     resetContentTurnEpoch();
     reset();
 
@@ -2138,6 +2234,13 @@ export function useChat(options: UseChatOptions = {}) {
         log.warn('Failed to parse persisted message', { messageId: pm.id, error: e });
       }
     }
+
+    // Put back the queue this conversation was carrying when the user last left it (BUG 7). Done
+    // HERE, after the history is indexed, because how much of that queue is still outstanding is
+    // decided by how many user messages the load brought back. `preservePending` callers are
+    // rehydrating the conversation already on screen and never left it, so their queue is the live
+    // one and there is nothing parked to put back.
+    if (!options.preservePending) restoreParkedPendingMessages(existingThreadId);
 
     // Attach tool results to tool calls
     for (const [toolCallId, result] of toolResults.value.entries()) {
@@ -2222,6 +2325,7 @@ export function useChat(options: UseChatOptions = {}) {
     markStreamLoading,
     submitClientToolResult,
     hasPendingClientQuestion,
+    isQuestionAnswered,
   };
 }
 

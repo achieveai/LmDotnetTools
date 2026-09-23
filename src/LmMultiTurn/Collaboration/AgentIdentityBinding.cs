@@ -96,6 +96,23 @@ public sealed record AgentIdentityBindingSet
     [JsonPropertyName("captured_at_utc")]
     public required DateTimeOffset CapturedAtUtc { get; init; }
 
+    /// <summary>
+    /// Which attachment of the collaboration took this capture: one more than the session that wrote
+    /// the document it was reconciled from, or 1 when there was none. Zero means unnumbered — a
+    /// document written by a build from before sessions were counted.
+    /// </summary>
+    /// <remarks>
+    /// Capture time is not enough to order writes, because sessions overlap. When a host swaps a
+    /// conversation's loop (provider or mode switch), the replacement is built — and so reconciles
+    /// this document and rewrites it — BEFORE the old loop is torn down, and tearing the old loop down
+    /// is what flushes the old loop's roster: last, and therefore with the latest capture time. Under
+    /// time alone that flush wins, the replacement's reconciliation is undone, and the next recreation
+    /// tombstones the same agents a second time. The session number says which loop the capture
+    /// describes, and a later session's document is never overwritten by an earlier session's.
+    /// </remarks>
+    [JsonPropertyName("session")]
+    public int Session { get; init; }
+
     /// <summary>Every directory node at capture time, ordered by canonical identifier.</summary>
     [JsonPropertyName("agents")]
     public IReadOnlyList<CollaborationNodeRecord> Agents { get; init; } = [];

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import ConversationInspector from '@/components/ConversationInspector.vue';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
@@ -117,5 +118,95 @@ describe('ConversationInspector', () => {
     const wrapper = mountInspector({ expanded: true, previewTabs: [{ id: 'a', label: 'a', path: 'a' }], activePreviewId: 'a' });
     expect(wrapper.get('[data-testid="workspace-monitoring-region"]').attributes('style')).toContain('display: none');
     expect(wrapper.find('[data-testid="todo-panel"]').exists()).toBe(true);
+  });
+});
+
+/**
+ * The Files disclosure (bug: "make the file explorer visible in the right panel"). It is the third
+ * section beside Work and Agents and is LAZY: the inspector auto-opens in developer view for every
+ * conversation, so an eagerly mounted browser would issue a listing request for conversations the
+ * user never looks at.
+ */
+describe('ConversationInspector Files section', () => {
+  const FileBrowserStub = {
+    name: 'FileBrowser',
+    props: {
+      threadId: { type: String as unknown as () => string | null, default: null },
+      embedded: { type: Boolean, default: false },
+    },
+    emits: ['openFile'],
+    template:
+      '<div data-testid="file-browser-stub" @click="$emit(\'openFile\', \'docs/report.md\')"></div>',
+  };
+
+  function mountWithFiles(overrides: Record<string, unknown> = {}) {
+    return mount(ConversationInspector, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        tasks: [task],
+        hasWork: true,
+        children: [child],
+        activeConversationTabId: 'main',
+        filesThreadId: 'thread-1',
+        ...overrides,
+      },
+      global: { stubs: { FileBrowser: FileBrowserStub } },
+      slots: { preview: '<div data-testid="preview-body">Preview</div>' },
+    });
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 900 });
+  });
+  afterEach(() => document.body.replaceChildren());
+
+  it('mounts FileBrowser on first expand and keeps it mounted (state intact) when collapsed', async () => {
+    const wrapper = mountWithFiles();
+
+    // Collapsed by default, and NOTHING is mounted behind it yet.
+    expect(wrapper.get('#inspector-tab-files').attributes('aria-expanded')).toBe('false');
+    expect(wrapper.find('[data-testid="file-browser-stub"]').exists()).toBe(false);
+
+    await wrapper.get('#inspector-tab-files').trigger('click');
+    expect(wrapper.get('#inspector-tab-files').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="file-browser-stub"]').exists()).toBe(true);
+    expect(wrapper.getComponent(FileBrowserStub).props('threadId')).toBe('thread-1');
+
+    // Collapsing HIDES it (v-show + inert) rather than unmounting: path, filter, scroll and any
+    // in-flight upload survive a collapse.
+    await wrapper.get('#inspector-tab-files').trigger('click');
+    expect(wrapper.find('[data-testid="file-browser-stub"]').exists()).toBe(true);
+    expect(wrapper.get('#inspector-panel-files').attributes('inert')).toBeDefined();
+    expect(wrapper.get('#inspector-panel-files').attributes('style')).toContain('display: none');
+  });
+
+  it('orders the monitoring sections Work, Files, Agents', () => {
+    const wrapper = mountWithFiles();
+    const headings = wrapper
+      .get('[data-testid="workspace-monitoring-region"]')
+      .findAll('h3 button')
+      .map((button) => button.attributes('id'));
+    expect(headings).toEqual(['inspector-tab-work', 'inspector-tab-files', 'inspector-tab-agents']);
+  });
+
+  it('revealSection("files") expands Files and focuses its disclosure', async () => {
+    const wrapper = mountWithFiles();
+    (wrapper.vm as unknown as { revealSection: (section: string) => void }).revealSection('files');
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.get('#inspector-tab-files').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="file-browser-stub"]').exists()).toBe(true);
+    expect(document.activeElement).toBe(wrapper.get('#inspector-tab-files').element);
+  });
+
+  it('forwards the browser open-file as openArtifact so it opens as a preview TAB', async () => {
+    const wrapper = mountWithFiles();
+    await wrapper.get('#inspector-tab-files').trigger('click');
+    await wrapper.get('[data-testid="file-browser-stub"]').trigger('click');
+
+    expect(wrapper.emitted('openArtifact')).toEqual([['docs/report.md']]);
   });
 });

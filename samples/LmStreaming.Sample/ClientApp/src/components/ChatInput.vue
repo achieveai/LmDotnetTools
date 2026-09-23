@@ -52,13 +52,18 @@ function handleKeydown(event: KeyboardEvent) {
           @keydown="handleKeydown"
         />
       </div>
-      <p id="chat-input-hint" class="input-hint" data-testid="chat-input-hint">
-        Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
-      </p>
       <div class="composer-footer" data-testid="chat-input-footer">
         <div v-if="$slots['mode-control']" class="composer-mode" data-testid="chat-input-mode-control">
           <slot name="mode-control" />
         </div>
+        <p
+          id="chat-input-hint"
+          class="composer-hint"
+          :class="{ 'is-hidden': inputText.trim() }"
+          data-testid="chat-input-hint"
+        >
+          Enter to {{ streaming ? 'queue' : 'send' }} · Shift+Enter for a new line
+        </p>
         <div class="composer-actions" data-testid="chat-input-actions">
           <slot name="context-control" />
           <button
@@ -171,7 +176,6 @@ textarea:disabled {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -189,7 +193,7 @@ textarea:disabled {
 
 .composer-mode {
   display: flex;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   align-items: center;
   position: relative;
@@ -236,11 +240,28 @@ textarea:disabled {
   border: 0;
 }
 
-.input-hint {
-  margin: -2px 4px 0;
+.composer-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
   color: #818892;
   font-size: 11px;
   line-height: 1.35;
+  text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: opacity 0.1s;
+}
+
+.composer-hint.is-hidden {
+  opacity: 0;
+}
+
+@media (max-width: 640px) {
+  .composer-hint {
+    display: none;
+  }
 }
 
 button {

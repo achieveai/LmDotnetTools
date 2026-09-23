@@ -166,7 +166,7 @@ public static class PricingCatalog
     ///     Context panel shows a gauge and compaction has a window to measure against instead of skipping with
     ///     <c>capacity_unknown</c>.
     /// </summary>
-    public const long DefaultMaxContextTokens = 156_000;
+    public const long DefaultMaxContextTokens = 196_000;
 
     /// <summary>The configured ceiling; 0 turns the cap off, a negative value is an operator error.</summary>
     private static long ReadMaxContextTokens(IConfiguration configuration)

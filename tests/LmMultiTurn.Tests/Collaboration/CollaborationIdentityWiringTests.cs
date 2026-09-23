@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Xunit;
 
@@ -151,6 +152,59 @@ public class CollaborationIdentityWiringTests
         var third = RegisterRoot(CreateRoot());
         await using var _ = await CollaborationIdentityWiring.AttachAsync(third, store);
         third.Directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
+    }
+
+    [Fact]
+    public async Task AReplacedSessionFlushingAfterItsReplacementAttached_CannotOverwriteTheNewRoster()
+    {
+        // The swap order in MultiTurnAgentPool.SwapAgentUnderLockAsync: the replacement loop is built
+        // (and so attaches, reconciles, and writes) BEFORE the old entry is disposed, and disposing the
+        // old entry is what flushes ITS roster — last. Monotonic-in-time alone lets that last write win,
+        // because it IS the latest capture; it just describes a session that has already been replaced.
+        // The next recreation then reads the old roster back and tombstones the same agents a second
+        // time, which is the "not live 26" trace. Ordered by session, not by clock: a document written
+        // by a later session is never overwritten by an earlier one.
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, RootId);
+
+        var old = RegisterRoot(CreateRoot());
+        var oldHandle = await CollaborationIdentityWiring.AttachAsync(old, store);
+        Spawn(old, "agent-1", "reviewer");
+        // The capture is written on the writers own drain task, so wait for the old sessions roster
+        // to reach the store before the replacement reads it. Disposing the old handle is what usually
+        // guarantees this, and not disposing it yet is the whole point of the test.
+        await Wait.UntilAsync(
+            async () =>
+                (await ConversationAgentBindingProjection.LoadAsync(store, RootId))?.Agents.Any(a =>
+                    a.AgentId == "agent-1"
+                ) == true,
+            "the old sessions roster reached the store"
+        );
+
+        // The replacement attaches while the old session is still alive, and its roster is on disk
+        // before the old session is torn down.
+        var replacement = RegisterRoot(CreateRoot());
+        await (await CollaborationIdentityWiring.AttachAsync(replacement, store)).DisposeAsync();
+        replacement.Directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.TargetNotLive);
+
+        // Now the old entry is disposed: its manager retires what it owned, and its handle flushes.
+        _ = old.Bundle.RetireAgent("agent-1", AgentCollaborationStatuses.Stopped);
+        await oldHandle.DisposeAsync();
+
+        var persisted = await ConversationAgentBindingProjection.LoadAsync(store, RootId);
+        persisted!
+            .Agents.Select(a => a.AgentId)
+            .Should()
+            .Equal(
+                ["agent-root"],
+                "the replacement's roster is the current one, whatever the old session wrote after it"
+            );
+
+        var next = RegisterRoot(CreateRoot());
+        await using var nextHandle = await CollaborationIdentityWiring.AttachAsync(next, store);
+        next.Directory.Resolve("reviewer")
+            .FailureCode.Should()
+            .Be(AgentDirectoryFailureCodes.NotFound, "an agent reported gone once must not be reported gone again");
     }
 
     [Fact]

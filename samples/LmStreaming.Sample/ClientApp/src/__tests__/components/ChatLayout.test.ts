@@ -17,6 +17,7 @@ import type { ConversationSummary } from '@/types/conversations';
 import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
 import type { QuestionInboxEntry } from '@/composables/useQuestionInbox';
+import type { PendingQuestionEvent } from '@/api/eventsWsClient';
 import type { ToolCallResultMessage } from '@/types';
 import { closeEgressDialog, openEgressDialog } from '@/composables/useEgressAuth';
 
@@ -37,6 +38,8 @@ const makeConversation = (overrides: Partial<ConversationSummary> = {}): Convers
 const sharedMocks = vi.hoisted(() => ({
   questionEntries: [] as QuestionInboxEntry[],
   questionEntriesRef: null as Ref<QuestionInboxEntry[]> | null,
+  /** `useQuestionInbox`'s `onQuestionRaised` hook, captured at mount. See the mock below. */
+  raiseQuestion: null as ((question: PendingQuestionEvent) => void) | null,
   chatLoading: false,
   isSending: false,
   modesLoading: false,
@@ -380,9 +383,12 @@ vi.mock('@/api/contextApi', () => ({
 // mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
 vi.mock('@/composables/useQuestionInbox', async () => {
   const { ref } = await import('vue');
-  return { useQuestionInbox: () => {
+  return { useQuestionInbox: (_current: unknown, options?: { onQuestionRaised?: (q: unknown) => void }) => {
     const entries = ref(sharedMocks.questionEntries);
     sharedMocks.questionEntriesRef = entries;
+    // Capture the push hook so the toast tests can raise a question the way `/ws/events` does,
+    // without a socket. The real composable calls it once per genuinely new pushed question.
+    sharedMocks.raiseQuestion = options?.onQuestionRaised ?? null;
     return { entries, isRefreshing: ref(false), error: ref(null), refresh: vi.fn(async () => {}) };
   } };
 });
@@ -862,6 +868,183 @@ describe('ChatLayout question inbox automatic retry', () => {
     await wrapper.get('[data-testid="question-inbox-trigger"]').trigger('click');
     await wrapper.get('.question-inbox-item').trigger('click');
     await flushPromises();
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  /**
+   * BUG 8: a question raised anywhere must be visible from wherever the user is. Before this, the
+   * only trace of one raised elsewhere was the header inbox icon's count — which the user missed —
+   * because the auto-open watcher and the dock are both scoped to the current conversation.
+   * Deliberately a NOTICE, not an auto-opened modal: answering needs that conversation's socket, so
+   * opening the form means navigating there, and doing that unasked would yank the user out of what
+   * they are reading (pinned by 'leaves another conversation in the inbox until the user selects it').
+   */
+  const remoteEntry: QuestionInboxEntry = {
+    ...entry,
+    key: 'root:thread-9/agent:root/child:root/tool:question-9',
+    rootThreadId: 'thread-9',
+    conversationTitle: 'Budget review',
+    conversation: makeConversation({ threadId: 'thread-9', title: 'Budget review' }),
+    agentId: null,
+    agentName: 'Main agent',
+    childThreadId: null,
+    toolCallId: 'question-9',
+    prompt: 'Which quarter should I start from?',
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, { global: { stubs: {
+      ConversationSidebar: true, MessageList: true, PendingMessageQueue: true,
+      PendingQuestionDock: true, ChatInput: true,
+    } } });
+
+  it('shows a question from ANOTHER conversation on screen, labelled with where it came from', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const dock = wrapper.get('[data-testid="elsewhere-question-dock"]');
+    expect(dock.text()).toContain('Budget review');
+    expect(dock.text()).toContain('Main agent');
+    expect(dock.text()).toContain('Which quarter should I start from?');
+    wrapper.unmount();
+  });
+
+  it('names the sub-agent a remote question came from, not just its conversation', async () => {
+    sharedMocks.questionEntries = [{
+      ...remoteEntry,
+      agentId: 'agent-question',
+      agentName: 'Question agent',
+      childThreadId: 'child-question',
+    }];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="elsewhere-question-dock"]').text()).toContain('Question agent');
+    wrapper.unmount();
+  });
+
+  it('leaves the CURRENT conversation to its own dock rather than listing it as elsewhere', async () => {
+    sharedMocks.questionEntries = [entry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="elsewhere-question-dock"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  /**
+   * The row above and the header count are both PASSIVE: they are already on screen and a user who
+   * is reading does not re-scan them. The toast is the part that makes an ARRIVAL noticeable, so it
+   * fires from the push hook — once, for a question in another conversation — and not from a sweep.
+   */
+  const raised = (overrides: Partial<PendingQuestionEvent> = {}): PendingQuestionEvent => ({
+    rootThreadId: 'thread-9',
+    agentId: null,
+    childThreadId: null,
+    toolCallId: 'question-9',
+    prompt: 'Which quarter should I start from?',
+    conversationTitle: 'Budget review',
+    agentName: null,
+    raisedAtUtc: '2026-09-21T10:00:00.0000000Z',
+    ...overrides,
+  });
+
+  it('toasts a question that arrives in another conversation, naming where it came from', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+
+    const toast = wrapper.get('[data-testid="question-toast"]');
+    expect(toast.text()).toContain('Budget review');
+    expect(toast.text()).toContain('Main agent');
+    expect(toast.text()).toContain('Which quarter should I start from?');
+    wrapper.unmount();
+  });
+
+  it('stays silent for a question in the conversation already on screen', async () => {
+    sharedMocks.questionEntries = [entry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sharedMocks.raiseQuestion!(
+      raised({ rootThreadId: 'thread-1', toolCallId: entry.toolCallId, conversationTitle: 'Chat' })
+    );
+    await flushPromises();
+
+    // PendingQuestionDock already owns this one; a toast over the open form is noise.
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('navigates from the toast only when the user presses Review', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="question-toast-review"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('retires the toast when its question stops waiting', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(true);
+
+    sharedMocks.questionEntriesRef!.value = [];
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('highlights the header inbox button while a question waits elsewhere, and not otherwise', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const trigger = wrapper.get('[data-testid="question-inbox-trigger"]');
+    expect(trigger.classes()).toContain('pending-elsewhere');
+    expect(wrapper.find('[data-testid="question-inbox-elsewhere"]').exists()).toBe(true);
+    expect(trigger.attributes('aria-label')).toContain('another conversation');
+
+    // The count alone cannot distinguish these two states, which is why the accent exists.
+    sharedMocks.questionEntriesRef!.value = [entry];
+    await flushPromises();
+    expect(wrapper.get('[data-testid="question-inbox-trigger"]').classes()).not.toContain('pending-elsewhere');
+    expect(wrapper.find('[data-testid="question-inbox-elsewhere"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('opens the remote question — and only on the user asking for it', async () => {
+    sharedMocks.questionEntries = [remoteEntry];
+    sharedMocks.disconnectWebSocket.mockClear();
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    // Still no navigation just because it is on screen.
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="elsewhere-question-review"]').trigger('click');
+    await flushPromises();
+
     expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
@@ -2681,7 +2864,9 @@ describe('ChatLayout header actions menu', () => {
           ChatInput: true,
           MarketplaceModal: true,
           EgressAuthModal: true,
-          FileBrowserModal: true,
+          // The Files section hosts the REAL browser now; stubbed here so choosing Files does not
+          // issue a listing fetch from this suite.
+          FileBrowser: true,
           ShareConversationModal: true,
         },
       },
@@ -2720,10 +2905,12 @@ describe('ChatLayout header actions menu', () => {
     wrapper.findComponent({ name: 'EgressAuthModal' }).vm.$emit('close');
     await flushPromises();
 
+    // Files is no longer a modal: it opens the right panel and reveals its Files disclosure.
     await choose(wrapper, 'file-browser-button');
-    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(true);
-    wrapper.findComponent({ name: 'FileBrowserModal' }).vm.$emit('close');
-    await flushPromises();
+    expect(wrapper.findComponent({ name: 'FileBrowserModal' }).exists()).toBe(false);
+    expect(wrapper.find('[data-testid="conversation-inspector"]').exists()).toBe(true);
+    expect(wrapper.get('#inspector-tab-files').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('[data-testid="workspace-files-section"]').exists()).toBe(true);
 
     await choose(wrapper, 'share-button');
     expect(wrapper.findComponent({ name: 'ShareConversationModal' }).exists()).toBe(true);
@@ -2748,6 +2935,32 @@ describe('ChatLayout header actions menu', () => {
     expect(wrapper.get('[data-testid="share-button"]').attributes('disabled')).toBeDefined();
     expect(wrapper.get('[data-testid="clear-button"]').attributes('disabled')).toBeDefined();
     wrapper.unmount();
+  });
+
+  // The Files section must be fed the SAME thread id the embedded preview is gated on
+  // (`subAgentParentThreadId`), not the raw `currentThreadId`: a brand-new messageless thread has an
+  // id but no started conversation, so the preview region refuses to mount for it. Feeding the
+  // browser the raw id would list a thread whose files could never be opened.
+  it('feeds the Files section the started-conversation thread id, not the raw current thread id', async () => {
+    // A New Chat that has an id but has not sent anything: not in the sidebar, no rendered items.
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [];
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const inspector = wrapper.findComponent({ name: 'ConversationInspector' });
+    expect(inspector.exists()).toBe(true);
+    expect(inspector.props('filesThreadId')).toBeNull();
+    wrapper.unmount();
+
+    // A started conversation (present in the sidebar) DOES flow its id through.
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    const started = mountLayout();
+    await flushPromises();
+    expect(started.findComponent({ name: 'ConversationInspector' }).props('filesThreadId')).toBe(
+      'thread-1'
+    );
+    started.unmount();
   });
 
   it('does not steal focus when an unrelated auth flow opens and closes Egress auth', async () => {

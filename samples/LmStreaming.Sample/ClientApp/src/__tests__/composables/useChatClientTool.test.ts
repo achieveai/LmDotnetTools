@@ -102,6 +102,81 @@ describe('useChat — hasPendingClientQuestion (#246)', () => {
   });
 });
 
+// Bug #5: the server settles a parked question EARLY (non-deferred placeholder) when another run
+// arrives, and delivers the answer later as a `<user-answer …>` user message. Such a question must
+// NOT block sending (hasPendingClientQuestion stays false) but must stay answerable
+// (isQuestionAnswered false) until the transcript carries its answer or this client's submit is acked.
+describe('useChat — early-settled questions (bug #5)', () => {
+  const earlySettled = (toolCallId: string) =>
+    resolvedResult(toolCallId, '{"status":"deferred_to_notification","message":"Question sent to user"}');
+  const userAnswer = (toolCallId: string) => ({
+    $type: MessageType.Text,
+    role: 'user',
+    text: `<user-answer tool="AskUserQuestion" tool-call-id="${toolCallId}">\n<request>\n- (q) Pick\n</request>\n<answer>\n{"answers":[]}\n</answer>\n</user-answer>`,
+  });
+
+  let captured: any;
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    wsMocks.sendClientToolResult.mockReset();
+    convMocks.loadConversationMessages.mockReset();
+    convMocks.getRunState.mockReset();
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => {
+      captured = options;
+      return { socket: { readyState: WebSocket.OPEN }, connectionId: 'ws-1', threadId: options.threadId, isConnected: true };
+    });
+  });
+
+  it('does not count an early-settled placeholder as a blocking pending question', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('ask me something');
+    captured.onMessage(earlySettled('call-1'));
+    expect(chat.hasPendingClientQuestion.value).toBe(false);
+    expect(chat.isQuestionAnswered('call-1')).toBe(false);
+  });
+
+  it('marks the question answered once the redirected user-answer message streams in', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('ask me something');
+    captured.onMessage(earlySettled('call-1'));
+    captured.onMessage(userAnswer('call-2'));
+    expect(chat.isQuestionAnswered('call-1')).toBe(false);
+    captured.onMessage(userAnswer('call-1'));
+    expect(chat.isQuestionAnswered('call-1')).toBe(true);
+  });
+
+  it('marks the question answered optimistically when this client\'s submit is acked', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('ask me something');
+    captured.onMessage(earlySettled('call-1'));
+
+    const outcomePromise = chat.submitClientToolResult('call-1', '{"answers":[]}', false);
+    await vi.waitFor(() => expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1));
+    expect(chat.isQuestionAnswered('call-1')).toBe(false);
+    captured.onClientToolResultAck('call-1', false);
+    await expect(outcomePromise).resolves.toEqual({ status: 'acked', duplicate: false });
+    expect(chat.isQuestionAnswered('call-1')).toBe(true);
+  });
+
+  it('does not mark the question answered when the submit is rejected', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('ask me something');
+    captured.onMessage(earlySettled('call-1'));
+
+    const outcomePromise = chat.submitClientToolResult('call-1', '{"answers":[]}', false);
+    await vi.waitFor(() => expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1));
+    captured.onClientToolResultError('call-1', 'not_found', 'gone');
+    await expect(outcomePromise).resolves.toMatchObject({ status: 'error' });
+    expect(chat.isQuestionAnswered('call-1')).toBe(false);
+  });
+});
+
 describe('useChat — submitClientToolResult (#246)', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();

@@ -36,13 +36,40 @@ export interface NoSessionState {
   workspaceId: string | null;
 }
 
+/** One worksheet of a {@link TablePreview}: already capped by the producer. */
+export interface SheetPreview {
+  name: string;
+  /** Row 0 is the header row. Rows are ragged — a short row simply has fewer cells. */
+  rows: string[][];
+  /** True when rows or columns were dropped to fit the caps. */
+  truncated: boolean;
+}
+
+/**
+ * A tabular preview. A spreadsheet has one entry per worksheet, in workbook order; a delimited text
+ * file is parsed on the client into a single-sheet table of the same shape, so one viewer serves both.
+ */
+export interface TablePreview {
+  sheets: SheetPreview[];
+  /** True when whole sheets past the server's sheet cap were dropped. */
+  truncated: boolean;
+}
+
 /** Result of the preview endpoint. `text` is present only when `previewable` is true. */
 export interface PreviewResult {
   previewable: boolean;
-  /** Why a file is not previewable, e.g. `binary` | `too_large` | `not_utf8` | `not_a_file` | `excluded`. */
+  /**
+   * Why a file is not previewable, e.g. `binary` | `too_large` | `not_utf8` | `not_a_file` |
+   * `excluded` | `corrupt_spreadsheet`.
+   */
   reason?: string;
   text?: string;
   lineCount?: number;
+  /**
+   * Present INSTEAD of `text` for a spreadsheet preview, which the server parses (the client never
+   * sees the workbook bytes). Absent — the key is omitted, not null — for every text preview.
+   */
+  table?: TablePreview;
 }
 
 /** Result of `GET files/resolve?target=`: a chat file link mapped onto the workspace. */

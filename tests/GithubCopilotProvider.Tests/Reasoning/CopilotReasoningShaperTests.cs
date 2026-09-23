@@ -32,6 +32,21 @@ public sealed class CopilotReasoningShaperTests
     }
 
     [Fact]
+    public void Shape_sends_reasoning_effort_string_for_chat_completions_transport()
+    {
+        var model = CreateModel(CopilotModelTransport.ChatCompletions, supportsAdaptiveThinking: false, "low", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.Medium);
+
+        // Medium is not advertised; the greatest advertised effort below it is selected.
+        result
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(new KeyValuePair<string, object?>("reasoning_effort", "low"));
+    }
+
+    [Fact]
     public void Shape_requests_displayable_summary_for_responses_transport()
     {
         // Regression: a Responses-transport reasoning request MUST also ask for a displayable summary

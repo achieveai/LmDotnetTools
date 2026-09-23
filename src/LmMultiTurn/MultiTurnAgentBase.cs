@@ -83,6 +83,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     private readonly object _stateLock = new();
     private readonly object _historyLock = new();
 
+    // Signalled when input a run would actually act on is queued. Guarded by _stateLock, which is also
+    // what re-arms it in TryDrainInputs. See WaitForRealInputAsync.
+    private TaskCompletionSource _realInputSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // The real input that is queued and not yet drained, oldest first, and an EDGE signal that fires
+    // once per arrival. _realInputSignal above is LEVEL-triggered: it stays set until the next drain,
+    // which is exactly right for "should the loop stop idling" and exactly wrong for a waiter that
+    // must ignore some arrivals — it would observe the same completed task forever and spin. These two
+    // answer the other question: WHAT arrived, and HAS ANYTHING arrived SINCE I last looked. Both are
+    // guarded by _stateLock, and the arrival source is swapped before the old one is completed, so a
+    // waiter that captured it under the same lock as its scan cannot miss the next write.
+    private readonly List<QueuedInput> _pendingRealInputs = [];
+    private TaskCompletionSource _inputArrival = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
@@ -137,9 +151,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected ILogger Logger { get; }
 
     /// <summary>
-    /// The system prompt for the agent.
+    /// The system prompt for the agent. Fixed for the agent's life unless a derived loop replaces the
+    /// whole mode/model-dependent configuration through <see cref="ApplyReconfiguredConfiguration"/>.
     /// </summary>
-    protected string? SystemPrompt { get; }
+    protected string? SystemPrompt { get; private set; }
 
     /// <summary>
     /// The composed system prompt, for tests. Internal rather than public: the prompt is an
@@ -169,9 +184,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected CancellationToken LifetimeToken { get; }
 
     /// <summary>
-    /// The default options for generating replies.
+    /// The default options for generating replies. Fixed for the agent's life unless a derived loop
+    /// replaces the whole mode/model-dependent configuration through
+    /// <see cref="ApplyReconfiguredConfiguration"/>.
     /// </summary>
-    protected GenerateReplyOptions DefaultOptions { get; }
+    protected GenerateReplyOptions DefaultOptions { get; private set; }
 
     /// <summary>
     /// The conversation history. Access via AddToHistory and GetHistorySnapshot for thread safety.
@@ -246,7 +263,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// per-turn usage, a sandbox-backed loop's session creation — and to derive a spawned
     /// agent's bundle with <c>with { Lineage = ... }</c>.
     /// </remarks>
-    protected MultiTurnLifecycleServices LifecycleServices { get; }
+    protected MultiTurnLifecycleServices LifecycleServices { get; private set; }
 
     /// <summary>
     /// Owns this thread's run and turn lifecycle: which run is in flight, which caller ends it,
@@ -370,23 +387,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         _maxReplayBufferSize = maxReplayBufferSize;
         _maxReplayBufferBytes = maxReplayBufferBytes;
 
-        // Per-turn output-budget floor. When no MaxToken is configured, the provider falls back to its
-        // raw 4096 default (AnthropicRequest: MaxTokens = options?.MaxToken ?? 4096). A single turn that
-        // emits a real file body (Write.content) or script (Bash.command) as a tool_use argument then
-        // exhausts that budget: the provider stops with stop_reason=max_tokens and truncates the streaming
-        // tool-call JSON mid-string, so the loop executes corrupt args. The main agent already dodges this
-        // by setting MaxToken explicitly (8192); sub-agents and the workflow-controller loop are built with
-        // options carrying only a model id, so they inherited the 4096 ceiling and their Write/Bash calls
-        // consistently failed. Filling ONLY a null MaxToken here is non-breaking: any explicit budget
-        // (including the main agent's) is preserved, and it never touches ModelId (empty ModelId still lets
-        // the provider pick its default model — this sets budget only, never clobbers model selection).
-        var baseOptions = defaultOptions ?? new GenerateReplyOptions();
-        DefaultOptions = baseOptions.MaxToken is null
-            ? baseOptions with
-            {
-                MaxToken = DefaultMaxTokenFloor,
-            }
-            : baseOptions;
+        DefaultOptions = WithOutputBudgetFloor(defaultOptions);
         Store = store;
         Logger = logger ?? NullLogger.Instance;
 
@@ -409,6 +410,58 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
+    }
+
+    /// <summary>
+    /// Fills a null per-turn output budget with <see cref="DefaultMaxTokenFloor"/>.
+    /// </summary>
+    /// <remarks>
+    /// When no MaxToken is configured, the provider falls back to its raw 4096 default
+    /// (AnthropicRequest: MaxTokens = options?.MaxToken ?? 4096). A single turn that emits a real file
+    /// body (Write.content) or script (Bash.command) as a tool_use argument then exhausts that budget:
+    /// the provider stops with stop_reason=max_tokens and truncates the streaming tool-call JSON
+    /// mid-string, so the loop executes corrupt args. The main agent already dodges this by setting
+    /// MaxToken explicitly (8192); sub-agents and the workflow-controller loop are built with options
+    /// carrying only a model id, so they inherited the 4096 ceiling and their Write/Bash calls
+    /// consistently failed. Filling ONLY a null MaxToken is non-breaking: any explicit budget (including
+    /// the main agent's) is preserved, and it never touches ModelId (empty ModelId still lets the
+    /// provider pick its default model — this sets budget only, never clobbers model selection).
+    /// <para>
+    /// Shared by the constructor and <see cref="ApplyReconfiguredConfiguration"/>, so a reconfigured
+    /// agent gets exactly the budget floor a newly constructed one would.
+    /// </para>
+    /// </remarks>
+    private protected static GenerateReplyOptions WithOutputBudgetFloor(GenerateReplyOptions? defaultOptions)
+    {
+        var baseOptions = defaultOptions ?? new GenerateReplyOptions();
+        return baseOptions.MaxToken is null ? baseOptions with { MaxToken = DefaultMaxTokenFloor } : baseOptions;
+    }
+
+    /// <summary>
+    /// Replaces the mode/model-dependent configuration the base class owns, for a derived loop that
+    /// supports in-place reconfiguration (<see cref="IReconfigurableAgent"/>).
+    /// </summary>
+    /// <param name="systemPrompt">The fully composed prompt, exactly as the constructor would have stored it.</param>
+    /// <param name="defaultOptions">The new per-turn options template; the output-budget floor is applied here.</param>
+    /// <remarks>
+    /// Assignment only, and deliberately so: the caller has already built every part that can fail, and
+    /// nothing on this path is allowed to throw and leave the agent half-switched. The lifecycle bundle's
+    /// model id is restamped too, because it describes the model this loop sends with, and it is read
+    /// back both here (the per-generation context observation) and inside the run-lifecycle finalizer
+    /// (the <c>run_started</c> payload) — which keeps its own copy, hence the second assignment. The
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> singleton is left alone: copying it would break
+    /// the reference checks that keep a lifecycle-free agent allocation-free.
+    /// </remarks>
+    private protected void ApplyReconfiguredConfiguration(string? systemPrompt, GenerateReplyOptions? defaultOptions)
+    {
+        SystemPrompt = systemPrompt;
+        DefaultOptions = WithOutputBudgetFloor(defaultOptions);
+        if (!ReferenceEquals(LifecycleServices, MultiTurnLifecycleServices.Disabled))
+        {
+            LifecycleServices = LifecycleServices with { ModelId = DefaultOptions.ModelId };
+        }
+
+        Lifecycle.ModelId = DefaultOptions.ModelId;
     }
 
     /// <summary>
@@ -1298,6 +1351,151 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
 
     /// <summary>
+    /// Whether input a run would actually act on is queued right now.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not <see cref="PendingInputCount"/> <c>&gt; 0</c>.</b> That counts everything on the channel,
+    /// including the loop's own wake sentinel — an entry with <see cref="QueuedInput.Resume"/> set and
+    /// no messages, written only to break the input wait. A sentinel is not an interruption, and a
+    /// caller that treats it as one stops waiting for a reason that never happened. The distinction
+    /// exists at the <em>write</em> site and nowhere else, which is why this is signalled there.
+    /// </remarks>
+    internal bool HasRealInputQueued
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _realInputSignal.Task.IsCompleted;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Completes when input a run would act on arrives — a human turn, a peer agent's message, a
+    /// notification, a trigger injection — and never for the loop's own wake sentinel.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A <see cref="Task"/> of its own rather than a <see cref="CancellationToken"/> on purpose. A
+    /// blocking tool that waits on this has to be able to tell "my wait was interrupted" from "my wait
+    /// was cancelled" from "the agent is going away", and folding the first into a token makes the
+    /// three indistinguishable at the catch site. A timeout's
+    /// <see cref="OperationCanceledException"/> has orphaned work here before.
+    /// </para>
+    /// <para>
+    /// <paramref name="ct"/> cancels the <em>waiting</em>, not the signal; the returned task faults
+    /// with <see cref="OperationCanceledException"/> in that case, which is the distinction above.
+    /// </para>
+    /// </remarks>
+    internal Task WaitForRealInputAsync(CancellationToken ct)
+    {
+        // Cancellation wins over an already-set signal: Task.WaitAsync on a completed task ignores its
+        // token, which would let a cancelled wait report an interruption instead of the cancellation the
+        // caller has to distinguish.
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled(ct);
+        }
+
+        Task signal;
+        lock (_stateLock)
+        {
+            signal = _realInputSignal.Task;
+        }
+
+        return signal.WaitAsync(ct);
+    }
+
+    /// <summary>
+    /// Announces that <paramref name="queued"/> is real input. Called from every enqueue path, and
+    /// gated on <see cref="QueuedInput.Resume"/> being null at the write — the one place the sentinel
+    /// is still distinguishable.
+    /// </summary>
+    private void SignalIfRealInput(QueuedInput queued)
+    {
+        if (queued.Resume != null)
+        {
+            return;
+        }
+
+        TaskCompletionSource signal;
+        TaskCompletionSource arrival;
+        lock (_stateLock)
+        {
+            signal = _realInputSignal;
+            _pendingRealInputs.Add(queued);
+
+            // Swap first, complete second. A waiter captured the OLD source under the lock together
+            // with its scan of the list, so completing it after the swap wakes exactly the waiters
+            // that have not yet seen this entry, and the next write already has a fresh source to
+            // wake the ones that are about to look again.
+            arrival = _inputArrival;
+            _inputArrival = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        _ = signal.TrySetResult();
+        _ = arrival.TrySetResult();
+    }
+
+    /// <summary>
+    /// Completes with the first queued input <paramref name="wakes"/> accepts — including one that was
+    /// already waiting when the call was made — and keeps waiting through every input it does not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is a PEEK. The input is left on the channel for the run loop to drain and act on, which is
+    /// what makes it safe for a blocking tool to end its wait on: the tool reports that it stopped,
+    /// the turn ends, and the loop then processes the very input that stopped it. Consuming it here
+    /// would make the tool responsible for delivering it, and a tool that returns an error would lose
+    /// it outright.
+    /// </para>
+    /// <para>
+    /// The already-queued case is not an optimization. A tool handler runs INSIDE a turn, so anything
+    /// that arrived between the turn starting and the handler blocking is sitting on the channel with
+    /// its arrival signal long since fired; a waiter that only listened for the NEXT arrival would
+    /// block on input the agent is already holding.
+    /// </para>
+    /// <para>
+    /// <paramref name="wakes"/> is evaluated outside the lock, over a snapshot: it is caller-supplied
+    /// and may do anything, and the write path takes the same lock. Re-scanning the whole list each
+    /// time rather than tracking a cursor is deliberate — the list is short (it is the undrained tail
+    /// of a bounded channel) and a cursor would have to be rebased every time a drain removed entries.
+    /// </para>
+    /// </remarks>
+    /// <param name="wakes">Decides whether an input is one this caller stops for.</param>
+    /// <param name="ct">Cancels the waiting, not the input.</param>
+    /// <returns>The matching input, left queued.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> fired first.</exception>
+    internal async Task<QueuedInput> WaitForMatchingInputAsync(Func<QueuedInput, bool> wakes, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(wakes);
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            QueuedInput[] pending;
+            Task arrival;
+            lock (_stateLock)
+            {
+                pending = [.. _pendingRealInputs];
+                arrival = _inputArrival.Task;
+            }
+
+            foreach (var queued in pending)
+            {
+                if (wakes(queued))
+                {
+                    return queued;
+                }
+            }
+
+            await arrival.WaitAsync(ct);
+        }
+    }
+
+    /// <summary>
     /// Posts a pre-built <see cref="QueuedInput"/> directly to the input channel, preserving
     /// any non-default fields (including <see cref="QueuedInput.Resume"/>). Used by
     /// <c>MultiTurnAgentLoop</c> to enqueue internal resume sentinels for deferred-tool
@@ -1309,9 +1507,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput)
-            ? ValueTask.CompletedTask
-            : _inputChannel.Writer.WriteAsync(queuedInput, ct);
+        if (_inputChannel.Writer.TryWrite(queuedInput))
+        {
+            SignalIfRealInput(queuedInput);
+            return ValueTask.CompletedTask;
+        }
+
+        return WriteThenSignalAsync();
+
+        async ValueTask WriteThenSignalAsync()
+        {
+            await _inputChannel.Writer.WriteAsync(queuedInput, ct);
+            SignalIfRealInput(queuedInput);
+        }
     }
 
     /// <summary>
@@ -1328,7 +1536,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput);
+        if (!_inputChannel.Writer.TryWrite(queuedInput))
+        {
+            return false;
+        }
+
+        SignalIfRealInput(queuedInput);
+        return true;
     }
 
     /// <summary>
@@ -1349,10 +1563,44 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <returns>True if any inputs were drained, false if queue was empty</returns>
     protected bool TryDrainInputs(out List<QueuedInput> inputs)
     {
+        // Re-arm BEFORE the drain, never after. A write that lands between the two sets the NEW
+        // source, so the worst this ordering can produce is a spurious wake for input this drain also
+        // took — and a waiter re-checks. Re-arming afterwards would instead discard the signal for an
+        // input that arrived mid-drain and was not taken, which is a wait that never ends.
+        lock (_stateLock)
+        {
+            if (_realInputSignal.Task.IsCompleted)
+            {
+                _realInputSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
         inputs = [];
         while (_inputChannel.Reader.TryRead(out var item))
         {
             inputs.Add(item);
+        }
+
+        // Retire exactly what this drain took, by reference. Clearing the list wholesale would also
+        // discard an input written between the re-arm above and the loop below — one this drain did
+        // NOT take — and a waiter would then never be told about it. Reference identity, not record
+        // equality: two inputs carrying the same messages are still two inputs.
+        if (inputs.Count > 0)
+        {
+            lock (_stateLock)
+            {
+                foreach (var taken in inputs)
+                {
+                    for (var i = 0; i < _pendingRealInputs.Count; i++)
+                    {
+                        if (ReferenceEquals(_pendingRealInputs[i], taken))
+                        {
+                            _pendingRealInputs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if (inputs.Count > 1)
@@ -1434,6 +1682,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     throw;
                 }
 
+                SignalIfRealInput(queued);
                 return new SendReceipt(
                     receiptId,
                     inputId,
@@ -1444,6 +1693,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             }
         }
 
+        SignalIfRealInput(queued);
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
         return ValueTask.FromResult(
@@ -1555,6 +1805,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return null;
         }
 
+        SignalIfRealInput(queued);
         Logger.LogDebug(
             "Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}",
             receiptId,

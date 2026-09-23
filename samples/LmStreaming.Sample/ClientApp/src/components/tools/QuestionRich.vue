@@ -4,6 +4,7 @@ interface StoredDraftAnswer {
   otherText: string;
   otherActive: boolean;
   skipped: boolean;
+  comment: string;
 }
 
 interface StoredQuestionDraft {
@@ -22,6 +23,7 @@ import { computed, reactive, ref, useId, watch } from 'vue';
 import type { ToolPillView } from '@/utils/toolTypes';
 import type { ToolCall } from '@/types';
 import { stripMarkdownPreview } from '@/utils/stripMarkdownPreview';
+import { isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { useClientToolSubmit, type ClientToolSubmitOutcome } from '@/composables/useClientToolSubmit';
 
 const props = defineProps<{ view: ToolPillView; toolCall: ToolCall; draftKey?: string }>();
@@ -52,6 +54,14 @@ interface Answer {
   selectedValues: string[];
   otherText: string;
   skipped: boolean;
+  /**
+   * Free commentary the user wrote alongside whatever they chose. Distinct from `otherText`, which
+   * belongs to the "Other" OPTION and in single-select replaces the choice — so it could never carry
+   * a remark about a choice, only instead of one. Omitted when empty, leaving the payload of an
+   * uncommented answer byte-identical to what it has always been. Client-only, like the Cancel body:
+   * the server treats `result` as an opaque string and never parses it.
+   */
+  comment?: string;
 }
 
 function isQuestionDef(v: unknown): v is QuestionDef {
@@ -88,6 +98,7 @@ interface DraftAnswer {
   otherText: string;
   otherActive: boolean;
   skipped: boolean;
+  comment: string;
 }
 const drafts = reactive<Record<string, DraftAnswer>>({});
 const memoryKey = computed(() => props.draftKey ?? props.toolCall.tool_call_id ?? 'question');
@@ -101,6 +112,7 @@ function replaceDrafts(next: Record<string, DraftAnswer>): void {
       otherText: value.otherText,
       otherActive: value.otherActive,
       skipped: value.skipped,
+      comment: value.comment ?? '',
     };
   }
 }
@@ -149,7 +161,7 @@ watch(
 function draftFor(idx: number): DraftAnswer {
   const qId = questionIdAt(idx);
   if (!drafts[qId]) {
-    drafts[qId] = { selectedValues: [], otherText: '', otherActive: false, skipped: false };
+    drafts[qId] = { selectedValues: [], otherText: '', otherActive: false, skipped: false, comment: '' };
   }
   return drafts[qId];
 }
@@ -196,6 +208,9 @@ const canProceed = computed<boolean>(() => {
   if (d.skipped) return true;
   if (d.selectedValues.length > 0) return true;
   if (d.otherActive && d.otherText.trim().length > 0) return true;
+  // A comment on its own IS an answer. Without this the user who wants to say something none of the
+  // options covers has to pick an option they do not mean, or Skip, to get their words through.
+  if (d.comment.trim().length > 0) return true;
   return false;
 });
 
@@ -203,11 +218,14 @@ function buildAnswers(): Answer[] {
   return questions.value.map((_, idx) => {
     const qId = questionIdAt(idx);
     const d = draftFor(idx);
+    const comment = d.comment.trim();
     return {
       questionId: qId,
       selectedValues: d.skipped ? [] : [...d.selectedValues],
       otherText: !d.skipped && d.otherActive ? d.otherText.trim() : '',
       skipped: d.skipped,
+      // Kept even on a Skip: "none of these, because ..." is exactly when commentary matters most.
+      ...(comment ? { comment } : {}),
     };
   });
 }
@@ -351,6 +369,14 @@ const isResolvedWithoutAnswers = computed<boolean>(
   () => !props.view.isDeferred && props.view.hasResult && resolvedAnswers.value === null
 );
 
+// Bug #5: the server settled this question EARLY (a run arrived while it was parked) and the
+// answer was delivered to the agent as a message instead of overwriting this result. The
+// placeholder is final, so once the answer is known to have been delivered (`view.isDeferred`
+// false — see `isQuestionAwaitingAnswer`) it must read as answered, never as cancelled.
+const isAnsweredElsewhere = computed<boolean>(
+  () => !props.view.isDeferred && props.view.hasResult && isEarlySettledQuestionResult(props.view.resultText)
+);
+
 function labelsFor(idx: number, values: string[]): string {
   const q = questions.value[idx];
   if (!q) return values.join(', ');
@@ -377,7 +403,19 @@ function answerFor(idx: number): Answer | undefined {
           <span>{{ labelsFor(idx, answerFor(idx)?.selectedValues ?? []) }}</span>
           <span v-if="answerFor(idx)?.otherText"> — {{ answerFor(idx)?.otherText }}</span>
         </div>
+        <div v-if="answerFor(idx)?.comment" class="question__answer-comment">
+          {{ answerFor(idx)?.comment }}
+        </div>
       </div>
+    </div>
+
+    <!-- Settled early by the server (bug #5): the answer went to the agent as a message, not here. -->
+    <div
+      v-else-if="isAnsweredElsewhere"
+      class="question__resolved"
+      data-testid="question-answered-elsewhere"
+    >
+      <p class="question__answer">Answered — delivered to the agent as a message.</p>
     </div>
 
     <!-- Resolved, but NOT answer-shaped (e.g. cancelled): a terminal message, never the form. -->
@@ -451,6 +489,18 @@ function answerFor(idx: number): Answer | undefined {
               />
             </label>
           </div>
+
+          <label class="question__comment-field">
+            <span>Comment (optional)</span>
+            <textarea
+              class="question__comment"
+              data-testid="question-comment"
+              rows="2"
+              placeholder="Anything you want to add alongside your answer…"
+              :disabled="isLocked"
+              v-model="draftFor(idx).comment"
+            />
+          </label>
 
           <p v-if="currentPreview" class="question__preview" data-testid="question-preview">
             {{ currentPreview }}
@@ -638,6 +688,35 @@ function answerFor(idx: number): Answer | undefined {
 .question__other-text:focus {
   border-color: #2d6cdf;
   outline: 2px solid rgb(45 108 223 / 18%);
+}
+.question__comment-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  color: #5f6874;
+  font-size: 12px;
+}
+.question__comment {
+  width: 100%;
+  min-height: 54px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid #cbd1d8;
+  border-radius: 6px;
+  color: #343a40;
+  font: inherit;
+}
+.question__comment:focus {
+  border-color: #2d6cdf;
+  outline: 2px solid rgb(45 108 223 / 18%);
+}
+.question__answer-comment {
+  margin-top: 4px;
+  color: #5f6874;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .question__preview {
   margin: 4px 0 10px;
