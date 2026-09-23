@@ -96,6 +96,22 @@ public class OpenClientHttpTests : LoggingTestBase
         Assert.Equal(0, handler.DisposeCount);
     }
 
+    [Fact]
+    public void PublishedFiveParameterHttpClientConstructor_StillExists()
+    {
+        // Callers compiled against the published signature bind to it by exact parameter list; an optional
+        // parameter added to it would change that list and make them fail with MissingMethodException.
+        var constructor = typeof(OpenClient).GetConstructor([
+            typeof(HttpClient),
+            typeof(string),
+            typeof(IPerformanceTracker),
+            typeof(ILogger),
+            typeof(RetryOptions),
+        ]);
+
+        Assert.NotNull(constructor);
+    }
+
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(

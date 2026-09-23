@@ -3477,10 +3477,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         // A calling LLM commonly re-states its OWN (parent) model id as the explicit `model` argument
         // while ALSO supplying `modelIntelligence` for a tier it actually wants honored — the model id is
         // the one thing the LLM already knows about itself, so it fills the field rather than leaving it
-        // blank. Spawn-model has the strongest precedence (see BuildRouting), so left as-is this
-        // redundant self-reference silently overrides the requested tier and any template tier/model
-        // choice, which is exactly how every high-judgment template ended up running on the primary
-        // agent's own (mechanical-tier) model. Only clear the override when a tier was ALSO requested:
+        // blank. A resolvable spawn tier already beats the model (below); this also covers a tier that
+        // resolves nothing, where the redundant self-reference would otherwise override any template
+        // tier/model choice, which is exactly how every high-judgment template ended up running on the
+        // primary agent's own (mechanical-tier) model. Only clear the override when a tier was ALSO requested:
         // that is the signal the model id is redundant filler rather than a deliberate "run this one on
         // my own model" choice, which a same-as-parent override with no tier still expresses and this
         // must not disturb. Comparison is case-insensitive, matching the tolerant handling already used
@@ -3503,26 +3503,35 @@ public sealed class SubAgentManager : IAsyncDisposable
             modelOverride = null;
         }
 
-        // A per-spawn model-intelligence tier resolves to a concrete model ONLY when the spawn set no
-        // explicit model override (an explicit model always wins over a tier) AND the host supplied a
-        // tier resolver. The resolved id is then fed into option resolution as if it were the requested
-        // model, so model + budget inheritance treats it like any pinned model (override > tier > template
-        // > parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the
-        // sub-agent on its parent-inherited model, exactly as if no tier had been requested.
+        // A per-spawn model-intelligence tier is the PRIMARY routing mechanism: when the host supplied a tier
+        // resolver and the tier resolves to a concrete model, that model runs and any explicit `model` is
+        // dropped. A calling LLM names models it guessed or copied; the tier is the operator-sanctioned
+        // ladder, so it wins. The resolved id is then fed into option resolution as if it were the requested
+        // model, so model + budget inheritance treats it like any pinned model (tier > override > template >
+        // parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the explicit
+        // model in charge, or with none the parent-inherited model, exactly as if no tier had been requested.
         var tierSelection =
-            string.IsNullOrWhiteSpace(modelOverride)
-            && modelIntelligence is { } tier
-            && _options.TierModelResolver is { } tierResolver
-                ? tierResolver(tier)
-                : null;
+            modelIntelligence is { } tier && _options.TierModelResolver is { } tierResolver ? tierResolver(tier) : null;
         var tierResolvedModel =
             tierSelection is { } selection && !string.IsNullOrWhiteSpace(selection.ModelId) ? selection.ModelId : null;
+        if (tierResolvedModel is not null && !string.IsNullOrWhiteSpace(modelOverride))
+        {
+            _logger.LogDebug(
+                "Sub-agent {AgentId} requested model {ModelOverride} alongside tier {ModelIntelligence}; the "
+                    + "tier resolved to {TierModel}, which wins, so the requested model is ignored",
+                agentId,
+                modelOverride,
+                modelIntelligence,
+                tierResolvedModel
+            );
+            modelOverride = null;
+        }
 
         // The operator's conversation-wide default applies only when THIS SPAWN named neither a model nor a
         // resolvable tier. Folding it into effectiveModel is what places it above the template: everything
         // downstream (ResolveSubAgentOptions' model inheritance, the plain path's transport-correct provider
         // choice) already treats effectiveModel as "the model chosen for this spawn", so the ordering
-        // spawn-model > spawn-tier > conversation-default > template > parent falls out of one assignment
+        // spawn-tier > spawn-model > conversation-default > template > parent falls out of one assignment
         // rather than a second, separately-maintained ladder.
         var conversationDefaultModel =
             string.IsNullOrWhiteSpace(modelOverride)
@@ -3583,7 +3592,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        // Resolve the sub-agent's options with model + budget + caching inheritance (override > tier > template > parent).
+        // Resolve the sub-agent's options with model + budget + caching inheritance (tier > override > template > parent).
         var defaultOptions = ResolveSubAgentOptions(
             template.DefaultOptions,
             effectiveModel,

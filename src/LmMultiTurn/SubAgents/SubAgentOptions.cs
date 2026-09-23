@@ -231,8 +231,8 @@ public record SubAgentOptions
     /// argument of the <c>Agent</c> tool, or a workflow task's tier) to a concrete model and that tier's
     /// reasoning effort, or null to leave the sub-agent on its parent-inherited model. The library is
     /// model-catalog-agnostic, so the host owns the tier ladder and passes this delegate in; the manager
-    /// only calls it (with the raw tier) when a spawn requested a tier AND set no explicit model override.
-    /// A non-null return is treated as a tier-resolved model
+    /// calls it (with the raw tier) whenever a spawn requested a tier, and a non-null return wins over the
+    /// spawn's explicit model override, which then applies only when this returns null. A non-null return is treated as a tier-resolved model
     /// (<see cref="SubAgentCharacteristics.IsModelTierResolved"/>), so the characteristics factory builds a
     /// real provider for it rather than handing back the parent; its effort applies unless the template
     /// authored one (see <see cref="SubAgentTemplate.TierEffort"/> for the precedence). Null (default)

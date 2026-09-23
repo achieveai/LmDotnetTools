@@ -211,6 +211,43 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         registry.GetPersistedTabs("t1").Select(t => t.AgentId).Should().BeEquivalentTo(["wf1", "wf2"]);
     }
 
+    [Fact]
+    public void RepeatedPersistFailures_WarnOncePerRun_AndWarnAgainAfterARecovery()
+    {
+        // Only Windows refuses to replace a file another handle holds open, so only there can this fail.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var logger = new CapturingLogger<WorkflowRunRegistry>();
+        var registry = new WorkflowRunRegistry(_dir, logger: logger);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+        int Warnings() => logger.Entries.Count(entry => entry.Level == LogLevel.Warning);
+
+        void PersistWhileHeldOpen(int polls)
+        {
+            using var holder = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete
+            );
+            for (var poll = 0; poll < polls; poll++)
+            {
+                registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+            }
+        }
+
+        PersistWhileHeldOpen(polls: 3);
+        Warnings().Should().Be(1, "the polls that keep failing after the first are the same failure");
+
+        registry.PersistTabs("t1", [Tab("workflow", "wf2", "running")]);
+        PersistWhileHeldOpen(polls: 1);
+        Warnings().Should().Be(2, "a failure after a successful persist starts a new run and warns again");
+    }
+
     /// <summary>
     /// The quarantine destination is unique per attempt, not merely timestamped. The same index
     /// corrupted and read again inside one millisecond must land in a second file, with every earlier

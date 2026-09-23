@@ -369,9 +369,10 @@ effort: high
   cannot shape effort, the setting is omitted. LmStreaming uses the provider-specific request
   shape: Anthropic `output_config.effort` or OpenAI Responses `reasoning.effort`.
 
-Model precedence is **explicit `model:` > tier-resolved model > inherited parent model** (a
-per-spawn model override, when supplied by a caller, remains highest). An explicit model therefore
-disables tier selection. The characteristics-aware factory builds the sub-agent on the resolved
+Model precedence is **explicit `model:` > tier-resolved model > inherited parent model**, so in
+frontmatter an explicit model disables tier selection. A spawn's own arguments rank above the
+frontmatter, and there the order is reversed: a per-spawn `modelIntelligence` tier that resolves to a
+model wins, and a per-spawn `model` applies only when the tier resolves to nothing. The characteristics-aware factory builds the sub-agent on the resolved
 model's routable transport and applies effort only after that model is known.
 The 0–6 model-intelligence tier space and the reasoning-effort values are deliberately independent;
 there is no ordinal or one-to-one mapping between them.

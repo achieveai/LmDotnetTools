@@ -52,22 +52,44 @@ public class OpenClient : BaseHttpService, IOpenClient
         );
     }
 
+    /// <summary>
+    ///     Sends requests through an injected <paramref name="httpClient"/> that this instance does not own,
+    ///     so disposing it leaves the client (for example one managed by DI) to its owner.
+    /// </summary>
+    /// <param name="httpClient">The client to send requests through.</param>
+    /// <param name="baseUrl">The API base URL.</param>
+    /// <param name="performanceTracker">Optional performance tracker.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="retryOptions">Optional retry configuration.</param>
+    /// <remarks>
+    ///     Kept with this exact signature so assemblies compiled against it still bind; the ownership opt-in
+    ///     is a separate overload rather than an optional parameter here.
+    /// </remarks>
+    public OpenClient(
+        HttpClient httpClient,
+        string baseUrl,
+        IPerformanceTracker? performanceTracker = null,
+        ILogger? logger = null,
+        RetryOptions? retryOptions = null
+    )
+        : this(httpClient, baseUrl, performanceTracker, logger, retryOptions, disposeHttpClient: false) { }
+
     /// <param name="httpClient">The client to send requests through.</param>
     /// <param name="baseUrl">The API base URL.</param>
     /// <param name="performanceTracker">Optional performance tracker.</param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="retryOptions">Optional retry configuration.</param>
     /// <param name="disposeHttpClient">
-    ///     <c>true</c> when this instance owns <paramref name="httpClient"/> and must dispose it; the
-    ///     default leaves an injected client (for example one managed by DI) to its owner.
+    ///     <c>true</c> when this instance owns <paramref name="httpClient"/> and must dispose it; <c>false</c>
+    ///     leaves an injected client (for example one managed by DI) to its owner.
     /// </param>
     public OpenClient(
         HttpClient httpClient,
         string baseUrl,
-        IPerformanceTracker? performanceTracker = null,
-        ILogger? logger = null,
-        RetryOptions? retryOptions = null,
-        bool disposeHttpClient = false
+        IPerformanceTracker? performanceTracker,
+        ILogger? logger,
+        RetryOptions? retryOptions,
+        bool disposeHttpClient
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {

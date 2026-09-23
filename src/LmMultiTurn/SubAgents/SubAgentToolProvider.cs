@@ -542,10 +542,10 @@ public class SubAgentToolProvider : IFunctionProvider
                     Name = "modelIntelligence",
                     Description =
                         "Optional model-intelligence tier (integer; ascending capability, 0 = cheapest) "
-                        + "used to size this sub-agent's model when no explicit 'model' is given. The host "
-                        + "resolves it to a concrete model, climbing to the nearest higher configured tier "
+                        + "used to size this sub-agent's model. This is the preferred way to pick a model. The "
+                        + "host resolves it to a concrete model, climbing to the nearest higher configured tier "
                         + "when the requested one is unmapped; omit it to keep the sub-agent's default "
-                        + "(parent-inherited) model. An explicit 'model' always wins over this.",
+                        + "(parent-inherited) model. When it resolves, it wins and any 'model' is ignored.",
                     ParameterType = new JsonSchemaObject { Type = new("integer") },
                     IsRequired = false,
                 },
@@ -1019,7 +1019,8 @@ public class SubAgentToolProvider : IFunctionProvider
             "Optional model id override for this sub-agent. Usually OMIT this — the sub-agent inherits "
             + "the correct model automatically; set it only to deliberately run this one sub-agent on a "
             + "different model. This is a MODEL ID, not a subagent_type (that is the separate "
-            + "'subagent_type' argument) and not a capability tier (use 'modelIntelligence' for that).";
+            + "'subagent_type' argument) and not a capability tier (use 'modelIntelligence' for that). "
+            + "Ignored when 'modelIntelligence' is also given and resolves to a model.";
 
         if (availableModelIds is { Count: > 0 })
         {

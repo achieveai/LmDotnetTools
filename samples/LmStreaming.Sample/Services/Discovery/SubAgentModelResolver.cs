@@ -113,7 +113,14 @@ internal sealed class SubAgentModelResolver
     /// Returns an explicit model unchanged, otherwise the first routable candidate for the tier.
     /// A null result means the sub-agent should inherit its parent model.
     /// </summary>
-    internal string? Resolve(string? explicitModel, int? modelIntelligence)
+    internal string? Resolve(string? explicitModel, int? modelIntelligence) =>
+        ResolveWithEffort(explicitModel, modelIntelligence)?.ModelId;
+
+    /// <summary>
+    /// <see cref="Resolve"/> plus the effort the tier runs that model at: the matched candidate's own
+    /// <c>"model:effort"</c> when it has one, otherwise the tier's. An explicit model carries no effort.
+    /// </summary>
+    internal SubAgentTierSelection? ResolveWithEffort(string? explicitModel, int? modelIntelligence)
     {
         var normalizedModel = explicitModel?.Trim();
         if (
@@ -132,7 +139,7 @@ internal sealed class SubAgentModelResolver
                 );
             }
 
-            return normalizedModel;
+            return new SubAgentTierSelection(normalizedModel, Effort: null);
         }
 
         if (modelIntelligence is null)
@@ -164,9 +171,9 @@ internal sealed class SubAgentModelResolver
             return null;
         }
 
-        if (TryGetRoutableModel(candidates, out var routable, out _))
+        if (TryGetRoutableModel(candidates, out var routable, out var candidate))
         {
-            return routable;
+            return new SubAgentTierSelection(routable, EffortFor(modelIntelligence.Value, candidate));
         }
 
         WarnOnce(

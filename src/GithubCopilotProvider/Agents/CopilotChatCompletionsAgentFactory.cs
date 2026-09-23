@@ -78,6 +78,7 @@ public static class CopilotChatCompletionsAgentFactory
         var client = new OpenClient(
             httpClient,
             host,
+            performanceTracker: null,
             logger: logger,
             retryOptions: retryOptions,
             disposeHttpClient: true

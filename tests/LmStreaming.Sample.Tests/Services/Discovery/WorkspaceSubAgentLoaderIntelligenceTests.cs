@@ -1,9 +1,11 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
@@ -95,7 +97,60 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
         template.IsModelTierResolved.Should().BeFalse();
     }
 
-    private static WorkspaceSubAgentLoader CreateLoader(ILogger<WorkspaceSubAgentLoader> logger)
+    [Theory]
+    [InlineData("routable-model", ReasoningEffort.Medium)]
+    [InlineData("routable-model:xhigh", ReasoningEffort.Xhigh)]
+    public async Task LoadOneAsync_TierEffortIsTheMatchedCandidatesOwnEffortWhenItHasOne(
+        string configuredCandidate,
+        ReasoningEffort expectedEffort
+    )
+    {
+        // The skipped first candidate proves the effort follows the candidate that matched, not the tier's
+        // first entry; the plain row proves the tier's Efforts value still applies without a suffix.
+        var options = SubAgentIntelligenceOptions.Load(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["SubAgentIntelligence:Tiers:3:0"] = "missing-model:low",
+                        ["SubAgentIntelligence:Tiers:3:1"] = configuredCandidate,
+                        ["SubAgentIntelligence:Efforts:3"] = "medium",
+                    }
+                )
+                .Build(),
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
+        var loader = CreateLoader(new CapturingLogger<WorkspaceSubAgentLoader>(), options);
+        var item = new SandboxSessionRegistry.DiscoveredItem(
+            "subagent",
+            "tiered",
+            "Tiered agent",
+            "/marketplaces/example/tiered.md",
+            """
+            ---
+            name: tiered
+            modelintelligence: 3
+            ---
+            Handle the task.
+            """
+        );
+
+        var template = await loader.LoadOneWithCharacteristicsAsync(
+            new SandboxSession("default", "session", "default", "workspace"),
+            item,
+            () => new Mock<IStreamingAgent>().Object,
+            _ => throw new InvalidOperationException("Factory should not run while loading.")
+        );
+
+        template!.DefaultOptions!.ModelId.Should().Be("routable-model");
+        template.IsModelTierResolved.Should().BeTrue();
+        template.TierEffort.Should().Be(expectedEffort);
+    }
+
+    private static WorkspaceSubAgentLoader CreateLoader(
+        ILogger<WorkspaceSubAgentLoader> logger,
+        SubAgentIntelligenceOptions? options = null
+    )
     {
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
@@ -126,7 +181,11 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
         );
         var resolver = new SubAgentModelResolver(
             catalog,
-            new SubAgentIntelligenceOptions { Tiers = new Dictionary<int, string[]> { [3] = ["routable-model"] } },
+            options
+                ?? new SubAgentIntelligenceOptions
+                {
+                    Tiers = new Dictionary<int, string[]> { [3] = ["routable-model"] },
+                },
             new CapturingLogger<SubAgentModelResolver>()
         );
 
