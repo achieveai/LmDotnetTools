@@ -74,7 +74,14 @@ public static class CopilotChatCompletionsAgentFactory
             new CopilotChatCompletionsDialectHandler(innerHandler)
         );
 
-        var client = new OpenClient(httpClient, host, logger: logger, retryOptions: retryOptions);
+        // The client owns the HttpClient built above, so disposing the agent releases its handlers.
+        var client = new OpenClient(
+            httpClient,
+            host,
+            logger: logger,
+            retryOptions: retryOptions,
+            disposeHttpClient: true
+        );
         return new OpenClientAgent(name, client, logger);
     }
 
