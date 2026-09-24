@@ -31,7 +31,7 @@ public sealed class SandboxAppBrowserTests(PlaywrightFixture fixture)
                 && url.Contains("/apps", StringComparison.Ordinal),
             async route =>
             {
-                if (route.Request.Url.EndsWith("/launch", StringComparison.Ordinal))
+                if (new Uri(route.Request.Url).AbsolutePath.EndsWith("/launch", StringComparison.Ordinal))
                 {
                     await route.FulfillAsync(
                         new RouteFulfillOptions
@@ -52,7 +52,20 @@ public sealed class SandboxAppBrowserTests(PlaywrightFixture fixture)
                             Status = 200,
                             ContentType = "application/json",
                             Body = JsonSerializer.Serialize(
-                                new { apps = new[] { new { id = "budget", name = "Budget explorer" } } }
+                                new
+                                {
+                                    apps = new[]
+                                    {
+                                        new
+                                        {
+                                            kind = "mini-web-app",
+                                            workspaceId = "workspace-1",
+                                            id = "budget",
+                                            name = "Budget explorer",
+                                            link = "#mini-app?workspace=workspace-1&app=budget",
+                                        },
+                                    },
+                                }
                             ),
                         }
                     );
