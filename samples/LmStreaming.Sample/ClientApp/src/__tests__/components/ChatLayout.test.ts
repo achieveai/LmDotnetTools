@@ -52,6 +52,7 @@ const sharedMocks = vi.hoisted(() => ({
   // it has made the server flip the conversation's visibility, and that call is what a test asserts.
   loadConversations: vi.fn(async () => {}),
   selectMode: vi.fn(),
+  loadModes: vi.fn(async (_workspaceId?: string) => {}),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
   // #435: the SPA no longer mints a thread id — `createNewConversation` POSTs /api/conversations
@@ -214,7 +215,7 @@ vi.mock('@/composables/useChatModes', async () => {
       currentModeId,
       availableTools: ref([]),
       isLoading: ref(sharedMocks.modesLoading),
-      loadModes: vi.fn(async () => {}),
+      loadModes: sharedMocks.loadModes,
       loadTools: vi.fn(async () => {}),
       selectMode: vi.fn((modeId: string) => {
         currentModeId.value = modeId;
@@ -1329,6 +1330,7 @@ describe('ChatLayout workspace project integration', () => {
     sharedMocks.setModeId?.('default');
     sharedMocks.workspaceCatalogLoad = Promise.resolve();
     sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.loadModes.mockClear();
     sharedMocks.selectWorkspace.mockImplementation((workspaceId: string) => {
       if (sharedMocks.workspaceSelectionRef) {
         sharedMocks.workspaceSelectionRef.value = workspaceId;
@@ -1366,6 +1368,16 @@ describe('ChatLayout workspace project integration', () => {
       providerId: 'anthropic',
       modeId: 'default',
     });
+  });
+
+  it('reloads available modes for the selected workspace', async () => {
+    mountLayout();
+    await flushPromises();
+    expect(sharedMocks.loadModes).toHaveBeenCalledWith('default');
+
+    sharedMocks.selectWorkspace('repo');
+    await flushPromises();
+    expect(sharedMocks.loadModes).toHaveBeenCalledWith('repo');
   });
 
   it('shows one editable project picker above the root composer only for a blank chat', async () => {
@@ -3246,6 +3258,10 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
           // The SUBJECT here is ChatLayout's mount gate, not the modal's internals
           // (ArtifactPreviewModal.test.ts owns those).
           ArtifactPreviewModal: ArtifactPreviewModalStub,
+          SandboxAppPreview: defineComponent({
+            props: ['threadId', 'workspaceId', 'appId', 'name'],
+            template: '<div data-testid="sandbox-app-preview-stub" :data-workspace-id="workspaceId">{{ name }}</div>',
+          }),
         },
       },
     });
@@ -3312,6 +3328,27 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     const wrapper = await mountWithOpenModal();
     expect(wrapper.getComponent(ArtifactPreviewModalStub).attributes()).toHaveProperty('embedded');
     expect(wrapper.find('[data-testid="workspace-preview-region"]').exists()).toBe(true);
+  });
+
+  it('opens an approved app in the existing preview tabs', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: String(url).endsWith('/apps'),
+      status: String(url).endsWith('/apps') ? 200 : 404,
+      json: async () => String(url).endsWith('/apps')
+        ? { apps: [{ kind: 'mini-web-app', workspaceId: 'workspace-1', id: 'budget', name: 'Budget explorer', link: '#mini-app?workspace=workspace-1&app=budget' }] }
+        : {},
+    })));
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('#inspector-tab-apps').trigger('click');
+    await wrapper.get('[data-testid="open-sandbox-app-budget"]').trigger('click');
+    expect(wrapper.get('[data-testid="sandbox-app-preview-stub"]').text()).toBe('Budget explorer');
+    expect(wrapper.get('[data-testid="sandbox-app-preview-stub"]').attributes('data-workspace-id')).toBe('workspace-1');
+    expect(wrapper.get('[role="tablist"]').text()).toContain('Budget explorer');
+    await wrapper.get('[aria-label="Close Budget explorer"]').trigger('click');
+    expect(wrapper.find('[data-testid="sandbox-app-preview-stub"]').exists()).toBe(false);
   });
 
   it('restores the mounted conversation when the inspector closes from expanded reading', async () => {

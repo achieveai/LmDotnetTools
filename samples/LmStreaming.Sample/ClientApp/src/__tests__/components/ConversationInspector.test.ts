@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
+import { flushPromises } from '@vue/test-utils';
 import ConversationInspector from '@/components/ConversationInspector.vue';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
@@ -18,7 +19,7 @@ describe('ConversationInspector', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1200 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 900 });
   });
-  afterEach(() => document.body.replaceChildren());
+  afterEach(() => { vi.restoreAllMocks(); document.body.replaceChildren(); });
 
   it('renders no rail while closed', () => expect(mountInspector({ open: false }).find('[data-testid="conversation-inspector"]').exists()).toBe(false));
 
@@ -31,6 +32,17 @@ describe('ConversationInspector', () => {
     await wrapper.get('#inspector-tab-work').trigger('click');
     expect(wrapper.get('#inspector-tab-work').attributes('aria-expanded')).toBe('false');
     expect(wrapper.get('#inspector-tab-agents').attributes('aria-expanded')).toBe('true');
+  });
+
+  it('shows an Apps disclosure and opens an approved app in the shared preview region', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ apps: [{ kind: 'mini-web-app', workspaceId: 'workspace-1', id: 'budget', name: 'Budget explorer', link: '#mini-app?workspace=workspace-1&app=budget' }] }), { status: 200 }),
+    );
+    const wrapper = mountInspector({ filesThreadId: 'thread-1' });
+    await flushPromises();
+    await wrapper.get('#inspector-tab-apps').trigger('click');
+    await wrapper.get('[data-testid="open-sandbox-app-budget"]').trigger('click');
+    expect(wrapper.emitted('openApp')).toEqual([['budget', 'Budget explorer', 'workspace-1']]);
   });
 
   it('preserves artifact and agent events', async () => {

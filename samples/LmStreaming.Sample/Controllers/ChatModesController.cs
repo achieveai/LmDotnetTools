@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -37,20 +38,58 @@ namespace LmStreaming.Sample.Controllers;
 [ApiController]
 [Route("api/chat-modes")]
 [InboundS2SAuth]
-public class ChatModesController(IChatModeStore modeStore, Services.SandboxEnvApplier envApplier) : ControllerBase
+public class ChatModesController(
+    IChatModeStore modeStore,
+    Services.SandboxEnvApplier envApplier,
+    SandboxApps.SandboxAppCatalog? sandboxAppCatalog = null,
+    Identity.ConversationAuthorizer? authorizer = null,
+    SandboxApps.ISandboxAppModeReadiness? modeReadiness = null
+) : ControllerBase
 {
+    private bool HostAvailable =>
+        sandboxAppCatalog is not null
+        && authorizer is not null
+        && authorizer.Current is { Source: PrincipalSource.Interactive, Actor.Kind: PrincipalKind.EndUser }
+        && sandboxAppCatalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced);
+
+    private async Task<bool> BuilderAvailableAsync(string workspace, CancellationToken ct) =>
+        HostAvailable && modeReadiness is not null && await modeReadiness.IsReadyAsync(workspace, ct);
+
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken ct = default)
+    public async Task<IActionResult> List([FromQuery] string workspace = "default", CancellationToken ct = default)
     {
         var modes = await modeStore.GetAllModesAsync(ct);
-        return Ok(modes);
+        if (HostAvailable)
+            Response.Headers["X-Mini-Web-App-Activation"] = "available";
+        return Ok(
+            await BuilderAvailableAsync(workspace, ct)
+                ? modes
+                : [.. modes.Where(m => m.Id != SystemChatModes.MiniWebAppBuilderModeId)]
+        );
     }
 
     [HttpGet("{modeId}")]
-    public async Task<IActionResult> Get(string modeId, CancellationToken ct = default)
+    public async Task<IActionResult> Get(
+        string modeId,
+        [FromQuery] string workspace = "default",
+        CancellationToken ct = default
+    )
     {
         var mode = await modeStore.GetModeAsync(modeId, ct);
+        if (modeId == SystemChatModes.MiniWebAppBuilderModeId && !await BuilderAvailableAsync(workspace, ct))
+            return NotFound();
         return mode != null ? Ok(mode) : NotFound();
+    }
+
+    [HttpPost("mini-web-app-builder/activate")]
+    public async Task<IActionResult> ActivateMiniWebApps(
+        [FromQuery] string workspace = "default",
+        CancellationToken ct = default
+    )
+    {
+        if (!HostAvailable || modeReadiness is null)
+            return NotFound();
+        return await modeReadiness.ActivateAsync(workspace, ct) ? NoContent() : NotFound();
     }
 
     [HttpPost]

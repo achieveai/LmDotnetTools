@@ -11,6 +11,7 @@ import {
   parseWorkspaceLinkHref,
   type WorkspaceFileLinksContext,
 } from '@/utils/workspaceLinks';
+import { MINI_WEB_APP_LINKS, parseMiniWebAppHref, type MiniWebAppLinksContext } from '@/utils/miniWebAppLinks';
 
 const props = withDefaults(
   defineProps<{
@@ -38,6 +39,7 @@ const props = withDefaults(
 );
 
 const fileLinks = inject<WorkspaceFileLinksContext | null>(WORKSPACE_FILE_LINKS, null);
+const miniWebAppLinks = inject<MiniWebAppLinksContext | null>(MINI_WEB_APP_LINKS, null);
 
 const workspaceLinkOptions = computed(() => {
   const threadId = fileLinks?.threadId.value;
@@ -124,7 +126,16 @@ watch(markdownElement, (element) => {
 
 /** One delegated listener for every link in the v-html body, including clicks on nested elements. */
 function onContentClick(event: MouseEvent): void {
-  if (!fileLinks || !(event.target instanceof Element)) return;
+  if (!props.workspaceLinks || !(event.target instanceof Element)) return;
+  const appAnchor = event.target.closest('a');
+  const appLink = appAnchor ? parseMiniWebAppHref(appAnchor.getAttribute('href') ?? '') : null;
+  const threadId = miniWebAppLinks?.threadId.value;
+  if (appLink && threadId) {
+    event.preventDefault();
+    miniWebAppLinks?.open({ threadId, ...appLink });
+    return;
+  }
+  if (!fileLinks) return;
   const anchor = event.target.closest(`a.${WORKSPACE_LINK_CLASS}`);
   const link = anchor ? parseWorkspaceLinkHref(anchor.getAttribute('href') ?? '') : null;
   if (!link) return;
