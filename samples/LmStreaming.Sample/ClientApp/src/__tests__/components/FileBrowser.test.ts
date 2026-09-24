@@ -34,7 +34,12 @@ async function mountBrowser(initial = sampleListing) {
  */
 async function mountInInspector(initial = sampleListing) {
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
-  fetchSpy.mockResolvedValueOnce(jsonResponse(initial));
+  fetchSpy.mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === '/api/conversations/thread-1/apps') return jsonResponse({ apps: [] });
+    if (url === '/api/conversations/thread-1/files') return jsonResponse(initial);
+    throw new Error(`Unexpected request: ${url}`);
+  });
   const wrapper = mount(ConversationInspector, {
     props: {
       open: true,

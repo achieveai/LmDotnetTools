@@ -51,6 +51,7 @@ using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
@@ -183,6 +184,13 @@ try
     // false every request resolves to the development principal, which is what keeps the existing
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
+
+    _ = builder.Services.AddSingleton(SandboxAppCatalog.Load(builder.Configuration));
+    _ = builder.Services.AddSingleton<SandboxAppInstanceStore>();
+    _ = builder.Services.AddSingleton<SandboxAppAccess>();
+    _ = builder.Services.AddSingleton<SandboxAppDiscovery>();
+    _ = builder.Services.AddSingleton<SandboxAppCapability>();
+    _ = builder.Services.AddSingleton<ISandboxAppModeReadiness, SandboxAppModeReadiness>();
 
     // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
     // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
@@ -911,6 +919,19 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
+                if (mode.Id == SystemChatModes.MiniWebAppBuilderModeId)
+                {
+                    if (
+                        !sp.GetRequiredService<SandboxAppCatalog>().Enabled
+                        || !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                    )
+                        throw new InvalidOperationException("Mini Web App Builder is unavailable on this host.");
+                    mode = mode with
+                    {
+                        SystemPrompt =
+                            mode.SystemPrompt + $" Workspace ID for Mini Web App links: {context.WorkspaceId}.",
+                    };
+                }
                 // The capacity resolver rides on the lifecycle bundle so every loop built below — and every
                 // sub-agent spawned from one — sizes its context against the model's window (#681). A bundle
                 // minted here for the purpose publishes nothing and stores nothing, so the loop's lifecycle
@@ -2808,6 +2829,9 @@ try
         };
     });
 
+    // Dedicated app hosts must terminate here, before Vite, static files, chat APIs or SPA fallback.
+    _ = app.UseMiddleware<SandboxAppMiddleware>();
+
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
     {
@@ -2920,6 +2944,66 @@ try
                         threadId
                     );
                     workspaceId = null;
+                }
+            }
+
+            var persistedMetadata = await context
+                .RequestServices.GetRequiredService<IConversationStore>()
+                .LoadMetadataAsync(threadId, cancellationToken);
+            var agentPoolForGate = context.RequestServices.GetRequiredService<MultiTurnAgentPool>();
+            var activeModeId = agentPoolForGate.GetAgentMode(threadId)?.Id;
+            var persistedModeId =
+                persistedMetadata?.Properties?.TryGetValue(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    out var persistedModeValue
+                ) == true
+                    ? persistedModeValue switch
+                    {
+                        string id => id,
+                        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                            value.GetString(),
+                        _ => null,
+                    }
+                    : null;
+            if (
+                modeId == SystemChatModes.MiniWebAppBuilderModeId
+                || (activeModeId ?? persistedModeId) == SystemChatModes.MiniWebAppBuilderModeId
+            )
+            {
+                var boundWorkspaceId =
+                    persistedMetadata?.Properties?.TryGetValue(
+                        MultiTurnAgentPool.WorkspacePropertyKey,
+                        out var boundValue
+                    ) == true
+                        ? boundValue switch
+                        {
+                            string id => id,
+                            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                                value.GetString(),
+                            _ => null,
+                        }
+                        : null;
+                var effectiveWorkspaceId =
+                    activeModeId == SystemChatModes.MiniWebAppBuilderModeId
+                        ? agentPoolForGate.GetAgentWorkspaceId(threadId)
+                    : persistedModeId == SystemChatModes.MiniWebAppBuilderModeId ? boundWorkspaceId
+                    : boundWorkspaceId ?? workspaceId ?? SandboxSessionRegistry.DefaultWorkspaceId;
+                var appCatalog = context.RequestServices.GetRequiredService<SandboxAppCatalog>();
+                var appAuthorizer = context.RequestServices.GetRequiredService<ConversationAuthorizer>();
+                if (
+                    string.IsNullOrWhiteSpace(effectiveWorkspaceId)
+                    || !appCatalog.IsAvailableFor(
+                        context.Request.Host.Host,
+                        context.Request.IsHttps,
+                        appAuthorizer.IsEnforced
+                    )
+                    || !await context
+                        .RequestServices.GetRequiredService<ISandboxAppModeReadiness>()
+                        .IsReadyAsync(effectiveWorkspaceId, cancellationToken)
+                )
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
                 }
             }
 

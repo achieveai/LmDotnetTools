@@ -14,8 +14,9 @@ import TodoBoardPanel from "./TodoBoardPanel.vue";
 import SubAgentListPanel from "./SubAgentListPanel.vue";
 import FileBrowser from "./FileBrowser.vue";
 import PanelSplitter from "./PanelSplitter.vue";
+import { listSandboxApps, type SandboxApp } from "@/api/sandboxAppsApi";
 
-type InspectorSection = "work" | "files" | "agents";
+type InspectorSection = "work" | "files" | "apps" | "agents";
 type PreviewTab = { id: string; label: string; path: string };
 const props = withDefaults(
   defineProps<{
@@ -58,6 +59,7 @@ const emit = defineEmits<{
   close: [];
   selectSection: [section: InspectorSection];
   openArtifact: [path: string];
+  openApp: [id: string, name: string, workspaceId: string];
   selectAgent: [agentId: string, closeDrawer: boolean];
   selectPreview: [id: string];
   closePreview: [id: string];
@@ -78,6 +80,9 @@ const filesOpen = ref(false);
 // Once mounted it STAYS mounted behind v-show, so collapsing the section keeps the path, the filter,
 // the scroll position and any in-flight upload rather than aborting them.
 const filesMounted = ref(false);
+const appsOpen = ref(false);
+const apps = ref<SandboxApp[]>([]);
+const appsError = ref(false);
 const resizing = ref(false);
 const workCounts = computed(() => countTodoTasks(props.tasks));
 const hasPreview = computed(() => props.previewTabs.length > 0);
@@ -113,6 +118,7 @@ function syncOverlay(): void {
 function toggleSection(section: InspectorSection): void {
   if (section === "work") workOpen.value = !workOpen.value;
   else if (section === "files") setFilesOpen(!filesOpen.value);
+  else if (section === "apps") appsOpen.value = !appsOpen.value;
   else agentsOpen.value = !agentsOpen.value;
   emit("selectSection", section);
 }
@@ -127,6 +133,7 @@ function setFilesOpen(open: boolean): void {
 function revealSection(section: InspectorSection): void {
   if (section === "work") workOpen.value = true;
   else if (section === "files") setFilesOpen(true);
+  else if (section === "apps") appsOpen.value = true;
   else agentsOpen.value = true;
   void nextTick(() =>
     (section === "files" ? filesButton.value : rootEl.value?.querySelector<HTMLButtonElement>(`#inspector-tab-${section}`))?.focus(),
@@ -232,6 +239,20 @@ watch(
     if (open) void nextTick(() => workButton.value?.focus());
   },
 );
+watch(
+  () => [props.filesThreadId, props.open] as const,
+  (_, __, onCleanup) => {
+    apps.value = [];
+    appsError.value = false;
+    if (!props.open || !props.filesThreadId) return;
+    const abort = new AbortController();
+    onCleanup(() => abort.abort());
+    void listSandboxApps(props.filesThreadId, abort.signal)
+      .then((listed) => { if (!abort.signal.aborted) apps.value = listed; })
+      .catch(() => { if (!abort.signal.aborted) appsError.value = true; });
+  },
+  { immediate: true },
+);
 onMounted(() => {
   syncOverlay();
   window.addEventListener("resize", syncOverlay);
@@ -284,7 +305,7 @@ onBeforeUnmount(() => {
         class="preview-region"
         data-testid="workspace-preview-region"
       >
-        <div class="preview-tabs" role="tablist" aria-label="Open files">
+        <div class="preview-tabs" role="tablist" aria-label="Open workspace tabs">
           <div
             v-for="(tab, index) in previewTabs"
             :key="tab.id"
@@ -396,6 +417,30 @@ onBeforeUnmount(() => {
               :thread-id="filesThreadId"
               @open-file="emit('openArtifact', $event)"
             />
+          </div>
+        </section>
+        <section v-if="apps.length || appsError" class="inspector-section" data-testid="workspace-apps-section">
+          <h3>
+            <button
+              id="inspector-tab-apps"
+              aria-label="Apps"
+              :aria-expanded="appsOpen"
+              aria-controls="inspector-panel-apps"
+              @click="toggleSection('apps')"
+            >Apps</button>
+          </h3>
+          <div id="inspector-panel-apps" v-show="appsOpen" class="inspector-content" :inert="!appsOpen || undefined">
+            <p v-if="appsError" class="inspector-empty">Apps are unavailable. Reopen this panel to retry.</p>
+            <ul v-else class="sandbox-app-list">
+              <li v-for="app in apps" :key="app.id">
+                <span>{{ app.name }}</span>
+                <button
+                  :data-testid="`open-sandbox-app-${app.id}`"
+                  :aria-label="`Open ${app.name}`"
+                  @click="emit('openApp', app.id, app.name, app.workspaceId)"
+                >Open</button>
+              </li>
+            </ul>
           </div>
         </section>
         <section class="inspector-section">
@@ -574,6 +619,12 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 13px;
 }
+.sandbox-app-list { list-style: none; margin: 0; padding: 0; }
+.sandbox-app-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; padding: 5px 4px; }
+.sandbox-app-list li + li { border-top: 1px solid #e2e6eb; }
+.sandbox-app-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sandbox-app-list button { flex: none; border: 1px solid #b9cbe2; border-radius: 5px; background: #fff; color: #275188; padding: 5px 10px; cursor: pointer; }
+.sandbox-app-list button:focus-visible { outline: 2px solid #275188; outline-offset: 2px; }
 @media (max-height: 620px) {
   .conversation-inspector.has-preview {
     overflow-y: auto;

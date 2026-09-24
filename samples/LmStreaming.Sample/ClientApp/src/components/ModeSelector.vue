@@ -9,6 +9,8 @@ const props = defineProps<{
   tools: ToolDefinition[];
   isLoading?: boolean;
   disabled?: boolean;
+  canActivateMiniWebApps?: boolean;
+  miniWebAppError?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   'update-mode': [modeId: string, data: ChatModeCreateUpdate];
   'delete-mode': [modeId: string];
   'copy-mode': [modeId: string, newName: string];
+  'activate-mini-web-apps': [];
 }>();
 
 const dropdownOpen = ref(false);
@@ -179,6 +182,15 @@ watch(
       </div>
 
       <!-- User Modes -->
+      <div v-if="canActivateMiniWebApps && !modes.some(mode => mode.id === 'mini-web-app-builder')" class="menu-section">
+        <button class="menu-item" data-testid="activate-mini-web-apps"
+          @click="emit('activate-mini-web-apps')" :disabled="disabled || isLoading">
+          Check Mini Web Apps
+        </button>
+        <small class="activation-note">Prepares this workspace to run apps.</small>
+        <small v-if="miniWebAppError" class="activation-note activation-error" role="alert">{{ miniWebAppError }}</small>
+      </div>
+
       <div v-if="userModes.length > 0" class="menu-section">
         <div class="section-header">Your Modes</div>
         <button
@@ -301,6 +313,17 @@ watch(
 
 .menu-section {
   padding: 4px 0;
+}
+
+.activation-note {
+  display: block;
+  padding: 0 12px 6px;
+  color: #667085;
+  line-height: 1.35;
+}
+
+.activation-error {
+  color: #b42318;
 }
 
 .section-header {

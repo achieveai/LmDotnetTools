@@ -1,9 +1,111 @@
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Configuration;
 
 namespace LmStreaming.Sample.Tests.Persistence;
 
 public class SystemChatModesTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuilderMode_RequiresSelectedWorkspaceProtocol(bool ready)
+    {
+        var store = new FileChatModeStore(Path.Combine(Path.GetTempPath(), $"modes-{Guid.NewGuid():N}"));
+        var catalog = LmStreaming.Sample.SandboxApps.SandboxAppCatalog.Load(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["SandboxApps:Enabled"] = "true",
+                        ["SandboxApps:SiteDomain"] = "example.test",
+                        ["SandboxApps:AppDomain"] = "apps.example.test",
+                    }
+                )
+                .Build()
+        );
+        var probe = new StubModeReadiness(ready);
+        var user = new AchieveAi.LmDotnetTools.LmCore.Identity.Principal
+        {
+            TenantId = "tenant",
+            Actor = new AchieveAi.LmDotnetTools.LmCore.Identity.PrincipalRef(
+                AchieveAi.LmDotnetTools.LmCore.Identity.PrincipalKind.EndUser,
+                "user"
+            ),
+            Source = AchieveAi.LmDotnetTools.LmCore.Identity.PrincipalSource.Interactive,
+        };
+        var controller = new LmStreaming.Sample.Controllers.ChatModesController(
+            store,
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
+            catalog,
+            LmStreaming.Sample.Tests.TestDoubles.TestAuthorizers.Enforcing(user),
+            probe
+        )
+        {
+            ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext(),
+            },
+        };
+        controller.Request.Host = new Microsoft.AspNetCore.Http.HostString("chat.example.test");
+        controller.Request.Scheme = "https";
+
+        var listed = (await controller.List("selected"))
+            .Should()
+            .BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>()
+            .Subject;
+        ((IEnumerable<LmStreaming.Sample.Models.ChatMode>)listed.Value!)
+            .Any(mode => mode.Id == SystemChatModes.MiniWebAppBuilderModeId)
+            .Should()
+            .Be(ready);
+        (
+            await controller.Get(SystemChatModes.MiniWebAppBuilderModeId, "selected")
+            is Microsoft.AspNetCore.Mvc.OkObjectResult
+        )
+            .Should()
+            .Be(ready);
+        probe.WorkspaceIds.Should().Equal("selected", "selected");
+        (await controller.ActivateMiniWebApps("selected") is Microsoft.AspNetCore.Mvc.NoContentResult)
+            .Should()
+            .Be(ready);
+        probe.ActivatedWorkspaceIds.Should().Equal("selected");
+    }
+
+    private sealed class StubModeReadiness(bool ready) : LmStreaming.Sample.SandboxApps.ISandboxAppModeReadiness
+    {
+        public List<string> WorkspaceIds { get; } = [];
+        public List<string> ActivatedWorkspaceIds { get; } = [];
+
+        public Task<bool> IsReadyAsync(string workspaceId, CancellationToken ct)
+        {
+            WorkspaceIds.Add(workspaceId);
+            return Task.FromResult(ready);
+        }
+
+        public Task<bool> ActivateAsync(string workspaceId, CancellationToken ct)
+        {
+            ActivatedWorkspaceIds.Add(workspaceId);
+            return Task.FromResult(ready);
+        }
+    }
+
+    [Fact]
+    public async Task BuilderMode_IsHiddenWhenMiniWebAppsAreDisabled()
+    {
+        var store = new FileChatModeStore(Path.Combine(Path.GetTempPath(), $"modes-{Guid.NewGuid():N}"));
+        var controller = new LmStreaming.Sample.Controllers.ChatModesController(
+            store,
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier()
+        );
+
+        var listed = (await controller.List()).Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>().Subject;
+        ((IEnumerable<LmStreaming.Sample.Models.ChatMode>)listed.Value!)
+            .Should()
+            .NotContain(mode => mode.Id == SystemChatModes.MiniWebAppBuilderModeId);
+        (await controller.Get(SystemChatModes.MiniWebAppBuilderModeId))
+            .Should()
+            .BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>();
+    }
+
     [Fact]
     public void All_LoadsSystemModesFromPromptsYaml()
     {
@@ -12,6 +114,13 @@ public class SystemChatModesTests
         modes.Should().Contain(m => m.Id == SystemChatModes.DefaultModeId);
         modes.Should().Contain(m => m.Id == SystemChatModes.MedicalKnowledgeModeId);
         modes.Should().Contain(m => m.Id == SystemChatModes.WorkspaceAgentModeId);
+        modes
+            .Should()
+            .Contain(m =>
+                m.Id == "mini-web-app-builder"
+                && m.SystemPrompt.Contains("mini-web-app.json", StringComparison.Ordinal)
+                && m.EnabledCapabilityTools!.Contains("sandbox:*")
+            );
         modes.Should().Contain(m => m.Id == SystemChatModes.CodeReviewDaemonModeId);
         modes.Should().OnlyContain(m => m.IsSystemDefined);
     }
@@ -121,6 +230,7 @@ public class SystemChatModesTests
         var ordinary = SystemChatModes
             .All.Where(m =>
                 m.Id != SystemChatModes.WorkspaceAgentModeId
+                && m.Id != SystemChatModes.MiniWebAppBuilderModeId
                 && m.Id != SystemChatModes.WorkflowAuthorModeId
                 && m.Id != SystemChatModes.CodeReviewDaemonModeId
             )

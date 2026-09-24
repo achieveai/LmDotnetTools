@@ -11,6 +11,9 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// </summary>
 public interface IWorkspaceFileBrowser
 {
+    /// <summary>Probes the owned session's streaming protocol without executing workspace code.</summary>
+    Task<bool> SupportsStreamingAsync(string sessionId, CancellationToken ct = default) => Task.FromResult(false);
+
     /// <summary>
     /// Resolves a conversation thread to a LIVE sandbox workspace session without ever provisioning a
     /// first-time session. See <see cref="SandboxSessionRegistry.ResolveThreadWorkspaceSessionAsync"/>.
@@ -86,4 +89,15 @@ public interface IWorkspaceFileBrowser
         SandboxCommand command,
         CancellationToken ct = default
     );
+
+    /// <summary>Runs a native workspace command and forwards byte-exact stdout/stderr with callback backpressure.</summary>
+    Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
+        string sessionId,
+        SandboxCommand command,
+        Func<SandboxOutputChunk, CancellationToken, ValueTask> onOutput,
+        ReadOnlyMemory<byte> stdin = default,
+        IReadOnlyDictionary<string, string>? environment = null,
+        long maxOutputBytes = 8L * 1024 * 1024,
+        CancellationToken ct = default
+    ) => throw new NotSupportedException("Streaming commands are unavailable for this workspace browser.");
 }

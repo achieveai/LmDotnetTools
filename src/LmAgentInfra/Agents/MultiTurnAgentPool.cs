@@ -1361,6 +1361,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         return _agents.TryGetValue(threadId, out var entry) ? entry.Mode : null;
     }
 
+    /// <summary>Returns the workspace frozen onto a live agent, without trusting a reconnect query.</summary>
+    public string? GetAgentWorkspaceId(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.WorkspaceId : null;
+    }
+
     /// <summary>
     /// The live todo board for a thread, or null when no agent is pooled for it or the pooled agent
     /// ships no task tooling.
