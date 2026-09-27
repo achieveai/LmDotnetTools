@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmEval.Findings;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -120,7 +121,7 @@ internal sealed class EvalCorpusSweep
 
     /// <summary>
     /// The last <c>judge</c> artifact schema version whose <c>Score</c> is ambiguous. Written as an
-    /// explicit ceiling rather than <c>&lt; JudgeAgent.JudgeArtifactSchemaVersion</c>: that
+    /// explicit ceiling rather than <c>&lt; ReviewArtifactKinds.JudgeArtifactSchemaVersion</c>: that
     /// comparison silently reclassifies today's rows as legacy the moment a v3 lands, which is the
     /// bug this branch exists to prevent, one version later.
     /// </summary>
@@ -132,7 +133,7 @@ internal sealed class EvalCorpusSweep
     /// judge rows and nothing else, and the finding-level signal comes off the candidate's own
     /// content, not off an artifact.
     /// </summary>
-    public static readonly string[] GradedArtifactKinds = [JudgeAgent.JudgeArtifactKind];
+    public static readonly string[] GradedArtifactKinds = [ReviewArtifactKinds.JudgeArtifactKind];
 
     /// <summary>
     /// The production <see cref="ReviewArtifactReader"/>: a kind-filtered listing over the store,
@@ -364,7 +365,9 @@ internal sealed class EvalCorpusSweep
         foreach (
             var artifact in artifacts
                 .For(reviewRunId)
-                .Where(a => string.Equals(a.ArtifactKind, JudgeAgent.JudgeArtifactKind, StringComparison.Ordinal))
+                .Where(a =>
+                    string.Equals(a.ArtifactKind, ReviewArtifactKinds.JudgeArtifactKind, StringComparison.Ordinal)
+                )
                 .OrderByDescending(a => a.Id)
         )
         {

@@ -151,7 +151,11 @@ internal sealed class TaskCoordinator
         var units = new List<SpawnUnit>();
         foreach (var task in tasks)
         {
-            if (task.Delegate != DelegateKind.Agent || string.IsNullOrEmpty(task.SubagentType))
+            if (
+                task.Delegate == DelegateKind.Script
+                    ? !definition.StrictContracts
+                    : task.Delegate != DelegateKind.Agent || string.IsNullOrEmpty(task.SubagentType)
+            )
             {
                 continue;
             }
@@ -392,7 +396,7 @@ internal sealed class TaskCoordinator
             task.Status == WorkflowTaskStatus.InFlight
             || (task.Status == WorkflowTaskStatus.Pending && hasLiveCorrelation);
 
-        if (isOrphan)
+        if (isOrphan && _definition()?.StrictContracts != true)
         {
             _status[task.Name] = WorkflowTaskStatus.Pending;
         }
@@ -457,7 +461,7 @@ internal sealed class TaskCoordinator
         var unit = new SpawnUnit
         {
             Name = taskRef.Name,
-            SubagentType = task.SubagentType!,
+            SubagentType = task.SubagentType ?? "script",
             ModelIntelligence = task.ModelIntelligence,
             Prompt = ComposePrompt(task, _buildContext(item, index, count)),
             OutputSchema = task.OutputSchema?.DeepClone(),
@@ -499,6 +503,12 @@ internal sealed class TaskCoordinator
     {
         if (isError)
         {
+            if (_definition()?.StrictContracts == true)
+            {
+                HandleHardFailure(taskRef, "invocation failed; automatic action replay is disabled");
+                return;
+            }
+
             // Stable, non-sensitive reason only (see HandleFailure); the raw sub-agent text is not embedded.
             HandleFailure(taskRef, $"sub-agent reported an error ({resultText.Length} chars)");
             return;
@@ -514,6 +524,28 @@ internal sealed class TaskCoordinator
     /// </summary>
     private void ValidateAndRecord(TaskRef taskRef, string resultText)
     {
+        if (_definition()?.StrictContracts == true)
+        {
+            var value = ParseWholeObject(resultText);
+            if (value is null)
+            {
+                HandleFailure(taskRef, "task output must be one JSON object without duplicate properties");
+                return;
+            }
+
+            if (
+                taskRef.OutputSchemaJson is { } strictSchema
+                && !_schemaValidator.ValidateDetailed(resultText, strictSchema).IsValid
+            )
+            {
+                HandleFailure(taskRef, "task output did not match the required schema");
+                return;
+            }
+
+            RecordValidated(taskRef, value);
+            return;
+        }
+
         // Sub-agents routinely wrap their JSON in prose or a Markdown fence, and a task with no output schema
         // may legitimately answer in free-form Markdown. Extract any embedded JSON tolerantly rather than
         // force-parsing the WHOLE reply: a report that merely fails a strict whole-text parse must not fail the
@@ -581,6 +613,15 @@ internal sealed class TaskCoordinator
             return SpawnSchemaCheck.NoSchema;
         }
 
+        if (_definition()?.StrictContracts == true)
+        {
+            return
+                ParseWholeObject(resultText) is not null
+                && _schemaValidator.ValidateDetailed(resultText, schemaJson).IsValid
+                ? SpawnSchemaCheck.Valid
+                : SpawnSchemaCheck.Invalid(schemaJson);
+        }
+
         var parsed = JsonStringUtils.TryExtractJsonPayload(resultText, out var extractedJson)
             ? SafeParse(extractedJson)
             : null;
@@ -592,6 +633,48 @@ internal sealed class TaskCoordinator
         return _schemaValidator.ValidateDetailed(extractedJson, schemaJson).IsValid
             ? SpawnSchemaCheck.Valid
             : SpawnSchemaCheck.Invalid(schemaJson);
+    }
+
+    private static JsonObject? ParseWholeObject(string text)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.ValueKind == JsonValueKind.Object && HasUniqueProperties(document.RootElement)
+                ? JsonNode.Parse(text) as JsonObject
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool HasUniqueProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || !HasUniqueProperties(property.Value))
+                {
+                    return false;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (!HasUniqueProperties(item))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static bool IsPureJsonFence(string text, string extractedJson)

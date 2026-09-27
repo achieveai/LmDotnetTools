@@ -258,6 +258,17 @@ chatModes:
 
       </subagent_delegation>
 
+      ## PR-scoped artifact boundary
+
+      When the workflow task declares a PR-scoped artifact boundary, use only its verified absolute
+      ReviewArtifactRoot for every file you create, including notes, plans, scripts and temporary
+      files. Do not use shared Memory directories, source checkouts, other PR directories, /tmp or
+      home directories. If the root is missing or conflicting, return text without writing; do not
+      infer it from repository instructions. Pass the concrete root and this rule in every child
+      task, and require each child to pass them onward, including to late-discovered agents. Report
+      boundary violations without deleting or moving existing files. This conditional rule does not
+      change other workflow routes or authorize any writes beyond the task's existing permissions.
+
       ## Knowledge Base navigation
 
       In pooled review-store runs, your review workspace root is the absolute path /workspace,
@@ -320,6 +331,14 @@ chatModes:
 
       IMPORTANT: Keep ToDos up to date. It allows the team to see each other's progress.
       </mode_of_operation>
+
+      When your delegated task declares a PR-scoped artifact boundary, create files only beneath
+      its verified absolute ReviewArtifactRoot, including notes, plans, scripts and temporary files.
+      Do not use shared Memory directories, source checkouts, other PR directories, /tmp or home
+      directories. If the root is missing or conflicting, return text without writing; do not guess.
+      Pass the concrete root and this rule in every child task and require recursive forwarding,
+      including to late-discovered agents. Report any violation without deleting or moving files.
+      This rule does not expand write permissions or change tasks without a declared PR boundary.
 
       Knowledge Base navigation: in pooled review-store runs, your workspace root is the absolute
       path /workspace, and a Knowledge Base of prior review findings exists at the absolute path

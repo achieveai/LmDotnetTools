@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using FluentAssertions;
@@ -16,6 +17,28 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 public class WorkflowPersistenceOrderingTests
 {
     private const string InstanceId = "wf-persist-order";
+
+    [Fact]
+    public async Task StrictWorkflow_SaveFailureFaultsBarrier_AndPreventsLaterQueuedSaves()
+    {
+        var definition = JsonNode.Parse(Phase4Fixtures.SingleTask(maxValidationRetries: 0))!.AsObject();
+        definition["strictContracts"] = true;
+        var store = new GatedOrderRecordingStore(throwOnSeq: 2);
+        var runtime = WorkflowRuntime.CreateNew();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(definition.ToJsonString()));
+        runtime.AttachStore(store, InstanceId);
+        for (var seq = 1; seq <= 4; seq++)
+        {
+            runtime.SetState("state.seq", JsonValue.Create(seq), "set");
+        }
+
+        store.ReleaseGate();
+        var drain = () => runtime.DrainPersistAsync();
+
+        await drain.Should().ThrowAsync<InvalidOperationException>();
+        store.CompletedSeqs.Should().Equal(1);
+        store.OverlapDetected.Should().BeFalse();
+    }
 
     [Fact]
     public async Task Saves_AreSerialized_InCaptureOrder_AndNeverOverlap()

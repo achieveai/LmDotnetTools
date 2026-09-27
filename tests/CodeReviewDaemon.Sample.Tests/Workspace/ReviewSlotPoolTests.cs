@@ -1,263 +1,166 @@
 using CodeReviewDaemon.Sample.Agents;
-using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Workspace;
 
-public class ReviewSlotPoolTests : IDisposable
+public class ReviewSlotPoolTests
 {
-    private readonly string _hostRoot = Path.Combine(Path.GetTempPath(), "crd-pool-" + Guid.NewGuid().ToString("N"));
-
-    /// <summary>Where a planted link points. Outside the pool, so following one is visible as an escape.</summary>
-    private readonly string _outsideRoot = Path.Combine(
-        Path.GetTempPath(),
-        "crd-outside-" + Guid.NewGuid().ToString("N")
-    );
-
-    public void Dispose()
-    {
-        foreach (var root in new[] { _hostRoot, _outsideRoot })
-        {
-            DirectoryLink.UnlinkAllUnder(root);
-            try
-            {
-                Directory.Delete(root, true);
-            }
-            catch
-            {
-                // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
-            }
-        }
-    }
-
-    private ReviewSlotPool CreatePool(int maxSlots) =>
-        new(maxSlots, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance);
+    private static ReviewSlotPool CreatePool(int count = 2) =>
+        new(["Nova", "Widgets"], count, NullLogger<ReviewSlotPool>.Instance);
 
     [Fact]
-    public async Task LeaseAsync_FirstLease_AllocatesSlotAddressWithoutCreatingStore()
-    {
-        var pool = CreatePool(maxSlots: 2);
-
-        var slot = await pool.LeaseAsync(default);
-
-        slot.Index.Should().Be(0);
-        slot.HostPath.Should().Be(Path.Combine(_hostRoot, "slot-0"));
-        slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"));
-        slot.ScratchPath.Should().Be(Path.Combine(slot.HostPath, "scratch"));
-        Directory.Exists(slot.HostPath).Should().BeTrue();
-        Directory.Exists(slot.ScratchPath).Should().BeTrue();
-        Directory
-            .Exists(slot.StorePath)
-            .Should()
-            .BeFalse("repository ownership starts only after the slot is mounted through SandboxClient");
-    }
-
-    [Fact]
-    public async Task LeaseAsync_AfterReturn_ReusesTheAddressWithoutInspectingStore()
-    {
-        var pool = CreatePool(maxSlots: 1);
-        var first = await pool.LeaseAsync(default);
-        Directory.CreateDirectory(first.StorePath);
-        File.WriteAllText(Path.Combine(first.StorePath, "partial"), "handled by SDK preparation");
-
-        await pool.ReturnAsync(first, default);
-        var second = await pool.LeaseAsync(default);
-
-        second.Should().Be(first);
-        File.Exists(Path.Combine(second.StorePath, "partial"))
-            .Should()
-            .BeTrue("the pool does not classify or repair repository state");
-    }
-
-    [Fact]
-    public async Task LeaseAsync_WhenPoolExhausted_BlocksUntilSlotIsReturned()
-    {
-        var pool = CreatePool(maxSlots: 1);
-        var firstSlot = await pool.LeaseAsync(default);
-
-        var secondLeaseTask = pool.LeaseAsync(default);
-        secondLeaseTask.IsCompleted.Should().BeFalse();
-
-        await pool.ReturnAsync(firstSlot, default);
-        var secondSlot = await secondLeaseTask.WaitAsync(TimeSpan.FromSeconds(10));
-
-        secondSlot.Index.Should().Be(firstSlot.Index);
-    }
-
-    [Fact]
-    public void Ctor_WithZeroMaxSlots_ThrowsArgumentOutOfRangeException()
-    {
-        var act = () => new ReviewSlotPool(0, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance);
-
-        act.Should().Throw<ArgumentOutOfRangeException>();
-    }
-
-    [Fact]
-    public async Task LeaseAsync_WithACustomSlotPrefix_NamesTheSlotDirWithIt()
+    public async Task Mixed_repository_counts_allocate_eighteen_unique_case_insensitive_slots()
     {
         var pool = new ReviewSlotPool(
-            1,
-            _hostRoot,
-            "scratch",
+            ["Nova", "NovaClient", "Astra", "WeveNova", "MODISService"],
+            3,
             NullLogger<ReviewSlotPool>.Instance,
-            slotDirPrefix: "review-slot-"
+            new Dictionary<string, int> { ["nova"] = 6 }
         );
-
-        var slot = await pool.LeaseAsync(default);
-
-        pool.SlotDirectoryName(0).Should().Be("review-slot-0");
-        slot.HostPath.Should().Be(Path.Combine(_hostRoot, "review-slot-0"));
-        slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"));
+        pool.Slots.Should().HaveCount(18).And.OnlyHaveUniqueItems();
+        pool.Slots.Count(slot => slot.RepositoryName == "Nova").Should().Be(6);
+        foreach (var repository in new[] { "Nova", "NovaClient", "Astra", "WeveNova", "MODISService" })
+        {
+            var expected = repository == "Nova" ? 6 : 3;
+            for (var index = 0; index < expected; index++)
+                (await pool.LeaseAsync(repository.ToLowerInvariant(), default))
+                    .Should()
+                    .Be(new ReviewSlot(repository, index));
+            (await pool.TryLeaseAsync(repository, default)).Should().BeNull();
+        }
     }
 
     [Theory]
     [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(17)]
-    public void SlotDirectoryName_OnTheS2SPath_SurvivesLmStreamingsSanitizerUnchanged(int index)
-    {
-        var pool = new ReviewSlotPool(
-            1,
-            _hostRoot,
-            "scratch",
-            NullLogger<ReviewSlotPool>.Instance,
-            slotDirPrefix: "review-slot-"
+    [InlineData(-1)]
+    [InlineData(7)]
+    public void Invalid_repository_slot_override_is_rejected(int count) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ReviewSlotPool(
+                ["Nova"],
+                3,
+                NullLogger<ReviewSlotPool>.Instance,
+                new Dictionary<string, int> { ["Nova"] = count }
+            )
         );
 
-        var name = pool.SlotDirectoryName(index);
-
-        S2SReviewWorkspacePreparer.SanitizeLeaf(name).Should().Be(name);
+    [Fact]
+    public void Unknown_or_case_colliding_slot_overrides_are_rejected()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new ReviewSlotPool(
+                ["Nova"],
+                3,
+                NullLogger<ReviewSlotPool>.Instance,
+                new Dictionary<string, int> { ["Other"] = 3 }
+            )
+        );
+        Assert.Throws<ArgumentException>(() =>
+            new ReviewSlotPool(
+                ["Nova"],
+                3,
+                NullLogger<ReviewSlotPool>.Instance,
+                new Dictionary<string, int> { ["Nova"] = 6, ["nova"] = 3 }
+            )
+        );
+        new ReviewSlotPool(["Nova", "Astra"], 3, NullLogger<ReviewSlotPool>.Instance).Slots.Should().HaveCount(6);
     }
 
     [Fact]
-    public void Ctor_WithABlankSlotPrefix_ThrowsArgumentException()
+    public async Task Repository_identity_selects_independent_bounded_slots()
     {
-        var act = () =>
-            new ReviewSlotPool(1, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
-
-        act.Should().Throw<ArgumentException>();
+        var pool = CreatePool(1);
+        var nova = await pool.LeaseAsync("nova", default);
+        var widgets = await pool.LeaseAsync("Widgets", default);
+        nova.Should().Be(new ReviewSlot("Nova", 0));
+        widgets.Should().Be(new ReviewSlot("Widgets", 0));
+        (await pool.TryLeaseAsync("Nova", default)).Should().BeNull();
+        nova.WorktreeRelativePath.Should().Be(".worktrees/Nova-0");
+        nova.SourceRelativePath.Should().Be(".worktrees/Nova-0/repos/Nova");
+        S2SReviewWorkspacePreparer.BuildWorktreeCwd(nova).Should().Be(nova.WorktreeRelativePath);
     }
 
     [Fact]
-    public async Task LeaseAsync_WhenTheSlotDirIsRedirected_RefusesAndCreatesNothingThroughIt()
+    public async Task Return_wakes_waiter_and_reuses_exact_address()
     {
-        Directory.CreateDirectory(_hostRoot);
-        Directory.CreateDirectory(_outsideRoot);
-        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
-        var pool = CreatePool(maxSlots: 1);
-
-        var act = async () => await pool.LeaseAsync(default);
-
-        await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        Directory
-            .Exists(Path.Combine(_outsideRoot, "scratch"))
-            .Should()
-            .BeFalse(
-                "CreateDirectory succeeds through a junction, so an unguarded lease builds the slot outside the pool"
-            );
+        var pool = CreatePool(1);
+        var first = await pool.LeaseAsync("Nova", default);
+        var next = pool.LeaseAsync("Nova", default);
+        next.IsCompleted.Should().BeFalse();
+        await pool.ReturnAsync(first, default);
+        (await next.WaitAsync(TimeSpan.FromSeconds(2))).Should().Be(first);
     }
 
     [Fact]
-    public async Task LeaseAsync_WhenOnlyTheStoreIsRedirected_StillRefuses()
+    public async Task Retirement_permanently_spends_capacity_even_after_return()
     {
-        Directory.CreateDirectory(Path.Combine(_hostRoot, "slot-0"));
-        Directory.CreateDirectory(_outsideRoot);
-        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0", "store"), _outsideRoot);
-        var pool = CreatePool(maxSlots: 1);
-
-        var act = async () => await pool.LeaseAsync(default);
-
-        await act.Should()
-            .ThrowAsync<SlotAddressUnusableException>()
-            .WithMessage("*store*", "the store is the path the clone and the wipe both write to");
+        var pool = CreatePool(1);
+        var slot = await pool.LeaseAsync("Nova", default);
+        await pool.RetireAsync(slot, default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pool.ReturnAsync(slot, default));
+        (await pool.TryLeaseAsync("Nova", default)).Should().BeNull();
+        (await pool.TryLeasePreferredAsync(slot, default)).Should().BeNull();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pool.RecoverLeaseAsync(slot, default));
+        using var ct = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pool.LeaseAsync("Nova", ct.Token));
     }
 
     [Fact]
-    public async Task LeaseAsync_WhenOnlyTheScratchDirIsRedirected_StillRefuses()
+    public async Task Retirement_never_invents_a_seventh_slot()
     {
-        Directory.CreateDirectory(Path.Combine(_hostRoot, "slot-0"));
-        Directory.CreateDirectory(_outsideRoot);
-        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0", "scratch"), _outsideRoot);
-        var pool = CreatePool(maxSlots: 1);
-
-        var act = async () => await pool.LeaseAsync(default);
-
-        await act.Should()
-            .ThrowAsync<SlotAddressUnusableException>()
-            .WithMessage("*scratch*", "the lease creates the scratch dir, and the preparer later clears it");
+        var pool = CreatePool(6);
+        for (var index = 0; index < 6; index++)
+        {
+            var slot = await pool.LeaseAsync("Nova", default);
+            slot.Index.Should().Be(index);
+            await pool.RetireAsync(slot, default);
+        }
+        (await pool.TryLeaseAsync("Nova", default)).Should().BeNull();
     }
 
     [Fact]
-    public async Task LeaseAsync_WhenALinkSitsBeneathTheRedirectedSlotDir_NamesTheSlotDirAndNotTheFarEnd()
+    public async Task Recovery_reserves_exact_address_and_rejects_duplicate()
     {
-        Directory.CreateDirectory(_hostRoot);
-        Directory.CreateDirectory(Path.Combine(_outsideRoot, "elsewhere"));
-        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
-        DirectoryLink.Create(Path.Combine(_outsideRoot, "store"), Path.Combine(_outsideRoot, "elsewhere"));
-        var pool = CreatePool(maxSlots: 1);
-
-        var act = async () => await pool.LeaseAsync(default);
-
-        var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        refusal
-            .Which.Message.Should()
-            .Contain($"'{Path.Combine(_hostRoot, "slot-0")}'")
-            .And.NotContain(
-                Path.Combine(_hostRoot, "slot-0", "store"),
-                "checking a child resolves THROUGH the slot dir, so a child-first order reports an entry the "
-                    + "operator will never find at the address the message gives"
-            );
+        var pool = CreatePool();
+        var slot = new ReviewSlot("Nova", 1);
+        (await pool.RecoverLeaseAsync(slot, default)).Should().Be(slot);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pool.RecoverLeaseAsync(slot, default));
+        (await pool.LeaseAsync("Nova", default)).Index.Should().Be(0);
     }
 
     [Fact]
-    public async Task LeaseAsync_AfterARefusal_HandsOutAFreshAddressInsteadOfTheRefusedOne()
+    public async Task Preferred_lease_waits_for_exact_address_not_another_free_slot()
     {
-        Directory.CreateDirectory(_hostRoot);
-        Directory.CreateDirectory(_outsideRoot);
-        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
-        var pool = CreatePool(maxSlots: 1);
-        var refused = async () => await pool.LeaseAsync(default);
-        await refused.Should().ThrowAsync<SlotAddressUnusableException>();
-
-        var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
-
-        next.Index.Should().Be(1, "the free list is a stack, so recycling a refused index refuses every later lease");
-        next.HostPath.Should().Be(Path.Combine(_hostRoot, "slot-1"));
-        Directory.Exists(next.ScratchPath).Should().BeTrue("the pool is still serving leases at full concurrency");
+        var pool = CreatePool();
+        var slot = await pool.LeaseAsync("Nova", default);
+        var pending = pool.LeasePreferredAsync(slot, default);
+        pending.IsCompleted.Should().BeFalse();
+        await pool.ReturnAsync(slot, default);
+        (await pending.WaitAsync(TimeSpan.FromSeconds(2))).Should().Be(slot);
     }
 
-    [Fact]
-    public async Task RetireAsync_DoesNotHandTheRetiredAddressOutAgain()
+    [Theory]
+    [InlineData("Other", 0)]
+    [InlineData("Nova", 6)]
+    [InlineData("", 0)]
+    public async Task Recovery_rejects_foreign_or_legacy_addresses(string repo, int index)
     {
-        // The caller's half of the same rule the refused LEASE above already follows. A refusal raised during
-        // PREPARATION names an entry beneath the slot — a descendant of the three paths the lease guard checks —
-        // so the next lease of that index sees nothing wrong, hands it out, and the preparation refuses again.
-        // The free list is a stack, so ReturnAsync would make the poisoned index the VERY NEXT one out: a run
-        // per cycle, each burning a full lease and a re-clone attempt, with nothing that ever breaks it.
-        var pool = CreatePool(maxSlots: 2);
-        var first = await pool.LeaseAsync(default);
-
-        await pool.RetireAsync(first, default);
-        var next = await pool.LeaseAsync(default);
-
-        next.Index.Should().NotBe(first.Index, "a retired address is spent until somebody looks at the disk");
-        next.Index.Should().Be(1);
+        var pool = CreatePool();
+        await Assert.ThrowsAsync<SlotAddressUnusableException>(() => pool.RecoverLeaseAsync(new(repo, index), default));
     }
 
-    [Fact]
-    public async Task RetireAsync_StillReleasesTheLease()
-    {
-        // Retiring costs an address and must cost nothing else. If it withheld the permit as well as the index,
-        // one planted entry would permanently cut the pool's concurrency by one, and N of them would stop the
-        // daemon dead — turning a contained refusal into the outage the refusal was supposed to avoid.
-        var pool = CreatePool(maxSlots: 1);
-        var first = await pool.LeaseAsync(default);
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    public void Unsupported_slot_count_is_rejected(int count) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreatePool(count));
 
-        await pool.RetireAsync(first, default);
-        var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
-
-        next.Index.Should().Be(1);
-        Directory.Exists(next.ScratchPath).Should().BeTrue();
-    }
+    [Theory]
+    [InlineData("../Nova")]
+    [InlineData("Nova/other")]
+    [InlineData("Nova\\other")]
+    [InlineData(".")]
+    public void Noncanonical_repo_names_cannot_become_conversation_cwd(string repo) =>
+        Assert.Throws<ArgumentException>(() => S2SReviewWorkspacePreparer.BuildWorktreeCwd(new(repo, 0)));
 }

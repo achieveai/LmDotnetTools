@@ -148,6 +148,16 @@ internal static class PrPollTargetBuilder
         return targets;
     }
 
+    /// <summary>
+    /// The <see cref="IPrProvider"/> that serves <paramref name="target"/>'s <see cref="PrPollTarget.Provider"/>
+    /// namespace, or <c>null</c> when none is registered (e.g. <c>EnableAdoProvider</c> is off). A small, direct
+    /// extraction of the identical lookup <see cref="PrPollingService"/>, <c>ListCandidatePrsCommand</c>, and
+    /// <c>RunSinglePrCommand</c> each performed inline (security review round 2, item 3) — not a broader
+    /// provider-resolution refactor.
+    /// </summary>
+    public static IPrProvider? ResolveProvider(IEnumerable<IPrProvider> providers, PrPollTarget target) =>
+        providers.FirstOrDefault(p => string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase));
+
     private static PrPollTarget GitHubTarget(string[] segments, string mode, string? modelId, int maxPrAgeDays) =>
         new()
         {

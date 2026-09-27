@@ -2,21 +2,7 @@ using CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 
 namespace CodeReviewDaemon.Sample.Tests.Agents;
 
-/// <summary>
-/// Direct tests for the function that turns a PR author into a directory name.
-/// <para>
-/// <b>Why these exist.</b> Phase 1 shipped <see cref="DeveloperIdentity"/> with no tests of its own. Its only
-/// guard was <see cref="DeveloperIdentitySlugParityTests"/>, which pins it against the copy in
-/// <c>ReviewFeedbackAgent</c> and is scheduled for deletion with that class — so the moment the original goes,
-/// the coverage goes with it. A mutation changing <c>"[bot]"</c> to <c>"[robot]"</c> in this file was killed
-/// only by those parity cases and by nothing else in the suite.
-/// </para>
-/// <para>
-/// <b>What this function actually is.</b> The output is a PATH SEGMENT. The character class is not
-/// formatting — it is what makes <c>../</c> unconstructible rather than filtered, and a filter that is only
-/// asserted through another implementation's behaviour is not asserted at all.
-/// </para>
-/// </summary>
+/// <summary>Direct identity and path-segment safety tests for stored developer records.</summary>
 public sealed class DeveloperIdentityTests
 {
     /// <summary>

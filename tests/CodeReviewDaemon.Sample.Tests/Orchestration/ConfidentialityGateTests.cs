@@ -1,8 +1,5 @@
 using CodeReviewDaemon.Sample.Configuration;
-using CodeReviewDaemon.Sample.Orchestration;
-using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
-using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -14,8 +11,8 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// as same-trust-domain (head not from a fork, target repo private). Anything else — a fork PR, a public
 /// target, or a run whose trust signal was never populated — must deny co-location, because a
 /// prompt-injected agent reviewing untrusted diff content could otherwise <c>Read</c> the sibling and
-/// surface it verbatim in the posted review. <see cref="DaemonReviewStageExecutor.AllowsCrossRepoCoLocation"/>
-/// is the single decision point <see cref="DaemonReviewStageExecutor.BuildStoreSubmoduleAllowList"/> (Task
+/// surface it verbatim in the posted review. <see cref="ReviewWorkspaceOperations.AllowsCrossRepoCoLocation"/>
+/// is the single decision point <see cref="ReviewWorkspaceOperations.BuildStoreSubmoduleAllowList"/> (Task
 /// 16, <see cref="CrossRepoCheckoutTests"/>) consults before adding any configured sibling.
 /// </summary>
 public sealed class ConfidentialityGateTests
@@ -47,8 +44,7 @@ public sealed class ConfidentialityGateTests
     [Fact]
     public void CoLocation_SameOrgNonFork_Allowed()
     {
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: false, isTargetRepoPublic: false), AcmeWidgets)
@@ -59,8 +55,7 @@ public sealed class ConfidentialityGateTests
     [Fact]
     public void CoLocation_ForkPr_Denied()
     {
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: true, isTargetRepoPublic: false), AcmeWidgets)
@@ -71,8 +66,7 @@ public sealed class ConfidentialityGateTests
     [Fact]
     public void CoLocation_PublicRepo_Denied()
     {
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: false, isTargetRepoPublic: true), OssRepo)
@@ -85,8 +79,7 @@ public sealed class ConfidentialityGateTests
     {
         // A run built without positively setting either trust field must deny co-location — the
         // fail-closed default (design §6 Risk B: never permissive when trust cannot be confirmed).
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
         var run = new ReviewRun
         {
             RepoId = 1,
@@ -112,13 +105,8 @@ public sealed class ConfidentialityGateTests
     {
         // End-to-end wiring: once the gate confirms same-trust-domain, BuildStoreSubmoduleAllowList (Task
         // 16) actually adds the configured sibling to the run's allow-list.
-        using var db = new TempSqliteDatabase();
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableToolAssistedReview = true,
-            CrossRepoSiblings = ["acme/other-service"],
-        };
-        var executor = BuildExecutor(db, options);
+        var options = new CodeReviewDaemonOptions { CrossRepoSiblings = ["acme/other-service"] };
+        var executor = BuildExecutor(options);
         var run = SeedRun(isForkPr: false, isTargetRepoPublic: false);
 
         var rules = executor.BuildStoreSubmoduleAllowList(run, AcmeWidgets);
@@ -150,8 +138,7 @@ public sealed class ConfidentialityGateTests
         // dev.azure.com/{org}/{project}/_git/{repo}; a github.com rule denies it (live symptom:
         // "submodule '…MCQdbDEV.git/info/refs' is not on the allow-list"). Assert the reviewed ADO repo's
         // own submodule is granted with its dev.azure.com host + path.
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
         var run = SeedRun(isForkPr: false, isTargetRepoPublic: false);
 
         var rules = executor.BuildStoreSubmoduleAllowList(run, AdoRepo);
@@ -176,16 +163,8 @@ public sealed class ConfidentialityGateTests
             .BeTrue("the reviewed ADO repo's own submodule must be allow-listed with its dev.azure.com host/path");
     }
 
-    private static DaemonReviewStageExecutor BuildExecutor(TempSqliteDatabase db, CodeReviewDaemonOptions options) =>
-        new(
-            new ReviewStore(db.ConnectionString),
-            new FakeReviewAgentLoopFactory(),
-            new FakeSandboxCommandRunner(),
-            new FakeSandboxFileSystem(),
-            options,
-            [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance
-        );
+    private static ReviewWorkspaceOperations BuildExecutor(CodeReviewDaemonOptions options) =>
+        new(options, NullLogger.Instance);
 
     private static ReviewRun SeedRun(bool isForkPr, bool isTargetRepoPublic) =>
         new()

@@ -5,6 +5,9 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
+internal sealed class S2SFinalTextMissingException()
+    : InvalidOperationException("The accepted hosted input completed without final review text.");
+
 /// <summary>
 /// The <see cref="IMultiTurnAgent"/> adapter that drives one review turn against a running
 /// <b>LmStreaming.Sample</b> review host over the S2S REST API (via <see cref="LmStreamingS2SClient"/>),
@@ -61,6 +64,8 @@ internal sealed class S2SReviewAgent
     private readonly string? _systemPrompt;
     private readonly string? _subAgentModelId;
     private readonly string? _reasoningEffort;
+    private readonly IReadOnlyDictionary<string, string>? _env;
+    private readonly string? _workingDirectoryRelPath;
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
@@ -103,7 +108,9 @@ internal sealed class S2SReviewAgent
         Action<string>? onConversationMinted = null,
         string? existingThreadId = null,
         string? subAgentModelId = null,
-        string? reasoningEffort = null
+        string? reasoningEffort = null,
+        IReadOnlyDictionary<string, string>? env = null,
+        string? workingDirectoryRelPath = null
     )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -116,6 +123,8 @@ internal sealed class S2SReviewAgent
         _systemPrompt = systemPrompt;
         _subAgentModelId = subAgentModelId;
         _reasoningEffort = reasoningEffort;
+        _env = env;
+        _workingDirectoryRelPath = workingDirectoryRelPath;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _onConversationMinted = onConversationMinted;
@@ -137,6 +146,9 @@ internal sealed class S2SReviewAgent
     /// <summary>The server-minted run id from the last polled status (null before the first run completes).</summary>
     public string? CurrentRunId => _currentRunId;
 
+    /// <summary>Terminal status for the current accepted input, reset before every invocation.</summary>
+    public string? CurrentRunStatus { get; private set; }
+
     /// <summary>
     /// The server-minted conversation id (<c>thread-{Guid:N}</c>) once provisioned. Before the first run it is
     /// an empty string (the agent has not yet talked to the review host); the collector reads it only after the
@@ -155,6 +167,28 @@ internal sealed class S2SReviewAgent
     /// configuration can raise, and the first symptom is a real review abandoned mid-flight.
     /// </summary>
     internal TimeSpan OverallTimeout => _overallTimeout;
+
+    internal Task RequireIdleAsync(CancellationToken ct) => _client.RequireIdleAsync(ThreadId, ct);
+
+    internal async Task<bool> HasAcceptedInputAsync(string inputId, CancellationToken ct)
+    {
+        try
+        {
+            _ = await _client.GetStatusByInputIdAsync(ThreadId, inputId, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (HttpRequestException error) when (error.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Read-only preflight before any workflow turn that may require a tool-free correction.</summary>
+    public Task EnsureActionToolSuppressionAsync(CancellationToken ct) =>
+        _client.EnsureHostContractAsync(ct, requireActionToolSuppression: true);
+
+    /// <summary>Fail before sending when the host cannot forward scoped workflow publication tools.</summary>
+    public Task EnsureWorkflowPublicationAsync(CancellationToken ct) => _client.EnsureWorkflowPublicationAsync(ct);
 
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
@@ -201,6 +235,7 @@ internal sealed class S2SReviewAgent
     )
     {
         ArgumentNullException.ThrowIfNull(userInput);
+        CurrentRunStatus = null;
 
         var input = ExtractUserText(userInput);
         if (string.IsNullOrWhiteSpace(input))
@@ -212,6 +247,8 @@ internal sealed class S2SReviewAgent
         // carries the SDK's per-turn flag. The host acknowledges or refuses — it is never a hint.
         var suppressSpawning = Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
 
+        if (userInput.SuppressActionTools)
+            await EnsureActionToolSuppressionAsync(ct).ConfigureAwait(false);
         var threadId = await EnsureProvisionedAsync(ct).ConfigureAwait(false);
 
         // Consume the arming BEFORE the turn runs: it applies to this turn only, so a later turn on the same
@@ -240,8 +277,23 @@ internal sealed class S2SReviewAgent
         }
         else
         {
+            using var sendBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (_deadlineUtc is { } sendDeadline)
+            {
+                var remaining = sendDeadline - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                    throw new TimeoutException("Hosted input deadline expired before admission.");
+                sendBudget.CancelAfter(remaining);
+            }
             inputId = await _client
-                .SendMessageAsync(threadId, input, suppressSpawning, idempotencyKey, ct)
+                .SendMessageAsync(
+                    threadId,
+                    input,
+                    suppressSpawning,
+                    idempotencyKey,
+                    sendBudget.Token,
+                    userInput.SuppressActionTools
+                )
                 .ConfigureAwait(false);
             // Reported before the first poll so the caller's checkpoint covers the whole wait, not just a wait
             // that happened to finish. When the send carried a key this is a confirmation rather than the only
@@ -258,8 +310,19 @@ internal sealed class S2SReviewAgent
             );
         }
 
-        var status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
+        S2SStatusResult status;
+        if (rejoinInputId is not null && _deadlineUtc is { } expired && expired <= DateTimeOffset.UtcNow)
+        {
+            // An expired invocation may still acquire terminal proof. It gets one read, never a new
+            // send or a refreshed polling budget; ambiguous/interrupted status remains unresolved.
+            status = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
+            if (!TerminalStatuses.Contains(status.Status) || IsInterrupted(status))
+                throw new TimeoutException("Expired invocation has no confirmed terminal hosted result.");
+        }
+        else
+            status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
         _currentRunId = status.RunId;
+        CurrentRunStatus = status.Status;
 
         if (!string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase))
         {
@@ -272,9 +335,7 @@ internal sealed class S2SReviewAgent
         var reviewText = status.ResponseText;
         if (string.IsNullOrWhiteSpace(reviewText))
         {
-            throw new InvalidOperationException(
-                $"S2S review run {status.RunId} on thread {threadId} reached Completed with no review text."
-            );
+            throw new S2SFinalTextMissingException();
         }
 
         // ONE finalized assistant message. AgentTextCollector prefers a finalized TextMessage over streamed
@@ -305,7 +366,13 @@ internal sealed class S2SReviewAgent
         // agent — the host cannot gain or lose the contract in the middle of one review.
         if (!_hostContractVerified)
         {
-            await _client.EnsureHostContractAsync(ct).ConfigureAwait(false);
+            await _client
+                .EnsureHostContractAsync(
+                    ct,
+                    requireSandboxEnv: _env is { Count: > 0 },
+                    requireConversationWorkingDirectory: _workingDirectoryRelPath is not null
+                )
+                .ConfigureAwait(false);
             _hostContractVerified = true;
         }
 
@@ -319,13 +386,23 @@ internal sealed class S2SReviewAgent
         }
 
         var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, _reasoningEffort, ct)
+            .ProvisionAsync(
+                _workspaceId,
+                _providerId,
+                _modeId,
+                _systemPrompt,
+                _subAgentModelId,
+                _reasoningEffort,
+                ct,
+                _env,
+                _workingDirectoryRelPath
+            )
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(
             "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "
                 + "mode {ModeId}, system prompt {SystemPromptChars} chars, sub-agent model {SubAgentModelId}, "
-                + "requested root effort {RequestedRootEffort}).",
+                + "requested root effort {RequestedRootEffort}, workspace environment keys [{WorkspaceEnvKeys}]).",
             threadId,
             _workspaceId,
             _providerId,
@@ -343,7 +420,8 @@ internal sealed class S2SReviewAgent
                 null => "(provider default)",
                 "" => "(omitted)",
                 _ => _reasoningEffort,
-            }
+            },
+            _env is { Count: > 0 } ? string.Join(", ", _env.Keys.Order(StringComparer.Ordinal)) : "(none)"
         );
 
         // The run-scoped checkpoint comes FIRST and is deliberately NOT guarded: from this line on there is a

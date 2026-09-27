@@ -29,6 +29,26 @@ internal enum ReviewBotPublishOutcome
 /// <param name="PushedSha">The review-branch SHA after the push, or <c>null</c> when the push failed.</param>
 internal sealed record ReviewBotPublishResult(ReviewBotPublishOutcome Outcome, string ReviewBranch, string? PushedSha);
 
+/// <summary>
+/// What <see cref="ReviewBranchManager.DeleteReviewBranchAsync"/> could establish about an explicitly
+/// requested review-artifact branch deletion. Only <see cref="Deleted"/> and <see cref="AlreadyAbsent"/>
+/// mean the published branch is gone; the other two mean the caller must stop rather than retry.
+/// </summary>
+internal enum ReviewBranchDeletionOutcome
+{
+    /// <summary>The remote ref was present at the expected SHA and is now proven absent.</summary>
+    Deleted,
+
+    /// <summary>The remote ref was already absent; nothing was deleted.</summary>
+    AlreadyAbsent,
+
+    /// <summary>The remote ref exists at a commit other than the recorded one; nothing was deleted.</summary>
+    RemoteShaMismatch,
+
+    /// <summary>The outcome could not be read. Quarantine — never retry on this.</summary>
+    Unknown,
+}
+
 /// <summary>Inputs for one ReviewBot notes commit.</summary>
 /// <param name="TargetRepo">Identity of the reviewed repository (used to slug the review branch + artifact paths).</param>
 /// <param name="PrNumber">The pull-request number under review.</param>
@@ -91,6 +111,49 @@ internal sealed class ReviewBranchManager
         _rebuildDerivedKnowledgeAsync = rebuildDerivedKnowledgeAsync;
     }
 
+    /// <summary>Checks out this PR's existing notes branch, or creates it from the trusted default branch.</summary>
+    public async Task CheckoutReviewBranchAsync(
+        string repoRoot,
+        RepoIdentity repo,
+        int prNumber,
+        string defaultBranch,
+        CancellationToken cancellationToken
+    )
+    {
+        var reviewBranch = BuildReviewBranchName(repo, prNumber);
+        // 1. Create-or-reuse the branch. Recreating from the default every time would wipe notes
+        // accumulated by prior reviews, so only branch from the default when it doesn't exist yet.
+        var probe = await RunGitAsync(
+                ["rev-parse", "--verify", reviewBranch],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        if (probe.Succeeded)
+        {
+            await RunGitAsync(["checkout", reviewBranch], repoRoot, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            // A fresh retention clone has only remote-tracking review branches. Reuse the remote history
+            // rather than starting at main and attempting to overwrite an existing artifact branch.
+            var remote = await ReadRemoteHeadAsync(repoRoot, reviewBranch, cancellationToken).ConfigureAwait(false);
+            if (remote.Kind == RemoteRefKind.Present)
+            {
+                await RunGitAsync(["fetch", "origin", $"refs/heads/{reviewBranch}"], repoRoot, cancellationToken)
+                    .ConfigureAwait(false);
+                await RunGitAsync(["checkout", "-b", reviewBranch, "FETCH_HEAD"], repoRoot, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (remote.Kind == RemoteRefKind.Absent)
+                await RunGitAsync(["checkout", "-b", reviewBranch, defaultBranch], repoRoot, cancellationToken)
+                    .ConfigureAwait(false);
+            else
+                throw new InvalidOperationException("Remote artifact branch could not be reconciled before checkout.");
+        }
+    }
+
     /// <summary>
     /// Commits <paramref name="request"/>'s artifacts onto its review branch inside
     /// <paramref name="repoRoot"/> (an existing ReviewBot checkout) and pushes it, creating the branch
@@ -118,24 +181,14 @@ internal sealed class ReviewBranchManager
 
         var reviewBranch = BuildReviewBranchName(request);
 
-        // 1. Create-or-reuse the branch. Recreating from the default every time would wipe notes
-        // accumulated by prior reviews, so only branch from the default when it doesn't exist yet.
-        var probe = await RunGitAsync(
-                ["rev-parse", "--verify", reviewBranch],
+        await CheckoutReviewBranchAsync(
                 repoRoot,
-                cancellationToken,
-                allowFailure: true
+                request.TargetRepo,
+                request.PrNumber,
+                request.DefaultBranch,
+                cancellationToken
             )
             .ConfigureAwait(false);
-        if (probe.Succeeded)
-        {
-            await RunGitAsync(["checkout", reviewBranch], repoRoot, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await RunGitAsync(["checkout", "-B", reviewBranch, request.DefaultBranch], repoRoot, cancellationToken)
-                .ConfigureAwait(false);
-        }
 
         // 2. Write the PRs/... + KnowledgeBase/... artifacts (this commit's content).
         foreach (var file in request.Files)
@@ -382,6 +435,225 @@ internal sealed class ReviewBranchManager
     }
 
     /// <summary>
+    /// Deletes <paramref name="branch"/> (local + remote) after proving the remote tip is exactly
+    /// <paramref name="expectedSha"/>, and reports what it could establish (task #82, requirement 4).
+    /// <para>
+    /// The difference from <see cref="DeleteBranchAsync"/> is the whole point: that method is idempotent
+    /// best-effort cleanup for a terminal PR and cannot tell "already gone" from "the remote refused" from
+    /// "the credential expired". An operator-driven redo must, because two of those three mean the branch is
+    /// still published and re-running the review would push a second artifact history onto it.
+    /// </para>
+    /// <para>
+    /// Every uncertainty resolves to <see cref="ReviewBranchDeletionOutcome.Unknown"/> — never to
+    /// "deleted", never to a retry. A <c>ls-remote</c> that fails for any reason other than exit 2 (no
+    /// matching ref) is not absence.
+    /// </para>
+    /// <para>
+    /// <b>The race, and why re-reading the ref cannot close it.</b> A read-then-delete pair is not atomic:
+    /// between the <c>ls-remote</c> that proves the tip is <paramref name="expectedSha"/> and the push that
+    /// removes it, a concurrent push can advance the branch, and a plain <c>push --delete</c> would then
+    /// destroy a commit nobody recorded. Moving the check closer to the delete shrinks that window without
+    /// ever closing it, so the check is NOT what makes this safe.
+    /// <see cref="DeleteExpectedShaArgument"/> is. <c>--force-with-lease=&lt;ref&gt;:&lt;expect&gt;</c> sends
+    /// the expected old value as part of the ref-update command itself, and the receiving <c>receive-pack</c>
+    /// compares it to the ref under its own lock, rejecting the whole update ("stale info") when they differ.
+    /// That is a genuine server-side compare-and-swap, and it is the only reason this method may delete at
+    /// all. The <c>ls-remote</c> before it is a cheap early refusal and a diagnostic, nothing more.
+    /// </para>
+    /// <para>
+    /// <b>Limits of the lease.</b> It is enforced by the peer, so it holds for anything speaking the git
+    /// protocol and would NOT hold against an endpoint that accepts ref updates while ignoring the old value.
+    /// It also proves only what the ref pointed at — not that no one still wants the branch. Both gaps are
+    /// covered the same way: the outcome is classified from the ref's ACTUAL state read back afterwards
+    /// rather than from the push's exit code, and anything that is not "provably absent" is
+    /// <see cref="ReviewBranchDeletionOutcome.Unknown"/> for the caller to quarantine.
+    /// </para>
+    /// </summary>
+    public async Task<ReviewBranchDeletionOutcome> DeleteReviewBranchAsync(
+        string repoRoot,
+        string branch,
+        string expectedSha,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedSha);
+
+        var before = await ReadRemoteHeadAsync(repoRoot, branch, cancellationToken).ConfigureAwait(false);
+        switch (before.Kind)
+        {
+            case RemoteRefKind.Absent:
+                return ReviewBranchDeletionOutcome.AlreadyAbsent;
+            case RemoteRefKind.Unknown:
+                _logger.LogWarning("Could not read origin's '{Branch}'; refusing to delete it.", branch);
+                return ReviewBranchDeletionOutcome.Unknown;
+            case RemoteRefKind.Present:
+                break;
+            default:
+                return ReviewBranchDeletionOutcome.Unknown;
+        }
+        if (!string.Equals(before.Sha, expectedSha, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Origin's '{Branch}' is at a different commit than the recorded retention; refusing to delete it.",
+                branch
+            );
+            return ReviewBranchDeletionOutcome.RemoteShaMismatch;
+        }
+
+        // The published ref goes first, under the lease. The local ref is only deleted once the remote is
+        // PROVEN gone (below) — dropping it earlier would discard the one local handle on a branch whose
+        // removal may have just been refused.
+        var deleted = await RunGitAsync(
+                ["push", DeleteExpectedShaArgument(branch, expectedSha), "origin", "--delete", branch],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+
+        // Deliberately NOT `if (!deleted.Succeeded) return Unknown;`. The exit code says what git attempted;
+        // only the ref says what is true. Read it back and classify from that.
+        var after = await ReadRemoteHeadAsync(repoRoot, branch, cancellationToken).ConfigureAwait(false);
+        var outcome = (deleted.Succeeded, after.Kind) switch
+        {
+            // Asked for the delete, and the ref is provably gone. The only success.
+            (true, RemoteRefKind.Absent) => ReviewBranchDeletionOutcome.Deleted,
+            // The push was refused, yet the ref is gone: a concurrent actor removed it. Nothing of ours ran,
+            // and the published artifact is absent — the same durable state "deleted" reconciles.
+            (false, RemoteRefKind.Absent) => ReviewBranchDeletionOutcome.AlreadyAbsent,
+            // The lease fired: the branch advanced under us and receive-pack rejected the update as stale.
+            // This is the race, refused — the advanced commit is untouched.
+            (false, RemoteRefKind.Present)
+                when !string.Equals(after.Sha, expectedSha, StringComparison.OrdinalIgnoreCase) =>
+                ReviewBranchDeletionOutcome.RemoteShaMismatch,
+            // Everything else: refused at the recorded SHA (a hook, a permission), or still present after a
+            // push that claimed to succeed. Unknown, so the caller quarantines instead of retrying.
+            _ => ReviewBranchDeletionOutcome.Unknown,
+        };
+
+        if (outcome is ReviewBranchDeletionOutcome.Deleted or ReviewBranchDeletionOutcome.AlreadyAbsent)
+        {
+            // Only now, with the remote ref proven absent. A missing local branch is expected in a fresh
+            // store checkout, so this stays best-effort.
+            _ = await RunGitAsync(["branch", "-D", branch], repoRoot, cancellationToken, allowFailure: true)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Deleting origin's '{Branch}' did not establish its absence ({Outcome}); leaving both refs "
+                    + "in place. Stderr: {Stderr}",
+                branch,
+                outcome,
+                deleted.Stderr
+            );
+        }
+
+        return outcome;
+    }
+
+    /// <summary>
+    /// The compare-and-swap argument for a guarded delete: <c>--force-with-lease=refs/heads/{branch}:{sha}</c>.
+    /// Naming the ref AND the expected value explicitly (rather than bare <c>--force-with-lease</c>) is what
+    /// makes it independent of this checkout's remote-tracking refs, which a fresh store clone does not have.
+    /// </summary>
+    internal static string DeleteExpectedShaArgument(string branch, string expectedSha) =>
+        $"--force-with-lease=refs/heads/{branch}:{expectedSha}";
+
+    private async Task<RemoteRef> ReadRemoteHeadAsync(
+        string repoRoot,
+        string branch,
+        CancellationToken cancellationToken
+    )
+    {
+        var result = await RunGitAsync(
+                ["ls-remote", "--exit-code", "--heads", "origin", $"refs/heads/{branch}"],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        // Exit 2 is ls-remote's "no matching ref". Anything else non-zero is a transport/auth failure and
+        // says nothing at all about whether the ref exists.
+        if (result.ExitCode == 2)
+        {
+            return new RemoteRef(RemoteRefKind.Absent, string.Empty);
+        }
+        if (!result.Succeeded)
+        {
+            return new RemoteRef(RemoteRefKind.Unknown, string.Empty);
+        }
+        var sha = result
+            .Stdout.Split(['\t', '\n', '\r', ' '], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(token => token.Length == 40 && token.All(Uri.IsHexDigit));
+        return sha is null
+            ? new RemoteRef(RemoteRefKind.Unknown, string.Empty)
+            : new RemoteRef(RemoteRefKind.Present, sha);
+    }
+
+    private enum RemoteRefKind
+    {
+        Present,
+        Absent,
+        Unknown,
+    }
+
+    private readonly record struct RemoteRef(RemoteRefKind Kind, string Sha);
+
+    /// <summary>
+    /// Proves closure against origin: the retained content reached the default branch and the review ref is absent.
+    /// The scoped content comparison also covers a push retry that rebased the retained commit onto a newer default.
+    /// </summary>
+    public async Task<bool> VerifyClosureAsync(
+        string repoRoot,
+        string branch,
+        string defaultBranch,
+        string retainedSha,
+        IReadOnlyList<string> retainedPaths,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(retainedSha);
+        if (retainedPaths.Count == 0)
+        {
+            throw new ArgumentException("Closure verification requires retained paths.", nameof(retainedPaths));
+        }
+        await RunGitAsync(["fetch", "origin", "--prune"], repoRoot, cancellationToken).ConfigureAwait(false);
+        var ancestor = await RunGitAsync(
+                ["merge-base", "--is-ancestor", retainedSha, $"origin/{defaultBranch}"],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        if (!ancestor.Succeeded)
+        {
+            var content = await RunGitAsync(
+                    ["diff", "--quiet", retainedSha, $"origin/{defaultBranch}", "--", .. retainedPaths],
+                    repoRoot,
+                    cancellationToken,
+                    allowFailure: true
+                )
+                .ConfigureAwait(false);
+            if (!content.Succeeded)
+            {
+                return false;
+            }
+        }
+        var remote = await RunGitAsync(
+                ["ls-remote", "--exit-code", "--heads", "origin", $"refs/heads/{branch}"],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            )
+            .ConfigureAwait(false);
+        // ls-remote exit 2 means no matching ref. Authentication/transport failures are not absence.
+        return remote.ExitCode == 2;
+    }
+
+    /// <summary>
     /// Pushes <paramref name="branch"/> to <c>origin</c>, rebasing onto the remote and retrying up to
     /// <see cref="MaxPushAttempts"/> times when it advanced underneath us (concurrent review or external
     /// push). Returns <c>true</c> on the first successful push.
@@ -441,7 +713,7 @@ internal sealed class ReviewBranchManager
     /// justify — a fast-forward resolves nothing, so on its own it loses nothing. Excluding it was an
     /// induction on "the notes branch's own listings describe its tree", and the base case fails: when this
     /// rebuild throws, the failure is swallowed below on the promise that the next extraction's regen repairs
-    /// it, and that regen runs only after a successful entry WRITE (<see cref="Agents.KnowledgeAgent"/>). A
+    /// it, and that regen runs only after a successful entry write by the knowledge workflow. A
     /// run of declined extractions writes none, so the default branch keeps broken listings indefinitely and
     /// every later fast-forward propagated them forward untouched — the one path with no way back. Including
     /// the fast-forward closes that by construction rather than by argument, and costs nothing: the `!changed`

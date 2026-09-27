@@ -4,7 +4,7 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
 /// Emits concise, human-readable one-line progress markers as a review moves through the
-/// <see cref="StageMachine"/> — "picked → setup → reviewing → done". It uses its OWN logger category so
+/// the authored review workflow — "picked → setup → reviewing → done". It uses its OWN logger category so
 /// the console filter (appsettings <c>Logging:Console</c>) can keep these at Information while quieting
 /// the verbose per-run/agent/streaming detail (which still flows in full to the JSONL sink). Messages
 /// use structured templates so they stay queryable; no <c>Console.WriteLine</c>. This is operator UX

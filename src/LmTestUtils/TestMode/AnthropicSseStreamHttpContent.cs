@@ -313,19 +313,10 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
         var toolUseId =
             result.ToolUseId ?? (toolUseIds.TryGetValue(result.Name, out var id) ? id : $"srvtoolu_{Guid.NewGuid():N}");
 
-        object content;
-        if (result.ErrorCode != null)
-        {
-            content = new { type = $"{resultType}_error", error_code = result.ErrorCode };
-        }
-        else if (result.Result.HasValue)
-        {
-            content = JsonSerializer.Deserialize<object>(result.Result.Value.GetRawText()) ?? new { };
-        }
-        else
-        {
-            content = new { };
-        }
+        var content =
+            result.ErrorCode != null ? new { type = $"{resultType}_error", error_code = result.ErrorCode }
+            : result.Result.HasValue ? JsonSerializer.Deserialize<object>(result.Result.Value.GetRawText()) ?? new { }
+            : new { };
 
         var startEvent = new
         {

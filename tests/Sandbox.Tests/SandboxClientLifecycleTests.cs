@@ -13,6 +13,73 @@ public class SandboxClientLifecycleTests
         """;
 
     [Fact]
+    public async Task CreateAsync_NativeHome_IsIndependentOfWorkspace_AndRequiresStoredAcknowledgement()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"sess-1","volumes":{"workspace":{"container_path":"/remote-only/workspace","home":".worktrees/Nova-0"}}}"""
+        );
+        var info = await client.CreateAsync(new SandboxCreateRequest("nova-reviews", home: "./.worktrees//Nova-0/"));
+        var body = JsonDocument.Parse(handler.Requests.Single().Body!).RootElement;
+        body.GetProperty("workspace").GetString().Should().Be("nova-reviews");
+        body.GetProperty("home").GetString().Should().Be(".worktrees/Nova-0");
+        info.HomeRelativePath.Should().Be(".worktrees/Nova-0");
+        info.WorkspaceContainerPath.Should().Be("/remote-only/workspace");
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"home\":null}")]
+    [InlineData("{\"home\":\".worktrees/Nova-1\"}")]
+    [InlineData("{\"home\":\"./.worktrees/Nova-0\"}")]
+    public async Task CreateAsync_UnacknowledgedHome_FailsClosed(string mount)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            "{\"session_id\":\"sess-1\",\"volumes\":{\"workspace\":" + mount + "}}"
+        );
+        var exception = await Assert.ThrowsAsync<SandboxHomeAcknowledgementException>(() =>
+            client.CreateAsync(new SandboxCreateRequest("nova-reviews", home: ".worktrees/Nova-0"))
+        );
+        exception.CreatedSessionId.Should().Be("sess-1");
+        exception.RequestedHome.Should().Be(".worktrees/Nova-0");
+        exception.CleanupSucceeded.Should().BeNull();
+        handler.Requests.Should().NotContain(request => request.Method == HttpMethod.Delete);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(".")]
+    public async Task CreateAsync_RootHome_OmitsFieldAndRemainsLegacyCompatible(string? home)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+        var info = await client.CreateAsync(new SandboxCreateRequest("nova-reviews", home: home));
+        JsonDocument
+            .Parse(handler.Requests.Single().Body!)
+            .RootElement.TryGetProperty("home", out _)
+            .Should()
+            .BeFalse();
+        info.HomeRelativePath.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetAsync_ReportsStoredHome()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1",
+            """{"session_id":"sess-1","volumes":{"workspace":{"home":".worktrees/Nova-0"}}}"""
+        );
+        (await client.GetAsync("sess-1")).HomeRelativePath.Should().Be(".worktrees/Nova-0");
+    }
+
+    [Fact]
     public async Task CreateAsync_HappyPath_ReturnsSandboxInfo()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

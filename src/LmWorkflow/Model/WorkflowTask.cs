@@ -4,11 +4,28 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 
 /// <summary>
-///     A single authored task within a <see cref="ProceduralNode"/>. In V1 every task delegates to an
-///     agent (<see cref="DelegateKind.Agent"/>) identified by <see cref="SubagentType"/>.
+///     A single authored task within a <see cref="ProceduralNode"/>. Legacy tasks delegate to an agent;
+///     strict authored workflows can invoke a host-bound agent session or a workspace script.
 /// </summary>
 public sealed record WorkflowTask
 {
+    /// <summary>Typed input binding document and resolved input schema.</summary>
+    public JsonNode? Input { get; init; }
+    public JsonNode? InputSchema { get; init; }
+
+    /// <summary>Host-bound parent session and trusted workspace-relative instruction files.</summary>
+    public string? Session { get; init; }
+    public IReadOnlyList<string>? Skills { get; init; }
+
+    /// <summary>Explicit host action grants for this step. Omitted means no action grant.</summary>
+    public IReadOnlyList<string>? Tools { get; init; }
+
+    /// <summary>Optional host-resolved model identifier; omitted inherits the admitted default.</summary>
+    public string? ModelId { get; init; }
+
+    /// <summary>Workspace-relative script executed by the script adapter.</summary>
+    public string? Script { get; init; }
+
     /// <summary>Task id, unique within its owning node.</summary>
     public required string Id { get; init; }
 

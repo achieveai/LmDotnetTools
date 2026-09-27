@@ -105,6 +105,21 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 
     [Theory]
     [MemberData(nameof(AllStores))]
+    public async Task Action_tool_suppression_grant_survives_acceptance_roundtrip(StoreKind kind)
+    {
+        var store = CreateStore(kind);
+        var admission = Admission() with { ActionToolsSuppressed = true };
+        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        var enforced = admission with { State = InputAcceptanceState.Enforced };
+        (await store.TryRecordOutcomeAsync(enforced)).Should().BeTrue();
+        var reader = kind == StoreKind.InMemory ? store : CreateStore(kind);
+        (await reader.GetAcceptanceAsync(admission.ThreadId, admission.InputId))!
+            .ActionToolsSuppressed.Should()
+            .BeTrue();
+    }
+
+    [Theory]
+    [MemberData(nameof(AllStores))]
     public async Task TryReserveAcceptanceAsync_AdmitsOnce_AndHandsEveryLaterCallerTheStoredRecord(StoreKind kind)
     {
         var store = CreateStore(kind);
@@ -290,13 +305,9 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 
     /// <summary>
     /// The invariant the whole read side rests on: an admission record that can be OPENED can be READ. The
-    /// store's reader treats an openable-but-empty record as a claim still settling and waits it out, and it
-    /// can only do that for a bounded time before calling it a fault — so every instant in which the record
-    /// is openable and empty is an instant that spends a stranger's budget. On a loaded runner that is
-    /// precisely what failed: the winner created the record and then flushed its content from a thread-pool
-    /// continuation, so the empty record stayed observable across a scheduling point that starvation can
-    /// stretch without limit, and losers were handed <c>IOException</c> for an input that was admitted
-    /// perfectly well.
+    /// store publishes a complete staged record under its final name; an observer must never see an empty
+    /// record. Creating the final name before writing is unsafe even with FileShare.None: on Unix, another
+    /// reader can open the name before the writer acquires its exclusive lock.
     /// <para>
     /// Proven by observation rather than by timing: a dedicated OS thread spins on the acceptances directory
     /// for the whole of a contended reserve/retract sweep and opens every record it finds, exactly as the

@@ -6,7 +6,7 @@ namespace CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 /// <summary>
 /// Turns a PR author into the directory name their learnings live under.
 /// <para>
-/// Moved verbatim from <c>ReviewFeedbackAgent</c> rather than re-derived. The slug is a PATH SEGMENT, so
+/// Preserved from historical developer-learning paths. The slug is a PATH SEGMENT, so
 /// its character set is a security boundary and not a formatting choice: the builder below emits only
 /// <c>[a-z0-9-]</c>, which makes <c>../</c> unconstructible rather than filtered. Re-deriving it would have
 /// meant re-deriving that property too, and a second implementation is a second chance to get it wrong.
@@ -14,6 +14,9 @@ namespace CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 /// </summary>
 internal static class DeveloperIdentity
 {
+    /// <summary>Reserved namespace for stored developer records; excluded from shared knowledge indexes.</summary>
+    public const string DevelopersDirectory = "developers";
+
     /// <summary>
     /// Bytes of the SHA-256 digest kept in the fingerprint suffix — enough that a collision between two real
     /// author identities is not a practical concern, short enough that the directory name stays readable.

@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,10 +28,8 @@ public sealed class FileConversationStore
 
     /// <summary>
     /// How long a caller waits for an admission record that exists but is not yet readable before calling it
-    /// a fault. The threshold separates "a live writer has not finished" from "a dead host left a half-written
-    /// record", and any fixed threshold there is a starvation-class discriminator: the waiter is starved by the
-    /// very load it is waiting on. The two defenses are keeping await points out of the guarded window — see
-    /// <see cref="TryReserveAcceptanceAsync"/> — and leaving the margin far wider than any plausible stall.
+    /// a fault. New records are published complete, but an older or damaged record may still need time to
+    /// settle before its contents can be read.
     /// </summary>
     private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
@@ -1100,90 +1100,96 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
 
-        // Serialized BEFORE the create, deliberately: everything between winning the arbitration and the
-        // record's content being durable happens inside the window a losing contender has to wait out, and
-        // this is the only part of it that does not have to be there.
         var payload = JsonSerializer.SerializeToUtf8Bytes(acceptance, AcceptanceJsonOptions);
-
-        // Bounded by the same settle budget the reader uses rather than by a count of tries: what has to be
-        // waited out is a transient of the OS, not a fixed number of collisions. A record deleted while any
-        // reader still holds it keeps its name on Windows in a delete-pending state that refuses every open,
-        // and a machine under load holds that reader open for far longer than a handful of immediate retries
-        // covers. Spending the budget instead lets the arbitration finish; a refusal that outlives it is a
-        // real fault and is rethrown as itself.
-        var started = _time.GetTimestamp();
-        while (true)
+        var stagedFile = acceptanceFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            FileStream claim;
-            try
+            // The final name must not exist until its bytes are complete. FileMode.CreateNew exposes an
+            // empty name before Unix acquires FileShare.None, so writing directly to it is not safe.
+            using (var stage = new FileStream(stagedFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                // FileShare.None, and not FileShare.Read: the exclusive create is the arbitration, so the
-                // record's NAME necessarily exists before its content does, and a reader let in during that
-                // gap sees a zero-length record it can only report as unsettled. Denying the open instead
-                // makes "the record exists" imply "the record is readable" — the gap is still there, but
-                // nothing can observe the record in it.
-                claim = new FileStream(
-                    acceptanceFile,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 0,
-                    FileOptions.None
-                );
+                stage.Write(payload);
             }
-            catch (IOException)
+
+            // A hard link publishes the complete inode without replacing another contender's record.
+            // Retractions can remove a winner between our failed publish and read, so retry for a bounded time.
+            var started = _time.GetTimestamp();
+            while (true)
             {
-                if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is { } existing)
+                try
                 {
-                    return existing;
+                    PublishAcceptanceFile(stagedFile, acceptanceFile);
+                    return null;
                 }
-
-                if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
+                catch (IOException)
                 {
-                    throw;
+                    if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is { } existing)
+                    {
+                        return existing;
+                    }
+
+                    if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
+                    {
+                        throw;
+                    }
+
+                    await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 }
-
-                // Yield before re-attempting, exactly as the sibling arm below does. Reaching here means the
-                // create was refused AND the read found nothing, and the read answers "nothing" immediately —
-                // synchronously — when the directory or the name is simply gone. DirectoryNotFoundException
-                // derives from IOException, so a thread directory deleted out from under a reserve in flight
-                // (DeleteThreadAsync takes no lock this path honours, and the directory is created once above
-                // rather than per attempt) lands here every single time with nothing to wait on: without this
-                // delay the loop is a tight synchronous spin that pegs a core for the whole budget and never
-                // observes cancellation. The budget still bounds it, and the refusal is still rethrown as
-                // itself once spent.
-                await Task.Delay(AcceptanceSettlePoll, _time, ct);
-                continue;
-            }
-            catch (UnauthorizedAccessException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
-            {
-                await Task.Delay(AcceptanceSettlePoll, _time, ct);
-                continue;
-            }
-
-            try
-            {
-                // Straight-line synchronous, with no await between the create and the close. An async
-                // FileStream buffers a record this small entirely in memory and flushes it from a
-                // continuation, so the record sat visibly EMPTY across a thread-pool scheduling point — and
-                // on a loaded runner that point is exactly where the wait becomes unbounded, which is how a
-                // contender came to spend its whole settle budget on a writer that was merely descheduled.
-                // Unbuffered plus synchronous makes the window a handful of syscalls that nothing can
-                // deschedule.
-                using (claim)
+                catch (UnauthorizedAccessException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
                 {
-                    claim.Write(payload);
+                    await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 }
             }
-            catch
-            {
-                TryDeleteRecordFile(acceptanceFile);
-                throw;
-            }
-
-            return null;
+        }
+        finally
+        {
+            TryDeleteRecordFile(stagedFile);
         }
     }
+
+    private static void PublishAcceptanceFile(string stagedFile, string acceptanceFile)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (CreateHardLink(acceptanceFile, stagedFile, IntPtr.Zero))
+            {
+                return;
+            }
+
+            var error = Marshal.GetLastPInvokeError();
+            if (error is 80 or 183 or 2 or 3 or 32)
+            {
+                throw new IOException("The admission record could not be published yet.", new Win32Exception(error));
+            }
+            if (error == 5)
+            {
+                throw new UnauthorizedAccessException("The admission record could not be published yet.");
+            }
+            throw new InvalidOperationException(
+                "The admission record could not be published.",
+                new Win32Exception(error)
+            );
+        }
+
+        if (Link(stagedFile, acceptanceFile) == 0)
+        {
+            return;
+        }
+
+        var errno = Marshal.GetLastPInvokeError();
+        if (errno is 17 or 2)
+        {
+            throw new IOException("The admission record could not be published yet.", new Win32Exception(errno));
+        }
+        throw new InvalidOperationException("The admission record could not be published.", new Win32Exception(errno));
+    }
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int Link(string existingPath, string newPath);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string newPath, string existingPath, IntPtr securityAttributes);
 
     private static void TryDeleteRecordFile(string path)
     {

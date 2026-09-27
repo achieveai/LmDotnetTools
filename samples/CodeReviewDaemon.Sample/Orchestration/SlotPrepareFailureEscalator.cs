@@ -3,7 +3,7 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <summary>
 /// Counts CONSECUTIVE, identically-worded prepare failures for one pooled slot address, and says when the
 /// caller should escalate to a re-clone REGARDLESS of how <see cref="Workspace.Git.GitFailureClassifier"/>
-/// classified the failure (issue #582, fix 3). <see cref="DaemonReviewStageExecutor.PrepareWithRecoveryAsync"/>'s
+/// classified the failure (issue #582, fix 3). the historical review implementation's
 /// existing recovery ladder reclones only on a TYPE match (<c>SlotNeedsRecloneException</c> /
 /// <c>SlotCorruptException</c>); a message shape the classifier has not been taught surfaces a plain
 /// <c>InvalidOperationException</c> instead, which that filter does not catch, so nothing ever repairs it — that
@@ -12,11 +12,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// backstop for the classifier's inevitable next gap: it does not need to know WHY prepare failed, only that
 /// the SAME address failed the SAME way <see cref="MaxConsecutiveFailures"/> times running.
 /// <para>
-/// Keyed by store root rather than run id on purpose. A run-scoped tracker (like <see cref="RetryGovernor"/>)
-/// resets on every new commit, so it can never see a condition that outlives any single run's retry budget by
-/// recurring across DIFFERENT runs leased onto the same wedged slot — which is precisely the mcqdb shape: 30,700
-/// log lines were spread across six different review runs over two days, none of which individually retried
-/// more than its own governed budget.
+/// Keyed by the slot's logical identity rather than run id on purpose. A run-scoped tracker (like
+/// <see cref="RetryGovernor"/>) resets on every new commit, so it can never see a condition that outlives any
+/// single run's retry budget by recurring across DIFFERENT runs leased onto the same wedged slot — which is
+/// precisely the mcqdb shape: 30,700 log lines were spread across six different review runs over two days,
+/// none of which individually retried more than its own governed budget.
 /// </para>
 /// <para>
 /// "Identical" is judged on the failure's message text so a streak actually proves a STUCK condition: a slot
@@ -24,11 +24,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// demonstrated anything a destructive re-clone should be spent on, so a differing message resets the streak
 /// rather than accumulating toward it. The comparison strips each message's leading <c>"Run &lt;id&gt;: "</c>
 /// first (every prepare-failure message in <see cref="Workspace.ReviewSlotPreparer"/> carries one) — without
-/// that, two DIFFERENT runs hitting the identical underlying failure on the identical wedged store root
-/// produce textually different messages purely because the run id differs, the streak resets to one on every
-/// single call, and it can never reach <see cref="MaxConsecutiveFailures"/> across runs. That would make this
-/// class no better than a run-scoped tracker despite being keyed by store root — the cross-run repeat is the
-/// one thing being keyed by store root (rather than run id) exists to catch.
+/// that, two DIFFERENT runs hitting the identical underlying failure on the identical wedged slot produce
+/// textually different messages purely because the run id differs, the streak resets to one on every single
+/// call, and it can never reach <see cref="MaxConsecutiveFailures"/> across runs. That would make this class
+/// no better than a run-scoped tracker despite being keyed by logical slot identity — the cross-run repeat is
+/// the one thing being keyed that way (rather than by run id) exists to catch.
 /// </para>
 /// </summary>
 internal sealed class SlotPrepareFailureEscalator
@@ -42,7 +42,7 @@ internal sealed class SlotPrepareFailureEscalator
 
     /// <summary>
     /// Small on purpose: this is a BACKSTOP for a gap in classifier coverage, not the primary recovery path —
-    /// that remains <see cref="DaemonReviewStageExecutor.PrepareWithRecoveryAsync"/>'s type-filtered catch,
+    /// that remains the historical review implementation's type-filtered catch,
     /// which already re-clones on the FIRST classified-corrupt failure. Three identical repeats is enough to
     /// tell a stuck condition from ordinary noise while still being cheap in the currency that actually matters
     /// here — failed review runs — before the destructive re-clone fires.
@@ -60,15 +60,15 @@ internal sealed class SlotPrepareFailureEscalator
     );
 
     /// <summary>
-    /// Records a prepare failure for <paramref name="storeRoot"/> and returns whether the caller should now
+    /// Records a prepare failure for <paramref name="slotKey"/> and returns whether the caller should now
     /// escalate to a re-clone regardless of classification. A message that differs from the slot's last
     /// recorded failure (once each has had its own run's <c>"Run &lt;id&gt;: "</c> prefix stripped) restarts
     /// the streak at one — a changing symptom has not shown the stuck condition this backstop targets.
     /// </summary>
-    public bool RecordFailureAndShouldEscalate(string storeRoot, string message)
+    public bool RecordFailureAndShouldEscalate(string slotKey, string message)
     {
         var normalized = RunIdPrefix.Replace(message, string.Empty);
-        var state = _states.GetOrAdd(storeRoot, static _ => new State());
+        var state = _states.GetOrAdd(slotKey, static _ => new State());
         lock (state)
         {
             if (!string.Equals(state.LastMessage, normalized, StringComparison.Ordinal))
@@ -94,5 +94,5 @@ internal sealed class SlotPrepareFailureEscalator
 
     /// <summary>Clears a slot's streak after a successful prepare. The condition this backstop watches for is
     /// a RUN of failures, and a success ends any run in progress.</summary>
-    public void RecordSuccess(string storeRoot) => _states.TryRemove(storeRoot, out _);
+    public void RecordSuccess(string slotKey) => _states.TryRemove(slotKey, out _);
 }

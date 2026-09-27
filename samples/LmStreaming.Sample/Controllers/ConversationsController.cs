@@ -217,17 +217,18 @@ public class ConversationsController(
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
     ConversationDescendantScanner descendantScanner,
-    // Both optional and trailing. `compactionOptions` keeps its position from main so any positional
-    // caller there is unaffected; the registry goes after it for the same reason on this side — the
-    // tests that construct this controller directly keep compiling and a host with no sandbox
-    // registry still starts. A null registry reports the capability as unsupported, which is the
-    // honest answer when there is nothing that could apply env.
+    // Optional and trailing. `compactionOptions` keeps its position from main so any positional
+    // caller there is unaffected; the rest follow it for the same reason — the tests that construct
+    // this controller directly keep compiling and a host with no sandbox registry still starts. A null
+    // registry reports the capability as unsupported, which is the honest answer when there is nothing
+    // that could apply env.
     CompactionOptions? compactionOptions = null,
     SandboxSessionRegistry? sandboxSessionRegistry = null,
-    // THREE optional trailing parameters now. Pass them BY NAME from any hand-written call site: a
+    // FOUR optional trailing parameters now. Pass them BY NAME from any hand-written call site: a
     // positional argument here binds to whichever one comes first, and when the types happen to be
     // compatible that is a silent mis-binding rather than a compile error.
-    SandboxEnvApplier? envApplier = null
+    SandboxEnvApplier? envApplier = null,
+    LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
 ) : ControllerBase
 {
     /// <summary>
@@ -318,6 +319,28 @@ public class ConversationsController(
             );
         }
 
+        // Same position, same reason: a malformed working directory must be refused before a thread id
+        // exists, not after an agent tries to start in it.
+        string? workingDirectoryRelPath;
+        try
+        {
+            workingDirectoryRelPath = ConversationWorkingDirectory.Normalize(
+                request.WorkingDirectoryRelPath,
+                nameof(request.WorkingDirectoryRelPath)
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "working_directory_invalid",
+                    detail = "WorkingDirectoryRelPath must be a relative POSIX path inside the workspace.",
+                }
+            );
+        }
+
         var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
         if (workspace == null)
         {
@@ -363,70 +386,108 @@ public class ConversationsController(
         // key Created exists to avoid.
         var threadId = $"thread-{now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
 
-        await store.UpdateMetadataAsync(
-            threadId,
-            existing =>
-            {
-                var propertiesBuilder =
-                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
-
-                propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
-                propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
-                propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
-
-                if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
+        try
+        {
+            await store.UpdateMetadataAsync(
+                threadId,
+                existing =>
                 {
-                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
-                }
+                    var propertiesBuilder =
+                        existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-                if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
-                {
-                    propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
-                }
+                    propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
+                    propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
+                    propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
 
-                if (request.Env is { Count: > 0 })
-                {
-                    propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(
-                        request.Env,
-                        StringComparer.Ordinal
-                    );
-                }
-
-                // Null means no caller override. Empty is intentionally persisted: it is the explicit
-                // "omit effort" value and must remain distinguishable from an absent property.
-                if (request.ReasoningEffort is not null)
-                {
-                    propertiesBuilder[ConversationRootReasoningEffort.PropertyKey] = request.ReasoningEffort;
-                }
-
-                if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
-                {
-                    propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
-                    propertiesBuilder["sample.authWebhookProviderId"] = request.ProviderId;
-                    propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
-                }
-
-                // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
-                // this is what closes #162). The startup repair exists for rows written before
-                // identity did; a row this build creates must never need it.
-                return authorizer.StampOwnership(
-                    new ThreadMetadata
+                    if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                     {
-                        ThreadId = threadId,
-                        CurrentRunId = existing?.CurrentRunId,
-                        LatestRunId = existing?.LatestRunId,
-                        LastUpdated = now.ToUnixTimeMilliseconds(),
-                        SessionMappings = existing?.SessionMappings,
-                        Properties = propertiesBuilder.ToImmutable(),
-                        TenantId = existing?.TenantId,
-                        OwnerUserId = existing?.OwnerUserId,
-                        OwnerAppId = existing?.OwnerAppId,
-                        Visibility = existing?.Visibility,
+                        propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
                     }
-                );
-            },
-            ct
-        );
+
+                    if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
+                    {
+                        propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
+                    }
+
+                    if (request.Env is { Count: > 0 })
+                    {
+                        propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(
+                            request.Env,
+                            StringComparer.Ordinal
+                        );
+                    }
+
+                    // Write-once. The thread id was just minted so `existing` is normally absent, but the
+                    // callback is the only place that can see a prior value at all — and relocating an agent
+                    // that may already be running in a directory is exactly the kind of silent change this
+                    // field must not permit. A repeat of the SAME value is accepted (idempotent retry).
+                    if (workingDirectoryRelPath is not null)
+                    {
+                        var priorWorkingDirectory =
+                            existing?.Properties is { } priorProperties
+                            && priorProperties.TryGetValue(ConversationWorkingDirectory.PropertyKey, out var priorRaw)
+                                ? ThreadPropertyValue.AsString(priorRaw)
+                                : null;
+                        if (
+                            !string.IsNullOrEmpty(priorWorkingDirectory)
+                            && !string.Equals(priorWorkingDirectory, workingDirectoryRelPath, StringComparison.Ordinal)
+                        )
+                        {
+                            throw new WorkingDirectoryImmutableException();
+                        }
+
+                        propertiesBuilder[ConversationWorkingDirectory.PropertyKey] = workingDirectoryRelPath;
+                    }
+
+                    // Null means no caller override. Empty is intentionally persisted: it is the explicit
+                    // "omit effort" value and must remain distinguishable from an absent property.
+                    if (request.ReasoningEffort is not null)
+                    {
+                        propertiesBuilder[ConversationRootReasoningEffort.PropertyKey] = request.ReasoningEffort;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
+                    {
+                        propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
+                        propertiesBuilder["sample.authWebhookProviderId"] = request.ProviderId;
+                        propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
+                    }
+
+                    // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
+                    // this is what closes #162). The startup repair exists for rows written before
+                    // identity did; a row this build creates must never need it.
+                    return authorizer.StampOwnership(
+                        new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            CurrentRunId = existing?.CurrentRunId,
+                            LatestRunId = existing?.LatestRunId,
+                            LastUpdated = now.ToUnixTimeMilliseconds(),
+                            SessionMappings = existing?.SessionMappings,
+                            Properties = propertiesBuilder.ToImmutable(),
+                            TenantId = existing?.TenantId,
+                            OwnerUserId = existing?.OwnerUserId,
+                            OwnerAppId = existing?.OwnerAppId,
+                            Visibility = existing?.Visibility,
+                        }
+                    );
+                },
+                ct
+            );
+        }
+        catch (WorkingDirectoryImmutableException)
+        {
+            // The conversation's working directory is write-once; a provision that would move an existing
+            // thread elsewhere is refused rather than applied.
+            return Conflict(
+                new
+                {
+                    error = "working_directory_immutable",
+                    code = "working_directory_immutable",
+                    detail = "WorkingDirectoryRelPath cannot be changed after the conversation is provisioned.",
+                }
+            );
+        }
 
         return Ok(
             new ProvisionConversationResponse
@@ -435,6 +496,18 @@ public class ConversationsController(
                 ReasoningEffortAccepted = request.ReasoningEffort is not null,
             }
         );
+    }
+
+    /// <summary>
+    /// Signals that a provision would have changed an already-persisted
+    /// <see cref="ConversationWorkingDirectory.PropertyKey"/>. Private to this controller because it never
+    /// escapes it: the only thing it carries is "translate this into a 409", and the check that raises it
+    /// runs inside the store's update callback, which has no other way to report a refusal.
+    /// </summary>
+    private sealed class WorkingDirectoryImmutableException : InvalidOperationException
+    {
+        public WorkingDirectoryImmutableException()
+            : base("The conversation's working directory has already been set to a different value.") { }
     }
 
     /// <summary>
@@ -1074,13 +1147,24 @@ public class ConversationsController(
     }
 
     [HttpGet("capabilities")]
-    public IActionResult GetCapabilities() =>
-        Ok(
+    public IActionResult GetCapabilities(string? providerId = null, string? modeId = null)
+    {
+        var publicationSupported =
+            workflowPublication?.Resolve(TryBuildCallerCredential(HttpContext?.Request?.Headers)?.AppId) is not null
+            && (providerId is null || WorkflowPublicationToolProvider.SupportsProvider(providerRegistry, providerId))
+            && (modeId is null || modeId == LmStreaming.Sample.Configuration.WorkflowPublicationOptions.ModeId);
+        return Ok(
             new ConversationCapabilitiesResponse
             {
                 SchemaVersion = 1,
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
+                ActionToolSuppression = true,
+                WorkflowPublication = publicationSupported,
+                WorkflowPublicationProviderId = publicationSupported ? providerId : null,
+                WorkflowPublicationModeId = publicationSupported
+                    ? LmStreaming.Sample.Configuration.WorkflowPublicationOptions.ModeId
+                    : null,
                 RootReasoningEffort = true,
                 // Reported, not asserted. The registry trips this to false the first time the gateway
                 // answers that it has no session-env route (a pre-0.1.11 image), which is exactly the
@@ -1088,9 +1172,14 @@ public class ConversationsController(
                 // gateway will never apply. Hardcoding true made SessionEnvSupported dead code and
                 // made the capability a claim about the build rather than about the running gateway.
                 SandboxEnv = sandboxSessionRegistry?.SessionEnvSupported ?? false,
+                // Asserted, unlike SandboxEnv: this one needs nothing from the gateway. The value is
+                // validated and persisted by THIS build's provision route and resolved by THIS build's
+                // agent factory, so the capability is a true statement about the running host.
+                ConversationWorkingDirectory = true,
                 ManualCompaction = ManualCompactionConfigured,
             }
         );
+    }
 
     /// <summary>
     /// True when some route can run in Compact mode and the kill switch is off. A per-agent refusal still
@@ -1453,6 +1542,22 @@ public class ConversationsController(
             );
         }
 
+        if (
+            request.SuppressActionTools
+            && agent is not IActionToolSuppressingAgent { EnforcesActionToolSuppression: true }
+        )
+        {
+            return BadRequest(
+                new
+                {
+                    error = "action_tool_suppression_unsupported",
+                    code = "action_tool_suppression_unsupported",
+                    detail = "This conversation cannot enforce a tool-free correction input.",
+                    threadId,
+                }
+            );
+        }
+
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
         // turn does, and the resulting id is ADMITTED durably before anything is queued — so a repeat can be
         // answered from the record of what this host actually granted. That is the recovery a caller needs
@@ -1492,13 +1597,18 @@ public class ConversationsController(
         var admission = new InputAcceptance(
             threadId,
             idempotent
-                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+                ? IdempotentInputId.Create(
+                    request.IdempotencyKey!,
+                    request.SuppressSubAgentSpawning,
+                    request.SuppressActionTools
+                )
                 : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N"),
             timeProvider.GetUtcNow(),
             InputAcceptanceState.Pending,
             SpawningSuppressed: request.SuppressSubAgentSpawning,
             IdempotencyHonored: idempotent,
-            ReservationId: Guid.NewGuid()
+            ReservationId: Guid.NewGuid(),
+            ActionToolsSuppressed: request.SuppressActionTools
         );
 
         if (idempotent && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
@@ -1526,7 +1636,8 @@ public class ConversationsController(
                         [userMessage],
                         admission.InputId,
                         ParentRunId: null,
-                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning,
+                        SuppressActionTools: request.SuppressActionTools
                     ),
                     ct
                 )
@@ -1597,7 +1708,9 @@ public class ConversationsController(
         // make this host advertise a guarantee — and the negative is RECORDED, not just returned, so a retry
         // that arrives after the turn has been drained still reads "not suppressed" instead of being told by
         // a rebuilt-from-the-request answer that the guarantee held.
-        var guaranteeKept = !request.SuppressSubAgentSpawning || receipt.SpawningSuppressed;
+        var guaranteeKept =
+            (!request.SuppressSubAgentSpawning || receipt.SpawningSuppressed)
+            && (!request.SuppressActionTools || receipt.ActionToolsSuppressed);
         if (!guaranteeKept)
         {
             logger.LogWarning(
@@ -1612,6 +1725,7 @@ public class ConversationsController(
         {
             State = guaranteeKept ? InputAcceptanceState.Enforced : InputAcceptanceState.Unenforced,
             SpawningSuppressed = receipt.SpawningSuppressed,
+            ActionToolsSuppressed = receipt.ActionToolsSuppressed,
         };
 
         if (idempotent && !await acceptances!.TryRecordOutcomeAsync(granted, ct))
@@ -1774,6 +1888,7 @@ public class ConversationsController(
             {
                 State = InputAcceptanceState.Unenforced,
                 SpawningSuppressed = false,
+                ActionToolsSuppressed = false,
             },
             queued: false
         );
@@ -1811,6 +1926,8 @@ public class ConversationsController(
                 // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
                 // and already carries false.
                 SpawningSuppressed = acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
+                ActionToolsSuppressed =
+                    acceptance.State is InputAcceptanceState.Enforced && acceptance.ActionToolsSuppressed,
                 IdempotencyKeyHonored = acceptance.IdempotencyHonored,
             }
         );
@@ -1859,12 +1976,9 @@ public class ConversationsController(
 
     /// <summary>
     /// Namespace for an id this HOST minted because no key was supplied. Distinct from
-    /// <see cref="IdempotentInputIdPrefix"/> so a server-minted id can never be produced by any caller key.
+    /// the idempotent input namespace so a server-minted id can never be produced by any caller key.
     /// </summary>
     private const string ServerMintedInputIdPrefix = "srv:";
-
-    /// <summary>Namespace for an id derived from a caller's idempotency key.</summary>
-    private const string IdempotentInputIdPrefix = "idem:";
 
     /// <summary>
     /// A key must be storable and unambiguous as part of an input id. Control characters are rejected
@@ -1875,20 +1989,6 @@ public class ConversationsController(
         !string.IsNullOrWhiteSpace(idempotencyKey)
         && idempotencyKey.Length <= MaxIdempotencyKeyLength
         && !idempotencyKey.Any(char.IsControl);
-
-    /// <summary>
-    /// Derives the durable input id an idempotent send is recorded under. The options that change what the
-    /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
-    /// silently resolving to the earlier, differently-behaving input.
-    /// <para>
-    /// The mapping is injective by construction: both variable parts sit at FIXED positions — a one-character
-    /// suppression flag immediately after the namespace, then the key as the entire remainder. A suffix
-    /// instead of a prefix would not be, because a key may itself end in whatever marker was chosen, letting
-    /// two different (key, flag) pairs derive the same id and dedupe against each other.
-    /// </para>
-    /// </summary>
-    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
-        $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

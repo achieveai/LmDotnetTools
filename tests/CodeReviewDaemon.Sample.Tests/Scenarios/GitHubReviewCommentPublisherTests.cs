@@ -62,6 +62,7 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
             .PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
 
         posted.ProviderResponseId.Should().Be("555");
+        posted.ProviderCommentId.Should().Be("issue-comment:555");
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Post);
         request.Uri.ToString().Should().Be("https://api.github.com/repos/acme/widgets/issues/7/comments");
@@ -70,6 +71,65 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var body = JsonDocument.Parse(request.Body!).RootElement.GetProperty("body").GetString();
         body.Should().Contain("## Review\nLGTM");
         body.Should().Contain($"<!-- idempotency-key:{Key} -->", "the marker makes the post discoverable on replay");
+    }
+
+    [Fact]
+    public async Task PostInlineComment_uses_the_exact_diff_target_and_returns_canonical_comment_id()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/pulls/7/comments",
+            """{"id":701}""",
+            HttpStatusCode.Created
+        );
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Inline,
+            CommitId = "0123456789abcdef0123456789abcdef01234567",
+            Path = "src/Foo.cs",
+            Line = 42,
+            Side = ReviewCommentSide.Right,
+        };
+
+        var posted = await Publisher(handler).PostReviewCommentAsync(target, Key, "Fix this", CancellationToken.None);
+
+        posted.ProviderResponseId.Should().Be("701");
+        posted.ProviderCommentId.Should().Be("review-comment:701");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.ToString().Should().Be("https://api.github.com/repos/acme/widgets/pulls/7/comments");
+        var json = JsonDocument.Parse(request.Body!).RootElement;
+        json.GetProperty("body").GetString().Should().Contain($"<!-- idempotency-key:{Key} -->");
+        json.GetProperty("commit_id").GetString().Should().Be(target.CommitId);
+        json.GetProperty("path").GetString().Should().Be("src/Foo.cs");
+        json.GetProperty("line").GetInt32().Should().Be(42);
+        json.GetProperty("side").GetString().Should().Be("RIGHT");
+    }
+
+    [Fact]
+    public async Task PostReply_uses_the_top_level_review_comment_and_returns_canonical_comment_id()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/pulls/7/comments/701/replies",
+            """{"id":702}""",
+            HttpStatusCode.Created
+        );
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Reply,
+            ProviderThreadId = "701",
+            ReplyToProviderCommentId = "701",
+        };
+
+        var posted = await Publisher(handler).PostReviewCommentAsync(target, Key, "Addressed", CancellationToken.None);
+
+        posted.ProviderResponseId.Should().Be("702");
+        posted.ProviderCommentId.Should().Be("review-comment:702");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.ToString().Should().Be("https://api.github.com/repos/acme/widgets/pulls/7/comments/701/replies");
+        var json = JsonDocument.Parse(request.Body!).RootElement;
+        json.EnumerateObject().Select(p => p.Name).Should().Equal("body");
+        json.GetProperty("body").GetString().Should().Contain($"<!-- idempotency-key:{Key} -->");
     }
 
     [Fact]
@@ -88,6 +148,86 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         found.Should().NotBeNull();
         found!.ProviderResponseId.Should().Be("200");
+        found.ProviderCommentId.Should().Be("issue-comment:200");
+    }
+
+    [Theory]
+    [InlineData((int)ReviewCommentKind.Inline)]
+    [InlineData((int)ReviewCommentKind.Reply)]
+    public async Task FindPostedComment_for_review_operations_scans_review_comments(int kindValue)
+    {
+        var kind = (ReviewCommentKind)kindValue;
+        var listJson = JsonSerializer.Serialize(
+            new[] { new { id = 702, body = $"Addressed\n\n<!-- idempotency-key:{Key} -->" } }
+        );
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pulls/7/comments", listJson);
+        var target =
+            kind == ReviewCommentKind.Inline
+                ? Target with
+                {
+                    Kind = kind,
+                    CommitId = "0123456789abcdef0123456789abcdef01234567",
+                    Path = "src/Foo.cs",
+                    Line = 42,
+                    Side = ReviewCommentSide.Right,
+                }
+                : Target with
+                {
+                    Kind = kind,
+                    ProviderThreadId = "701",
+                    ReplyToProviderCommentId = "701",
+                };
+
+        var found = await Publisher(handler).FindPostedCommentAsync(target, Key, CancellationToken.None);
+
+        found.Should().Be(new PostedComment("702", "review-comment:702"));
+        handler.Requests.Should().ContainSingle(r => r.Uri.AbsolutePath.EndsWith("/pulls/7/comments"));
+        handler.Requests.Should().NotContain(r => r.Uri.AbsolutePath.Contains("/issues/"));
+    }
+
+    [Theory]
+    [InlineData("../secrets.cs")]
+    [InlineData("/src/Foo.cs")]
+    [InlineData("src\\Foo.cs")]
+    public async Task Inline_rejects_unsafe_paths_before_HTTP(string path)
+    {
+        var handler = new FakeHttpMessageHandler();
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Inline,
+            CommitId = "0123456789abcdef0123456789abcdef01234567",
+            Path = path,
+            Line = 42,
+            Side = ReviewCommentSide.Right,
+        };
+
+        var act = () => Publisher(handler).PostReviewCommentAsync(target, Key, "body", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(null, "701")]
+    [InlineData("", "701")]
+    [InlineData("0", "701")]
+    [InlineData("7/replies/8", "701")]
+    [InlineData("701", null)]
+    [InlineData("701", "0")]
+    public async Task Reply_rejects_unsafe_provider_comment_ids_before_HTTP(string? threadId, string? providerCommentId)
+    {
+        var handler = new FakeHttpMessageHandler();
+        var target = Target with
+        {
+            Kind = ReviewCommentKind.Reply,
+            ProviderThreadId = threadId,
+            ReplyToProviderCommentId = providerCommentId,
+        };
+
+        var act = () => Publisher(handler).PostReviewCommentAsync(target, Key, "body", CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
@@ -217,6 +357,75 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
             );
         existing.Should().ContainSingle(e => e.Path == "src/Bar.cs" && e.Line == "7" && e.Author == "alice"); // original_line fallback when line is absent
         existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("Reviewed PR 7"));
+    }
+
+    [Fact]
+    public async Task ListExisting_exposes_each_provider_comment_identity()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/reviews",
+                """[{"id":900,"state":"COMMENTED","body":"review body","user":{"login":"revobot"}}]"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/comments",
+                """[{"id":901,"path":"src/Foo.cs","line":42,"body":"inline","user":{"login":"revobot"}}]"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/issues/7/comments",
+                """[{"id":902,"body":"timeline","user":{"login":"revobot"}}]"""
+            );
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing
+            .Select(x => x.ProviderCommentId)
+            .Should()
+            .BeEquivalentTo("review-submission:900", "review-comment:901", "issue-comment:902");
+    }
+
+    [Fact]
+    public async Task ListExisting_carries_exact_provider_update_version()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/comments",
+                """[{"id":901,"body":"inline","path":"src/Foo.cs","line":3,"created_at":"2026-07-20T10:00:00Z","updated_at":"2026-07-21T11:12:13Z"}]"""
+            )
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle().Which.ProviderVersion.Should().Be("2026-07-21T11:12:13Z");
+    }
+
+    [Fact]
+    public async Task ListExisting_names_the_comment_surface_when_numeric_ids_overlap()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/comments",
+                """[{"id":42,"body":"inline","created_at":"2026-07-20T10:00:00Z"}]"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/issues/7/comments",
+                """[{"id":42,"body":"timeline","created_at":"2026-07-20T10:00:00Z"}]"""
+            );
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing
+            .Select(value => value.ProviderCommentId)
+            .Should()
+            .BeEquivalentTo("review-comment:42", "issue-comment:42");
     }
 
     [Fact]
@@ -562,7 +771,7 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // The bot's own prior summaries AND questions addressed to it live on /issues/{pr}/comments, which
         // GitHub returns oldest-first and will not reorder. The newest comment is therefore on the LAST page,
         // and a capped forward walk keeps a window of ancient chatter and never sees the live question.
-        var conversation = FillerToTheTail("older-chatter", 8000);
+        var conversation = Filler(PageSize * 4, "older-chatter", 8000);
         conversation.Add(Comment(9001, "@revobot is this still needed?", conversation.Count));
 
         var handler = new FakeHttpMessageHandler();
@@ -589,7 +798,7 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         List<object> reviews =
         [
             .. Enumerable
-                .Range(0, PageSize * (PagesBeyondTheCap - 1))
+                .Range(0, PageSize * 4)
                 .Select(i =>
                     (object)
                         new
@@ -700,7 +909,7 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task ListExisting_stops_at_the_page_cap_and_drops_the_oldest_conversation()
+    public async Task ListExisting_fails_when_the_complete_conversation_exceeds_the_page_cap()
     {
         // The cap is the counterweight to following pagination at all: a very long thread must not hold the
         // daemon in a listing loop. What it discards has to be the oldest end — which is the half of this the
@@ -711,15 +920,10 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         OnAscendingListing(handler, "/issues/7/comments", conversation);
         handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
 
-        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+        var act = () => Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        handler
-            .CountRequests("/issues/7/comments")
-            .Should()
-            .Be(6, "one request locates the tail, then MaxListPages bounds the walk");
-        existing.Should().HaveCount(PageSize * 5);
-        existing.Should().Contain(e => e.Body == "chatter-4999", "the newest comment is what dedup needs");
-        existing.Should().NotContain(e => e.Body == "chatter-0", "the cap must drop the oldest end");
+        await act.Should().ThrowAsync<InvalidDataException>();
+        handler.CountRequests("/issues/7/comments").Should().Be(1, "the Link header proves the read is incomplete");
     }
 
     [Fact]

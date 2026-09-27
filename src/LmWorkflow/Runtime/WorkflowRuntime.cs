@@ -36,7 +36,7 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 ///         re-spawns it; only when the budget is exhausted is the unit terminally failed.
 ///     </para>
 /// </remarks>
-public sealed class WorkflowRuntime
+public sealed partial class WorkflowRuntime
 {
     private readonly object _lock = new();
     private readonly WorkflowValidator _validator = new();
@@ -317,6 +317,7 @@ public sealed class WorkflowRuntime
         lock (_lock)
         {
             Definition = def;
+            _automaticSessions.Clear();
             RebuildNodeIndexNoLock();
             _inputs = CloneObject(def.Inputs);
             _state = CloneObject(def.State);
@@ -1542,6 +1543,17 @@ public sealed class WorkflowRuntime
             // Restore the definition verbatim (no validator, no channel re-seeding) and the channels as
             // captured — a deep copy so the runtime never aliases the caller's snapshot nodes.
             Definition = snapshot.Definition;
+            _instanceId = string.IsNullOrEmpty(snapshot.InstanceId) ? null : snapshot.InstanceId;
+            _automaticSessions.Clear();
+            foreach (var (name, sessionId) in snapshot.Sessions)
+            {
+                _automaticSessions[name] = sessionId;
+            }
+            _automaticDeadlines.Clear();
+            foreach (var (name, deadline) in snapshot.Deadlines)
+            {
+                _automaticDeadlines[name] = deadline;
+            }
             RebuildNodeIndexNoLock();
             CurrentNodeId = snapshot.CurrentNodeId;
             IsComplete = snapshot.IsComplete;
@@ -1586,6 +1598,8 @@ public sealed class WorkflowRuntime
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
             Tasks = _coordinator.BuildTaskSnapshots(),
             Collaboration = _collaboration,
+            Sessions = new Dictionary<string, string>(_automaticSessions, StringComparer.Ordinal),
+            Deadlines = new Dictionary<string, DateTimeOffset>(_automaticDeadlines, StringComparer.Ordinal),
         };
 
     /// <summary>Builds a snapshot for persistence, or <c>null</c> when no store is attached. Caller holds the lock.</summary>

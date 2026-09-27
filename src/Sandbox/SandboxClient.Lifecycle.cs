@@ -16,6 +16,10 @@ public sealed partial class SandboxClient
     /// The gateway rejected the credential (<see cref="SandboxErrorKind.Authorization"/>) or returned
     /// an unexpected response (<see cref="SandboxErrorKind.Protocol"/>).
     /// </exception>
+    /// <exception cref="SandboxHomeAcknowledgementException">
+    /// Creation succeeded, but the requested home was not acknowledged. The exception retains the
+    /// newly created session id so the caller can explicitly delete it using the creating credential.
+    /// </exception>
     public async Task<SandboxInfo> CreateAsync(SandboxCreateRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -35,6 +39,10 @@ public sealed partial class SandboxClient
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
+        if (request.Home is not null && !string.Equals(request.Home, info.HomeRelativePath, StringComparison.Ordinal))
+        {
+            throw new SandboxHomeAcknowledgementException(info.SessionId, request.Home, info.HomeRelativePath);
+        }
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -171,7 +179,8 @@ public sealed partial class SandboxClient
             PluginSelection: request.PluginSelection is null
                 ? null
                 : [.. request.PluginSelection.Select(ToPluginRefDto)],
-            Env: request.Env.Count > 0 ? request.Env : null
+            Env: request.Env.Count > 0 ? request.Env : null,
+            Home: request.Home
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -208,7 +217,8 @@ public sealed partial class SandboxClient
             dto.Volumes?.Workspace?.Id,
             dto.Status,
             ToInventory(dto.Inventory, operation, statusCode),
-            ToPluginResolution(dto.PluginResolution, operation, statusCode)
+            ToPluginResolution(dto.PluginResolution, operation, statusCode),
+            dto.Volumes?.Workspace?.Home
         );
 
     /// <summary>

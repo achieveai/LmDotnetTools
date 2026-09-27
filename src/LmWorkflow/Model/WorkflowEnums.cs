@@ -126,4 +126,7 @@ public enum DelegateKind
 
     /// <summary>Delegate the task to a human (not supported in V1).</summary>
     Human,
+
+    /// <summary>Execute a workspace script using validated JSON stdin/stdout.</summary>
+    Script,
 }

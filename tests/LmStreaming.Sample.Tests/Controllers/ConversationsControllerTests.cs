@@ -35,7 +35,8 @@ public class ConversationsControllerTests
         ProviderRegistry? providerRegistry = null,
         ConversationStatusResolver? statusResolver = null,
         SandboxSessionRegistry? sandboxSessionRegistry = null,
-        SandboxEnvApplier? envApplier = null
+        SandboxEnvApplier? envApplier = null,
+        LmStreaming.Sample.Configuration.WorkflowPublicationOptions? workflowPublication = null
     )
     {
         return new ConversationsController(
@@ -56,7 +57,8 @@ public class ConversationsControllerTests
             // Named, not positional: the controller has more than one optional trailing parameter, so a
             // positional argument here silently binds to whichever one happens to come first.
             sandboxSessionRegistry: sandboxSessionRegistry,
-            envApplier: envApplier
+            envApplier: envApplier,
+            workflowPublication: workflowPublication
         );
     }
 
@@ -934,6 +936,7 @@ public class ConversationsControllerTests
         response.SchemaVersion.Should().Be(1);
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
+        response.ActionToolSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
         // No sandbox registry is wired into this controller, so nothing here could apply env to a
         // session. It used to report true regardless — a claim about the BUILD rather than about the
@@ -1270,6 +1273,74 @@ public class ConversationsControllerTests
         metadata.Properties[MultiTurnAgentPool.WorkspacePropertyKey].Should().Be("ws-1");
         metadata.Properties[MultiTurnAgentPool.ModePropertyKey].Should().Be(SystemChatModes.DefaultModeId);
         metadata.Properties[ConversationRootReasoningEffort.PropertyKey].Should().Be("xhigh");
+    }
+
+    [Theory]
+    [InlineData(".worktrees/Nova-0", ".worktrees/Nova-0")]
+    [InlineData("./.worktrees//Nova-1/", ".worktrees/Nova-1")]
+    [InlineData(".", null)]
+    [InlineData(null, null)]
+    public async Task Provision_PersistsNormalizedConversationCwdWithoutChangingWorkspace(string? cwd, string? expected)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaces = new Mock<IWorkspaceStore>();
+        workspaces.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>())).ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaces.Object,
+            providerRegistry: new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal()
+        );
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                WorkingDirectoryRelPath = cwd,
+            },
+            default
+        );
+        var response = Assert.IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        (await ConversationWorkingDirectory.ReadAsync(store, response.ThreadId)).Should().Be(expected);
+        (await store.LoadMetadataAsync(response.ThreadId, default))!
+            .Properties![MultiTurnAgentPool.WorkspacePropertyKey]
+            .Should()
+            .Be("ws-1");
+    }
+
+    [Theory]
+    [InlineData("../outside")]
+    [InlineData("/absolute")]
+    [InlineData("C:/outside")]
+    [InlineData(".worktrees\\Nova-0")]
+    public async Task Provision_RejectsUnsafeConversationCwd(string cwd)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaces = new Mock<IWorkspaceStore>();
+        workspaces.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>())).ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaces.Object,
+            providerRegistry: new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal()
+        );
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                WorkingDirectoryRelPath = cwd,
+            },
+            default
+        );
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        System.Text.Json.JsonSerializer.Serialize(bad.Value).Should().Contain("working_directory_invalid");
     }
 
     [Fact]

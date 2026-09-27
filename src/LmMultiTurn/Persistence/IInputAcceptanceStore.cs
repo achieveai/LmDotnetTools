@@ -62,6 +62,8 @@ public enum InputAcceptanceState
 /// late (after the id was released and re-reserved by someone else) is rejected rather than deleting
 /// the new owner's record.
 /// </param>
+/// <param name="ActionToolsSuppressed">Persisted per-input grant that all action tools are disabled.</param>
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record InputAcceptance(
     string ThreadId,
     string InputId,
@@ -69,8 +71,42 @@ public sealed record InputAcceptance(
     InputAcceptanceState State,
     bool SpawningSuppressed,
     bool IdempotencyHonored,
-    Guid ReservationId
-);
+    Guid ReservationId,
+    bool ActionToolsSuppressed = false
+)
+{
+    /// <summary>Preserves the constructor used by previously compiled consumers.</summary>
+    public InputAcceptance(
+        string ThreadId,
+        string InputId,
+        DateTimeOffset AcceptedAt,
+        InputAcceptanceState State,
+        bool SpawningSuppressed,
+        bool IdempotencyHonored,
+        Guid ReservationId
+    )
+        : this(ThreadId, InputId, AcceptedAt, State, SpawningSuppressed, IdempotencyHonored, ReservationId, false) { }
+
+    /// <summary>Preserves positional deconstruction for previously compiled consumers.</summary>
+    public void Deconstruct(
+        out string ThreadId,
+        out string InputId,
+        out DateTimeOffset AcceptedAt,
+        out InputAcceptanceState State,
+        out bool SpawningSuppressed,
+        out bool IdempotencyHonored,
+        out Guid ReservationId
+    )
+    {
+        ThreadId = this.ThreadId;
+        InputId = this.InputId;
+        AcceptedAt = this.AcceptedAt;
+        State = this.State;
+        SpawningSuppressed = this.SpawningSuppressed;
+        IdempotencyHonored = this.IdempotencyHonored;
+        ReservationId = this.ReservationId;
+    }
+}
 
 /// <summary>
 /// Opt-in capability for stores that can admit an input EXACTLY ONCE and remember the outcome durably.

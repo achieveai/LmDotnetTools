@@ -7,6 +7,21 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 public sealed class DaemonProfileConfigurationTests
 {
+    [Theory]
+    [InlineData("appsettings.json")]
+    [InlineData("appsettings.achieveai.json")]
+    [InlineData("appsettings.mcqdb.json")]
+    [InlineData("appsettings.s2s.json")]
+    public void Shipped_profiles_use_the_authored_workflow_without_retired_stage_controls(string name)
+    {
+        var section = new ConfigurationBuilder()
+            .AddJsonFile(LocateProfile(name))
+            .Build()
+            .GetSection("CodeReviewDaemon");
+        CodeReviewDaemonOptions.ValidateWorkflowConfiguration(section);
+        section.GetValue<string>("WorkflowPath").Should().Be(".review/workflow.yaml");
+    }
+
     [Fact]
     public void Mcqdb_listener_and_auth_webhook_use_the_same_origin()
     {
@@ -58,7 +73,6 @@ public sealed class DaemonProfileConfigurationTests
         var options = BindDaemonOptions(profileFileName);
 
         options.SubAgentModelId.Should().BeEmpty("the code-review mode now routes each canonical subagent_type");
-        options.ReviewReasoningEffort.Should().Be("xhigh");
         options.ToolAssistedReasoningEffort.Should().Be("xhigh");
     }
 

@@ -30,6 +30,22 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 public class WorkflowAuthoringErgonomicsTests
 {
     [Fact]
+    public async Task Controller_authoring_rejects_automatic_contracts_before_mutating_runtime()
+    {
+        var runtime = new WorkflowRuntime();
+        var provider = new WorkflowToolProvider(runtime) { RequireControllerCompatibleDefinition = true };
+        var definition = WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid) with { StrictContracts = true };
+        var args = new JsonObject { ["definition"] = JsonSerializer.SerializeToNode(definition, WorkflowJson.Options) };
+        var result = await Invoke(
+            provider.GetFunctions().Single(value => value.Contract.Name == "SetWorkflow"),
+            args.ToJsonString()
+        );
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.Text.Should().Contain("RunAutomaticAsync");
+        runtime.Definition.Should().BeNull();
+    }
+
+    [Fact]
     public void AuthoringSchema_AdvertisesModelIntelligenceAndRejectsUnknownFields()
     {
         var workflow = SimpleWorkflowSchema.Workflow();

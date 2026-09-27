@@ -34,7 +34,10 @@ internal sealed class SnapshotPersister
         {
             _saveChain = _saveChain
                 .ContinueWith(
-                    _ => SaveBestEffortAsync(store, instanceId, snapshot, logger),
+                    prior =>
+                        snapshot.Definition?.StrictContracts == true
+                            ? SaveRequiredAsync(prior, store, instanceId, snapshot)
+                            : SaveBestEffortAsync(store, instanceId, snapshot, logger),
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default
@@ -54,6 +57,17 @@ internal sealed class SnapshotPersister
         {
             return _saveChain;
         }
+    }
+
+    private static async Task SaveRequiredAsync(
+        Task prior,
+        IWorkflowStore store,
+        string instanceId,
+        WorkflowInstanceSnapshot snapshot
+    )
+    {
+        await prior.ConfigureAwait(false);
+        await store.SaveAsync(instanceId, snapshot).ConfigureAwait(false);
     }
 
     private static async Task SaveBestEffortAsync(

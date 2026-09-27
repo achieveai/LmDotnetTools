@@ -19,12 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class S2SReviewAgentLoopFactoryTests
 {
-    private static readonly PreparedReviewWorkspace Workspace = new(
-        Leaf: "pr-118",
-        WorkspaceId: "ws-118",
-        HostDir: "/srv/checkouts/pr-118",
-        PrId: "118"
-    );
+    private static readonly PreparedReviewWorkspace Workspace = new(Leaf: "pr-118", WorkspaceId: "ws-118", PrId: "118");
 
     private static readonly AgentProfile Profile = new(
         Id: "review",

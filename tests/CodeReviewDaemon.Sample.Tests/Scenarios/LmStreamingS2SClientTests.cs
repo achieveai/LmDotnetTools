@@ -17,6 +17,45 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class LmStreamingS2SClientTests
 {
+    [Fact]
+    public async Task Workflow_provider_preflight_refuses_global_capability_without_selected_provider_grant()
+    {
+        using var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app", "key");
+        await Assert.ThrowsAsync<ReviewHostContractException>(() =>
+            client.EnsureWorkflowPublicationAsync(default, "claude")
+        );
+        Assert.Single(handler.Requests);
+        Assert.Contains("providerId=claude", handler.Requests[0].Uri.Query);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Workflow_publication_preflight_requires_the_explicit_host_capability(bool supports)
+    {
+        using var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":"
+                + (supports ? "true" : "false")
+                + "}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s2s-secret", "app", "key");
+        if (supports)
+            await client.EnsureWorkflowPublicationAsync(default);
+        else
+            await Assert.ThrowsAsync<ReviewHostContractException>(() => client.EnsureWorkflowPublicationAsync(default));
+        Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+    }
+
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
@@ -54,7 +93,12 @@ public sealed class LmStreamingS2SClientTests
             "REVIEW METHODOLOGY",
             "gpt-5.6-sol",
             "xhigh",
-            CancellationToken.None
+            CancellationToken.None,
+            env: new Dictionary<string, string>
+            {
+                ["BLUEBIRD_URL"] = "https://agency.internal:8765",
+                ["BLUEBIRD_DUMMY_KEY"] = "not-a-secret",
+            }
         );
 
         threadId.Should().Be("thread-abc123");
@@ -78,7 +122,12 @@ public sealed class LmStreamingS2SClientTests
             .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"")
             // Root effort is also conversation-scoped. It must cross S2S instead of falling back to the
             // provider default, which is only medium for the deployed GPT-5.6 models.
-            .And.Contain("\"reasoningEffort\":\"xhigh\"");
+            .And.Contain("\"reasoningEffort\":\"xhigh\"")
+            // Workspace environment is provision-scoped and immutable. This is the only request that can
+            // carry the configured Bluebird origin and non-secret bootstrap values to the hosted sandbox.
+            .And.Contain("\"env\":{")
+            .And.Contain("\"BLUEBIRD_URL\":\"https://agency.internal:8765\"")
+            .And.Contain("\"BLUEBIRD_DUMMY_KEY\":\"not-a-secret\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");

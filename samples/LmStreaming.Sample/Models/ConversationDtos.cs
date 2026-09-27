@@ -239,6 +239,31 @@ public record ProvisionConversationRequest
     /// the one in effect. Never logged.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Env { get; init; }
+
+    /// <summary>
+    /// Optional workspace-relative directory <i>inside</i> the mounted <see cref="WorkspaceId"/> that THIS
+    /// conversation's Gateway MCP tools use as their native home. Trusted orchestration metadata —
+    /// never model output. Home partitions sessions, not mounted storage or catalog identity;
+    /// the file browser remains workspace-relative.
+    /// <para>
+    /// The case it exists for is one shared workspace holding several isolated checkouts: the code-review
+    /// daemon mounts one <c>nova-reviews</c> workspace and defaults each review to its own leased
+    /// <c>.worktrees/&lt;Repo&gt;-&lt;N&gt;</c> linked worktree. Encoding that in the workspace's own
+    /// <c>DirectoryRelPath</c> instead would mint a separate Gateway workspace per slot and defeat the
+    /// shared object store the whole layout exists for.
+    /// </para>
+    /// <para>
+    /// Normalized and validated <b>before</b> the thread is minted (rooted paths, Windows drive prefixes,
+    /// backslashes, NUL bytes and <c>..</c> segments are refused), then persisted immutably: a later
+    /// provision that names a different directory for the same thread is rejected rather than silently
+    /// relocating an agent. Gateway validates canonical containment and acknowledges its actual stored home;
+    /// missing or mismatched acknowledgement fails closed. Home is a default, not confinement, and Gateway
+    /// creating the directory does not prove a review checkout was prepared. Callers must check
+    /// <see cref="ConversationCapabilitiesResponse.ConversationWorkingDirectory"/> first; a host that
+    /// predates this field ignores it and would start the agent at the workspace root.
+    /// </para>
+    /// </summary>
+    public string? WorkingDirectoryRelPath { get; init; }
 }
 
 /// <summary>
@@ -284,6 +309,18 @@ public record ConversationCapabilitiesResponse
     /// </summary>
     public required bool SpawnSuppression { get; init; }
 
+    /// <summary>Supports tool-free correction inputs, enforcing or refusing each requested guarantee.</summary>
+    public bool ActionToolSuppression { get; init; }
+
+    /// <summary>Whether native parent publication forwarding is configured on this host.</summary>
+    public bool WorkflowPublication { get; init; }
+
+    /// <summary>Echoed only when the queried provider supports native publication forwarding.</summary>
+    public string? WorkflowPublicationProviderId { get; init; }
+
+    /// <summary>Mode with native callbacks and provider egress denial; absent on older hosts.</summary>
+    public string? WorkflowPublicationModeId { get; init; }
+
     /// <summary>
     /// True when <see cref="ProvisionConversationRequest.ReasoningEffort"/> is understood and persisted before
     /// the hosted root agent is built. Callers check this side-effect-free capability before provisioning so an
@@ -298,6 +335,16 @@ public record ConversationCapabilitiesResponse
     /// unusable orphan conversation merely to reveal that it ignored the field.
     /// </summary>
     public required bool SandboxEnv { get; init; }
+
+    /// <summary>
+    /// True when <see cref="ProvisionConversationRequest.WorkingDirectoryRelPath"/> is understood:
+    /// validated and persisted at provision, and resolved beneath the mounted workspace when the hosted
+    /// agent is built. Callers check this side-effect-free capability before provisioning because the
+    /// failure it guards against is silent — a host that ignores the field mints a perfectly healthy
+    /// conversation whose agent simply runs at the workspace root instead of the assigned worktree, and
+    /// nothing in the response says so.
+    /// </summary>
+    public required bool ConversationWorkingDirectory { get; init; }
 
     /// <summary>
     /// True when <c>POST api/conversations/{threadId}/compaction</c> can be honored: some route runs compaction in
@@ -354,6 +401,9 @@ public record SendMessageRequest
     /// </summary>
     public bool SuppressSubAgentSpawning { get; init; }
 
+    /// <summary>Disables all tools for the run consuming this format-correction input.</summary>
+    public bool SuppressActionTools { get; init; }
+
     /// <summary>
     /// Makes this send safe to REPEAT. When supplied, the host records the input under an id derived from
     /// this key (plus the options that change what the turn does) and reconciles a repeat against its
@@ -387,6 +437,9 @@ public record SendMessageResponse
     /// unsupported host rather than silently proceeding without suppression.
     /// </summary>
     public bool SpawningSuppressed { get; init; }
+
+    /// <summary>Durable acknowledgment that the accepted input is enforced without tools.</summary>
+    public bool ActionToolsSuppressed { get; init; }
 
     /// <summary>
     /// Acknowledgement that <see cref="SendMessageRequest.IdempotencyKey"/> was supplied AND applied — i.e.

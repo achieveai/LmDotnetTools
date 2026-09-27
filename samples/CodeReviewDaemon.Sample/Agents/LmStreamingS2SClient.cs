@@ -132,7 +132,9 @@ internal sealed class LmStreamingS2SClient
         string? systemPromptAppendix,
         string? subAgentModelId,
         string? reasoningEffort,
-        CancellationToken ct
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? env = null,
+        string? workingDirectoryRelPath = null
     )
     {
         using var response = await ExecuteAsync(
@@ -148,6 +150,10 @@ internal sealed class LmStreamingS2SClient
                 // Do not normalize empty to null: empty explicitly asks the host to omit effort, while null
                 // leaves the provider's default intact.
                 ReasoningEffort = reasoningEffort,
+                // Values may contain secrets and are deliberately never logged. The host validates the map
+                // before persisting it and applies it only when the conversation's sandbox activates.
+                Env = env is { Count: > 0 } ? env : null,
+                WorkingDirectoryRelPath = workingDirectoryRelPath,
             },
             ct
         );
@@ -244,6 +250,24 @@ internal sealed class LmStreamingS2SClient
         return true;
     }
 
+    /// <summary>Checks native workflow publication forwarding and correction suppression before any send.</summary>
+    public Task EnsureWorkflowPublicationAsync(
+        CancellationToken ct,
+        string? providerId = null,
+        string? modeId = null,
+        bool requireSandboxEnv = false,
+        bool requireConversationWorkingDirectory = false
+    ) =>
+        EnsureHostContractAsync(
+            ct,
+            requireActionToolSuppression: true,
+            requireWorkflowPublication: true,
+            requireSandboxEnv: requireSandboxEnv,
+            requireConversationWorkingDirectory: requireConversationWorkingDirectory,
+            publicationProviderId: providerId,
+            publicationModeId: modeId
+        );
+
     /// <summary>
     /// Verifies, WITHOUT creating or queueing anything, that the host implements the three contracts a review
     /// depends on: root reasoning effort, per-turn spawn suppression, and message idempotency.
@@ -263,9 +287,24 @@ internal sealed class LmStreamingS2SClient
     /// until the governor's clock runs out only delays the same conclusion.
     /// </para>
     /// </summary>
-    public async Task EnsureHostContractAsync(CancellationToken ct)
+    public async Task EnsureHostContractAsync(
+        CancellationToken ct,
+        bool requireActionToolSuppression = false,
+        bool requireWorkflowPublication = false,
+        bool requireSandboxEnv = false,
+        bool requireConversationWorkingDirectory = false,
+        string? publicationProviderId = null,
+        string? publicationModeId = null
+    )
     {
-        using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
+        var queries = new List<string>();
+        if (publicationProviderId is not null)
+            queries.Add("providerId=" + Uri.EscapeDataString(publicationProviderId));
+        if (publicationModeId is not null)
+            queries.Add("modeId=" + Uri.EscapeDataString(publicationModeId));
+        var capabilityPath =
+            "api/conversations/capabilities" + (queries.Count == 0 ? "" : "?" + string.Join("&", queries));
+        using var response = await ExecuteAsync(HttpMethod.Get, capabilityPath, body: null, ct);
 
         if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
         {
@@ -304,6 +343,52 @@ internal sealed class LmStreamingS2SClient
         if (!ReadBoolProperty(body, "rootReasoningEffort"))
         {
             missing.Add("rootReasoningEffort");
+        }
+
+        if (requireActionToolSuppression && !ReadBoolProperty(body, "actionToolSuppression"))
+        {
+            missing.Add("actionToolSuppression");
+        }
+
+        if (requireWorkflowPublication && !ReadBoolProperty(body, "workflowPublication"))
+        {
+            missing.Add("workflowPublication");
+        }
+
+        if (requireSandboxEnv && !ReadBoolProperty(body, "sandboxEnv"))
+        {
+            missing.Add("sandboxEnv");
+        }
+
+        if (requireConversationWorkingDirectory && !ReadBoolProperty(body, "conversationWorkingDirectory"))
+        {
+            missing.Add("conversationWorkingDirectory");
+        }
+
+        if (publicationProviderId is not null)
+        {
+            using var capabilities = JsonDocument.Parse(body);
+            if (
+                !string.Equals(
+                    OptionalString(capabilities.RootElement, "workflowPublicationProviderId"),
+                    publicationProviderId,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+                missing.Add("native publication for the selected provider");
+        }
+
+        if (publicationModeId is not null)
+        {
+            using var capabilities = JsonDocument.Parse(body);
+            if (
+                !string.Equals(
+                    OptionalString(capabilities.RootElement, "workflowPublicationModeId"),
+                    publicationModeId,
+                    StringComparison.Ordinal
+                )
+            )
+                missing.Add("provider egress isolation for the selected mode");
         }
 
         if (missing.Count > 0)
@@ -385,7 +470,8 @@ internal sealed class LmStreamingS2SClient
         string text,
         bool suppressSubAgentSpawning,
         string? idempotencyKey,
-        CancellationToken ct
+        CancellationToken ct,
+        bool suppressActionTools = false
     )
     {
         var body = await SendReadAsync(
@@ -395,6 +481,7 @@ internal sealed class LmStreamingS2SClient
             {
                 Text = text,
                 SuppressSubAgentSpawning = suppressSubAgentSpawning,
+                SuppressActionTools = suppressActionTools,
                 IdempotencyKey = idempotencyKey,
             },
             ct
@@ -406,6 +493,13 @@ internal sealed class LmStreamingS2SClient
                 "The review host did not acknowledge the requested sub-agent spawn suppression "
                     + "('spawningSuppressed' was absent or false), so this turn cannot be guaranteed free of "
                     + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}"
+            );
+        }
+
+        if (suppressActionTools && !ReadBoolProperty(body, "actionToolsSuppressed"))
+        {
+            throw new ReviewHostContractException(
+                "The review host did not acknowledge action-tool suppression; correction cannot be confirmed safe."
             );
         }
 
@@ -437,6 +531,24 @@ internal sealed class LmStreamingS2SClient
             ct
         );
         return ParseStatus(body);
+    }
+
+    internal async Task RequireIdleAsync(string threadId, CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations/{Uri.EscapeDataString(threadId)}/run-state",
+                body: null,
+                ct
+            )
+            .ConfigureAwait(false);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (
+            root.GetProperty("threadId").GetString() != threadId
+            || root.GetProperty("isInProgress").ValueKind != JsonValueKind.False
+        )
+            throw new InvalidOperationException("Hosted conversation is not proven idle.");
     }
 
     /// <summary>

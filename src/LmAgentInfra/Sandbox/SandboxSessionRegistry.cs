@@ -37,8 +37,8 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// calls.</param>
 /// <param name="WorkspaceRelPath">Workspace path relative to the gateway's workspace base, as
 /// requested at creation time.</param>
-/// <param name="HostPath">Absolute host path of the mounted workspace (long-path <c>\\?\</c>
-/// prefix stripped) — the path the model uses for absolute-path file tools.</param>
+/// <param name="HostPath">Legacy name for the remote container workspace path returned by Gateway.
+/// Never use it as a local host path or probe it through local filesystem APIs.</param>
 /// <param name="PluginResolution">How the gateway resolved this session's plugin selection, exactly
 /// as it reported at creation. <see langword="null"/> when the gateway reported no resolution block
 /// at all — a strictly weaker claim than a resolution saying filtering is unsupported, and the two
@@ -55,7 +55,14 @@ public sealed record SandboxSession(
     string HostPath,
     SandboxPluginResolution? PluginResolution = null,
     IReadOnlyList<string>? Marketplaces = null
-);
+)
+{
+    /// <summary>Whether provider egress was denied in this session's creation network policy.</summary>
+    public bool BlockProviderEgress { get; init; }
+
+    /// <summary>Immutable workspace-relative Gateway tool home, separate from the mounted workspace.</summary>
+    public string? HomeRelativePath { get; init; }
+}
 
 /// <summary>
 /// Identifies the workspace a sandbox session is being requested for: the logical
@@ -89,7 +96,14 @@ public sealed record WorkspaceRef(
     IReadOnlyList<string>? Marketplaces = null,
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
     IReadOnlyDictionary<string, string>? Env = null
-);
+)
+{
+    /// <summary>Host-owned isolation for review sessions whose provider operations use native callbacks.</summary>
+    public bool BlockProviderEgress { get; init; }
+
+    /// <summary>Immutable workspace-relative Gateway tool home, separate from the mounted workspace.</summary>
+    public string? HomeRelativePath { get; init; }
+}
 
 /// <summary>
 /// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
@@ -263,8 +277,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// default equality comparer for a <c>(string, string)</c> value tuple already compares each
     /// element with ordinal string equality, so no explicit comparer is needed.
     /// </summary>
-    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>> _sessions =
-        new();
+    private readonly ConcurrentDictionary<
+        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+        Lazy<Task<SandboxSession>>
+    > _sessions = new();
 
     /// <summary>
     /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
@@ -435,7 +451,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// an invalidated slot claims the marker, so the linkage follows the replacement rather than the
     /// caller that noticed the eviction.
     /// </remarks>
-    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), string> _replacedSessions = new();
+    private readonly ConcurrentDictionary<
+        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+        string
+    > _replacedSessions = new();
 
     /// <summary>
     /// Initialises the registry.
@@ -915,7 +934,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// whose <c>AppId</c> partitions the session cache. <c>null</c> resolves to the process-wide
     /// default credential (unchanged behavior for interactive/daemon callers, which never pass
     /// one).</param>
-    public Task<SandboxSession> GetOrCreateSessionAsync(
+    public async Task<SandboxSession> GetOrCreateSessionAsync(
         WorkspaceRef workspaceRef,
         CancellationToken ct = default,
         SandboxCredential? credential = null
@@ -925,9 +944,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         ArgumentNullException.ThrowIfNull(workspaceRef);
 
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
-        var effectiveRef = workspaceRef with { Id = workspaceId };
+        var normalizedHome = AchieveAi.LmDotnetTools.Sandbox.Command.WorkspaceRelativePath.Normalize(
+            workspaceRef.HomeRelativePath,
+            nameof(workspaceRef.HomeRelativePath)
+        );
+        var effectiveRef = workspaceRef with
+        {
+            Id = workspaceId,
+            HomeRelativePath = normalizedHome.Length == 0 ? null : normalizedHome,
+        };
         var effectiveCredential = credential ?? _defaultCredential;
-        var key = (workspaceId, effectiveCredential.AppId);
+        var key = (
+            workspaceId,
+            effectiveCredential.AppId,
+            effectiveRef.HomeRelativePath,
+            effectiveRef.BlockProviderEgress
+        );
 
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
@@ -940,7 +972,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             )
         );
 
-        return AwaitAndEvictOnFailureAsync(key, lazy);
+        var session = await AwaitAndEvictOnFailureAsync(key, lazy).ConfigureAwait(false);
+        if (session.BlockProviderEgress != effectiveRef.BlockProviderEgress)
+            throw new InvalidOperationException(
+                "Existing sandbox session has a different provider network policy; it cannot be reused for this conversation."
+            );
+        return session;
     }
 
     /// <summary>
@@ -951,7 +988,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// creation itself.
     /// </summary>
     private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(
-        (string WorkspaceId, string AppId) key,
+        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress) key,
         Lazy<Task<SandboxSession>> lazy
     )
     {
@@ -964,8 +1001,19 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             // Only evict the entry we own, in case another creation has since replaced it.
             _ = (
-                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
-            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
+                (ICollection<
+                    KeyValuePair<
+                        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+                        Lazy<Task<SandboxSession>>
+                    >
+                >)
+                    _sessions
+            ).Remove(
+                new KeyValuePair<
+                    (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+                    Lazy<Task<SandboxSession>>
+                >(key, lazy)
+            );
             throw;
         }
 
@@ -1088,7 +1136,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         ArgumentNullException.ThrowIfNull(workspaceRef);
 
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
-        var effectiveRef = workspaceRef with { Id = workspaceId };
+        var normalizedHome = AchieveAi.LmDotnetTools.Sandbox.Command.WorkspaceRelativePath.Normalize(
+            workspaceRef.HomeRelativePath,
+            nameof(workspaceRef.HomeRelativePath)
+        );
+        var effectiveRef = workspaceRef with
+        {
+            Id = workspaceId,
+            HomeRelativePath = normalizedHome.Length == 0 ? null : normalizedHome,
+        };
         var effectiveCredential = credential ?? _defaultCredential;
 
         var session = await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
@@ -1159,19 +1215,39 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
         }
 
-        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
+        await InvalidateSessionAsync(
+                (
+                    workspaceId,
+                    effectiveCredential.AppId,
+                    effectiveRef.HomeRelativePath,
+                    effectiveRef.BlockProviderEgress
+                ),
+                session
+            )
+            .ConfigureAwait(false);
 
         // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
         // invalidated, whatever id the store happens to echo back.
-        var refreshedRef = reloaded is null ? effectiveRef : reloaded with { Id = workspaceId };
+        var refreshedRef = reloaded is null
+            ? effectiveRef
+            : reloaded with
+            {
+                Id = workspaceId,
+                BlockProviderEgress = effectiveRef.BlockProviderEgress,
+                HomeRelativePath = effectiveRef.HomeRelativePath,
+            };
 
         return await GetOrCreateSessionAsync(refreshedRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
+    private sealed class SandboxHomeAcknowledgementException()
+        : InvalidOperationException(
+            "Gateway no longer acknowledges the established native workspace home; refusing review tools. Upgrade or reconcile the Gateway session."
+        );
+
     /// <summary>
-    /// Probes the gateway for <paramref name="sessionId"/>. Returns <c>false</c> only on a definitive
-    /// <c>404</c> (the gateway has forgotten the session); any other status — success OR a transient
-    /// error — is reported as alive so a flaky gateway never triggers needless recreation.
+    /// Probes the gateway. Only a definitive 404 authorizes recreation. Explicit home mismatch fails
+    /// closed; transient transport errors do not authorize replay or recreation.
     /// </summary>
     private async Task<bool> IsSessionAliveAsync(string sessionId, CancellationToken ct)
     {
@@ -1187,7 +1263,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         probeCts.CancelAfter(SessionLivenessProbeTimeout);
         try
         {
-            _ = await ClientFor(CredentialFor(sessionId)).GetAsync(sessionId, probeCts.Token).ConfigureAwait(false);
+            var info = await ClientFor(CredentialFor(sessionId))
+                .GetAsync(sessionId, probeCts.Token)
+                .ConfigureAwait(false);
+            if (
+                _sessionsById.TryGetValue(sessionId, out var established)
+                && established.HomeRelativePath is not null
+                && !string.Equals(established.HomeRelativePath, info.HomeRelativePath, StringComparison.Ordinal)
+            )
+                throw new SandboxHomeAcknowledgementException();
             // The gateway just confirmed this session, so the next acquisitions within the freshness
             // window can skip the round-trip. Only this branch stamps: the catch-all below reports
             // "alive" without having heard from the gateway at all.
@@ -1212,6 +1296,18 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw; // genuine caller cancellation — propagate
+        }
+        catch (SandboxHomeAcknowledgementException)
+        {
+            throw;
+        }
+        catch (SandboxException ex)
+            when (ex.Kind == SandboxErrorKind.Protocol
+                && _sessionsById.TryGetValue(sessionId, out var established)
+                && established.HomeRelativePath is not null
+            )
+        {
+            throw new SandboxHomeAcknowledgementException();
         }
         catch (Exception ex)
         {
@@ -1262,7 +1358,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// main maps. The gateway already dropped this session (a 404 liveness probe is what brought us
     /// here), so no DELETE is issued.
     /// </summary>
-    private async Task InvalidateSessionAsync((string WorkspaceId, string AppId) key, SandboxSession session)
+    private async Task InvalidateSessionAsync(
+        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress) key,
+        SandboxSession session
+    )
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
@@ -1276,8 +1375,19 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         )
         {
             _ = (
-                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
-            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
+                (ICollection<
+                    KeyValuePair<
+                        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+                        Lazy<Task<SandboxSession>>
+                    >
+                >)
+                    _sessions
+            ).Remove(
+                new KeyValuePair<
+                    (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress),
+                    Lazy<Task<SandboxSession>>
+                >(key, lazy)
+            );
 
             // Only when this call actually freed the slot: the next create for it is this session's
             // successor, and its event says so. Recording it when a concurrent caller had already
@@ -1403,6 +1513,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // known) and so two sessions' secrets can never be cross-validated against each other.
         var sessionSecret = RandomNumberGenerator.GetHexString(64);
         var (authProviders, network) = BuildAuthProviders(sessionSecret);
+        if (workspaceRef.BlockProviderEgress)
+        {
+            // Deny before every token-injecting allow rule. This policy is enforced by the gateway
+            // for shell, plugin and descendant traffic alike; cached OAuth headers cannot bypass it.
+            network =
+            [
+                new SandboxNetworkRule(
+                    "workflow-deny-github",
+                    "deny",
+                    hosts: OAuthProviderHosts.For("github"),
+                    priority: 0
+                ),
+                new SandboxNetworkRule("workflow-deny-ado", "deny", hosts: OAuthProviderHosts.For("ado"), priority: 0),
+                .. network ?? [],
+            ];
+        }
         var discovery = BuildDiscovery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
@@ -1427,7 +1553,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // gateway applies its legacy "all plugins" default; an empty list is a deliberate
             // "load none" that has to reach the wire as an explicit empty array.
             workspaceRef.PluginSelection,
-            workspaceRef.Env
+            workspaceRef.Env,
+            home: workspaceRef.HomeRelativePath
         );
 
         if (createRequest.Env.Count > 0)
@@ -1496,6 +1623,37 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     ex
                 );
             }
+            catch (AchieveAi.LmDotnetTools.Sandbox.SandboxHomeAcknowledgementException ex)
+            {
+                try
+                {
+                    // This ID was just allocated by this create, not obtained from a GET or cache.
+                    // Use its creator directly: session credential tracking has not been published yet.
+                    await client.DeleteAsync(ex.CreatedSessionId, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception cleanupFailure)
+                {
+                    _logger.LogError(
+                        "Failed to delete newly created sandbox {SessionId} after native home acknowledgement failed for app {AppId}: {FailureType}.",
+                        ex.CreatedSessionId,
+                        effectiveCredential.AppId,
+                        cleanupFailure.GetType().Name
+                    );
+                    throw new AchieveAi.LmDotnetTools.Sandbox.SandboxHomeAcknowledgementException(
+                        ex.CreatedSessionId,
+                        ex.RequestedHome,
+                        ex.AcknowledgedHome,
+                        false,
+                        cleanupFailure
+                    );
+                }
+                throw new AchieveAi.LmDotnetTools.Sandbox.SandboxHomeAcknowledgementException(
+                    ex.CreatedSessionId,
+                    ex.RequestedHome,
+                    ex.AcknowledgedHome,
+                    true
+                );
+            }
             catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Authorization)
             {
                 // Distinct marker from the connectivity-failure path above: this is the gateway actively
@@ -1561,7 +1719,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // The EFFECTIVE list resolved above, so a replacement session can be created with the
                 // same marketplace scope without re-reading the global default.
                 marketplaces
-            );
+            )
+            {
+                BlockProviderEgress = workspaceRef.BlockProviderEgress,
+                HomeRelativePath = info.HomeRelativePath,
+            };
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
             // unit: if ANY step fails (e.g. SaveAsync throws or is cancelled), the remote session and
@@ -1627,7 +1789,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // subscriber's latency never lands inside this shared creation — see _unreportedCreations.
             if (_lifecycle.PublishesEvents)
             {
-                _ = _replacedSessions.TryRemove((workspaceId, effectiveCredential.AppId), out var replacedSessionId);
+                _ = _replacedSessions.TryRemove(
+                    (
+                        workspaceId,
+                        effectiveCredential.AppId,
+                        workspaceRef.HomeRelativePath,
+                        workspaceRef.BlockProviderEgress
+                    ),
+                    out var replacedSessionId
+                );
                 _unreportedCreations[session.SessionId] = new SandboxCreatedPayload
                 {
                     SessionId = session.SessionId,

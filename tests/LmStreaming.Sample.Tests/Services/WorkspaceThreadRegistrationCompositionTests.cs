@@ -49,6 +49,66 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
     /// <summary>The one plugin that is legal under <see cref="Marketplace"/> in the stub catalog.</summary>
     private static readonly PluginRef SelectedPlugin = new(Marketplace, "code-review");
 
+    [Theory]
+    [InlineData("copilot")]
+    [InlineData("claude")]
+    [InlineData("codex")]
+    public void Native_cli_cannot_silently_accept_remote_home(string provider) =>
+        Assert.Throws<AchieveAi.LmDotnetTools.LmAgentInfra.ProviderUnavailableException>(() =>
+            ConversationWorkingDirectory.EnsureProviderSupportsHome(".worktrees/Nova-0", provider, true)
+        );
+
+    [Fact]
+    public void Raw_API_model_id_is_not_treated_as_native_cli() =>
+        ConversationWorkingDirectory.EnsureProviderSupportsHome(".worktrees/Nova-0", "gpt-5.6-sol", true);
+
+    [Fact]
+    public async Task Api_provider_build_carries_native_home_without_inspecting_remote_container_path_locally()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "native-home-composition-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var gateway = new FakeSandboxGateway { Home = ".worktrees/Nova-0" };
+        await using (var host = new WorkspaceCompositionWebAppFactory(root, gateway, new ThreadAwareActivityProbe()))
+        {
+            var workspace = await host
+                .Services.GetRequiredService<IWorkspaceStore>()
+                .CreateAsync(new WorkspaceCreate { Name = "Nova reviews", Marketplaces = [Marketplace] });
+            const string thread = "native-home-thread";
+            var conversations = host.Services.GetRequiredService<IConversationStore>();
+            await conversations.UpdateMetadataAsync(
+                thread,
+                metadata => new ThreadMetadata
+                {
+                    ThreadId = thread,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = System.Collections.Immutable.ImmutableDictionary<string, object>.Empty.Add(
+                        ConversationWorkingDirectory.PropertyKey,
+                        ".worktrees/Nova-0"
+                    ),
+                },
+                default
+            );
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            pool.GetOrCreateAgent(
+                    thread,
+                    WorkspaceMode,
+                    requestedProviderId: "test",
+                    requestResponseDumpFileName: null,
+                    requestedWorkspaceId: workspace.Id
+                )
+                .Should()
+                .NotBeNull();
+            var registry = host.Services.GetRequiredService<SandboxSessionRegistry>();
+            registry.TryGetEstablishedBinding(thread, out var binding).Should().BeTrue();
+            binding!.WorkspaceRef.HomeRelativePath.Should().Be(".worktrees/Nova-0");
+            registry.TryGetSessionById(binding.SessionId!, out var session).Should().BeTrue();
+            session!.HomeRelativePath.Should().Be(".worktrees/Nova-0");
+            session.HostPath.Should().Be("/only-on-remote-gateway/workspace");
+            gateway.RequestedHome.Should().Be(".worktrees/Nova-0");
+        }
+        DetachedStoreTeardown.Purge(root);
+    }
+
     [Fact]
     public async Task OrdinaryWorkspaceConversation_IsIndexedByItsSession_SoAnActiveRunBlocksTheMigration()
     {
@@ -325,6 +385,8 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
         private readonly List<string> _createdSessionIds = [];
         private readonly List<string> _deletedSessionIds = [];
         private int _creates;
+        public string? Home { get; init; }
+        public string? RequestedHome { get; private set; }
 
         public IReadOnlyList<string> CreatedSessionIds
         {
@@ -367,6 +429,35 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
             }
 
+            if (
+                request.Method == HttpMethod.Get
+                && path.Contains("/api/v1/sandboxes/", StringComparison.Ordinal)
+                && !path.EndsWith("/env", StringComparison.Ordinal)
+            )
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            System.Text.Json.JsonSerializer.Serialize(
+                                new
+                                {
+                                    session_id = path.Split('/')[^1],
+                                    volumes = new
+                                    {
+                                        workspace = new
+                                        {
+                                            container_path = "/only-on-remote-gateway/workspace",
+                                            home = Home,
+                                        },
+                                    },
+                                }
+                            ),
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    }
+                );
+
             if (request.Method != HttpMethod.Post || !path.EndsWith("/sandboxes", StringComparison.Ordinal))
             {
                 // Health probes, liveness GETs and the boot-time context-file reads.
@@ -380,10 +471,26 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
                 _createdSessionIds.Add(sessionId);
             }
 
-            var responseBody = $$"""
-                { "session_id": "{{sessionId}}", "container_id": "c-{{ordinal}}",
-                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
-                """;
+            using var createBody = System.Text.Json.JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult()
+            );
+            RequestedHome = createBody.RootElement.TryGetProperty("home", out var home) ? home.GetString() : null;
+            var responseBody = System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    session_id = sessionId,
+                    container_id = $"c-{ordinal}",
+                    volumes = new
+                    {
+                        workspace = new
+                        {
+                            container_path = "/only-on-remote-gateway/workspace",
+                            read_only = false,
+                            home = Home,
+                        },
+                    },
+                }
+            );
             return Task.FromResult(
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {

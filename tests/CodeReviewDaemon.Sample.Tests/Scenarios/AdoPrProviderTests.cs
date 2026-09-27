@@ -618,6 +618,72 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
     }
 
+    // ---- Task #81: GetPullRequestAsync, the fresh single-PR re-read the operator-triggered run checks ----
+
+    [Fact]
+    public async Task GetPullRequest_maps_a_found_pr_the_same_way_the_list_does()
+    {
+        const string payload = """
+            {
+              "pullRequestId": 42,
+              "status": "active",
+              "creationDate": "2026-05-20T09:00:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-42" },
+              "lastMergeTargetCommit": { "commitId": "base-42" },
+              "createdBy": { "uniqueName": "jane.doe@contoso.com", "displayName": "Jane Doe" },
+              "title": "Fix the thing",
+              "description": "Because reasons"
+            }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests/42", payload);
+
+        var descriptor = await Provider(handler).GetPullRequestAsync(Repo, "42", CancellationToken.None);
+
+        descriptor.Should().NotBeNull();
+        descriptor!.PrId.Should().Be("42");
+        descriptor.HeadSha.Should().Be("head-42");
+        descriptor.BaseSha.Should().Be("base-42");
+        descriptor.TriggerWatermark.Should().Be("head-42");
+        descriptor.LifecycleState.Should().Be(PrLifecycleState.Open);
+        descriptor.Author.Should().Be("jane.doe@contoso.com");
+        descriptor.Title.Should().Be("Fix the thing");
+        descriptor.Description.Should().Be("Because reasons");
+    }
+
+    [Fact]
+    public async Task GetPullRequest_returns_null_on_a_confirmed_404()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "message": "not found" }""",
+            HttpStatusCode.NotFound
+        );
+
+        var descriptor = await Provider(handler).GetPullRequestAsync(Repo, "42", CancellationToken.None);
+
+        descriptor.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task GetPullRequest_throws_on_a_non_success_status_other_than_404(HttpStatusCode status)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "message": "nope" }""",
+            status
+        );
+
+        var act = () => Provider(handler).GetPullRequestAsync(Repo, "42", CancellationToken.None);
+
+        // "Unreachable/unauthorized" must never be reported as "confirmed absent" — only a 404 is safe to
+        // reject a single-PR run on.
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
     [Fact]
     public async Task RecencyCutoff_resolves_ado_updated_from_the_last_push_for_old_prs_only()
     {

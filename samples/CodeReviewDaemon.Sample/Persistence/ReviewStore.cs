@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
@@ -44,6 +45,39 @@ internal sealed class ReviewStore : IDisposable
     {
         _connection = SqliteConnectionFactory.Open(connectionString);
         MigrationRunner.Migrate(_connection);
+    }
+
+    public bool HasUnsettledWorkspaceBootstrap()
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM shared_workspace_bootstrap);";
+        return Convert.ToInt64(command.ExecuteScalar()) != 0;
+    }
+
+    public string BeginWorkspaceBootstrap()
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        var operationId = Guid.NewGuid().ToString("N");
+        command.CommandText =
+            "INSERT OR IGNORE INTO shared_workspace_bootstrap (id, operation_id) VALUES (1, $operation);";
+        command.Parameters.AddWithValue("$operation", operationId);
+        if (command.ExecuteNonQuery() != 1)
+            throw new InvalidOperationException(
+                "Shared workspace bootstrap is unsettled; operator reconciliation is required."
+            );
+        return operationId;
+    }
+
+    public void SettleWorkspaceBootstrap(string operationId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM shared_workspace_bootstrap WHERE id = 1 AND operation_id = $operation;";
+        command.Parameters.AddWithValue("$operation", operationId);
+        if (command.ExecuteNonQuery() != 1)
+            throw new InvalidOperationException("Cannot settle another bootstrap operation.");
     }
 
     private static string UtcNow() => DateTimeOffset.UtcNow.ToString("O");
@@ -196,9 +230,18 @@ internal sealed class ReviewStore : IDisposable
     /// Finds the <c>review_run</c> for a reviewed commit's identity — <c>(repo, pr, head, base, kind,
     /// variant)</c>, mode/watermark-agnostic (see <see cref="CreateOrGetReviewRun"/>). When more than one
     /// row exists for the identity (e.g. rows left by an earlier build that keyed identity on mode or
-    /// watermark), the furthest-progressed one wins so a completed review is not needlessly re-run.
+    /// watermark), the furthest-progressed one wins so a completed review is not needlessly re-run —
+    /// <c>generation</c> (migration v12) is checked FIRST and breaks that tie only for a row created by a
+    /// consumed <see cref="Models.ReviewRerunAuthorization"/>; every ordinary row is <c>generation = 0</c>,
+    /// so this is a no-op for every pre-existing scenario.
+    /// <para>
+    /// Public (task #81, round 4, item 4) so <c>RunSinglePrCommand.AdmitAndRunAsync</c> can peek whether an
+    /// identity is already <see cref="WorkflowStatus.Completed"/> BEFORE calling
+    /// <see cref="Orchestration.PrOrchestrator.RunAsync"/> — reporting that explicitly instead of relying on
+    /// the orchestrator's own no-op to mask a duplicate exact-run as an ordinary "admitted" outcome.
+    /// </para>
     /// </summary>
-    private ReviewRun? FindReviewRunByIdentity(ReviewRun run)
+    public ReviewRun? FindReviewRunByIdentity(ReviewRun run)
     {
         using var gate = _gate.EnterScope();
         using var select = _connection.CreateCommand();
@@ -206,7 +249,8 @@ internal sealed class ReviewStore : IDisposable
             SELECT * FROM review_run
             WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $head AND base_sha = $base
               AND review_kind = $kind AND variant_id = $variant
-            ORDER BY CASE stage
+            ORDER BY generation DESC,
+                     CASE stage
                        WHEN 'Posted' THEN 4
                        WHEN 'Judged' THEN 3
                        WHEN 'Reviewed' THEN 2
@@ -234,6 +278,347 @@ internal sealed class ReviewStore : IDisposable
         _ = command.Parameters.AddWithValue("$id", id);
         using var reader = command.ExecuteReader();
         return reader.Read() ? MapReviewRun(reader) : null;
+    }
+
+    /// <summary>
+    /// Inserts a fresh <c>review_run</c> row for a consumed <see cref="Models.ReviewRerunAuthorization"/> —
+    /// task #81 round 5's redo path. Deliberately bypasses <see cref="CreateOrGetReviewRun"/>'s
+    /// find-then-insert check: that check is mode/watermark-agnostic and would simply re-find and return
+    /// the already-<see cref="WorkflowStatus.Completed"/> row this call exists to supersede. Callers must
+    /// set <paramref name="run"/>'s <see cref="ReviewRun.TriggerWatermark"/> to the authorization's
+    /// <c>RerunWatermark</c> (satisfies <c>review_run</c>'s existing UNIQUE constraint without erasing the
+    /// completed row it shares an identity with) and <see cref="ReviewRun.Generation"/> to one more than the
+    /// completed row's (so <see cref="FindReviewRunByIdentity"/> prefers this row over that one from here
+    /// on). Stage/workflow status are NOT re-derived here — callers pass a fully-formed seed exactly like
+    /// <see cref="CreateOrGetReviewRun"/>'s caller does.
+    /// </summary>
+    public ReviewRun InsertRerunReviewRun(ReviewRun run)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+
+        using var gate = _gate.EnterScope();
+        var now = UtcNow();
+        using var insert = _connection.CreateCommand();
+        insert.CommandText = """
+            INSERT INTO review_run (
+                repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
+                merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
+                feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
+                is_fork_pr, is_target_repo_public, pr_author,
+                pr_title, pr_description, generation, created_at, updated_at)
+            VALUES (
+                $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
+                $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
+                $flags, $stage, $workflow, $prState,
+                $isForkPr, $isTargetRepoPublic, $prAuthor,
+                $prTitle, $prDescription, $generation, $now, $now)
+            RETURNING *;
+            """;
+        _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
+        _ = insert.Parameters.AddWithValue("$prId", run.PrId);
+        _ = insert.Parameters.AddWithValue("$head", run.HeadSha);
+        _ = insert.Parameters.AddWithValue("$base", run.BaseSha);
+        _ = insert.Parameters.AddWithValue("$watermark", run.TriggerWatermark);
+        _ = insert.Parameters.AddWithValue("$kind", run.ReviewKind);
+        _ = insert.Parameters.AddWithValue("$variant", run.VariantId);
+        _ = insert.Parameters.AddWithValue("$mode", run.Mode);
+        _ = insert.Parameters.AddWithValue("$merge", (object?)run.MergeSha ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$modelProvider", (object?)run.ModelProvider ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$modelId", (object?)run.ModelId ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$promptHash", (object?)run.PromptTemplateHash ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$policyVersion", (object?)run.PolicyBundleVersion ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$flags", (object?)run.FeatureFlagSnapshot ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$stage", run.Stage.ToString());
+        _ = insert.Parameters.AddWithValue("$workflow", run.WorkflowStatus.ToString());
+        _ = insert.Parameters.AddWithValue("$prState", run.PrLifecycleState.ToString());
+        _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
+        _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
+        _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prTitle", (object?)run.PrTitle ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prDescription", (object?)run.PrDescription ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$generation", run.Generation);
+        _ = insert.Parameters.AddWithValue("$now", now);
+        using var reader = insert.ExecuteReader();
+        _ = reader.Read();
+        return MapReviewRun(reader);
+    }
+
+    /// <summary>
+    /// Deletes one <c>review_run</c> row — used only to undo <see cref="InsertRerunReviewRun"/> when the
+    /// matching <see cref="Models.ReviewRerunAuthorization"/> could not be atomically consumed (the PR
+    /// moved between validation and claim), so the abandoned row leaves no evidence a redo happened that
+    /// never actually got authorized.
+    /// </summary>
+    public void DeleteReviewRun(long id)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM review_run WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
+    // ── supplementary workflow admission ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Admits one same-head discussion window or merged-close event. The existing <c>review_run</c>
+    /// remains the new-head code-review identity; these supplementary events have a separate immutable
+    /// identity and frozen workflow input. Repeating an event returns the first row unchanged.
+    /// </summary>
+    public WorkflowRound CreateOrGetWorkflowRound(WorkflowRoundSeed seed)
+    {
+        ArgumentNullException.ThrowIfNull(seed);
+        ValidateWorkflowRoundSeed(seed);
+
+        using var gate = _gate.EnterScope();
+        var existing = FindWorkflowRoundByIdentity(seed);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var now = UtcNow();
+        using var insert = _connection.CreateCommand();
+        insert.CommandText = """
+            INSERT OR IGNORE INTO workflow_round (
+                repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+                workflow_instance_id, outcome, completed_at, created_at, updated_at)
+            VALUES (
+                $repoId, $prId, $headSha, $kind, $eventKey, $frozenInput,
+                NULL, $outcome, NULL, $now, $now);
+            """;
+        _ = insert.Parameters.AddWithValue("$repoId", seed.RepoId);
+        _ = insert.Parameters.AddWithValue("$prId", seed.PrId);
+        _ = insert.Parameters.AddWithValue("$headSha", seed.HeadSha);
+        _ = insert.Parameters.AddWithValue("$kind", seed.Kind.ToString());
+        _ = insert.Parameters.AddWithValue("$eventKey", seed.EventKey);
+        _ = insert.Parameters.AddWithValue("$frozenInput", seed.FrozenInputJson);
+        _ = insert.Parameters.AddWithValue("$outcome", WorkflowRoundOutcome.Pending.ToString());
+        _ = insert.Parameters.AddWithValue("$now", now);
+        _ = insert.ExecuteNonQuery();
+
+        return FindWorkflowRoundByIdentity(seed)!;
+    }
+
+    /// <summary>Returns one supplementary workflow round, or <c>null</c> when it does not exist.</summary>
+    public WorkflowRound? GetWorkflowRound(long id)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT * FROM workflow_round WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    /// <summary>Returns the latest admitted round for one PR head and route, including completed rounds.</summary>
+    public WorkflowRound? GetLatestWorkflowRound(long repoId, string prId, string headSha, WorkflowRoundKind kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM workflow_round
+            WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $headSha AND kind = $kind
+            ORDER BY id DESC LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$headSha", headSha);
+        _ = command.Parameters.AddWithValue("$kind", kind.ToString());
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    /// <summary>
+    /// Lists every supplementary round that has not completed successfully, oldest first. Supplying a
+    /// repository id restricts restart recovery to that pool's repository.
+    /// </summary>
+    public IReadOnlyList<WorkflowRound> GetPendingWorkflowRounds(long? repoId = null)
+    {
+        var rounds = new List<WorkflowRound>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = repoId is null
+            ? "SELECT * FROM workflow_round WHERE completed_at IS NULL ORDER BY id;"
+            : "SELECT * FROM workflow_round WHERE completed_at IS NULL AND repo_id = $repoId ORDER BY id;";
+        if (repoId is not null)
+        {
+            _ = command.Parameters.AddWithValue("$repoId", repoId.Value);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rounds.Add(MapWorkflowRound(reader));
+        }
+
+        return rounds;
+    }
+
+    /// <summary>
+    /// Binds the durable workflow snapshot that owns a round. The first binding wins; replaying that same
+    /// binding succeeds, while a different workflow instance cannot take over the round.
+    /// </summary>
+    public bool TryBindWorkflowInstance(long roundId, string workflowInstanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowInstanceId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE workflow_round
+            SET workflow_instance_id = COALESCE(workflow_instance_id, $workflowInstanceId),
+                updated_at = $now
+            WHERE id = $id
+              AND completed_at IS NULL
+              AND (workflow_instance_id IS NULL OR workflow_instance_id = $workflowInstanceId);
+            """;
+        _ = command.Parameters.AddWithValue("$workflowInstanceId", workflowInstanceId);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", roundId);
+        return command.ExecuteNonQuery() == 1;
+    }
+
+    /// <summary>
+    /// Records the workflow's latest explicit outcome. Failed and Unknown rounds remain pending. Only a
+    /// Succeeded outcome sets the durable completion timestamp. Replaying success is idempotent; a completed
+    /// round rejects a contradictory later outcome.
+    /// </summary>
+    public bool RecordWorkflowOutcome(long roundId, string workflowInstanceId, WorkflowRoundOutcome outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowInstanceId);
+        if (outcome is WorkflowRoundOutcome.Pending || !Enum.IsDefined(outcome))
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "A workflow result must be explicit.");
+        }
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE workflow_round
+            SET outcome = $outcome,
+                completed_at = CASE WHEN $outcome = 'Succeeded' THEN $now ELSE NULL END,
+                updated_at = $now
+            WHERE id = $id
+              AND workflow_instance_id = $workflowInstanceId
+              AND completed_at IS NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$outcome", outcome.ToString());
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", roundId);
+        _ = command.Parameters.AddWithValue("$workflowInstanceId", workflowInstanceId);
+        if (command.ExecuteNonQuery() == 1)
+        {
+            return true;
+        }
+
+        return outcome == WorkflowRoundOutcome.Succeeded
+            && GetWorkflowRound(roundId)
+                is {
+                    WorkflowInstanceId: var existingWorkflow,
+                    Outcome: WorkflowRoundOutcome.Succeeded,
+                    CompletedAt: not null,
+                }
+            && string.Equals(existingWorkflow, workflowInstanceId, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns exact provider object ids from confirmed effect receipts for the specified publication
+    /// operations on one PR. The caller supplies the operation allow-list so Git/artifact receipts cannot be
+    /// mistaken for daemon-authored discussion messages.
+    /// </summary>
+    public IReadOnlySet<string> GetConfirmedProviderResponseIds(
+        long repoId,
+        string prId,
+        IReadOnlyCollection<string> operations
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentNullException.ThrowIfNull(operations);
+        if (operations.Count == 0)
+        {
+            throw new ArgumentException("At least one publication operation is required.", nameof(operations));
+        }
+
+        var allowed = new HashSet<string>(operations, StringComparer.Ordinal);
+        if (allowed.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("Publication operation names cannot be blank.", nameof(operations));
+        }
+
+        var responseIds = new HashSet<string>(StringComparer.Ordinal);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT o.operation, o.status, o.provider_response_id
+            FROM review_outbox o
+            INNER JOIN review_run r ON r.id = o.review_run_id
+            WHERE r.repo_id = $repoId
+              AND r.pr_id = $prId
+              AND o.provider_response_id IS NOT NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var operation = reader.GetString(reader.GetOrdinal("operation"));
+            var status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status")));
+            if (allowed.Contains(operation) && status is OutboxStatus.Posted or OutboxStatus.Sent)
+            {
+                _ = responseIds.Add(reader.GetString(reader.GetOrdinal("provider_response_id")));
+            }
+        }
+
+        return responseIds;
+    }
+
+    private WorkflowRound? FindWorkflowRoundByIdentity(WorkflowRoundSeed seed)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM workflow_round
+            WHERE repo_id = $repoId
+              AND pr_id = $prId
+              AND head_sha = $headSha
+              AND kind = $kind
+              AND event_key = $eventKey
+            LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", seed.RepoId);
+        _ = command.Parameters.AddWithValue("$prId", seed.PrId);
+        _ = command.Parameters.AddWithValue("$headSha", seed.HeadSha);
+        _ = command.Parameters.AddWithValue("$kind", seed.Kind.ToString());
+        _ = command.Parameters.AddWithValue("$eventKey", seed.EventKey);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    private static void ValidateWorkflowRoundSeed(WorkflowRoundSeed seed)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.PrId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.HeadSha);
+        ArgumentException.ThrowIfNullOrWhiteSpace(seed.EventKey);
+        if (seed.Kind is not WorkflowRoundKind.Discussion and not WorkflowRoundKind.Merged)
+        {
+            throw new ArgumentOutOfRangeException(nameof(seed), seed.Kind, "Unsupported workflow round kind.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(seed.FrozenInputJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new ArgumentException("Workflow round frozen input must be a JSON object.", nameof(seed));
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new ArgumentException("Workflow round frozen input must be a JSON object.", nameof(seed), exception);
+        }
     }
 
     /// <summary>
@@ -294,6 +679,61 @@ internal sealed class ReviewStore : IDisposable
         }
 
         return results;
+    }
+
+    /// <summary>Returns the newest review identity observed for one pull request.</summary>
+    public ReviewRun? GetLatestReviewRun(long repoId, string prId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM review_run WHERE repo_id = $repoId AND pr_id = $prId
+            ORDER BY id DESC LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapReviewRun(reader) : null;
+    }
+
+    /// <summary>Lists runs that own at least one artifact of the requested kind, oldest first.</summary>
+    public IReadOnlyList<ReviewRun> ListReviewRunsWithArtifact(string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+        var runs = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT run.* FROM review_run AS run
+            WHERE EXISTS (
+                SELECT 1 FROM review_artifact AS artifact
+                WHERE artifact.review_run_id = run.id AND artifact.artifact_kind = $kind)
+            ORDER BY run.id;
+            """;
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            runs.Add(MapReviewRun(reader));
+        }
+        return runs;
+    }
+
+    /// <summary>Loads only unresolved workspace owners; journal history is not part of startup recovery.</summary>
+    public IReadOnlyList<ReviewRun> ListActiveWorkflowWorkspaceRuns()
+    {
+        var runs = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT run.* FROM active_workflow_workspace active
+            JOIN review_run run ON run.id = active.review_run_id ORDER BY active.review_run_id;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            runs.Add(MapReviewRun(reader));
+        return runs;
     }
 
     /// <summary>
@@ -1037,6 +1477,175 @@ internal sealed class ReviewStore : IDisposable
         return command.ExecuteNonQuery() == 1;
     }
 
+    /// <summary>
+    /// Returns a <c>Posted</c> receipt to <c>Pending</c> and CLEARS its recorded response, after the side
+    /// effect that receipt attested to was explicitly undone (task #82, requirement 4 — the redo path).
+    /// <para>
+    /// This is deliberately not reachable through <see cref="TryTransitionOutbox"/>: that method's
+    /// <c>COALESCE</c> can only ever add a response id, which is exactly right for the forward path (a
+    /// replay must not erase the evidence of the post it is replaying) and exactly wrong here. Leaving the
+    /// pushed SHA behind after the branch it names has been deleted would let the next retention
+    /// short-circuit on a receipt for a commit that no longer exists.
+    /// </para>
+    /// <para>
+    /// Conditional on BOTH the expected status and the expected response id, so a receipt that advanced or
+    /// was re-pushed between the ownership check and here is left alone and the caller sees <c>false</c>.
+    /// </para>
+    /// </summary>
+    public bool TryInvalidateOutboxReceipt(long id, OutboxStatus from, string expectedProviderResponseId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedProviderResponseId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_outbox
+            SET status = $to, provider_response_id = NULL, updated_at = $now
+            WHERE id = $id AND status = $from AND provider_response_id = $expected;
+            """;
+        _ = command.Parameters.AddWithValue("$to", OutboxStatus.Pending.ToString());
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.Parameters.AddWithValue("$from", from.ToString());
+        _ = command.Parameters.AddWithValue("$expected", expectedProviderResponseId);
+        return command.ExecuteNonQuery() == 1;
+    }
+
+    /// <summary>
+    /// Records the one-use authorization a verified artifact-branch deletion produces (task #82,
+    /// requirement 4). Returns the row, or <c>null</c> when this PR already has an outstanding one — the
+    /// partial unique index allows any number of CONSUMED rows (that is the audit trail) but at most one
+    /// live authorization, so two redos cannot leave two reruns waiting to happen.
+    /// </summary>
+    /// <param name="repoId">The repository the authorization is scoped to.</param>
+    /// <param name="prId">The single pull request it authorizes.</param>
+    /// <param name="headSha">The head the prior run reviewed.</param>
+    /// <param name="baseSha">The base the prior run reviewed.</param>
+    /// <param name="priorReviewRunId">The completed run whose published output was deleted.</param>
+    /// <param name="deletedBranch">The artifact branch that was removed.</param>
+    /// <param name="deletedBranchSha">The commit it was proven to be at when it was removed.</param>
+    public ReviewRerunAuthorization? TryRecordRerunAuthorization(
+        long repoId,
+        string prId,
+        string headSha,
+        string baseSha,
+        long priorReviewRunId,
+        string deletedBranch,
+        string deletedBranchSha
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deletedBranch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deletedBranchSha);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        // ON CONFLICT DO NOTHING over both unique indexes: a second redo of the same PR is refused by the
+        // store rather than by a check-then-insert in the caller, which would have a window between them.
+        command.CommandText = """
+            INSERT INTO review_rerun_authorization (
+                repo_id, pr_id, head_sha, base_sha, prior_review_run_id,
+                deleted_branch, deleted_branch_sha, rerun_watermark, created_at
+            )
+            VALUES ($repoId, $prId, $head, $base, $prior, $branch, $branchSha, $watermark, $now)
+            ON CONFLICT DO NOTHING
+            RETURNING *;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$head", headSha);
+        _ = command.Parameters.AddWithValue("$base", baseSha);
+        _ = command.Parameters.AddWithValue("$prior", priorReviewRunId);
+        _ = command.Parameters.AddWithValue("$branch", deletedBranch);
+        _ = command.Parameters.AddWithValue("$branchSha", deletedBranchSha);
+        // Derived from the deletion, so it is stable for one deletion and distinct across deletions —
+        // which is exactly the uniqueness the new run needs.
+        _ = command.Parameters.AddWithValue(
+            "$watermark",
+            $"rerun:{priorReviewRunId.ToString(CultureInfo.InvariantCulture)}:{deletedBranchSha}"
+        );
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapRerunAuthorization(reader) : null;
+    }
+
+    /// <summary>
+    /// The outstanding rerun authorization for a PR, or <c>null</c>. Read-only: a caller decides whether
+    /// it likes what it sees, then claims it with <see cref="TryConsumeRerunAuthorization"/>, which
+    /// re-checks the same facts atomically.
+    /// </summary>
+    /// <param name="repoId">The repository.</param>
+    /// <param name="prId">The pull request.</param>
+    public ReviewRerunAuthorization? GetOutstandingRerunAuthorization(long repoId, string prId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM review_rerun_authorization
+            WHERE repo_id = $repoId AND pr_id = $prId AND consumed_at IS NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapRerunAuthorization(reader) : null;
+    }
+
+    /// <summary>
+    /// Claims an authorization for <paramref name="consumedByRunId"/>, once, and only if it is still
+    /// outstanding AND still describes the head and base the caller just read from the provider.
+    /// <para>
+    /// The identity re-check lives in the WHERE clause on purpose. A caller that validated the head, then
+    /// called a plain "mark consumed", would have a window in which the PR could be pushed to — and would
+    /// then re-review an identity nobody checked, which is the exact failure the authorization exists to
+    /// prevent. Here the check and the claim are one statement: they both happen or neither does.
+    /// </para>
+    /// </summary>
+    /// <param name="id">The authorization to claim.</param>
+    /// <param name="headSha">The head just read from the provider.</param>
+    /// <param name="baseSha">The base just read from the provider.</param>
+    /// <param name="consumedByRunId">The run created from this authorization.</param>
+    public bool TryConsumeRerunAuthorization(long id, string headSha, string baseSha, long consumedByRunId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_rerun_authorization
+            SET consumed_at = $now, consumed_by_run_id = $runId
+            WHERE id = $id AND consumed_at IS NULL
+              AND head_sha = $head COLLATE NOCASE
+              AND base_sha = $base COLLATE NOCASE;
+            """;
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$runId", consumedByRunId);
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.Parameters.AddWithValue("$head", headSha);
+        _ = command.Parameters.AddWithValue("$base", baseSha);
+        return command.ExecuteNonQuery() == 1;
+    }
+
+    private static ReviewRerunAuthorization MapRerunAuthorization(SqliteDataReader reader) =>
+        new(
+            reader.GetInt64(reader.GetOrdinal("id")),
+            reader.GetInt64(reader.GetOrdinal("repo_id")),
+            reader.GetString(reader.GetOrdinal("pr_id")),
+            reader.GetString(reader.GetOrdinal("head_sha")),
+            reader.GetString(reader.GetOrdinal("base_sha")),
+            reader.GetInt64(reader.GetOrdinal("prior_review_run_id")),
+            reader.GetString(reader.GetOrdinal("deleted_branch")),
+            reader.GetString(reader.GetOrdinal("deleted_branch_sha")),
+            reader.GetString(reader.GetOrdinal("rerun_watermark")),
+            reader.GetString(reader.GetOrdinal("created_at")),
+            reader.IsDBNull(reader.GetOrdinal("consumed_at"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("consumed_at")),
+            reader.IsDBNull(reader.GetOrdinal("consumed_by_run_id"))
+                ? null
+                : reader.GetInt64(reader.GetOrdinal("consumed_by_run_id"))
+        );
+
     public OutboxEntry? GetOutbox(long id)
     {
         using var gate = _gate.EnterScope();
@@ -1397,6 +2006,7 @@ internal sealed class ReviewStore : IDisposable
             GovernedFailureCount = reader.GetInt32(reader.GetOrdinal("governed_failure_count")),
             ParkedAt = GetNullableTimestamp(reader, "parked_at"),
             ParkReason = GetNullableString(reader, "park_reason"),
+            Generation = reader.GetInt32(reader.GetOrdinal("generation")),
         };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) =>
@@ -1411,6 +2021,26 @@ internal sealed class ReviewStore : IDisposable
             Status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status"))),
             BodyHash = GetNullableString(reader, "body_hash"),
             ProviderResponseId = GetNullableString(reader, "provider_response_id"),
+        };
+
+    private static WorkflowRound MapWorkflowRound(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
+            PrId = reader.GetString(reader.GetOrdinal("pr_id")),
+            HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
+            Kind = Enum.Parse<WorkflowRoundKind>(reader.GetString(reader.GetOrdinal("kind"))),
+            EventKey = reader.GetString(reader.GetOrdinal("event_key")),
+            FrozenInputJson = reader.GetString(reader.GetOrdinal("frozen_input_json")),
+            WorkflowInstanceId = GetNullableString(reader, "workflow_instance_id"),
+            Outcome = Enum.Parse<WorkflowRoundOutcome>(reader.GetString(reader.GetOrdinal("outcome"))),
+            CompletedAt = GetNullableTimestamp(reader, "completed_at"),
+            CreatedAt = DateTimeOffset.Parse(
+                reader.GetString(reader.GetOrdinal("created_at")),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind
+            ),
         };
 
     private static string? GetNullableString(SqliteDataReader reader, string column)
@@ -1471,3 +2101,63 @@ internal sealed record PriorReviewSummary(string? PrevHeadSha, int PriorReviewCo
 /// conversation was provisioned — the start of its retention window, not when the review finished.
 /// </summary>
 internal sealed record DeepLinkConversationRow(string ThreadId, string? Title, DateTimeOffset MintedAt);
+
+/// <summary>The supplementary workflow routes that require identities separate from a code-review run.</summary>
+internal enum WorkflowRoundKind
+{
+    Discussion,
+    Merged,
+}
+
+/// <summary>The last durable execution outcome for a supplementary workflow round.</summary>
+internal enum WorkflowRoundOutcome
+{
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+/// <summary>Immutable identity and input used to admit a supplementary workflow round.</summary>
+internal sealed record WorkflowRoundSeed
+{
+    public required long RepoId { get; init; }
+
+    public required string PrId { get; init; }
+
+    public required string HeadSha { get; init; }
+
+    public required WorkflowRoundKind Kind { get; init; }
+
+    /// <summary>Window id for Discussion; stable merge identity for Merged.</summary>
+    public required string EventKey { get; init; }
+
+    public required string FrozenInputJson { get; init; }
+}
+
+/// <summary>A durable supplementary workflow admission owned by <see cref="ReviewStore"/>.</summary>
+internal sealed record WorkflowRound
+{
+    public required long Id { get; init; }
+
+    public required long RepoId { get; init; }
+
+    public required string PrId { get; init; }
+
+    public required string HeadSha { get; init; }
+
+    public required WorkflowRoundKind Kind { get; init; }
+
+    public required string EventKey { get; init; }
+
+    public required string FrozenInputJson { get; init; }
+
+    public string? WorkflowInstanceId { get; init; }
+
+    public required WorkflowRoundOutcome Outcome { get; init; }
+
+    public DateTimeOffset? CompletedAt { get; init; }
+
+    public required DateTimeOffset CreatedAt { get; init; }
+}

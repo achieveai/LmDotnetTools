@@ -41,6 +41,10 @@ nul
 
 # Dev bot working notes (conversation memory / per-task drafts)
 scratchPad/conversation_memories/
+**/scratchpad/*
+**/ScratchPad/*
+**/scratchPad/*
+.progress/
 .next/
 node_modules/
 

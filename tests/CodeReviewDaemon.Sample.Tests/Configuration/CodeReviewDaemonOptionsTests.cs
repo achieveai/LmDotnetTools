@@ -1,18 +1,97 @@
 using CodeReviewDaemon.Sample.Configuration;
+using Microsoft.Extensions.Configuration;
 
 namespace CodeReviewDaemon.Sample.Tests.Configuration;
 
 public class CodeReviewDaemonOptionsTests
 {
     [Fact]
-    public void Defaults_AreConservativeAndToolAssistedIsOff()
+    public void Defaults_KeepPublicationOffAndUseConfiguredDiscovery()
     {
         var options = new CodeReviewDaemonOptions();
 
-        options.EnableToolAssistedReview.Should().BeFalse();
         options.Marketplaces.Should().Equal("gb-plugins", "superpowers");
         options.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         options.WorkspaceHostRoot.Should().BeNull();
+    }
+
+    [Fact]
+    public void Explicit_marketplace_arrays_replace_defaults_without_duplicate_aliases()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:Marketplaces:0"] = "gb",
+                    ["CodeReviewDaemon:Marketplaces:1"] = "superpowers",
+                    ["CodeReviewDaemon:SubAgentMarketplaces:0"] = "gb",
+                }
+            )
+            .Build();
+        var section = configuration.GetSection(CodeReviewDaemonOptions.SectionName);
+        var options = CodeReviewDaemonOptions.FromConfiguration(section);
+        options.Marketplaces.Should().Equal("gb", "superpowers");
+        options.SubAgentMarketplaces.Should().Equal("gb");
+    }
+
+    [Fact]
+    public void Unspecified_marketplace_arrays_keep_existing_defaults()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
+        var options = CodeReviewDaemonOptions.FromConfiguration(
+            configuration.GetSection(CodeReviewDaemonOptions.SectionName)
+        );
+
+        options.Marketplaces.Should().Equal("gb-plugins", "superpowers");
+        options.SubAgentMarketplaces.Should().Equal("gb-plugins");
+    }
+
+    [Fact]
+    public void Per_repository_slot_counts_bind_with_scalar_fallback_and_later_provider_override()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:ReviewPoolSize"] = "3",
+                    ["CodeReviewDaemon:ReviewPoolSizesByRepository:Nova"] = "4",
+                }
+            )
+            .AddInMemoryCollection(
+                new Dictionary<string, string?> { ["CodeReviewDaemon:ReviewPoolSizesByRepository:Nova"] = "6" }
+            )
+            .Build();
+        var options = CodeReviewDaemonOptions.FromConfiguration(
+            configuration.GetSection(CodeReviewDaemonOptions.SectionName)
+        );
+        options.ReviewPoolSize.Should().Be(3);
+        options
+            .ReviewPoolSizesByRepository.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(new KeyValuePair<string, int>("Nova", 6));
+        var defaults = CodeReviewDaemonOptions.FromConfiguration(
+            new ConfigurationBuilder().Build().GetSection(CodeReviewDaemonOptions.SectionName)
+        );
+        defaults.ReviewPoolSize.Should().Be(2);
+        defaults.ReviewPoolSizesByRepository.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("six")]
+    [InlineData("")]
+    [InlineData("0")]
+    [InlineData("7")]
+    public void Noninteger_slot_override_is_rejected_during_binding(string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?> { ["CodeReviewDaemon:ReviewPoolSizesByRepository:Nova"] = value }
+            )
+            .Build();
+        Assert.Throws<InvalidOperationException>(() =>
+            CodeReviewDaemonOptions.FromConfiguration(configuration.GetSection(CodeReviewDaemonOptions.SectionName))
+        );
     }
 
     [Fact]
@@ -20,12 +99,6 @@ public class CodeReviewDaemonOptionsTests
     {
         var options = new CodeReviewDaemonOptions();
 
-        options
-            .ReviewMaxTokens.Should()
-            .BeGreaterThan(
-                16000,
-                "a multi-turn tool-assisted + sub-agent loop needs a larger token budget than the single-pass diff-only reviewer"
-            );
         options
             .ToolAssistedReasoningEffort.Should()
             .Be(
@@ -86,10 +159,7 @@ public class CodeReviewDaemonOptionsTests
     {
         var o = new CodeReviewDaemonOptions();
         o.ReviewPoolSize.Should().Be(2);
-        o.EnableReviewerWrites.Should().BeFalse("writes are an explicit opt-in");
         o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
-        o.MergeNotesBranchOnClose.Should().BeTrue();
-        o.ScratchDirName.Should().Be("scratch");
         o.MaxConcurrentSubAgents.Should()
             .Be(5, "default matches the library's SubAgentOptions default; a profile raises it to fan out wider");
     }
@@ -111,9 +181,6 @@ public class CodeReviewDaemonOptionsTests
 
         o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
         o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
-        o.KnowledgeModelId.Should()
-            .BeEmpty(
-                "empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model"
-            );
+        o.WorkflowPath.Should().Be(".review/workflow.yaml");
     }
 }

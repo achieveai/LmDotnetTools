@@ -190,7 +190,7 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// </summary>
     public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
-        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        using var document = await GetPullRequestDocumentAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         return MapPrLifecycle(document.RootElement);
     }
 
@@ -206,7 +206,7 @@ internal sealed class GitHubPrProvider : IPrProvider
         CancellationToken cancellationToken
     )
     {
-        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        using var document = await GetPullRequestDocumentAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         if (
             !document.RootElement.TryGetProperty("head", out var head)
             || !head.TryGetProperty("sha", out var sha)
@@ -221,10 +221,63 @@ internal sealed class GitHubPrProvider : IPrProvider
     }
 
     /// <summary>
+    /// Reads a single PR fresh from the host, mapped the same way <see cref="ListOpenPullRequestsAsync"/>
+    /// maps a list entry (task #81). Returns <c>null</c> only on a confirmed 404 (PR does not exist); any
+    /// other non-success status or transport failure throws via <see cref="HttpResponseMessage.EnsureSuccessStatusCode"/>,
+    /// since "unreachable" and "confirmed absent" must never be conflated.
+    /// </summary>
+    public async Task<PullRequestDescriptor?> GetPullRequestAsync(
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrEmpty(prId);
+
+        var owner = repo.OrgOrOwner;
+        var repoName = repo.RepoName;
+        var url = $"{BaseUrl}/repos/{owner}/{repoName}/pulls/{prId}";
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+        httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
+        httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
+
+        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var pr = document.RootElement;
+        var updatedAt = pr.GetProperty("updated_at").GetString() ?? string.Empty;
+        return new PullRequestDescriptor
+        {
+            PrId = pr.GetProperty("number").GetRawText(),
+            HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
+            BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
+            TriggerWatermark = updatedAt,
+            LifecycleState = MapLifecycle(pr),
+            CreatedAt = ParseTimestamp(pr, "created_at"),
+            UpdatedAt = ParseTimestamp(pr, "updated_at"),
+            Author = LoginOf(pr, "user"),
+            Title = StringOf(pr, "title"),
+            Description = StringOf(pr, "body"),
+        };
+    }
+
+    /// <summary>
     /// <c>GET /repos/{owner}/{repo}/pulls/{number}</c> — the single-PR resource both per-PR reads parse.
     /// The caller owns the returned document.
     /// </summary>
-    private async Task<JsonDocument> GetPullRequestAsync(
+    private async Task<JsonDocument> GetPullRequestDocumentAsync(
         RepoIdentity repo,
         string prId,
         CancellationToken cancellationToken

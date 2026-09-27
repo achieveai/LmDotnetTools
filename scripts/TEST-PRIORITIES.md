@@ -81,12 +81,12 @@ unscoped `-Priority All` when static impact is insufficient.
 
 ## Case-level migration status
 
-The checked-in manifest classifies **10,875 known .NET method families and atomic script tests**:
-P0 416, P1 8,210, P2 2,100 and P3 149. Each reviewed declaration carries its exact inventory ID and
+The checked-in manifest classifies **10,607 known .NET method families and atomic script tests**:
+P0 403, P1 7,948, P2 2,102 and P3 154. Each reviewed declaration carries its exact inventory ID and
 path, plus behavioral rationale, evidence, component, uncertainties and prerequisites. .NET method
 families also carry their exact source hash. The 40 atomic script rows explicitly carry a null hash,
 so script-content drift remains a documented residual. The runner requires a reviewed policy row for every current known declaration, previews per-method
-selections and rejects missing, extra or stale identities. The 40 container/default rows remain for
+selections and rejects missing, extra or stale identities. The 41 container/default rows remain for
 surface ownership, whole-suite client policy and conservative handling outside declaration scope.
 
 **Supported method-subset execution is filtered, and the filter is proven.** For non-overloaded

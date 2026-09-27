@@ -24,6 +24,56 @@ public class SandboxSessionRegistryPluginSelectionTests
     private const string AppIdHeader = "X-Sbx-App-Id";
 
     [Fact]
+    public async Task Review_session_denies_provider_egress_without_changing_other_workspaces()
+    {
+        await using var registry = CreateRegistryWithFakeGateway(out var gateway);
+        var review = await registry.GetOrCreateSessionAsync(new WorkspaceRef("review") { BlockProviderEgress = true });
+        var ordinary = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ordinary"));
+        review.BlockProviderEgress.Should().BeTrue();
+        ordinary.BlockProviderEgress.Should().BeFalse();
+        var creates = gateway.Requests.Where(r => r.Method == HttpMethod.Post).ToArray();
+        creates[0].Body.Should().Contain("workflow-deny-github").And.Contain("workflow-deny-ado");
+        creates[1].Body.Should().NotContain("workflow-deny-");
+        using var payload = JsonDocument.Parse(creates[0].Body!);
+        foreach (var rule in payload.RootElement.GetProperty("network").GetProperty("rules").EnumerateArray())
+        {
+            rule.GetProperty("action").GetString().Should().Be("deny");
+            rule.GetProperty("priority").GetInt32().Should().Be(0);
+            rule.GetProperty("hosts").GetArrayLength().Should().BeGreaterThan(0);
+            rule.GetProperty("methods").GetArrayLength().Should().Be(0);
+            rule.GetProperty("ports").GetArrayLength().Should().Be(0);
+            rule.TryGetProperty("auth_provider", out _).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task Existing_unrestricted_session_cannot_be_reused_as_a_review_session()
+    {
+        await using var registry = CreateRegistryWithFakeGateway(out var gateway);
+        var ordinary = await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared"));
+        var review = await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared") { BlockProviderEgress = true });
+        review.SessionId.Should().NotBe(ordinary.SessionId);
+        review.BlockProviderEgress.Should().BeTrue();
+        (await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared"))).SessionId.Should().Be(ordinary.SessionId);
+        gateway.Requests.Count(r => r.Method == HttpMethod.Post).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Plugin_replacement_preserves_review_egress_restriction()
+    {
+        await using var registry = CreateRegistryWithFakeGateway(out var gateway);
+        await registry.GetOrCreateSessionAsync(new WorkspaceRef("review") { BlockProviderEgress = true });
+        var partition = registry.SnapshotPluginSelectionPartitions("review").Single();
+        var candidate = await registry.CreatePluginSelectionCandidateAsync(
+            new WorkspaceRef("review"),
+            partition,
+            default
+        );
+        candidate.BlockProviderEgress.Should().BeTrue();
+        gateway.Requests.Last(r => r.Method == HttpMethod.Post).Body.Should().Contain("workflow-deny-github");
+    }
+
+    [Fact]
     public async Task SnapshotPluginSelectionPartitions_ReturnsOnePartitionPerCallerAppId()
     {
         // Sessions are partitioned by (workspace, caller app) — one workspace can be live under several
@@ -169,7 +219,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         elapsed.Stop();
 
         snapshot.Partitions.Should().ContainSingle().Which.Key.AppId.Should().Be("app-a");
-        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b"));
+        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b", null, false));
         elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "a zero budget must not wait at all");
 
         gateway.ReleaseCreates();

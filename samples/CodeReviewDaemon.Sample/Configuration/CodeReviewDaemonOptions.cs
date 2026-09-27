@@ -12,6 +12,80 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Configuration section name: <c>CodeReviewDaemon</c>.</summary>
     public const string SectionName = "CodeReviewDaemon";
 
+    internal static CodeReviewDaemonOptions FromConfiguration(IConfigurationSection section)
+    {
+        // The binder appends to initialized arrays. Start explicit selections empty so an operator's
+        // marketplace aliases replace the defaults instead of retaining aliases absent on that gateway.
+        var defaults = new CodeReviewDaemonOptions();
+        var options = new CodeReviewDaemonOptions
+        {
+            Marketplaces = section.GetSection(nameof(Marketplaces)).Exists() ? [] : defaults.Marketplaces,
+            SubAgentMarketplaces = section.GetSection(nameof(SubAgentMarketplaces)).Exists()
+                ? []
+                : defaults.SubAgentMarketplaces,
+        };
+        section.Bind(options);
+        // Dictionary binding can silently drop values that cannot convert to int. Refuse those
+        // entries explicitly rather than accidentally falling back to the global pool size.
+        var overrides = section.GetSection(nameof(ReviewPoolSizesByRepository));
+        if (overrides.Value is not null)
+            throw new InvalidOperationException("ReviewPoolSizesByRepository must be a repository-to-count map.");
+        foreach (var entry in overrides.GetChildren())
+        {
+            if (entry.GetChildren().Any() || !int.TryParse(entry.Value, out var count) || count is < 1 or > 6)
+                throw new InvalidOperationException(
+                    "Each repository slot override must be an integer from 1 through 6."
+                );
+        }
+        return options;
+    }
+
+    /// <summary>Old stage controls cannot silently change the authored workflow's behavior.</summary>
+    internal static void ValidateWorkflowConfiguration(IConfigurationSection section, Action<string>? warn = null)
+    {
+        string[] retired =
+        [
+            "EnableHostSummaryFallback",
+            "EnableKnowledgeAgent",
+            "EnableReviewFeedbackAgent",
+            "EnableJudgeAgent",
+            "EnableABVariants",
+            "OverflowEscalationModelId",
+            "KnowledgeModelId",
+            "JudgeModelId",
+            "VariantModelId",
+            "VariantReasoningEffort",
+            "ReviewMaxTokens",
+            "ReviewMaxTurns",
+            "ReviewReasoningEffort",
+            "ReviewSubAgentUnknownQuiescenceSeconds",
+            "RequireSkillSupport",
+            "EnableToolAssistedReview",
+            "EnableReviewerWrites",
+            "MergeNotesBranchOnClose",
+        ];
+        var present = section
+            .GetChildren()
+            .Select(value => value.Key)
+            .Where(key => retired.Contains(key, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+        if (present.Length > 0)
+            warn?.Invoke(
+                "Ignored retired CodeReviewDaemon settings: "
+                    + string.Join(", ", present)
+                    + ". WorkflowPath is authoritative for step selection and model choices. Remove these settings when convenient."
+            );
+    }
+
+    /// <summary>Trusted workflow entry file. Relative paths resolve against the daemon content root.</summary>
+    public string WorkflowPath { get; init; } = ".review/workflow.yaml";
+
+    /// <summary>Durable workflow snapshots and scoped operation files; defaults beside the review database.</summary>
+    public string? WorkflowStateDirectory { get; init; }
+
+    public string WorkflowPythonExecutable { get; init; } = "python";
+    public string WorkflowPowerShellExecutable { get; init; } = "pwsh";
+
     /// <summary>
     /// When <c>false</c> (default) the daemon is <b>collect-only</b>: review output is persisted but no
     /// comments are posted to the PR. Posting to a live PR is an outward-facing action, so it stays off
@@ -20,33 +94,13 @@ internal sealed class CodeReviewDaemonOptions
     public bool EnableCommentPosting { get; init; }
 
     /// <summary>
-    /// When <c>false</c> (default) the daemon does NOT post the host-side single-summary comment: the review
-    /// agent posts its findings inline itself (line-anchored review comments + thread replies) over the egress
-    /// proxy. Enable only as a degraded fallback — it posts one PR-level summary blob instead of inline
-    /// comments, which is strictly inferior. Requires <see cref="EnableCommentPosting"/>.
+    /// Allows host-side <c>git push</c> operations used by artifact retention. Defaults to <c>true</c> to
+    /// preserve existing configured profiles. Set to <c>false</c> for disposable validation runs; clone and
+    /// fetch remain available, and every push still authorized by a live, exactly-scoped grant (see
+    /// <see cref="Workspace.Sandbox.HostGitPushAuthorization"/>) still succeeds — this flag only removes the
+    /// blanket allow-everything fallback, it does not add a second gate on top of the scoped grants.
     /// </summary>
-    public bool EnableHostSummaryFallback { get; init; }
-
-    /// <summary>When <c>false</c> (default) the knowledge-base agent does not run.</summary>
-    public bool EnableKnowledgeAgent { get; init; }
-
-    /// <summary>
-    /// When <c>false</c> (default) the per-developer review-feedback agent does not run. Enabling it makes the
-    /// daemon write a record NAMED AFTER each PR author into the store's <c>KnowledgeBase/developers/</c>
-    /// directory, which for a public store is public, searchable and effectively permanent — an operator
-    /// decision, never a default. Independent of <see cref="EnableKnowledgeAgent"/> so either half of the
-    /// at-close extraction can be turned off alone, but both share the same notes-branch commit.
-    /// </summary>
-    public bool EnableReviewFeedbackAgent { get; init; }
-
-    /// <summary>When <c>false</c> (default) the judge agent does not run (no grading is persisted).</summary>
-    public bool EnableJudgeAgent { get; init; }
-
-    /// <summary>
-    /// When <c>false</c> (default) only the primary review variant runs. Enabling it adds the
-    /// collect-only A/B variant (which never posts or pushes — see the capability-enforced A/B design).
-    /// </summary>
-    public bool EnableABVariants { get; init; }
+    public bool EnableGitPush { get; init; } = true;
 
     /// <summary>
     /// When <c>false</c> (default) the Azure DevOps provider is not registered, so the daemon is
@@ -54,6 +108,12 @@ internal sealed class CodeReviewDaemonOptions
     /// registers the ADO OAuth provider and (later) its poller.
     /// </summary>
     public bool EnableAdoProvider { get; init; }
+
+    /// <summary>
+    /// Starts periodic PR discovery for <see cref="EnabledRepos"/>. Defaults to <c>true</c> for existing
+    /// profiles. Set to <c>false</c> while preparing and validating workspaces without selecting any PR.
+    /// </summary>
+    public bool EnablePrPolling { get; init; } = true;
 
     /// <summary>
     /// Allow-list of <c>owner/repo</c> (GitHub) or <c>org/project/repo</c> (ADO) identifiers the daemon
@@ -86,25 +146,6 @@ internal sealed class CodeReviewDaemonOptions
     /// output. Unset (default) leaves only the console logger, exactly as before.
     /// </summary>
     public string? LogFilePath { get; init; }
-
-    /// <summary>
-    /// When true, a review that cannot be backed by Revobot's <c>code-reviewer</c> skill + sub-agents is
-    /// ABORTED rather than degraded, and the daemon stops
-    /// (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>) — Revobot's reviews
-    /// are only trustworthy WITH them, so a setup that can't provide them is a fatal misconfiguration to
-    /// surface, not to review through. Where the prerequisite is checked depends on who owns the session:
-    /// <list type="bullet">
-    ///   <item><b>In-process</b> — the daemon's own sandbox session discovered no <c>code-reviewer</c>
-    ///   sub-agents (<c>SubAgentOptions</c> would be null).</item>
-    ///   <item><b>S2S</b> (<see cref="UseS2SReviewAgent"/>) — the daemon provisions no session at all, so the
-    ///   gateway's marketplace catalog is read directly over <see cref="SubAgentMarketplaces"/> and must
-    ///   surface both the <c>code-reviewer:pr-review</c> skill and ≥1 <c>code-reviewer:*</c> agent. A catalog
-    ///   that cannot be READ is a different finding (gateway down, not skills absent): it warns and re-probes
-    ///   on the next run.</item>
-    /// </list>
-    /// Default false (degrade-not-fail, unchanged).
-    /// </summary>
-    public bool RequireSkillSupport { get; init; }
 
     /// <summary>
     /// Model id the <b>primary orchestrator loop</b> runs with — the "dispatcher / state" agent that reads
@@ -150,16 +191,6 @@ internal sealed class CodeReviewDaemonOptions
     public string SubAgentModelId { get; init; } = "";
 
     /// <summary>
-    /// Bigger-context model the <b>primary review loop</b> escalates to when a review attempt fails with a
-    /// context-window overflow (the diff + all fanned-out sub-agent results exceed <see cref="ReviewModelId"/>'s
-    /// window). On overflow the loop retries on a FRESH thread with this model (keeping the tool context), then
-    /// falls back to diff-only on it if it still overflows. Default <c>gpt-5.6-terra</c> (the largest-window
-    /// sibling of <c>gpt-5.6-luna</c>/<c>-sol</c>). Empty ⇒ no model escalation (fall straight back to diff-only
-    /// on <see cref="ReviewModelId"/>). Must be served by the same Copilot backend as the review model.
-    /// </summary>
-    public string OverflowEscalationModelId { get; init; } = "gpt-5.6-terra";
-
-    /// <summary>
     /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
     /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight a
     /// further spawn is DEFER-QUEUED (accepted immediately, then started by a background pump as a slot
@@ -170,86 +201,11 @@ internal sealed class CodeReviewDaemonOptions
     public int MaxConcurrentSubAgents { get; init; } = 5;
 
     /// <summary>
-    /// Model id the at-close <b>knowledge-extraction agent</b> runs with (<see cref="EnableKnowledgeAgent"/>) —
-    /// the gated pass that distils a merged PR's review notes into the Knowledge Base. Empty (default) ⇒ the
-    /// extraction loop inherits the primary <see cref="ReviewModelId"/>, exactly as before. Set it to run the
-    /// extraction on a dedicated model — e.g. a stronger writer like <c>claude-opus-4.8</c> — independent of
-    /// the dispatcher. Like the other model knobs it must be served by the daemon's Copilot backend (a
-    /// <c>claude-*</c> id routes through Anthropic Messages, a <c>gpt-*</c>/<c>o*</c> id through OpenAI
-    /// Responses); an unsupported slug — or an empty request model — is rejected with <c>model_not_supported</c>.
-    /// </summary>
-    public string KnowledgeModelId { get; init; } = "";
-
-    /// <summary>
-    /// Model id the judge agent grades on. Empty (default) grades on the <b>reviewing run's own
-    /// model</b>, which is self-preference bias (P6 §3.2): the generator scores its own output and
-    /// the number carries no independent signal. It stays the default because swapping the judge
-    /// model changes what every score this daemon has already recorded means — a behaviour change
-    /// #322 owns — but the judge stage warns whenever it applies, and the persisted artifact records
-    /// which model graded and which model wrote, so the axis is measurable rather than lost.
-    /// <para>
-    /// Set it to a model from a <i>different family</i> than <see cref="ReviewModelId"/>, and at
-    /// least as capable: a cheaper verifier rubber-stamps, and resampling against an imperfect
-    /// verifier cannot reduce the false-positive rate at any compute budget (§7.2).
-    /// </para>
-    /// </summary>
-    public string JudgeModelId { get; init; } = "";
-
-    /// <summary>
-    /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
-    /// model the configured backend accepts — the Copilot backend rejects OpenRouter-style slugs
-    /// (e.g. <c>anthropic/claude-haiku-4-5</c>) with <c>model_not_supported</c>; its haiku id is
-    /// <c>claude-haiku-4.5</c>. The B variant is the model axis of the A/B, so it defaults to a cheaper
-    /// model than the primary <see cref="ReviewModelId"/>.
-    /// </summary>
-    public string VariantModelId { get; init; } = "claude-haiku-4.5";
-
-    /// <summary>
-    /// Adaptive-thinking effort (<c>output_config.effort</c>) for the A/B (B) variant. Empty (default) omits
-    /// it — the default variant model (<c>claude-haiku-4.5</c>) is not an adaptive-thinking model and
-    /// rejects an effort it does not support. Set this only if <see cref="VariantModelId"/> is pointed at
-    /// an adaptive model that needs its reasoning bounded.
-    /// </summary>
-    public string VariantReasoningEffort { get; init; } = "";
-
-    /// <summary>
-    /// Max output tokens for a review turn. Copilot's adaptive Claude models emit reasoning before the
-    /// answer, and that reasoning counts against the token budget — the provider default (4096) is easily
-    /// exhausted by reasoning over a large diff, leaving no room for the review text (an empty review).
-    /// The generous default gives both the reasoning and the answer room. It is a cap, not a target, so a
-    /// single value suits the review, judge, and knowledge agents alike. Raised from the diff-only-era
-    /// default because the tool-assisted path (<see cref="EnableToolAssistedReview"/>) is a multi-turn
-    /// loop that also dispatches <c>code-reviewer:*</c> sub-agents — each turn's reasoning + tool-call
-    /// scaffolding consumes more of the budget than a single-pass diff review.
-    /// </summary>
-    public int ReviewMaxTokens { get; init; } = 32000;
-
-    /// <summary>
-    /// Maximum turns the primary review agent's multi-turn loop may take before it is stopped (the per-run
-    /// cap handed to the review loop). The tool-assisted path reads across the checkout, loads skills, and
-    /// dispatches sub-agents, so a large PR can exhaust the library default (50) before the loop ever writes
-    /// its review — yielding an empty review that then posts nothing. Raised so big diffs have the headroom
-    /// to finish. Applies to every loop this daemon's loop factory creates (review, judge, knowledge, and the
-    /// A/B variant arm); the review sub-agents are bounded separately by their own template cap.
-    /// </summary>
-    public int ReviewMaxTurns { get; init; } = 150;
-
-    /// <summary>
-    /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
-    /// <c>low</c> / <c>medium</c> / <c>high</c>). GitHub Copilot's adaptive Claude models reason before
-    /// answering and, left uncapped, spend the whole token budget reasoning over a large diff and emit no
-    /// review text. A low effort keeps reasoning short so the answer lands. Default <c>low</c>. This is
-    /// the diff-only single-pass default; see <see cref="ToolAssistedReasoningEffort"/> for the
-    /// tool-assisted path's default.
-    /// </summary>
-    public string ReviewReasoningEffort { get; init; } = "low";
-
-    /// <summary>
     /// Reasoning effort for the review agent's adaptive-thinking model when
-    /// <see cref="EnableToolAssistedReview"/> is on (<c>output_config.effort</c>: <c>low</c> /
+    /// the hosted review workflow runs (<c>output_config.effort</c>: <c>low</c> /
     /// <c>medium</c> / <c>high</c>). A multi-turn loop that reads across repos, loads the
     /// <c>code-reviewer</c> skill, and dispatches sub-agents needs more reasoning headroom per turn than
-    /// the single-pass diff-only reviewer, so this defaults above <see cref="ReviewReasoningEffort"/>'s
+    /// the retired single-pass reviewer, so this defaults above that path's
     /// <c>low</c>. Default <c>medium</c>.
     /// </summary>
     public string ToolAssistedReasoningEffort { get; init; } = "medium";
@@ -334,14 +290,6 @@ internal sealed class CodeReviewDaemonOptions
     public int MaxPrAgeDays { get; init; }
 
     /// <summary>
-    /// When <c>false</c> (default) the daemon runs the diff-only review (empty tool registry, no
-    /// sub-agents, boot-lifetime sandbox session) exactly as before. Enabling it provisions a per-run
-    /// sandbox session, exposes the read-only MCP tools + <c>Skill</c>, and dispatches the
-    /// <c>code-reviewer:*</c> sub-agents. Opt-in because it is materially more expensive per review.
-    /// </summary>
-    public bool EnableToolAssistedReview { get; init; }
-
-    /// <summary>
     /// Host directory that per-run sandbox workspaces are created under (one subdirectory per run, removed
     /// on completion). When unset (default) the daemon uses <c>workspaces</c> beside the binary.
     /// </summary>
@@ -349,6 +297,12 @@ internal sealed class CodeReviewDaemonOptions
 
     /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
     public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
+
+    /// <summary>
+    /// Provision-layer environment variables applied to every newly-created hosted review conversation.
+    /// Values are never logged. Resumed conversations retain the immutable map from their original provision.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> WorkspaceEnv { get; init; } = new Dictionary<string, string>();
 
     /// <summary>
     /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
@@ -417,21 +371,20 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Warm review-checkout slots kept ready to skip re-cloning. Default 2.</summary>
     public int ReviewPoolSize { get; init; } = 2;
 
-    /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
-    public string? ReviewPoolHostRoot { get; init; }
+    /// <summary>Optional slot-count overrides keyed by enabled source repository name; each count is 1–6.</summary>
+    public Dictionary<string, int> ReviewPoolSizesByRepository { get; init; } = [];
 
     /// <summary>
-    /// Whether the sandbox gateway roots every workspace at <c>WORKSPACE_BASE_PATH/&lt;app-dir&gt;/&lt;workspace&gt;</c>
-    /// (SandboxedOstoolsMcpServer ADR 0028). When <c>true</c>, the daemon prepares its pooled store — and measures
-    /// slot paths — under <c>&lt;app-dir&gt;</c> (derived from <c>SandboxGateway:AppId</c>) so the app-dir-less
-    /// <c>workspace</c> field it sends re-roots to the prepared store instead of an empty gateway-created dir.
-    /// Default <c>false</c> = pre-ADR-0028 flat behavior, matching a gateway image that predates per-app rooting;
-    /// set <c>true</c> only against a gateway that does the per-app rooting.
+    /// Discards a completed slot when admitting its next review. Disable while preserving a slot for debugging.
+    /// An active, unknown, or mismatched slot still refuses preparation regardless of this setting.
     /// </summary>
-    public bool PerAppWorkspaceRooting { get; init; }
+    public bool AutoDiscardCompletedSlotOnAdmission { get; init; } = true;
 
-    /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
-    public string ScratchDirName { get; init; } = "scratch";
+    /// <summary>
+    /// The single Gateway/LmStreaming workspace leaf that contains the outer review repository and every linked
+    /// slot worktree. Slot names are paths inside this workspace, never sibling Gateway workspaces.
+    /// </summary>
+    public string ReviewWorkspaceLeaf { get; init; } = "nova-reviews";
 
     /// <summary>
     /// Maximum ContextReady attempts (including the re-clone escalation) before a run is parked with a
@@ -461,15 +414,8 @@ internal sealed class CodeReviewDaemonOptions
     /// </remarks>
     public int MaxDurableRetryAttempts { get; init; } = 10;
 
-    /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
-    /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
-    public bool EnableReviewerWrites { get; init; }
-
-    /// <summary>Extra tool names granted when <see cref="EnableReviewerWrites"/> is on.</summary>
+    /// <summary>Legacy scoped tool policy defaults for compatible readers.</summary>
     public IReadOnlyList<string> WritableToolAllowList { get; init; } = ["Write", "Edit", "Bash"];
-
-    /// <summary>Merge the persistent PR notes branch into the store default branch on PR close.</summary>
-    public bool MergeNotesBranchOnClose { get; init; } = true;
 
     /// <summary>
     /// Display name the daemon presents as, both as the git commit identity's <c>user.name</c> for
@@ -580,21 +526,6 @@ internal sealed class CodeReviewDaemonOptions
     /// mid-transition (e.g. a child that finished and a grandchild about to be spawned in response).
     /// </summary>
     public int ReviewSubAgentBarrierQuietSeconds { get; init; } = 2;
-
-    /// <summary>
-    /// How long, in seconds, a sub-agent node whose status could not be resolved at all ("unknown") must
-    /// have shown no activity before <c>ReviewSubAgentCompletionBarrier</c> stops waiting on it. Default 300.
-    /// Set to 0 to disable the allowance and require a terminal status from every node.
-    /// </summary>
-    /// <remarks>
-    /// An unresolved node reports no terminal transition and no running flag, so a terminal-only barrier
-    /// waits on it until the whole <see cref="ReviewStageDeadlineMinutes"/> budget is gone and then discards
-    /// a review that had actually finished — and the retry reproduces the same node, so it never converges.
-    /// The default is deliberately much longer than any gap between a working agent's tool calls, so the
-    /// only thing it can admit is a node that has genuinely stopped. Raise it if a legitimately slow child
-    /// is ever admitted early; lower it only with the same evidence in hand.
-    /// </remarks>
-    public int ReviewSubAgentUnknownQuiescenceSeconds { get; init; } = 300;
 
     /// <summary>
     /// How many hours a non-terminal run must have sat untouched before the stranded-run reconciler treats it

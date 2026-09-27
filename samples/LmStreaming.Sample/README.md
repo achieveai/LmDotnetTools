@@ -6,6 +6,35 @@ It also showcases the **SandboxedOstools MCP gateway** — a *Workspace Agent* m
 file / shell / search tools run inside an isolated sandbox — plus optional GitHub / Azure DevOps
 token injection.
 
+## Hosted review publication callbacks
+
+The declarative review daemon requires a configured publication callback, including in collect-only mode. Configure the following section on the **LmStreaming host**. Keep real secrets in its private configuration or secret store, never in source or a review workspace:
+
+```json
+{
+  "WorkflowPublication": {
+    "Callbacks": {
+      "code-review-daemon": {
+        "CallbackUrl": "http://127.0.0.1:5080/api/workflow/publication",
+        "SharedSecret": "<primary daemon callback secret>"
+      },
+      "codereview-daemon-mcqdb": {
+        "CallbackUrl": "http://127.0.0.1:5082/api/workflow/publication",
+        "SharedSecret": "<ADO daemon callback secret>"
+      }
+    }
+  }
+}
+```
+
+Each daemon needs `WorkflowPublication:SharedSecret` set to its matching callback secret (the environment variable is `WorkflowPublication__SharedSecret`). These callback secrets are separate from the inbound S2S credential and sandbox AppKey. The callback URL must be reachable from the LmStreaming server; use HTTPS outside a trusted local connection.
+
+Routing uses the conversation's frozen caller AppId. The map keys must match each daemon's `SandboxGateway:AppId`. Model tool arguments cannot choose a destination. A configured map refuses unknown or absent AppIds. A single-daemon deployment can instead set `WorkflowPublication:CallbackUrl` and `WorkflowPublication:SharedSecret` directly, without `Callbacks`.
+
+The shipped `achieveai` and `s2s` daemon profiles share the `code-review-daemon` AppId and workspace configuration. They are alternatives: use port 5080 above for `achieveai`, or change that callback to port 5081 for `s2s`; do not run both identities concurrently. The `mcqdb` profile uses its own AppId and can share the same LmStreaming service on port 5051. Restart the host after changing callback configuration; existing pooled conversations retain their captured callback until eviction.
+
+The host advertises publication capability only for a configured caller, an API-backed model, and the `code-review-daemon` mode. The daemon checks that grant before sending a workflow step. These sessions deny direct GitHub/ADO network egress; publication uses the scoped native callback and durable daemon receipts. Older unconfirmed workflow session bindings must not be substituted into this deployment.
+
 ## Quick start
 
 ```powershell

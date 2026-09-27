@@ -1,8 +1,10 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -23,11 +25,15 @@ public sealed class SandboxSessionAdapterTests
     private const string Gateway = "http://127.0.0.1:8080";
     private const string Session = "sess-1";
 
-    private static SandboxSessionAdapter CreateAdapter(ScriptedSandboxGateway gateway, SandboxLimits? limits = null) =>
+    private static SandboxSessionAdapter CreateAdapter(
+        ScriptedSandboxGateway gateway,
+        SandboxLimits? limits = null,
+        ILogger<SandboxSessionAdapter>? logger = null
+    ) =>
         new(
             Gateway,
             Session,
-            NullLogger<SandboxSessionAdapter>.Instance,
+            logger ?? NullLogger<SandboxSessionAdapter>.Instance,
             new SandboxCredential("codereview-daemon", string.Empty),
             limits,
             gateway
@@ -92,6 +98,30 @@ public sealed class SandboxSessionAdapterTests
         var act = () => adapter.RunAsync(new SandboxCommand(["sleep", "600"]), CancellationToken.None);
 
         (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("timeout");
+    }
+
+    [Fact]
+    public async Task RunAsync_logs_a_terminal_outcome_when_the_gateway_times_out()
+    {
+        var gateway = new ScriptedSandboxGateway { SimulateExecutionTimeout = true };
+        var logger = new CapturingLogger<SandboxSessionAdapter>();
+        await using var adapter = CreateAdapter(gateway, logger: logger);
+
+        var act = () =>
+            adapter.RunAsync(new SandboxCommand(["sleep", "600"], "/workspace/reviewbot"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        logger.CountAtLevel(LogLevel.Information, "Daemon sandbox command starting").Should().Be(1);
+        logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle(message =>
+                message.Contains("Daemon sandbox command failed", StringComparison.Ordinal)
+                && message.Contains("sess-1", StringComparison.Ordinal)
+                && message.Contains("reviewbot", StringComparison.Ordinal)
+                && message.Contains("sleep 600", StringComparison.Ordinal)
+                && message.Contains("timed out", StringComparison.Ordinal)
+            );
     }
 
     [Fact]

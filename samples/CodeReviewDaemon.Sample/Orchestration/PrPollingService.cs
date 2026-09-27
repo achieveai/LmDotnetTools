@@ -1,4 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -61,6 +65,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly TimeProvider _timeProvider;
     private readonly ReviewProgressReporter? _progress;
     private readonly int _firstReviewLookbackDays;
+    private readonly IReadOnlyList<IReviewCommentReader> _commentReaders;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -72,7 +77,8 @@ internal sealed class PrPollingService : BackgroundService
         Func<CancellationToken, Task>? sweepAsync = null,
         TimeProvider? timeProvider = null,
         ReviewProgressReporter? progress = null,
-        int? firstReviewLookbackDays = null
+        int? firstReviewLookbackDays = null,
+        IEnumerable<IReviewCommentReader>? commentReaders = null
     )
     {
         _targets = [.. targets];
@@ -87,10 +93,12 @@ internal sealed class PrPollingService : BackgroundService
         _firstReviewLookbackDays = firstReviewLookbackDays is > 0
             ? firstReviewLookbackDays.Value
             : CodeReviewDaemonOptions.DefaultFirstReviewSentinelLookbackDays;
+        _commentReaders = commentReaders is null ? [.. _providers.OfType<IReviewCommentReader>()] : [.. commentReaders];
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _orchestrator.RecoverActiveWorkspacesAsync(stoppingToken).ConfigureAwait(false);
         ReportFirstReviewSentinelRate();
 
         while (!stoppingToken.IsCancellationRequested)
@@ -145,10 +153,8 @@ internal sealed class PrPollingService : BackgroundService
         try
         {
             var since = _timeProvider.GetUtcNow().AddDays(-_firstReviewLookbackDays);
-            var payloads = _store.GetFirstReviewPayloadsSince(since, DaemonReviewStageExecutor.ReviewArtifactKind);
-            var sentinels = payloads.Count(static p =>
-                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p))
-            );
+            var payloads = _store.GetFirstReviewPayloadsSince(since, ReviewArtifactKinds.ReviewArtifactKind);
+            var sentinels = payloads.Count(static p => ReviewArtifactKinds.IsNoNewFindingsSentinel(ReadReviewText(p)));
             _progress.FirstReviewSentinelRate(payloads.Count, sentinels, _firstReviewLookbackDays);
         }
         catch (Exception ex)
@@ -165,7 +171,7 @@ internal sealed class PrPollingService : BackgroundService
         try
         {
             return JsonSerializer
-                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)
+                .Deserialize<ReviewArtifactPayload>(payload, ReviewArtifactKinds.PayloadOptions)
                 ?.ReviewText;
         }
         catch (JsonException)
@@ -252,9 +258,7 @@ internal sealed class PrPollingService : BackgroundService
 
     private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
     {
-        var provider = _providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase)
-        );
+        var provider = PrPollTargetBuilder.ResolveProvider(_providers, target);
         if (provider is null)
         {
             _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
@@ -265,10 +269,7 @@ internal sealed class PrPollingService : BackgroundService
 
         // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
         // signal for borderline PRs) and the filter below agree on the same instant.
-        var cutoff =
-            target.MaxPrAgeDays > 0
-                ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
-                : (DateTimeOffset?)null;
+        var cutoff = PrRecencyFilter.ComputeCutoff(target.MaxPrAgeDays, _timeProvider);
 
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
@@ -314,7 +315,7 @@ internal sealed class PrPollingService : BackgroundService
             // resume from its first incomplete stage on a later poll; here we just log and move on.
             try
             {
-                _ = await _orchestrator.RunAsync(seed, cancellationToken);
+                await RunWorkflowAsync(target, pr, seed, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -334,6 +335,225 @@ internal sealed class PrPollingService : BackgroundService
         _store.SaveCursor(page.NextCursor);
     }
 
+    private async Task RunWorkflowAsync(
+        PrPollTarget target,
+        PullRequestDescriptor descriptor,
+        ReviewRun seed,
+        CancellationToken cancellationToken
+    )
+    {
+        var run = _store.CreateOrGetReviewRun(seed);
+        if (run.WorkflowStatus != WorkflowStatus.Completed)
+        {
+            var initial =
+                run.Mode == "collect-only"
+                    ? WorkflowMarkdown.InitialContext(descriptor)
+                    : await ReadCommentContextAsync(
+                            target,
+                            descriptor,
+                            run,
+                            new Dictionary<string, string>(StringComparer.Ordinal),
+                            cancellationToken
+                        )
+                        .ConfigureAwait(false);
+            run = await _orchestrator.RunAsync(seed, initial, cancellationToken).ConfigureAwait(false);
+            if (run.WorkflowStatus != WorkflowStatus.Completed)
+            {
+                return;
+            }
+            return; // This provider snapshot is the new-head baseline; a later poll admits changes.
+        }
+
+        foreach (
+            var pending in _store
+                .GetPendingWorkflowRounds(run.RepoId)
+                .Where(value => value.PrId == run.PrId && value.HeadSha == run.HeadSha)
+                .OrderBy(value => value.Id)
+        )
+        {
+            if (
+                await _orchestrator.RunRoundAsync(run, pending, cancellationToken).ConfigureAwait(false)
+                != WorkflowInvocationStatus.Completed
+            )
+            {
+                return;
+            }
+        }
+
+        var previousRound = _store.GetLatestWorkflowRound(
+            run.RepoId,
+            run.PrId,
+            run.HeadSha,
+            WorkflowRoundKind.Discussion
+        );
+        if (previousRound is null && !_orchestrator.HasFrozenContext(run, null))
+        {
+            var baseline = await ReadCommentContextAsync(
+                    target,
+                    descriptor,
+                    run,
+                    new Dictionary<string, string>(StringComparer.Ordinal),
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+            var baselineRound = _store.CreateOrGetWorkflowRound(
+                new WorkflowRoundSeed
+                {
+                    RepoId = run.RepoId,
+                    PrId = run.PrId,
+                    HeadSha = run.HeadSha,
+                    Kind = WorkflowRoundKind.Discussion,
+                    EventKey = $"legacy-window:{BuildWindowId(baseline["CommentWindow"]!.AsArray())}",
+                    FrozenInputJson = baseline.ToJsonString(),
+                }
+            );
+            _ = await _orchestrator.RunRoundAsync(run, baselineRound, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        var previousContext = await _orchestrator
+            .ReadFrozenContextAsync(run, previousRound, cancellationToken)
+            .ConfigureAwait(false);
+        if (previousRound is null && previousContext["DiscussionDeferred"]?.GetValue<bool>() == true)
+        {
+            previousContext = JsonNode
+                .Parse(
+                    _store.TryGetLatestArtifact(run.Id, "workflow-deferred-discussion")?.Payload
+                        ?? throw new InvalidDataException("Deferred discussion baseline is missing.")
+                )!
+                .AsObject();
+        }
+        var previousVersions = ReadVersions(previousContext);
+        var current = await ReadCommentContextAsync(target, descriptor, run, previousVersions, cancellationToken)
+            .ConfigureAwait(false);
+        var window = current["CommentWindow"]!.AsArray();
+        if (window.Count == 0)
+        {
+            return;
+        }
+        var eventKey = BuildWindowId(window);
+        var round = _store.CreateOrGetWorkflowRound(
+            new WorkflowRoundSeed
+            {
+                RepoId = run.RepoId,
+                PrId = run.PrId,
+                HeadSha = run.HeadSha,
+                Kind = WorkflowRoundKind.Discussion,
+                EventKey = eventKey,
+                FrozenInputJson = current.ToJsonString(),
+            }
+        );
+        _ = await _orchestrator.RunRoundAsync(run, round, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task<JsonObject> ReadCommentContextAsync(
+        PrPollTarget target,
+        PullRequestDescriptor descriptor,
+        ReviewRun run,
+        IReadOnlyDictionary<string, string> previousVersions,
+        CancellationToken cancellationToken
+    ) =>
+        PrCommentContextReader.ReadAsync(
+            _commentReaders,
+            _store,
+            target.Repo,
+            target.Provider,
+            run.RepoId,
+            run.PrId,
+            descriptor,
+            previousVersions,
+            cancellationToken
+        );
+
+    internal static JsonObject BuildCommentContext(
+        PullRequestDescriptor descriptor,
+        IReadOnlyList<ExistingReviewComment> comments,
+        IReadOnlySet<string> ownIds,
+        IReadOnlyDictionary<string, string> previousVersions
+    )
+    {
+        var baseline = new JsonArray();
+        var window = new JsonArray();
+        foreach (
+            var comment in comments
+                .Where(value => value.ProviderCommentId is null || !ownIds.Contains(value.ProviderCommentId))
+                .OrderBy(value => value.ProviderCommentId, StringComparer.Ordinal)
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(comment.ProviderCommentId)
+                || string.IsNullOrWhiteSpace(comment.ProviderVersion)
+            )
+            {
+                throw new InvalidDataException("Provider comment data is missing its stable id or version.");
+            }
+            var item = CommentToJson(comment);
+            baseline.Add(item);
+            if (
+                !previousVersions.TryGetValue(comment.ProviderCommentId, out var previous)
+                || !string.Equals(previous, comment.ProviderVersion, StringComparison.Ordinal)
+            )
+            {
+                window.Add(item.DeepClone());
+            }
+        }
+        return new JsonObject
+        {
+            ["PullRequest"] = new JsonObject
+            {
+                ["PrId"] = descriptor.PrId,
+                ["HeadSha"] = descriptor.HeadSha,
+                ["BaseSha"] = descriptor.BaseSha,
+                ["Title"] = descriptor.Title,
+                ["Description"] = descriptor.Description,
+                ["Author"] = descriptor.Author,
+            },
+            ["CommentBaseline"] = baseline,
+            ["CommentWindow"] = window,
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> ReadVersions(JsonObject context)
+    {
+        if (context["CommentBaseline"] is not JsonArray comments)
+        {
+            throw new InvalidDataException("Frozen comment baseline is missing.");
+        }
+        return comments.ToDictionary(
+            value =>
+                value?["ProviderCommentId"]?.GetValue<string>()
+                ?? throw new InvalidDataException("Frozen comment id is missing."),
+            value =>
+                value?["ProviderVersion"]?.GetValue<string>()
+                ?? throw new InvalidDataException("Frozen comment version is missing."),
+            StringComparer.Ordinal
+        );
+    }
+
+    private static JsonObject CommentToJson(ExistingReviewComment comment) =>
+        new()
+        {
+            ["ProviderCommentId"] = comment.ProviderCommentId,
+            ["ProviderVersion"] = comment.ProviderVersion,
+            ["Path"] = comment.Path,
+            ["Line"] = comment.Line,
+            ["Body"] = comment.Body,
+            ["Author"] = comment.Author,
+            ["IsActive"] = comment.IsActive,
+            ["PublishedAt"] = comment.PublishedAt?.ToString("O"),
+            ["ThreadId"] = comment.ThreadId,
+        };
+
+    private static string BuildWindowId(JsonArray window)
+    {
+        var identity = string.Join(
+            '\n',
+            window.Select(value =>
+                value!["ProviderCommentId"]!.GetValue<string>() + "\0" + value["ProviderVersion"]!.GetValue<string>()
+            )
+        );
+        return "comments-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+    }
+
     /// <summary>
     /// Applies the operator recency bound (<see cref="PrPollTarget.MaxPrAgeDays"/>): drops PRs whose last
     /// activity (GitHub <c>updated_at</c>; ADO the source branch's last push, resolved by the provider) or,
@@ -348,20 +568,7 @@ internal sealed class PrPollingService : BackgroundService
         IReadOnlyList<PullRequestDescriptor> pullRequests
     )
     {
-        if (cutoff is null || pullRequests.Count == 0)
-        {
-            return pullRequests;
-        }
-
-        var kept = new List<PullRequestDescriptor>(pullRequests.Count);
-        foreach (var pr in pullRequests)
-        {
-            var activity = pr.UpdatedAt ?? pr.CreatedAt;
-            if (activity is null || activity.Value >= cutoff.Value)
-            {
-                kept.Add(pr);
-            }
-        }
+        var kept = PrRecencyFilter.Apply(cutoff, pullRequests);
 
         if (kept.Count < pullRequests.Count)
         {

@@ -8,7 +8,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// this groups them by scope (the first path segment) under a <c>## &lt;scope&gt;</c> heading — scopes and
 /// entries sorted ordinal — so the same set always yields byte-identical output (no spurious diffs on
 /// regen). Entries with no scope segment render flat directly under the header, preserving the legacy
-/// single-directory layout. Separated from the IO in <see cref="KnowledgeAgent"/> so the formatting is
+/// single-directory layout. Separated from the IO in the historical review implementation so the formatting is
 /// unit-testable in isolation.
 /// </summary>
 internal static class KnowledgeTableOfContents

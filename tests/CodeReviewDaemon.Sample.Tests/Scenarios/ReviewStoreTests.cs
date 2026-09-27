@@ -1017,6 +1017,234 @@ public sealed class ReviewStoreTests
         reopened.WasDedupContextLost(runId).Should().BeTrue();
     }
 
+    [Fact]
+    public void Active_workspace_projection_tracks_latest_assignment_and_survives_reopen()
+    {
+        using var db = new TempSqliteDatabase();
+        long runId;
+        using (var store = new ReviewStore(db.ConnectionString))
+        {
+            runId = SeedRun(store);
+            foreach (var active in new[] { true, false, true })
+            {
+                store.AddArtifact(
+                    new ReviewArtifact
+                    {
+                        ReviewRunId = runId,
+                        ArtifactSchemaVersion = 1,
+                        ArtifactKind = "workflow-workspace-assignment",
+                        Provider = "github",
+                        Payload = active ? "{\"Active\":true}" : "{\"Active\":false}",
+                    }
+                );
+                store.ListActiveWorkflowWorkspaceRuns().Select(r => r.Id).Should().Equal(active ? [runId] : []);
+            }
+        }
+        using var reopened = new ReviewStore(db.ConnectionString);
+        reopened.ListActiveWorkflowWorkspaceRuns().Select(r => r.Id).Should().Equal(runId);
+    }
+
+    // ── task #81 round 5 / task #82 — durable redo generation ordering (migration v12) ──────────────
+
+    [Fact]
+    public void FindReviewRunByIdentity_still_prefers_the_completed_row_when_generations_tie_at_zero()
+    {
+        // Every pre-existing and ordinarily-admitted row is generation = 0, so prepending "generation DESC"
+        // to FindReviewRunByIdentity's ORDER BY must be a no-op for the pre-existing "furthest-progressed
+        // wins" scenario (a stray incomplete leftover row, e.g. from an earlier build keyed on mode or
+        // watermark, must still lose to a completed row) — this is exactly the invariant task #82 asked to
+        // see covered before agreeing to the generation-column design.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var identity = SampleRun(repoId);
+
+        var stray = store.InsertRerunReviewRun(
+            identity with
+            {
+                Mode = "collect-only",
+                TriggerWatermark = "wm-legacy",
+                Stage = ReviewStage.ContextReady,
+                WorkflowStatus = WorkflowStatus.Running,
+                Generation = 0,
+            }
+        );
+        var completed = store.InsertRerunReviewRun(
+            identity with
+            {
+                Mode = "post",
+                TriggerWatermark = "wm-current",
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+                Generation = 0,
+            }
+        );
+
+        var found = store.FindReviewRunByIdentity(identity);
+
+        found.Should().NotBeNull();
+        found!.Id.Should().Be(completed.Id, "at generation 0 the furthest-progressed row still wins");
+        found.Id.Should().NotBe(stray.Id);
+    }
+
+    [Fact]
+    public void FindReviewRunByIdentity_prefers_a_higher_generation_row_even_at_a_lower_stage()
+    {
+        // The one deliberate case generation exists for: a fresh redo row (generation = priorRun.Generation
+        // + 1) must outrank the completed row it supersedes for EVERY later identity lookup — including
+        // PrOrchestrator.RunAsync's own internal CreateOrGetReviewRun call — even though it starts back at
+        // ReviewStage.Discovered, which the pre-existing stage-rank ordering alone would rank last.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var identity = SampleRun(repoId);
+
+        var completed = store.InsertRerunReviewRun(
+            identity with
+            {
+                TriggerWatermark = "wm-completed",
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+                Generation = 0,
+            }
+        );
+        var redo = store.InsertRerunReviewRun(
+            identity with
+            {
+                TriggerWatermark = "wm-redo",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Pending,
+                Generation = completed.Generation + 1,
+            }
+        );
+
+        var found = store.FindReviewRunByIdentity(identity);
+
+        found.Should().NotBeNull();
+        found!.Id.Should().Be(redo.Id, "a higher generation must outrank a completed row at generation 0");
+    }
+
+    // ── task #81 round 5 / task #82 — review_rerun_authorization consumption (migration v11) ────────
+
+    [Fact]
+    public void TryConsumeRerunAuthorization_claims_exactly_once_and_a_second_attempt_fails()
+    {
+        // Single-consumption, race-safe: an authorization must never be reusable once claimed, even
+        // against a fresh candidate run id — this is the durability guarantee that stops a redo from
+        // being replayed twice.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var completed = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+            }
+        );
+        var redoRun = store.InsertRerunReviewRun(
+            SampleRun(repoId) with
+            {
+                TriggerWatermark = "wm-redo",
+                Generation = 1,
+            }
+        );
+        SeedRerunAuthorization(db, repoId, "118", "head-sha", "base-sha", completed.Id, "wm-redo");
+
+        var outstanding = store.GetOutstandingRerunAuthorization(repoId, "118");
+        outstanding.Should().NotBeNull();
+        outstanding!.IsOutstanding.Should().BeTrue();
+        outstanding.Describes("head-sha", "base-sha").Should().BeTrue();
+
+        store.TryConsumeRerunAuthorization(outstanding.Id, "head-sha", "base-sha", redoRun.Id).Should().BeTrue();
+        store
+            .GetOutstandingRerunAuthorization(repoId, "118")
+            .Should()
+            .BeNull("consuming it must remove it from the outstanding lookup");
+
+        var secondRedoRun = store.InsertRerunReviewRun(
+            SampleRun(repoId) with
+            {
+                TriggerWatermark = "wm-redo-2",
+                Generation = 2,
+            }
+        );
+        store
+            .TryConsumeRerunAuthorization(outstanding.Id, "head-sha", "base-sha", secondRedoRun.Id)
+            .Should()
+            .BeFalse("an already-consumed authorization must never be claimable again");
+    }
+
+    [Fact]
+    public void TryConsumeRerunAuthorization_refuses_when_head_or_base_drifted_since_validation()
+    {
+        // The PR moved between the caller's earlier Describes() check and this claim attempt — re-checked
+        // atomically at the moment of the claim, not just when it was looked up, so a losing claim leaves
+        // the authorization outstanding rather than silently consuming it against stale identity.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var completed = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+            }
+        );
+        var redoRun = store.InsertRerunReviewRun(
+            SampleRun(repoId) with
+            {
+                TriggerWatermark = "wm-redo",
+                Generation = 1,
+            }
+        );
+        SeedRerunAuthorization(db, repoId, "118", "head-sha", "base-sha", completed.Id, "wm-redo");
+        var outstanding = store.GetOutstandingRerunAuthorization(repoId, "118")!;
+
+        store
+            .TryConsumeRerunAuthorization(outstanding.Id, "head-sha-drifted", "base-sha", redoRun.Id)
+            .Should()
+            .BeFalse();
+        store
+            .GetOutstandingRerunAuthorization(repoId, "118")
+            .Should()
+            .NotBeNull("a losing claim must leave the authorization outstanding, not silently consume it");
+    }
+
+    /// <summary>
+    /// Task #82 owns the producer side of <c>review_rerun_authorization</c>; this raw insert exists purely
+    /// so task #81's consumer-side tests can seed one without duplicating that producer method here.
+    /// </summary>
+    private static void SeedRerunAuthorization(
+        TempSqliteDatabase database,
+        long repoId,
+        string prId,
+        string headSha,
+        string baseSha,
+        long priorReviewRunId,
+        string rerunWatermark
+    )
+    {
+        using var connection = SqliteConnectionFactory.Open(database.ConnectionString);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO review_rerun_authorization (
+                repo_id, pr_id, head_sha, base_sha, prior_review_run_id,
+                deleted_branch, deleted_branch_sha, rerun_watermark, created_at)
+            VALUES ($repoId, $prId, $head, $base, $priorRunId, $branch, $branchSha, $watermark, $now);
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$head", headSha);
+        _ = command.Parameters.AddWithValue("$base", baseSha);
+        _ = command.Parameters.AddWithValue("$priorRunId", priorReviewRunId);
+        _ = command.Parameters.AddWithValue("$branch", "codereview/redo-" + prId);
+        _ = command.Parameters.AddWithValue("$branchSha", "deleted-branch-sha");
+        _ = command.Parameters.AddWithValue("$watermark", rerunWatermark);
+        _ = command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        _ = command.ExecuteNonQuery();
+    }
+
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
     private static RepoIdentity SampleRepo() =>

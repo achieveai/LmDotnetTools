@@ -1,6 +1,4 @@
 using CodeReviewDaemon.Sample.Configuration;
-using CodeReviewDaemon.Sample.Orchestration;
-using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
@@ -12,7 +10,7 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
 /// <summary>
 /// Task 16 — the tool-assisted review clones the cross-repo <c>AchieveAiReviews</c> store and needs a
-/// per-run submodule allow-list to read across it. <see cref="DaemonReviewStageExecutor.BuildStoreSubmoduleAllowList"/>
+/// per-run submodule allow-list to read across it. <see cref="ReviewWorkspaceOperations.BuildStoreSubmoduleAllowList"/>
 /// always permits the reviewed repo itself and the shared, low-sensitivity <c>Contracts/</c> layer, and
 /// denies everything else by default — sibling private submodules are added only when the confidentiality
 /// gate (Task 17, see <c>ConfidentialityGateTests</c>) permits co-location for the run.
@@ -39,8 +37,7 @@ public sealed class CrossRepoCheckoutTests
     [Fact]
     public void StoreSubmoduleAllowList_PermitsTargetRepoAndContracts_DeniesUnrelatedRepos()
     {
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
         var run = SeedRun();
 
         var rules = executor.BuildStoreSubmoduleAllowList(run, AcmeWidgets);
@@ -68,13 +65,8 @@ public sealed class CrossRepoCheckoutTests
         // The confidentiality gate (Task 17) decides whether a configured sibling is added; until it
         // positively confirms same-trust-domain, no sibling is added — proven here for a run carrying no
         // trust signal at all (fail closed, design §6 Risk B).
-        using var db = new TempSqliteDatabase();
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableToolAssistedReview = true,
-            CrossRepoSiblings = ["acme/other-service"],
-        };
-        var executor = BuildExecutor(db, options);
+        var options = new CodeReviewDaemonOptions { CrossRepoSiblings = ["acme/other-service"] };
+        var executor = BuildExecutor(options);
         var run = SeedRun();
 
         var rules = executor.BuildStoreSubmoduleAllowList(run, AcmeWidgets);
@@ -93,15 +85,13 @@ public sealed class CrossRepoCheckoutTests
     [Fact]
     public void StoreSubmoduleAllowList_ReviewedRepoSubmodules_AreAllowed_RegardlessOfConfidentialityGate()
     {
-        using var db = new TempSqliteDatabase();
         var options = new CodeReviewDaemonOptions
         {
-            EnableToolAssistedReview = true,
             // A store-level sibling (gated) alongside the target's OWN submodules (never gated).
             CrossRepoSiblings = ["some-sibling"],
             ReviewedRepoSubmodules = ["LibProfiler", "Microsoft%20Orleans"],
         };
-        var executor = BuildExecutor(db, options);
+        var executor = BuildExecutor(options);
         // A default run carries NO positive trust signal (IsForkPr/IsTargetRepoPublic default true), so
         // AllowsCrossRepoCoLocation is FALSE — the confidentiality gate is shut.
         var run = SeedRun();
@@ -157,11 +147,10 @@ public sealed class CrossRepoCheckoutTests
             RepoName = "My Repo",
             RepoStableId = "ado-guid-2",
         };
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(new CodeReviewDaemonOptions());
         var run = SeedRun();
 
-        var cloneUrl = DaemonReviewStageExecutor.TargetRemoteUrl(spaced, "ado");
+        var cloneUrl = ReviewWorkspaceOperations.TargetRemoteUrl(spaced, "ado");
         var parsed = GitRemoteUrl.Parse(cloneUrl);
         var rules = executor.BuildStoreSubmoduleAllowList(run, spaced);
 
@@ -175,7 +164,7 @@ public sealed class CrossRepoCheckoutTests
 
         var policy = DaemonOperationPolicy.BuildForRun(
             spaced,
-            DaemonReviewStageExecutor.TargetRemoteUrl(spaced with { RepoName = "MCQdbReview" }, "ado"),
+            ReviewWorkspaceOperations.TargetRemoteUrl(spaced with { RepoName = "MCQdbReview" }, "ado"),
             allowWriteOperations: false,
             allowedSubmodules: rules
         );
@@ -197,15 +186,13 @@ public sealed class CrossRepoCheckoutTests
     [Fact]
     public void StoreSubmoduleAllowList_WarnsWhenAConfiguredNameIsNotInUrlForm()
     {
-        using var db = new TempSqliteDatabase();
         using var loggers = new CapturingLoggerFactory();
         var options = new CodeReviewDaemonOptions
         {
-            EnableToolAssistedReview = true,
             // The correct spelling and the foot-gun side by side: only the raw-space one may be reported.
             ReviewedRepoSubmodules = ["Microsoft%20Orleans", "Microsoft Orleans", "LibProfiler"],
         };
-        var executor = BuildExecutor(db, options, loggers);
+        var executor = BuildExecutor(options, loggers);
 
         var rules = executor.BuildStoreSubmoduleAllowList(SeedRun(), McqdbDev);
 
@@ -225,39 +212,16 @@ public sealed class CrossRepoCheckoutTests
             );
     }
 
-    [Fact]
-    public void StoreSubmoduleAllowList_NotToolAssisted_IsEmpty()
-    {
-        using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = false });
-        var run = SeedRun();
-
-        executor
-            .BuildStoreSubmoduleAllowList(run, AcmeWidgets)
-            .Should()
-            .BeEmpty("the diff-only path never grants any submodule fetch");
-    }
-
     private static PolicyDecision Fetch(OperationPolicy policy, string host, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "github", host, "GET", path));
 
     private static PolicyDecision FetchAdo(OperationPolicy policy, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "ado", "dev.azure.com", "GET", path));
 
-    private static DaemonReviewStageExecutor BuildExecutor(
-        TempSqliteDatabase db,
+    private static ReviewWorkspaceOperations BuildExecutor(
         CodeReviewDaemonOptions options,
         ILoggerFactory? loggerFactory = null
-    ) =>
-        new(
-            new ReviewStore(db.ConnectionString),
-            new FakeReviewAgentLoopFactory(),
-            new FakeSandboxCommandRunner(),
-            new FakeSandboxFileSystem(),
-            options,
-            [new FakeReviewCommentPublisher("github")],
-            loggerFactory ?? NullLoggerFactory.Instance
-        );
+    ) => new(options, (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<ReviewWorkspaceOperations>());
 
     private static ReviewRun SeedRun() =>
         new()

@@ -300,6 +300,13 @@ public static class SqliteSchemaInitializer
         new(3, [.. AddThreadMetadataOwnerColumnsSql, CreateThreadMetadataOwnerIndexSql]),
         new(4, [CreateResourceGrantsTableSql, CreateResourceGrantsSubjectIndexSql]),
         new(5, [AddMessagesSeqColumnSql, CreateMessagesSeqIndexSql]),
+        new(
+            6,
+            [
+                CreateInputAcceptancesTableSql,
+                "ALTER TABLE input_acceptances ADD COLUMN action_tools_suppressed INTEGER NOT NULL DEFAULT 0;",
+            ]
+        ),
     ];
 
     /// <summary>

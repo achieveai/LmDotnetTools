@@ -88,6 +88,15 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    var workflowPublication =
+        builder.Configuration.GetSection(WorkflowPublicationOptions.SectionName).Get<WorkflowPublicationOptions>()
+        ?? new WorkflowPublicationOptions();
+    workflowPublication.Validate();
+    _ = builder.Services.AddSingleton(workflowPublication);
+    _ = builder
+        .Services.AddHttpClient(WorkflowPublicationOptions.HttpClientName)
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+
     // Bridge the operator-facing flat env var LMSTREAMING_S2S_INBOUND_SECRET into the section key the
     // InboundS2SAuth filter actually reads (Auth:S2SInboundSecret). The standard env-var provider only
     // maps the double-underscore form (Auth__S2SInboundSecret) into that section, so the documented
@@ -937,6 +946,7 @@ try
                 // case. Frozen for the pooled agent's lifetime; captured once here so every site in
                 // this factory threads the same value.
                 var callerCredential = context.CallerCredential;
+                var publicationCallback = workflowPublication.Resolve(callerCredential?.AppId);
 
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
@@ -962,6 +972,15 @@ try
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
+                var provisionedWorkingDirectory = ConversationWorkingDirectory
+                    .ReadAsync(conversationStore, threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                ConversationWorkingDirectory.EnsureProviderSupportsHome(
+                    provisionedWorkingDirectory,
+                    normalizedProviderId,
+                    caps.NeedsSandbox
+                );
                 // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
                 SandboxEstablishedBinding? stagedBinding = null;
@@ -1010,7 +1029,12 @@ try
                         : workspaceId;
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
-                    var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
+                    var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace) with
+                    {
+                        HomeRelativePath = provisionedWorkingDirectory,
+                    };
+                    if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
+                        workspaceRef = workspaceRef with { BlockProviderEgress = true };
                     var envApplier = sp.GetRequiredService<SandboxEnvApplier>();
                     var effectiveEnv = envApplier
                         .ComputeEffectiveAsync(threadId, effectiveWorkspaceId, mode.Id, CancellationToken.None)
@@ -1090,11 +1114,12 @@ try
                         )
                         .GetAwaiter()
                         .GetResult();
-                    // The suffix must name the tools this agent ACTUALLY has, or the model will
-                    // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
-                    // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
-                    // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    // These are remote container paths. Gateway has acknowledged the native tool home;
+                    // formatting the prompt must never inspect the LmStreaming host filesystem.
+                    var toolHome = sandboxSession.HomeRelativePath is null
+                        ? sandboxSession.HostPath
+                        : sandboxSession.HostPath.TrimEnd('/') + "/" + sandboxSession.HomeRelativePath;
+                    var wsSuffix = BuildWorkspaceSuffix(toolHome, caps.SandboxToolAllowList);
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1332,7 +1357,7 @@ try
                                         sandboxMcpHeaders!
                                     )
                                     : null,
-                                workingDirectoryOverride: hasFullSandboxSurface ? sandboxSession!.HostPath : null,
+                                workingDirectoryOverride: null,
                                 lifecycleServices: lifecycleServices
                             ),
                             cliHostedSearch.Resource is null ? null : [cliHostedSearch.Resource]
@@ -2324,6 +2349,23 @@ try
                             conversationStore,
                             stampProvenance: true
                         );
+                    }
+
+                    if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
+                    {
+                        var publicationProvider = new WorkflowPublicationToolProvider(
+                            sp.GetRequiredService<IHttpClientFactory>()
+                                .CreateClient(WorkflowPublicationOptions.HttpClientName),
+                            publicationCallback,
+                            threadId,
+                            () => agent?.CurrentRunId
+                        );
+                        subAgentOptions = RegisterWorkflowPublicationTools(
+                            filteredRegistry,
+                            subAgentOptions,
+                            publicationProvider
+                        );
+                        ownedResources.Add(publicationProvider);
                     }
 
                     // Hoisted out of the constructor call because the two branches below must hand the
@@ -4253,6 +4295,26 @@ public partial class Program
                     threadId,
                     childAgentId
                 ),
+            };
+    }
+
+    /// <summary>Bind publication tools only to the hosted parent; descendants receive no forwarding authority.</summary>
+    internal static SubAgentOptions? RegisterWorkflowPublicationTools(
+        FunctionRegistry registry,
+        SubAgentOptions? options,
+        WorkflowPublicationToolProvider provider
+    )
+    {
+        _ = registry.AddProvider(provider);
+        return options is null
+            ? null
+            : options with
+            {
+                NonInheritedToolNames =
+                [
+                    .. options.NonInheritedToolNames ?? [],
+                    .. WorkflowPublicationToolProvider.ToolNames,
+                ],
             };
     }
 

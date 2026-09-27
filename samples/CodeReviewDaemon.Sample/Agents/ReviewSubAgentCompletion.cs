@@ -273,6 +273,23 @@ internal sealed class ReviewSubAgentCompletionBarrier
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>Two read-only observations of already terminal descendants, without waiting for active work.</summary>
+    public async Task<ReviewSubAgentTreeSnapshot?> TryConfirmSettledAsync(
+        ReviewRun run,
+        string parentThreadId,
+        CancellationToken ct
+    )
+    {
+        var first = await _source.GetSnapshotAsync(run, parentThreadId, ct).ConfigureAwait(false);
+        if (!first.Nodes.All(IsTerminal))
+            return null;
+        await Task.Delay(_quietPeriod, _timeProvider, ct).ConfigureAwait(false);
+        var second = await _source.GetSnapshotAsync(run, parentThreadId, ct).ConfigureAwait(false);
+        return second.Nodes.All(IsTerminal) && SameIdentity(Canonicalize(first.Nodes), Canonicalize(second.Nodes))
+            ? second
+            : null;
+    }
+
     /// <summary>
     /// Waits until every sub-agent descendant of <paramref name="parentThreadId"/> has reached a terminal
     /// status and stayed that way (same roster, identical statuses) across two observations separated by

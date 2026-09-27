@@ -5,6 +5,8 @@ store that itself lives in ADO**, run as a **second daemon instance in parallel*
 GitHub daemon. The worked example is `MCQdbDEV` reviewed through the ADO store `MCQdbReview`; substitute
 your own org/project/repo throughout.
 
+The declarative workflow also requires [host publication callback routing](../LmStreaming.Sample/README.md#hosted-review-publication-callbacks). On the shared LmStreaming host, map `codereview-daemon-mcqdb` to this daemon's `/api/workflow/publication` endpoint (port 5082 in the supplied profile). Configure the same private callback secret in that map entry and this daemon's `WorkflowPublication:SharedSecret`. The primary GitHub daemon has a separate map entry and secret; no model argument selects either route.
+
 ## How it fits together
 
 The daemon is already provider-agnostic for PR discovery and comment posting: `AdoPrProvider` polls

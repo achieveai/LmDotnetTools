@@ -65,6 +65,10 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             new SandboxCommandResult(1, string.Empty, "unknown revision")
         );
         runner.OnArgvContains(
+            $"ls-remote --exit-code --heads origin refs/heads/{ReviewBranch}",
+            new SandboxCommandResult(2, string.Empty, string.Empty)
+        );
+        runner.OnArgvContains(
             $"rev-parse {ReviewBranch}",
             new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
         );
@@ -77,7 +81,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.PushedSha.Should().Be("f00dcafef00dcafe");
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"checkout -B {ReviewBranch} {DefaultBranch}"));
+        commands.Should().Contain(a => a.Contains($"checkout -b {ReviewBranch} {DefaultBranch}"));
         commands.Should().Contain(a => a.Contains("commit -m"));
         commands.Should().Contain(a => a.Contains($"push origin {ReviewBranch}"));
 
@@ -219,6 +223,10 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             $"rev-parse --verify {ReviewBranch}",
             new SandboxCommandResult(1, string.Empty, "unknown revision")
         );
+        runner.OnArgvContains(
+            $"ls-remote --exit-code --heads origin refs/heads/{ReviewBranch}",
+            new SandboxCommandResult(2, string.Empty, string.Empty)
+        );
         // Push is rejected twice (remote moved), then succeeds on the third attempt.
         runner.OnArgvContainsSequence(
             $"push origin {ReviewBranch}",
@@ -246,6 +254,10 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
             new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
+        runner.OnArgvContains(
+            $"ls-remote --exit-code --heads origin refs/heads/{ReviewBranch}",
+            new SandboxCommandResult(2, string.Empty, string.Empty)
         );
         // Push is rejected (remote moved) and the rebase onto the moved remote then fails (a conflict).
         runner.OnArgvContains($"push origin {ReviewBranch}", new SandboxCommandResult(1, string.Empty, "rejected"));

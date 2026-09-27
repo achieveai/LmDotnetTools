@@ -72,15 +72,17 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         }
     }
 
-    public Task WriteFileAsync(string path, string content, CancellationToken cancellationToken)
+    public Func<string, Task>? BeforeWriteAsync { get; set; }
+
+    public async Task WriteFileAsync(string path, string content, CancellationToken cancellationToken)
     {
+        if (BeforeWriteAsync is not null)
+            await BeforeWriteAsync(path);
         lock (_gate)
         {
             Files[path] = content;
             Writes.Add(path);
         }
-
-        return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken)

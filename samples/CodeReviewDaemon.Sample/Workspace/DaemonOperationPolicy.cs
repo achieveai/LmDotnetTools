@@ -124,11 +124,11 @@ internal static class DaemonOperationPolicy
 
     /// <summary>ADO git remote path: <c>/{org}/{project}/_git/{repo}</c>.</summary>
     private static string AdoGitRepoPath(RepoIdentity repo) =>
-        $"/{repo.OrgOrOwner}/{repo.Project}/_git/{repo.RepoName}";
+        GitRemoteUrl.RepoPathFor(repo.Provider, repo.OrgOrOwner, repo.Project, repo.RepoName);
 
     /// <summary>ADO REST repo route prefix: <c>/{org}/{project}/_apis/git/repositories/{repo}</c>.</summary>
     private static string AdoApiRepoPrefix(RepoIdentity repo) =>
-        $"/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}";
+        $"/{Uri.EscapeDataString(repo.OrgOrOwner)}/{Uri.EscapeDataString(repo.Project ?? string.Empty)}/_apis/git/repositories/{Uri.EscapeDataString(repo.RepoName)}";
 
     /// <summary>
     /// The ADO REST route root <see cref="Orchestration.AdoWorkItemContextReader"/> reads a PR's linked work
@@ -152,7 +152,9 @@ internal static class DaemonOperationPolicy
     /// </para>
     /// </summary>
     private static IReadOnlyList<string> AdoApiWorkItemPaths(RepoIdentity repo) =>
-        string.IsNullOrEmpty(repo.Project) ? [] : [$"/{repo.OrgOrOwner}/{repo.Project}/_apis/wit/workitems"];
+        string.IsNullOrEmpty(repo.Project)
+            ? []
+            : [$"/{Uri.EscapeDataString(repo.OrgOrOwner)}/{Uri.EscapeDataString(repo.Project)}/_apis/wit/workitems"];
 
     /// <summary>
     /// Parses the configured ReviewBot remote into a (host, repo-path) the push policy matches against.
