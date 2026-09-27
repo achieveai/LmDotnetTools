@@ -11,6 +11,7 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
 {
     private readonly List<(Func<SandboxCommand, bool> Match, Func<SandboxCommandResult> Next)> _rules = [];
+    private readonly List<(Func<SandboxCommand, bool> Match, Action Effect)> _effects = [];
     private readonly Lock _commandsGate = new();
 
     /// <summary>Every command the runner was asked to execute, in invocation order.</summary>
@@ -23,6 +24,22 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
     public FakeSandboxCommandRunner On(Func<SandboxCommand, bool> match, SandboxCommandResult result)
     {
         _rules.Add((match, () => result));
+        return this;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="effect"/> just before a command whose joined argv contains
+    /// <paramref name="argvSubstring"/> is answered, then lets the normal rules produce the result.
+    /// <para>
+    /// This is how a test reaches the window BETWEEN two steps of a production sequence — a store row that
+    /// another process mutates while a git command is in flight. Scripting a result cannot express it,
+    /// because the point is not what the command returns but what the world does while it runs.
+    /// </para>
+    /// </summary>
+    public FakeSandboxCommandRunner BeforeArgvContains(string argvSubstring, Action effect)
+    {
+        ArgumentNullException.ThrowIfNull(effect);
+        _effects.Add((c => ArgvContains(c, argvSubstring), effect));
         return this;
     }
 
@@ -73,6 +90,14 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
         lock (_commandsGate)
         {
             Commands.Add(command);
+        }
+
+        foreach (var (match, effect) in _effects)
+        {
+            if (match(command))
+            {
+                effect();
+            }
         }
 
         foreach (var (match, next) in _rules)

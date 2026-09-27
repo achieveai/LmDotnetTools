@@ -383,6 +383,74 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         state.Should().Be(PrLifecycle.Abandoned);
     }
 
+    // ---- Task #81: GetPullRequestAsync, the fresh single-PR re-read the operator-triggered run checks ----
+
+    [Fact]
+    public async Task GetPullRequest_maps_a_found_pr_the_same_way_the_list_does()
+    {
+        const string payload = """
+            {
+              "number": 7,
+              "state": "open",
+              "merged_at": null,
+              "updated_at": "2026-06-01T10:00:00Z",
+              "created_at": "2026-05-20T09:00:00Z",
+              "head": { "sha": "head-7" },
+              "base": { "sha": "base-7" },
+              "user": { "login": "alice" },
+              "title": "Fix the thing",
+              "body": "Because reasons"
+            }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", payload);
+
+        var descriptor = await Provider(handler).GetPullRequestAsync(Repo, "7", CancellationToken.None);
+
+        descriptor.Should().NotBeNull();
+        descriptor!.PrId.Should().Be("7");
+        descriptor.HeadSha.Should().Be("head-7");
+        descriptor.BaseSha.Should().Be("base-7");
+        descriptor.TriggerWatermark.Should().Be("2026-06-01T10:00:00Z");
+        descriptor.LifecycleState.Should().Be(PrLifecycleState.Open);
+        descriptor.Author.Should().Be("alice");
+        descriptor.Title.Should().Be("Fix the thing");
+        descriptor.Description.Should().Be("Because reasons");
+    }
+
+    [Fact]
+    public async Task GetPullRequest_returns_null_on_a_confirmed_404()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls/7",
+            """{ "message": "Not Found" }""",
+            HttpStatusCode.NotFound
+        );
+
+        var descriptor = await Provider(handler).GetPullRequestAsync(Repo, "7", CancellationToken.None);
+
+        descriptor.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task GetPullRequest_throws_on_a_non_success_status_other_than_404(HttpStatusCode status)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls/7",
+            """{ "message": "nope" }""",
+            status
+        );
+
+        var act = () => Provider(handler).GetPullRequestAsync(Repo, "7", CancellationToken.None);
+
+        // "Unreachable/unauthorized" must never be reported as "confirmed absent" — only a 404 is safe to
+        // reject a single-PR run on.
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
     // ---- Issue #537: MaxPagesPerPoll is the bound, and it must be able to exceed the old hardcoded 10 ----
 
     private GitHubPrProvider Provider(

@@ -51,13 +51,11 @@ public class SandboxSessionRegistryPluginSelectionTests
     {
         await using var registry = CreateRegistryWithFakeGateway(out var gateway);
         var ordinary = await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared"));
-        await registry
-            .Invoking(value => value.GetOrCreateSessionAsync(new WorkspaceRef("shared") { BlockProviderEgress = true }))
-            .Should()
-            .ThrowAsync<InvalidOperationException>()
-            .WithMessage("*network policy*");
+        var review = await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared") { BlockProviderEgress = true });
+        review.SessionId.Should().NotBe(ordinary.SessionId);
+        review.BlockProviderEgress.Should().BeTrue();
         (await registry.GetOrCreateSessionAsync(new WorkspaceRef("shared"))).SessionId.Should().Be(ordinary.SessionId);
-        gateway.Requests.Count(r => r.Method == HttpMethod.Post).Should().Be(1);
+        gateway.Requests.Count(r => r.Method == HttpMethod.Post).Should().Be(2);
     }
 
     [Fact]
@@ -221,7 +219,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         elapsed.Stop();
 
         snapshot.Partitions.Should().ContainSingle().Which.Key.AppId.Should().Be("app-a");
-        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b"));
+        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b", null, false));
         elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "a zero budget must not wait at all");
 
         gateway.ReleaseCreates();

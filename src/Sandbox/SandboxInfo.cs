@@ -19,6 +19,10 @@ public sealed class SandboxInfo
     /// </summary>
     public string? WorkspaceContainerPath { get; }
 
+    /// <summary>Actual stored workspace-relative home acknowledged by Gateway create/get. Null means
+    /// omitted/unknown on legacy responses, not proof that a requested home was honored.</summary>
+    public string? HomeRelativePath { get; }
+
     /// <summary>
     /// The persisted workspace mount id (<c>session_mounts.id</c>) the gateway's direct file/command
     /// APIs are keyed by, when the gateway reports one. Present on a create/get result from a
@@ -59,13 +63,15 @@ public sealed class SandboxInfo
         long? workspaceMountId = null,
         string? status = null,
         SandboxInventory? inventory = null,
-        SandboxPluginResolution? pluginResolution = null
+        SandboxPluginResolution? pluginResolution = null,
+        string? homeRelativePath = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         SessionId = sessionId;
         ContainerId = containerId;
         WorkspaceContainerPath = workspaceContainerPath;
+        HomeRelativePath = homeRelativePath;
         WorkspaceMountId = workspaceMountId;
         Status = status ?? string.Empty;
         // A result that carries no inventory at all — a create against a gateway that predates the

@@ -319,6 +319,28 @@ public class ConversationsController(
             );
         }
 
+        // Same position, same reason: a malformed working directory must be refused before a thread id
+        // exists, not after an agent tries to start in it.
+        string? workingDirectoryRelPath;
+        try
+        {
+            workingDirectoryRelPath = ConversationWorkingDirectory.Normalize(
+                request.WorkingDirectoryRelPath,
+                nameof(request.WorkingDirectoryRelPath)
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "working_directory_invalid",
+                    detail = "WorkingDirectoryRelPath must be a relative POSIX path inside the workspace.",
+                }
+            );
+        }
+
         var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
         if (workspace == null)
         {
@@ -364,70 +386,108 @@ public class ConversationsController(
         // key Created exists to avoid.
         var threadId = $"thread-{now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
 
-        await store.UpdateMetadataAsync(
-            threadId,
-            existing =>
-            {
-                var propertiesBuilder =
-                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
-
-                propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
-                propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
-                propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
-
-                if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
+        try
+        {
+            await store.UpdateMetadataAsync(
+                threadId,
+                existing =>
                 {
-                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
-                }
+                    var propertiesBuilder =
+                        existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-                if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
-                {
-                    propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
-                }
+                    propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
+                    propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
+                    propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
 
-                if (request.Env is { Count: > 0 })
-                {
-                    propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(
-                        request.Env,
-                        StringComparer.Ordinal
-                    );
-                }
-
-                // Null means no caller override. Empty is intentionally persisted: it is the explicit
-                // "omit effort" value and must remain distinguishable from an absent property.
-                if (request.ReasoningEffort is not null)
-                {
-                    propertiesBuilder[ConversationRootReasoningEffort.PropertyKey] = request.ReasoningEffort;
-                }
-
-                if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
-                {
-                    propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
-                    propertiesBuilder["sample.authWebhookProviderId"] = request.ProviderId;
-                    propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
-                }
-
-                // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
-                // this is what closes #162). The startup repair exists for rows written before
-                // identity did; a row this build creates must never need it.
-                return authorizer.StampOwnership(
-                    new ThreadMetadata
+                    if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                     {
-                        ThreadId = threadId,
-                        CurrentRunId = existing?.CurrentRunId,
-                        LatestRunId = existing?.LatestRunId,
-                        LastUpdated = now.ToUnixTimeMilliseconds(),
-                        SessionMappings = existing?.SessionMappings,
-                        Properties = propertiesBuilder.ToImmutable(),
-                        TenantId = existing?.TenantId,
-                        OwnerUserId = existing?.OwnerUserId,
-                        OwnerAppId = existing?.OwnerAppId,
-                        Visibility = existing?.Visibility,
+                        propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
                     }
-                );
-            },
-            ct
-        );
+
+                    if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
+                    {
+                        propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
+                    }
+
+                    if (request.Env is { Count: > 0 })
+                    {
+                        propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(
+                            request.Env,
+                            StringComparer.Ordinal
+                        );
+                    }
+
+                    // Write-once. The thread id was just minted so `existing` is normally absent, but the
+                    // callback is the only place that can see a prior value at all — and relocating an agent
+                    // that may already be running in a directory is exactly the kind of silent change this
+                    // field must not permit. A repeat of the SAME value is accepted (idempotent retry).
+                    if (workingDirectoryRelPath is not null)
+                    {
+                        var priorWorkingDirectory =
+                            existing?.Properties is { } priorProperties
+                            && priorProperties.TryGetValue(ConversationWorkingDirectory.PropertyKey, out var priorRaw)
+                                ? ThreadPropertyValue.AsString(priorRaw)
+                                : null;
+                        if (
+                            !string.IsNullOrEmpty(priorWorkingDirectory)
+                            && !string.Equals(priorWorkingDirectory, workingDirectoryRelPath, StringComparison.Ordinal)
+                        )
+                        {
+                            throw new WorkingDirectoryImmutableException();
+                        }
+
+                        propertiesBuilder[ConversationWorkingDirectory.PropertyKey] = workingDirectoryRelPath;
+                    }
+
+                    // Null means no caller override. Empty is intentionally persisted: it is the explicit
+                    // "omit effort" value and must remain distinguishable from an absent property.
+                    if (request.ReasoningEffort is not null)
+                    {
+                        propertiesBuilder[ConversationRootReasoningEffort.PropertyKey] = request.ReasoningEffort;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
+                    {
+                        propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
+                        propertiesBuilder["sample.authWebhookProviderId"] = request.ProviderId;
+                        propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
+                    }
+
+                    // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
+                    // this is what closes #162). The startup repair exists for rows written before
+                    // identity did; a row this build creates must never need it.
+                    return authorizer.StampOwnership(
+                        new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            CurrentRunId = existing?.CurrentRunId,
+                            LatestRunId = existing?.LatestRunId,
+                            LastUpdated = now.ToUnixTimeMilliseconds(),
+                            SessionMappings = existing?.SessionMappings,
+                            Properties = propertiesBuilder.ToImmutable(),
+                            TenantId = existing?.TenantId,
+                            OwnerUserId = existing?.OwnerUserId,
+                            OwnerAppId = existing?.OwnerAppId,
+                            Visibility = existing?.Visibility,
+                        }
+                    );
+                },
+                ct
+            );
+        }
+        catch (WorkingDirectoryImmutableException)
+        {
+            // The conversation's working directory is write-once; a provision that would move an existing
+            // thread elsewhere is refused rather than applied.
+            return Conflict(
+                new
+                {
+                    error = "working_directory_immutable",
+                    code = "working_directory_immutable",
+                    detail = "WorkingDirectoryRelPath cannot be changed after the conversation is provisioned.",
+                }
+            );
+        }
 
         return Ok(
             new ProvisionConversationResponse
@@ -436,6 +496,18 @@ public class ConversationsController(
                 ReasoningEffortAccepted = request.ReasoningEffort is not null,
             }
         );
+    }
+
+    /// <summary>
+    /// Signals that a provision would have changed an already-persisted
+    /// <see cref="ConversationWorkingDirectory.PropertyKey"/>. Private to this controller because it never
+    /// escapes it: the only thing it carries is "translate this into a 409", and the check that raises it
+    /// runs inside the store's update callback, which has no other way to report a refusal.
+    /// </summary>
+    private sealed class WorkingDirectoryImmutableException : InvalidOperationException
+    {
+        public WorkingDirectoryImmutableException()
+            : base("The conversation's working directory has already been set to a different value.") { }
     }
 
     /// <summary>
@@ -1100,6 +1172,10 @@ public class ConversationsController(
                 // gateway will never apply. Hardcoding true made SessionEnvSupported dead code and
                 // made the capability a claim about the build rather than about the running gateway.
                 SandboxEnv = sandboxSessionRegistry?.SessionEnvSupported ?? false,
+                // Asserted, unlike SandboxEnv: this one needs nothing from the gateway. The value is
+                // validated and persisted by THIS build's provision route and resolved by THIS build's
+                // agent factory, so the capability is a true statement about the running host.
+                ConversationWorkingDirectory = true,
                 ManualCompaction = ManualCompactionConfigured,
             }
         );

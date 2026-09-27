@@ -1,13 +1,15 @@
-using CodeReviewDaemon.Sample.Workspace;
-using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using CodeReviewDaemon.Sample.Orchestration;
 
-namespace CodeReviewDaemon.Sample.Orchestration;
+namespace CodeReviewDaemon.Sample.Workspace;
 
-/// <summary>Host-owned slot pool and the existing host/SDK preparation capabilities.</summary>
+/// <summary>The repository worktree pool and remote script preparer factory.</summary>
 internal sealed record ReviewSlotWorkspace(
     IReviewSlotPool Pool,
-    IReviewSlotPreparer HostPreparer,
-    Func<ReviewRunSession, string, IReviewSlotPreparer> CreateSessionPreparer,
-    ISandboxCommandRunner HostRunner,
-    ISandboxFileSystem HostFileSystem
-);
+    Func<ReviewRunSession, IReviewSlotPreparer>? PreparerFactory = null,
+    bool AutoDiscardCompletedSlotOnAdmission = true
+)
+{
+    public IReviewSlotPreparer CreatePreparer(ReviewRunSession session) =>
+        PreparerFactory?.Invoke(session)
+        ?? new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, AutoDiscardCompletedSlotOnAdmission);
+}

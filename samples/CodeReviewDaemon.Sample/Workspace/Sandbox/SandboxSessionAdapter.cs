@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
@@ -111,14 +112,21 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         // alias distinct re-invocations of the same command (e.g. an intentional later `git fetch`) onto a
         // stale idempotent replay and return the earlier result instead of running — a meaningful id must be
         // a caller-minted per-logical-execution token the daemon does not currently produce.
-        var sdkCommand = new SdkSandboxCommand(command.Argv, ToWorkspaceRelativeDirectory(command.WorkingDirectory));
+        var relativeWorkingDirectory = ToWorkspaceRelativeDirectory(command.WorkingDirectory);
+        var sdkCommand = new SdkSandboxCommand(command.Argv, relativeWorkingDirectory);
+        var started = Stopwatch.StartNew();
+        _logger.LogInformation(
+            "Daemon sandbox command starting for session {SessionId} in {WorkingDirectory}: {Argv}",
+            _sessionId,
+            string.IsNullOrWhiteSpace(relativeWorkingDirectory) ? "." : relativeWorkingDirectory,
+            string.Join(' ', command.Argv)
+        );
 
-        // Bound every command with a per-command timeout (PR #121 H4): a command that runs longer than the
-        // configured limit is cancelled client-side so untrusted PR code cannot hang the poller. This
-        // complements the gateway-side ExecutionTimeout (configured below) — either surfaces as the SAME
-        // TimeoutException the old orchestrator threw.
+        // Let the script's configured operation budget expire first, then allow Gateway cleanup and
+        // the terminal response to settle before cancelling the local wait. A lost wait is not proof
+        // that remote descendants stopped; bootstrap callers quarantine that uncertainty.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_limits.CommandTimeout);
+        timeoutCts.CancelAfter(_limits.CommandTimeout + S_transportGrace + S_transportGrace);
 
         SdkSandboxCommandResult sdkResult;
         try
@@ -128,11 +136,33 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         catch (OperationCanceledException)
             when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
+            LogCommandFailure("timed out", relativeWorkingDirectory, command.Argv, started);
             throw CommandTimedOut();
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.ExecutionTimeout)
         {
+            LogCommandFailure("timed out", relativeWorkingDirectory, command.Argv, started);
             throw CommandTimedOut();
+        }
+        catch (OperationCanceledException)
+        {
+            LogCommandFailure("cancelled", relativeWorkingDirectory, command.Argv, started);
+            throw;
+        }
+        catch (SandboxException ex)
+        {
+            LogCommandFailure(
+                $"gateway error ({ex.Kind}, {ex.ErrorCode ?? "no error code"})",
+                relativeWorkingDirectory,
+                command.Argv,
+                started
+            );
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogCommandFailure($"exception ({ex.GetType().Name})", relativeWorkingDirectory, command.Argv, started);
+            throw;
         }
 
         // Cap BOTH streams before they are materialized into the result, so a command that emits megabytes
@@ -140,11 +170,19 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         // sentinel-parsing runner (which could never separate stderr and always returned it empty), the SDK
         // captures a genuine exit code and distinct stdout/stderr — surfacing the real, capped stderr is a
         // strict improvement that no test depends on being empty.
-        return new SandboxCommandResult(
+        var result = new SandboxCommandResult(
             sdkResult.ExitCode,
             _limits.CapOutput(sdkResult.StandardOutput),
             _limits.CapOutput(sdkResult.StandardError)
         );
+        _logger.LogInformation(
+            "Daemon sandbox command finished for session {SessionId} with exit {ExitCode} in {ElapsedMilliseconds} ms: {Argv}",
+            _sessionId,
+            result.ExitCode,
+            started.ElapsedMilliseconds,
+            string.Join(' ', command.Argv)
+        );
+        return result;
     }
 
     public async Task<SandboxFileRead> ReadFileAsync(string path, long maxBytes, CancellationToken cancellationToken)
@@ -263,8 +301,8 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
             new Uri(_gatewayBaseUrl, UriKind.Absolute),
             _credential.AppId,
             _credential.AppKey,
-            executionTimeout: _limits.CommandTimeout,
-            transportTimeout: _limits.CommandTimeout + S_transportGrace,
+            executionTimeout: _limits.CommandTimeout + S_transportGrace,
+            transportTimeout: _limits.CommandTimeout + S_transportGrace + S_transportGrace,
             allowInsecureDevelopmentTransport: true
         );
 
@@ -287,6 +325,24 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
             _sessionId
         );
         return client;
+    }
+
+    private void LogCommandFailure(
+        string outcome,
+        string? relativeWorkingDirectory,
+        IReadOnlyList<string> argv,
+        Stopwatch started
+    )
+    {
+        _logger.LogWarning(
+            "Daemon sandbox command failed for session {SessionId} in {WorkingDirectory} "
+                + "after {ElapsedMilliseconds} ms with outcome {Outcome}: {Argv}",
+            _sessionId,
+            string.IsNullOrWhiteSpace(relativeWorkingDirectory) ? "." : relativeWorkingDirectory,
+            started.ElapsedMilliseconds,
+            outcome,
+            string.Join(' ', argv)
+        );
     }
 
     private TimeoutException CommandTimedOut()

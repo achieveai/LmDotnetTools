@@ -94,8 +94,6 @@ public sealed class CodeReviewDaemonOptionsTests
                 new Dictionary<string, string?>
                 {
                     ["CodeReviewDaemon:ReviewPoolSize"] = "4",
-                    ["CodeReviewDaemon:ReviewPoolHostRoot"] = "/var/crd/review-pool",
-                    ["CodeReviewDaemon:ScratchDirName"] = "work",
                     ["CodeReviewDaemon:WritableToolAllowList:0"] = "PrNotes",
                 }
             )
@@ -105,8 +103,6 @@ public sealed class CodeReviewDaemonOptionsTests
 
         options.Should().NotBeNull();
         options!.ReviewPoolSize.Should().Be(4);
-        options.ReviewPoolHostRoot.Should().Be("/var/crd/review-pool");
-        options.ScratchDirName.Should().Be("work");
         // A distinctive value (not one of the ["Write","Edit","Bash"] defaults) proves the list bound. Note
         // the config binder APPENDS bound items onto a non-empty default collection rather than replacing it,
         // so the configured entry is asserted via Contain rather than exact equality.

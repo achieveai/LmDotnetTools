@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -21,6 +22,12 @@ using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.Data.Sqlite;
 
+// The untouched process argv, captured before any parsing/stripping below mutates `args` — used only for
+// the `--setup-workspace` command's startup log line (plan §5: log sanitized argv). Nothing on this CLI
+// surface (`--review`, `--days`, `--max-pr-age-days`, `--workflow-operation`, `--setup-workspace`) carries a
+// secret value, so the original argv already IS the sanitized form; nothing here would ever be redacted.
+var processArgv = args;
+
 // ── One-time setup subcommand ────────────────────────────────────────────────────────────────────
 // `CodeReviewDaemon reviewbot init --url <ReviewBotRepoUrl>` seeds/validates the ReviewBot repo and
 // exits (plan §1). This runs BEFORE the web host is built so the long-running daemon and the setup
@@ -36,23 +43,106 @@ if (args is ["reviewbot", "init", ..])
 // achieveai` loads appsettings.achieveai.json (GitHub daemon). This is the single operator knob:
 // every setting (repo/store/paths/ports/gateway) lives in that one profile file, so no launch env
 // vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
-string? workflowOperation = null;
-if (args is ["--workflow-operation", var operation])
-{
-    workflowOperation = operation;
-    args = [];
-}
+// Extract profile/recency options first so a scoped command can compose with `--review <profile>`.
 var (reviewProfile, maxPrAgeDaysOverride, hostArgs) = ReviewProfileArgs.Extract(args);
+
+string? workflowOperation = null;
+var listCandidatePrs = false;
+(string RepoKey, string PrId, string HeadSha, string BaseSha)? runPrRequest = null;
+int? runPrConcurrency = null;
+long? retainReviewNotesRunId = null;
+(string RepoKey, string PrId)? redoArtifactBranchRequest = null;
+var scopedCommand = ScopedCommandLine.Parse(hostArgs);
+if (scopedCommand.Kind == ScopedCommandKind.Malformed)
+{
+    // Never fall through to ReviewProfileArgs.Extract/normal daemon startup on a fat-fingered scoped
+    // command — that would silently hand the daemon an unrelated "review args" list and boot the poller
+    // instead of telling the operator they mistyped `--run-pr`'s four arguments (security review round 1).
+    Console.Error.WriteLine(scopedCommand.Error);
+    return 64; // EX_USAGE
+}
+if (scopedCommand.Kind == ScopedCommandKind.WorkflowOperation)
+{
+    workflowOperation = scopedCommand.WorkflowOperation;
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.ListCandidatePrs)
+{
+    // Task #81, Command A — a bounded, read-only candidate listing over the configured allow-list.
+    // Never creates a run, never touches a cursor: see ListCandidatePrsCommand.
+    listCandidatePrs = true;
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.RunPr)
+{
+    // Task #81, Command B — an operator-approved, exact one-PR run. See RunSinglePrCommand.
+    runPrRequest = (
+        scopedCommand.RunPrRepoKey!,
+        scopedCommand.RunPrId!,
+        scopedCommand.RunPrHeadSha!,
+        scopedCommand.RunPrBaseSha!
+    );
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.RunPrStream)
+{
+    runPrConcurrency = scopedCommand.RunPrConcurrency;
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.ResetReviewRun)
+{
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.RetainReviewNotes)
+{
+    retainReviewNotesRunId = scopedCommand.NotesRunId;
+    hostArgs = [];
+}
+else if (scopedCommand.Kind == ScopedCommandKind.RedoArtifactBranch)
+{
+    // Task #82, requirement 4 — the explicit, operator-only redo. Never scheduled, never reached from the
+    // review flow. Recognized by the SAME parser as the other scoped commands so a fat-fingered
+    // `--redo-artifact-branch` is a usage error rather than a silent fall-through into daemon startup.
+    redoArtifactBranchRequest = (scopedCommand.RedoRepoKey!, scopedCommand.RedoPrId!);
+    hostArgs = [];
+}
+var isScopedCommand =
+    workflowOperation is not null
+    || listCandidatePrs
+    || runPrRequest is not null
+    || runPrConcurrency is not null
+    || retainReviewNotesRunId is not null
+    || scopedCommand.Kind == ScopedCommandKind.ResetReviewRun
+    || redoArtifactBranchRequest is not null;
+
+// Task #82, requirement 1 — the review-artifact branch push capability. Denied here, and there is no flag
+// that changes that: the grant is minted by calling ReviewArtifactBranchCapability.Grant from the one-shot
+// single-PR run command (task #81's --run-pr), using the repo/PR/head that command has just re-read and
+// validated for the SECOND time, immediately before it admits the run. Every other entry point into this
+// file — normal daemon startup, --list-candidate-prs, --workflow-operation, --redo-artifact-branch — leaves
+// it at Denied, so retention refuses before it touches git on all of them.
+ReviewArtifactBranchCapability ArtifactCapability() => ReviewArtifactBranchCapability.Current;
+
+// `--setup-workspace` bootstraps every configured logical review slot through the SAME Gateway/session
+// wiring a real review uses, then keeps serving (plan §5, Step 0) — a bare flag, composable with
+// `--review <profile>`, so it is stripped here before profile-flag extraction rather than consuming args.
+// It is NOT a ScopedCommandLine command: it composes with `--review <profile>` and it keeps serving, so it
+// is stripped from args rather than claiming the whole argv the way the four one-shot commands do.
+var setupWorkspaceRequested = args.Contains("--setup-workspace");
+if (setupWorkspaceRequested)
+{
+    args = [.. args.Where(a => a != "--setup-workspace")];
+}
 
 var builder = WebApplication.CreateBuilder(
     new WebApplicationOptions
     {
         Args = hostArgs,
         EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
-        ContentRootPath = workflowOperation is null ? null : AppContext.BaseDirectory,
+        ContentRootPath = isScopedCommand ? AppContext.BaseDirectory : null,
     }
 );
-if (workflowOperation is not null)
+if (isScopedCommand)
 {
     // A scoped operation owns stdout exclusively; diagnostic logs stay on stderr.
     builder.Logging.ClearProviders();
@@ -76,13 +166,26 @@ if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
 // operator opt-in to a higher-blast-radius behavior. See CodeReviewDaemonOptions.
-var daemonOptions =
-    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
-    ?? new CodeReviewDaemonOptions();
+var daemonOptions = CodeReviewDaemonOptions.FromConfiguration(
+    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName)
+);
+
+// Reject invalid workspace environment keys before any hosted conversation can be provisioned. Validation
+// reports key names only; values are never logged or surfaced.
+SandboxEnvRules.Validate(daemonOptions.WorkspaceEnv, "CodeReviewDaemon:WorkspaceEnv");
 
 // Refuse startup on a malformed EnabledRepos entry, naming it — encoding the segments consistently (issue
 // #485) is not the same as validating them, and a bad entry otherwise polls the wrong repo or nothing at all.
 PrPollTargetBuilder.ValidateEnabledRepos(daemonOptions);
+
+// `--setup-workspace` must never run in the same process as PR polling — see
+// SetupWorkspaceCommand.EnsureCanRunWithoutPolling for why. Checked here, before the host is even built,
+// so this fails fast instead of only surfacing later as pool contention once PrPollingService starts
+// polling in app.StartAsync().
+if (setupWorkspaceRequested)
+{
+    SetupWorkspaceCommand.EnsureCanRunWithoutPolling(daemonOptions);
+}
 
 builder.Services.AddSingleton(daemonOptions);
 
@@ -91,6 +194,18 @@ builder.Services.AddSingleton(daemonOptions);
 // from the configured ADO context and shared by every HostGitCommandRunner below; a GitHub-only daemon gets
 // an empty set (no rewrite emitted).
 var hostGitAdoOrgs = DeriveAdoOrgs(daemonOptions);
+
+// Task #85 — the scoped authority HostGitCommandRunner consults before executing any `git push`. This is
+// what closes the gap `artifactBranchCapability` above cannot: that capability governs whether
+// WorkflowArtifactOperations.RetainArtifactsAsync PROCEEDS to call git at all, but the shared host git
+// boundary itself used to consult only the flat CodeReviewDaemonOptions.EnableGitPush boolean — so a
+// capability minted below could clear the retention layer's own check while this runner still rejected (or,
+// under a permissive profile, accepted ANY push) regardless of which branch was actually named. Constructed
+// once here and shared BY REFERENCE with every HostGitCommandRunner that needs it, so a grant minted later
+// (in onIdentityRevalidated below, and in RedoReviewArtifactBranchCommand) is visible to a runner that was
+// already constructed. EnableGitPush is now only this object's all-or-nothing escape hatch, not a second
+// gate layered on top of the scoped grants.
+var hostGitPushAuthorization = new HostGitPushAuthorization(daemonOptions.EnableGitPush);
 
 // Opt-in structured JSONL logging: when CodeReviewDaemon:LogFilePath is set, add a Serilog file sink
 // alongside the console logger so the daemon's own logs are DuckDB-queryable. Unset ⇒ console-only.
@@ -213,7 +328,13 @@ var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databa
 
 // This daemon's SQLite/workspace deployment has one coordinator. An OS-held lease rejects a
 // second host before polling; process exit releases it, so stale coordinators cannot keep writing.
-using var coordinatorLease = workflowOperation is null ? WorkflowCoordinatorLease.Acquire(databasePath) : null;
+// A scoped one-shot command (workflow operation, candidate listing, an operator-approved single-PR run,
+// or an artifact-branch redo) never polls, so it never contends for this process-wide lease here. The two
+// that DO need coordinator exclusion take the identical WorkflowCoordinatorLease themselves, around their
+// own gates — --run-pr via RunPrCoordinatorLease.TryAcquire, --redo-artifact-branch inside
+// RedoReviewArtifactBranchCommand — so "no daemon is running" is checked at the point the state is read
+// rather than minutes earlier at startup. Taking it here too would self-deadlock both of them.
+using var coordinatorLease = isScopedCommand ? null : WorkflowCoordinatorLease.Acquire(databasePath);
 
 // Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is still the serial
 // PrPollingService loop (each PR is orchestrated to completion before the next), so concurrent use does
@@ -268,13 +389,9 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     BaseUrl = gatewayBaseUrl,
     AutoSpawn = false,
     Marketplaces = string.Join(",", daemonOptions.Marketplaces),
-    // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
-    // per-run provisioner mounts a distinct leaf (review-run-{id}) under this base, so it MUST be set or
-    // session-create fails with "no workspace base path is configured". Sourced from env/config so it
-    // tracks whatever the adopted gateway actually mounts (e.g. B:/sandbox-workspaces/workspaces).
-    WorkspaceBasePath =
-        Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
-        ?? builder.Configuration["SandboxGateway:WorkspaceBasePath"],
+    // Gateway storage may be remote. The daemon identifies only its logical workspace leaf and never needs
+    // the gateway host's workspace base path.
+    WorkspaceBasePath = null,
     // Per-app bearer identity (ADR 0029) — the daemon's own identity, distinct from LmStreaming.Sample so
     // its sandbox sessions are scoped to their own app tree under an AUTH_ENFORCE gateway, and so the
     // registry's default credential (used to stamp its own REST/MCP calls) matches the two direct /mcp
@@ -283,16 +400,9 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     AppKey = daemonKeyMissing ? null : daemonAppKey,
 };
 
-// Per-app workspace rooting (gateway ADR 0028): when the adopted gateway roots workspaces at
-// WORKSPACE_BASE_PATH/<app-dir>/<workspace>, the daemon prepares its store + measures slot paths under that
-// same <app-dir> (derived from AppId) so the app-dir-less workspace field it sends re-roots to the prepared
-// store. Off by default (flat, pre-ADR-0028). sandboxGatewayOptions.WorkspaceBasePath stays the CONFIGURED
-// base (the gateway's own WORKSPACE_BASE_PATH); only the daemon-side prep/relative base gains <app-dir>.
-var effectiveWorkspaceBase = SandboxAppDir.EffectiveBase(
-    sandboxGatewayOptions.WorkspaceBasePath,
-    daemonAppId,
-    daemonOptions.PerAppWorkspaceRooting
-);
+// NOTE: this no longer feeds a review-workspace host path — every review slot is a purely logical leaf the
+// run's own Gateway session mounts (see the pooled workspace registration below), so there is no daemon-side
+// prep/relative base left to re-root under an app dir.
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
@@ -329,12 +439,8 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     daemonOptions,
     sp.GetRequiredService<ILoggerFactory>(),
     daemonCredential,
-    // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
-    // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
-    // pool root is defaulted under it below so the slot always resolves to a path inside the base. Under
-    // per-app rooting this base already includes <app-dir> (see effectiveWorkspaceBase above).
-    effectiveWorkspaceBase,
-    gatewayBaseUrl
+    gatewayBaseUrl,
+    daemonOptions.ReviewWorkspaceLeaf
 ));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
@@ -366,14 +472,8 @@ if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
 }
 
 // The authored model id is resolved by the review host when its parent conversation is provisioned.
-if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
-{
-    throw new InvalidOperationException(
-        "UseS2SReviewAgent is on but no workspace base path is configured "
-            + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
-            + "PR checkout under it, and the review host must mount the same base."
-    );
-}
+// The review-workspace path itself no longer needs a host workspace base: every review slot is a purely
+// logical leaf the run's own Gateway session mounts, never a host directory this process inspects.
 
 // Normalize to a host-root base with a trailing slash so the client's relative paths ("api/workspaces",
 // "api/conversations") resolve correctly against HttpClient.BaseAddress.
@@ -433,21 +533,13 @@ builder.Services.AddSingleton<IReviewAgentTranscriptSource>(sp =>
     sp.GetRequiredService<S2SReviewSubAgentCompletionSource>()
 );
 
-// Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
-// the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
-// (privileged, credentialed, never the sandbox runner).
+// Names a leased Layer-1 review slot to LmStreaming as an S2S workspace. Runs no git of its own — the slot
+// was already prepared through the run's own Gateway session (see the pooled workspace registration below).
 builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
     sp.GetRequiredService<LmStreamingS2SClient>(),
-    new GitRunner(
-        new HostGitCommandRunner(
-            BuildHostGitCredentialsSource(sp),
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs
-        )
-    ),
-    effectiveWorkspaceBase!,
     daemonOptions.LmStreamingReviewMarketplace,
-    sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()
+    sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>(),
+    daemonOptions.ReviewWorkspaceLeaf
 ));
 
 // Gateway prerequisite probe (RequireSkillSupport). The review runs in a conversation the review host
@@ -646,7 +738,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
         var runner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs
+            hostGitAdoOrgs,
+            pushAuthorization: hostGitPushAuthorization
         );
         return new HostRetentionWorkspace(
             runner,
@@ -656,107 +749,25 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
     });
 }
 
-// ── Pooled scoped-writable review workspace + PR-lifecycle sweep (Layer 1) ─────────────────────────
-// Every authored review uses the existing workspace pool.
-// The pool, preparer, and lifecycle sweep use host-side Git.
-// They retain the privileged write
-// credential) — never the sandbox the untrusted review agent shares (design §4.7).
+// ── Shared review workspace + repository worktree slot pool ────────────────────────────────────────
+// The Gateway mounts exactly one workspace (`ReviewWorkspaceLeaf`). A slot is a linked worktree path
+// inside that mount: `.worktrees/<Repo>-<N>`. All deterministic Git/file access goes through the shared
+// Gateway session and uses an explicit slot-relative cwd; the daemon never resolves a Gateway host path.
 {
-    // The pool root MUST sit under the gateway's WorkspaceBasePath so a leased slot can be mounted at
-    // /workspace (ReviewSessionProvisioner.GetOrCreateForSlotAsync expresses the slot relative to that
-    // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
-    // it is configured, falling back to a dir beside the binary only when no base path is set (the slot
-    // mount then degrades to the per-run mount, which is still correct — just not slot-backed).
-    // The pool root MUST resolve INSIDE effectiveWorkspaceBase so a leased slot's host path is expressible
-    // relative to that base (the workspace field the gateway re-roots under <app-dir>). Under per-app rooting
-    // the explicit ReviewPoolHostRoot's leaf (e.g. "review-pool-mcqdb") is re-based under <app-dir>; a flat
-    // path would land outside the base and the slot mount would silently degrade to the per-run mount.
-    var poolLeaf = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
-        ? "review-pool"
-        : Path.GetFileName(daemonOptions.ReviewPoolHostRoot.TrimEnd('/', '\\'));
-    var poolRoot =
-        daemonOptions.PerAppWorkspaceRooting && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
-            ? $"{effectiveWorkspaceBase!.TrimEnd('/', '\\')}/{poolLeaf}"
-        : !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot) ? daemonOptions.ReviewPoolHostRoot
-        : !string.IsNullOrWhiteSpace(effectiveWorkspaceBase) ? Path.Combine(effectiveWorkspaceBase, "review-pool")
-        : Path.Combine(AppContext.BaseDirectory, "review-pool");
-
-    var slotDirPrefix = "slot-";
-    // S2S flattens the slot to ONE segment directly under the base. The gateway re-roots a workspace by a
-    // multi-segment rel path just fine (that is the in-process layout, {base}/review-pool/slot-{i}), but the
-    // S2S path names the same directory to LmStreaming as a workspace *directory*, and
-    // FileWorkspaceStore.SanitizeDirectory strips '/' and '\\' — "review-pool/slot-0" would silently become
-    // "review-poolslot-0", a different (empty) directory the agent would review as if it were the repo.
-    // {base}/review-slot-{i} sits BESIDE the untouched review-pool/ used by the in-process profiles.
-    if (daemonOptions.UseS2SReviewAgent && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
-    {
-        poolRoot = effectiveWorkspaceBase!.TrimEnd('/', '\\');
-        slotDirPrefix = "review-slot-";
-    }
-
-    // Host-side only (never mounted) on the in-process path; on S2S the knowledge-extraction arm mounts it as
-    // its own workspace, so it must be a sanitize-stable single segment too — hence the distinct leaf name.
     builder.Services.AddSingleton(sp =>
     {
-        var hostRunner = new HostGitCommandRunner(
-            BuildHostGitCredentialsSource(sp),
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs
-        );
-        var hostFileSystem = new HostFileSystem();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var repositoryNames = daemonOptions.EnabledRepos.Select(RepositoryNameRules.FromEnabledRepo).ToArray();
 
         var pool = new ReviewSlotPool(
+            repositoryNames,
             daemonOptions.ReviewPoolSize,
-            poolRoot,
-            daemonOptions.ScratchDirName,
             loggerFactory.CreateLogger<ReviewSlotPool>(),
-            slotDirPrefix
-        );
-
-        // A slot directory whose name does not survive LmStreaming's workspace-directory sanitizer unchanged
-        // would be mounted as a DIFFERENT, empty directory — a failure that looks like success: the agent finds
-        // no repo, reports nothing wrong, and the review passes vacuously. Fail at startup instead.
-        if (daemonOptions.UseS2SReviewAgent)
-        {
-            for (var i = 0; i < daemonOptions.ReviewPoolSize; i++)
-            {
-                var slotDir = pool.SlotDirectoryName(i);
-                var sanitized = S2SReviewWorkspacePreparer.SanitizeLeaf(slotDir);
-                if (!string.Equals(slotDir, sanitized, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Review slot directory '{slotDir}' is not stable under LmStreaming's workspace-directory "
-                            + $"sanitizer (it becomes '{sanitized}'), so the hosted conversation would be mounted on "
-                            + "a different, empty directory. Choose a slot prefix of lowercase letters, digits and "
-                            + "dashes only."
-                    );
-                }
-            }
-        }
-
-        // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var hostPreparer = new ReviewSlotPreparer(
-            new GitRunner(hostRunner),
-            hostFileSystem,
-            "github",
-            loggerFactory,
-            enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance
+            daemonOptions.ReviewPoolSizesByRepository
         );
         return new ReviewSlotWorkspace(
             pool,
-            hostPreparer,
-            (session, provider) =>
-                new ReviewSlotPreparer(
-                    new GitRunner(session.CommandRunner),
-                    session.FileSystem,
-                    provider,
-                    loggerFactory,
-                    requireSdkOwnershipMarker: true,
-                    enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance
-                ),
-            hostRunner,
-            hostFileSystem
+            AutoDiscardCompletedSlotOnAdmission: daemonOptions.AutoDiscardCompletedSlotOnAdmission
         );
     });
 }
@@ -791,8 +802,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
                     retention.RepoRoot,
                     ct
                 );
-                await sp.GetRequiredService<ReviewSlotWorkspace>()
-                    .HostPreparer.EnsureStoreAsync(retention.RepoRoot, daemonOptions.ResolvedStoreUrl, ct);
+                var retentionPreparer = new ReviewSlotPreparer(git, retention.FileSystem);
+                await retentionPreparer.EnsureStoreAsync(retention.RepoRoot, daemonOptions.ResolvedStoreUrl, ct);
                 var rows = await store.ListReviewedPrsAsync(ct);
                 IReadOnlyList<ReviewedPr> reviewed =
                 [
@@ -868,7 +879,6 @@ builder.Services.AddSingleton(sp => new WorkflowPublicationGateway(
 ));
 builder.Services.AddSingleton(sp => new WorkflowContextReader(
     sp.GetRequiredService<ReviewStore>(),
-    sp.GetRequiredService<ReviewSlotWorkspace>(),
     workflowRunRoot,
     daemonOptions.Limits.MaxArtifactPayloadChars,
     async (run, ct) =>
@@ -892,11 +902,14 @@ builder.Services.AddSingleton(sp => new WorkflowWorkspace(
     sp.GetRequiredService<ReviewStore>(),
     daemonOptions,
     sp.GetRequiredService<ReviewSlotWorkspace>(),
+    sp.GetRequiredService<IReviewSessionProvisioner>(),
     sp.GetRequiredService<S2SReviewWorkspacePreparer>().AdoptSlotAsync,
     sp.GetRequiredService<ILoggerFactory>(),
-    async (run, admission, ct) =>
+    async (run, admission, session, ct) =>
     {
-        var context = await sp.GetRequiredService<WorkflowContextReader>().ReadAsync(run, admission, ct);
+        var context = await sp.GetRequiredService<WorkflowContextReader>()
+            .ReadAsync(run, admission, session, ct)
+            .ConfigureAwait(false);
         context["Execution"] = new JsonObject
         {
             ["PublicationMode"] =
@@ -909,12 +922,12 @@ builder.Services.AddSingleton(sp => new WorkflowWorkspace(
             retention.RepoRoot,
             ct
         );
-        await sp.GetRequiredService<ReviewSlotWorkspace>()
-            .HostPreparer.EnsureStoreAsync(
-                retention.RepoRoot,
-                daemonOptions.ResolvedStoreUrl ?? throw new InvalidOperationException("Review store URL is required."),
-                ct
-            );
+        var retentionPreparer = new ReviewSlotPreparer(new GitRunner(retention.Git), retention.FileSystem);
+        await retentionPreparer.EnsureStoreAsync(
+            retention.RepoRoot,
+            daemonOptions.ResolvedStoreUrl ?? throw new InvalidOperationException("Review store URL is required."),
+            ct
+        );
         return context;
     }
 ));
@@ -943,6 +956,7 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
     sp.GetRequiredService<WorkflowWorkspace>(),
     daemonOptions,
     workflowRunRoot,
+    ArtifactCapability,
     (run, ct) =>
     {
         ct.ThrowIfCancellationRequested();
@@ -969,6 +983,7 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
                 "main",
                 manager,
                 workflowGitGate,
+                ArtifactCapability(),
                 new WorkflowKnowledgeEdits(
                     retention.RepoRoot,
                     repo,
@@ -985,6 +1000,37 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
                     )
             )
         );
+    },
+    async (run, ct) =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
+        var providerId = RepoIdentity.ToPublisherNamespace(repo.Provider);
+        var provider = sp.GetServices<IPrProvider>().Single(value => value.Provider == providerId);
+        var before =
+            await provider.GetPullRequestAsync(repo, run.PrId, ct)
+            ?? throw new InvalidDataException("PR is unavailable for discussion capture.");
+        if (before.HeadSha != run.HeadSha || before.BaseSha != run.BaseSha)
+            throw new InvalidDataException("PR identity changed before discussion capture.");
+        var readStartedAt = DateTimeOffset.UtcNow;
+        var snapshot = await PrCommentContextReader.ReadAsync(
+            sp.GetServices<IReviewCommentPublisher>().ToArray(),
+            store,
+            repo,
+            providerId,
+            run.RepoId,
+            run.PrId,
+            before,
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            ct
+        );
+        snapshot["BodyNormalization"] =
+            "Provider reader flattens line endings and caps each comment at 2000 characters; a trailing ellipsis may indicate truncation. Judge only the available evidence.";
+        snapshot["ReadStartedAt"] = readStartedAt.ToString("O");
+        var after = await provider.GetPullRequestAsync(repo, run.PrId, ct);
+        if (after is null || after.HeadSha != before.HeadSha || after.BaseSha != before.BaseSha)
+            throw new InvalidDataException("PR identity changed during discussion capture.");
+        return snapshot;
     }
 ));
 builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
@@ -1191,46 +1237,57 @@ if (EvalSweepConfiguration.Resolve(daemonOptions) is { } evalSweep)
 }
 
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
-// exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
-builder.Services.AddHostedService(sp => new PrPollingService(
-    PrPollTargetBuilder.Build(daemonOptions, sp.GetRequiredService<ILogger<PrPollingService>>()),
-    sp.GetServices<IPrProvider>(),
-    sp.GetRequiredService<ReviewStore>(),
-    sp.GetRequiredService<PrOrchestrator>(),
-    sp.GetRequiredService<ILogger<PrPollingService>>(),
-    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
-    // deep-link retention sweep (registered by the S2S path when a window is configured), the stranded-run
-    // reconciler, and the eval corpus sweep (registered when a cadence is configured; it gates itself on
-    // its own interval rather than running on every tick). Any of them may be absent, in which case the
-    // poller keeps polling with whatever remains (design §4.5). The reconciler runs before the eval sweep
-    // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
-    // only reads: nothing downstream of it depends on when in the cycle it happened.
-    sweepAsync: ComposeMaintenanceSweep(
-        (
-            "PR-lifecycle",
-            sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null
+// exactly the gateway callbacks below. With the allow-list empty (default) it has no targets and is inert.
+// Workspace-validation profiles can keep their repository allow-list configured while disabling polling
+// explicitly; this lets setup use the real repository identity without accidentally selecting or reviewing
+// a PR.
+//
+// Never registered for --run-pr either (security review round 1: "configured polling disabled" must be
+// structural, not just "the daemon happens not to call app.Run()") — an operator-approved exact run must
+// never race the poller's own admission for the same PR/slot. The two gates are independent and both must
+// pass: one is an operator configuration choice, the other is a property of the command being run.
+if (daemonOptions.EnablePrPolling && runPrRequest is null && runPrConcurrency is null && retainReviewNotesRunId is null)
+{
+    builder.Services.AddHostedService(sp => new PrPollingService(
+        PrPollTargetBuilder.Build(daemonOptions, sp.GetRequiredService<ILogger<PrPollingService>>()),
+        sp.GetServices<IPrProvider>(),
+        sp.GetRequiredService<ReviewStore>(),
+        sp.GetRequiredService<PrOrchestrator>(),
+        sp.GetRequiredService<ILogger<PrPollingService>>(),
+        // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
+        // deep-link retention sweep (registered by the S2S path when a window is configured), the stranded-run
+        // reconciler, and the eval corpus sweep (registered when a cadence is configured; it gates itself on
+        // its own interval rather than running on every tick). Any of them may be absent, in which case the
+        // poller keeps polling with whatever remains (design §4.5). The reconciler runs before the eval sweep
+        // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
+        // only reads: nothing downstream of it depends on when in the cycle it happened.
+        sweepAsync: ComposeMaintenanceSweep(
+            (
+                "PR-lifecycle",
+                sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null
+            ),
+            (
+                "deep-link retention",
+                sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null
+            ),
+            (
+                "stranded-run",
+                sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null
+            ),
+            (
+                "eval-corpus",
+                sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null
+            )
         ),
-        (
-            "deep-link retention",
-            sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null
-        ),
-        (
-            "stranded-run",
-            sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null
-        ),
-        (
-            "eval-corpus",
-            sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null
-        )
-    ),
-    // The reporter is passed so the startup no-change-on-a-first-review rate reaches the CONSOLE, which is
-    // filtered to Warning for every category except this one. GetRequiredService, not GetService: a missing
-    // registration must fail at startup rather than leave the standing check silently inert, which is the
-    // exact failure mode — a control that is present and does nothing — this check exists to catch.
-    progress: sp.GetRequiredService<ReviewProgressReporter>(),
-    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays,
-    commentReaders: sp.GetServices<IReviewCommentPublisher>()
-));
+        // The reporter is passed so the startup no-change-on-a-first-review rate reaches the CONSOLE, which is
+        // filtered to Warning for every category except this one. GetRequiredService, not GetService: a missing
+        // registration must fail at startup rather than leave the standing check silently inert, which is the
+        // exact failure mode — a control that is present and does nothing — this check exists to catch.
+        progress: sp.GetRequiredService<ReviewProgressReporter>(),
+        firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays,
+        commentReaders: sp.GetServices<IReviewCommentPublisher>()
+    ));
+}
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
 // the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
@@ -1306,33 +1363,15 @@ CodeReviewDaemonOptions.ValidateWorkflowConfiguration(
     warning => app.Logger.LogWarning("{WorkflowMigrationWarning}", warning)
 );
 
-if (workflowOperation is not null)
-{
-    // Building resolves configuration and credentials; hosted polling never starts in this child.
-    return await WorkflowScriptHost.RunAsync(
-        workflowOperation,
-        Console.In,
-        Console.Out,
-        Console.Error,
-        app.Services.GetRequiredService<WorkflowOperationDispatcher>().DispatchAsync,
-        CancellationToken.None
-    );
-}
-
-// One-time, non-blocking notice for the keyless dev path (see the per-app identity block above) — never
-// logs the key itself, since none was configured.
-if (daemonKeyMissing)
-{
-    app.Logger.LogWarning(
-        "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with no key "
-            + "(keyless AUTH_ENFORCE=off dev path). Set CRD_SANDBOX_APP_KEY for a gateway that enforces auth.",
-        daemonAppId
-    );
-}
-
 // The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the
 // gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway
 // does not sign its callbacks, so requiring a signature rejected every real callback.
+//
+// Routes are mapped here — before every early-return branch below, including --run-pr — because --run-pr
+// starts this same host (via app.StartAsync()) to serve S2S callbacks for the duration of its one
+// orchestrated run (security review rounds 1/2); the routes must already exist by the time that happens.
+// Mapping them here is harmless for --workflow-operation/--list-candidate-prs too: neither ever reaches
+// app.StartAsync()/app.Run(), so a mapped-but-never-served route does nothing.
 app.MapControllers();
 app.MapPost(
     "api/workflow/publication",
@@ -1363,6 +1402,395 @@ app.MapPost(
         }
     }
 );
+
+if (workflowOperation is not null)
+{
+    // Building resolves configuration and credentials; hosted polling never starts in this child.
+    return await WorkflowScriptHost.RunAsync(
+        workflowOperation,
+        Console.In,
+        Console.Out,
+        Console.Error,
+        app.Services.GetRequiredService<WorkflowOperationDispatcher>().DispatchAsync,
+        CancellationToken.None
+    );
+}
+
+// Command output is compact and machine-readable; enums render by name rather than ordinal so an
+// operator (or a script) reading stdout never has to cross-reference ReviewRunAxes.cs.
+var commandOutputOptions = new JsonSerializerOptions
+{
+    WriteIndented = true,
+    Converters = { new JsonStringEnumConverter() },
+};
+
+// Task #82, requirement 4 — the explicit redo. It is reached ONLY from the operator-typed flag parsed at
+// the top of this file: building the host resolves configuration, hosted polling never starts in this
+// child (app.Run() below is never reached, so the registered PrPollingService is constructed by nothing
+// and its loop never begins), and no other code path in the daemon calls RedoReviewArtifactBranchCommand
+// at all. It is deletion-only: it removes a published artifact branch and, on a VERIFIED non-quarantined
+// deletion, records a single-use ReviewRerunAuthorization — it never re-admits a run itself, and
+// `artifactBranchCapability` is still Denied here, so nothing in this arm can push a new commit. Task #85:
+// the command still authorizes exactly one thing at the host git boundary — a single guarded
+// (compare-and-swap) DELETE of the one branch/SHA it just finished proving it owns — and only grants that
+// after its own full refusal-gate sequence passes, from inside RunUnderLocksAsync itself, not from here.
+//
+// The process-wide `coordinatorLease` above is deliberately NOT taken for this command: the command
+// acquires the identical WorkflowCoordinatorLease itself, around its own gates, so that "no daemon is
+// running" is checked at the point the state is read rather than minutes earlier at startup. Taking it
+// here too would self-deadlock.
+if (redoArtifactBranchRequest is { } redoRequest)
+{
+    var redoLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    var redoTargets = PrPollTargetBuilder
+        .Build(app.Services.GetRequiredService<CodeReviewDaemonOptions>(), redoLogger)
+        .Where(target =>
+            string.Equals(target.Repo.DisplayName, redoRequest.RepoKey, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(target.Repo.NormalizedKey, redoRequest.RepoKey, StringComparison.OrdinalIgnoreCase)
+        )
+        .Select(target => target.Repo)
+        .DistinctBy(repo => repo.NormalizedKey, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    if (redoTargets.Count != 1)
+    {
+        // Outside the allow-list, or ambiguous. Either way there is no single repository to own a branch.
+        redoLogger.LogError(
+            "'{RepoKey}' does not resolve to exactly one allow-listed repository ({Count} matches).",
+            redoRequest.RepoKey,
+            redoTargets.Count
+        );
+        return 64;
+    }
+    var redoRetention = app.Services.GetRequiredService<HostRetentionWorkspace>();
+    var redoLoggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+    var redoResult = await RedoReviewArtifactBranchCommand.RunAsync(
+        app.Services.GetRequiredService<ReviewStore>(),
+        redoTargets[0],
+        redoRequest.PrId,
+        redoRetention.RepoRoot,
+        databasePath,
+        new ReviewBranchManager(
+            new GitRunner(redoRetention.Git),
+            redoRetention.FileSystem,
+            redoLoggerFactory.CreateLogger<ReviewBranchManager>()
+        ),
+        hostGitPushAuthorization,
+        redoLogger,
+        TimeProvider.System,
+        app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping
+    );
+    Console.WriteLine(JsonSerializer.Serialize(redoResult, commandOutputOptions));
+    return
+        redoResult.Outcome is RedoReviewArtifactBranchOutcome.Deleted or RedoReviewArtifactBranchOutcome.AlreadyAbsent
+        ? 0
+        : 1;
+}
+
+if (listCandidatePrs)
+{
+    // Task #81, Command A. Building resolves configuration only; hosted polling never starts in this
+    // child (app.Run() below is never reached), and this command takes no ReviewStore/PrOrchestrator
+    // dependency at all — it cannot create a run, update a cursor, or allocate a slot.
+    var candidates = await ListCandidatePrsCommand.RunAsync(
+        app.Services.GetRequiredService<CodeReviewDaemonOptions>(),
+        [.. app.Services.GetServices<IPrProvider>()],
+        app.Services.GetRequiredService<ILogger<Program>>(),
+        CancellationToken.None
+    );
+    Console.WriteLine(JsonSerializer.Serialize(candidates, commandOutputOptions));
+    return 0;
+}
+
+// One-time, non-blocking notice for the keyless dev path (see the per-app identity block above) — never
+// logs the key itself, since none was configured.
+if (daemonKeyMissing)
+{
+    app.Logger.LogWarning(
+        "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with no key "
+            + "(keyless AUTH_ENFORCE=off dev path). Set CRD_SANDBOX_APP_KEY for a gateway that enforces auth.",
+        daemonAppId
+    );
+}
+
+app.Logger.LogInformation(
+    "Review daemon startup: profile {Profile}; URLs {Urls}; auth webhook base {WebhookBaseUrl}; "
+        + "auth routes {GithubWebhookUrl}, {AdoWebhookUrl}; LmStreaming {LmStreamingBaseUrl}; "
+        + "comment posting {CommentPosting}; Git retention {GitRetention}; PR polling {PrPolling}; "
+        + "configured PR targets {EnabledRepoCount}; review slots {ReviewPoolSize}; "
+        + "workspace environment keys [{WorkspaceEnvKeys}].",
+    reviewProfile ?? builder.Environment.EnvironmentName,
+    builder.Configuration["Urls"] ?? "(Kestrel defaults)",
+    authOptions.Webhook.CallbackBaseUrl,
+    $"{authOptions.Webhook.CallbackBaseUrl}/api/auth/webhook/github",
+    $"{authOptions.Webhook.CallbackBaseUrl}/api/auth/webhook/ado",
+    daemonOptions.LmStreamingBaseUrl ?? "(disabled)",
+    daemonOptions.EnableCommentPosting ? "enabled" : "disabled",
+    daemonOptions.EnableGitPush ? "enabled" : "disabled",
+    daemonOptions.EnablePrPolling ? "enabled" : "disabled",
+    daemonOptions.EnabledRepos.Count,
+    daemonOptions.ReviewPoolSize,
+    daemonOptions.WorkspaceEnv.Count > 0
+        ? string.Join(", ", daemonOptions.WorkspaceEnv.Keys.Order(StringComparer.Ordinal))
+        : "(none)"
+);
+
+if (daemonOptions.UseS2SReviewAgent)
+{
+    await app
+        .Services.GetRequiredService<LmStreamingS2SClient>()
+        .EnsureHostContractAsync(CancellationToken.None, requireSandboxEnv: daemonOptions.WorkspaceEnv.Count > 0)
+        .ConfigureAwait(false);
+    app.Logger.LogInformation(
+        "LmStreaming review host preflight passed at {LmStreamingBaseUrl}; sandbox environment support required: {SandboxEnvRequired}.",
+        daemonOptions.LmStreamingBaseUrl,
+        daemonOptions.WorkspaceEnv.Count > 0
+    );
+}
+
+async Task<RunSinglePrResult> AdmitApprovedAsync(RunSinglePrPrepareResult prepared, CancellationToken ct)
+{
+    using var capabilityScope = ReviewArtifactBranchCapability.EnterScope();
+    using var pushScope = hostGitPushAuthorization.EnterScope();
+    return await RunSinglePrCommand
+        .AdmitAndRunAsync(
+            prepared,
+            app.Services.GetRequiredService<ReviewStore>(),
+            app.Services.GetRequiredService<PrOrchestrator>(),
+            ct,
+            commentReaders: [.. app.Services.GetServices<IReviewCommentPublisher>()],
+            onIdentityRevalidated: (target, descriptor) =>
+            {
+                var capability = ReviewArtifactBranchCapability.Grant(
+                    target.Repo.DisplayName,
+                    descriptor.PrId,
+                    descriptor.HeadSha
+                );
+                ReviewArtifactBranchCapability.SetCurrent(capability);
+                hostGitPushAuthorization.AuthorizePush(capability.AuthorizedBranch(target.Repo));
+            },
+            fresh: scopedCommand.Fresh,
+            canStartFresh: app.Services.GetRequiredService<ReviewWorkflowRunner>().CanStartFreshAsync
+        )
+        .ConfigureAwait(false);
+}
+
+if (scopedCommand.ResetRunId is { } resetRunId)
+{
+    try
+    {
+        var result = await ResetReviewRunCommand
+            .RunAsync(
+                resetRunId,
+                scopedCommand.ConfirmReset,
+                databasePath,
+                daemonOptions,
+                app.Services.GetRequiredService<ReviewStore>(),
+                app.Services.GetRequiredService<WorkflowWorkspace>(),
+                app.Services.GetRequiredService<IWorkflowStore>(),
+                app.Services.GetRequiredService<IReviewSessionProvisioner>(),
+                app.Services.GetRequiredService<LmStreamingS2SClient>(),
+                app.Services.GetRequiredService<ILoggerFactory>(),
+                CancellationToken.None
+            )
+            .ConfigureAwait(false);
+        Console.WriteLine(result.ToJsonString());
+        return 0;
+    }
+    catch (Exception error) when (error is not OutOfMemoryException)
+    {
+        app.Logger.LogError("Scoped review reset refused: {Reason}", error.Message);
+        return 1;
+    }
+}
+
+if (retainReviewNotesRunId is { } notesRunId)
+{
+    if (daemonOptions.EnablePrPolling || daemonOptions.EnableCommentPosting || daemonOptions.EnableGitPush)
+        throw new InvalidOperationException(
+            "Supplemental retention requires all broad write and polling gates disabled."
+        );
+    using var lease = RunPrCoordinatorLease.TryAcquire(databasePath);
+    if (!lease.IsAcquired)
+        return 1;
+    var store = app.Services.GetRequiredService<ReviewStore>();
+    var run = store.GetReviewRun(notesRunId) ?? throw new InvalidOperationException("Review run is missing.");
+    if (run.WorkflowStatus != WorkflowStatus.Completed)
+        throw new InvalidOperationException("Review must finish before supplemental retention.");
+    var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
+    await app.StartAsync().ConfigureAwait(false);
+    try
+    {
+        var prepared = await RunSinglePrCommand
+            .PrepareAsync(
+                daemonOptions,
+                [.. app.Services.GetServices<IPrProvider>()],
+                app.Services.GetRequiredService<ILogger<Program>>(),
+                repo.DisplayName,
+                run.PrId,
+                run.HeadSha,
+                run.BaseSha ?? throw new InvalidOperationException("Review base is missing."),
+                CancellationToken.None
+            )
+            .ConfigureAwait(false);
+        if (!prepared.Accepted)
+            throw new InvalidOperationException("Supplemental retention identity revalidation failed.");
+        using var capabilityScope = ReviewArtifactBranchCapability.EnterScope();
+        using var pushScope = hostGitPushAuthorization.EnterScope();
+        var capability = ReviewArtifactBranchCapability.Grant(repo.DisplayName, run.PrId, run.HeadSha);
+        ReviewArtifactBranchCapability.SetCurrent(capability);
+        hostGitPushAuthorization.AuthorizePush(capability.AuthorizedBranch(repo));
+        var retention = app.Services.GetRequiredService<HostRetentionWorkspace>();
+        await using (
+            var repositoryLease = await HostRetentionWorkspace.AcquireRepositoryLockAsync(
+                retention.RepoRoot,
+                CancellationToken.None
+            )
+        )
+        {
+            await new ReviewSlotPreparer(new GitRunner(retention.Git), retention.FileSystem)
+                .EnsureStoreAsync(
+                    retention.RepoRoot,
+                    daemonOptions.ResolvedStoreUrl
+                        ?? throw new InvalidOperationException("Review store URL is missing."),
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+        }
+        var retained = await app
+            .Services.GetRequiredService<WorkflowOperationDispatcher>()
+            .RetainCompletedReviewNotesAsync(run, CancellationToken.None)
+            .ConfigureAwait(false);
+        Console.WriteLine(retained.ToJsonString());
+        return 0;
+    }
+    finally
+    {
+        await app.StopAsync().ConfigureAwait(false);
+    }
+}
+
+if (runPrConcurrency is { } concurrency)
+{
+    if (daemonOptions.EnablePrPolling || daemonOptions.EnableCommentPosting || daemonOptions.EnableGitPush)
+    {
+        Console.Error.WriteLine("run-pr-stream requires polling, comment posting, and blanket Git push disabled.");
+        return 64;
+    }
+    return await RunPrOrchestration
+        .ExecuteStreamAsync(
+            Console.In,
+            concurrency,
+            () => RunPrCoordinatorLease.TryAcquire(databasePath),
+            () => app.StartAsync(),
+            async (request, ct) =>
+            {
+                var prepared = await RunSinglePrCommand
+                    .PrepareAsync(
+                        daemonOptions,
+                        [.. app.Services.GetServices<IPrProvider>()],
+                        app.Services.GetRequiredService<ILogger<Program>>(),
+                        request.RepoKey,
+                        request.PrId,
+                        request.HeadSha,
+                        request.BaseSha,
+                        ct
+                    )
+                    .ConfigureAwait(false);
+                return prepared.Accepted
+                    ? await AdmitApprovedAsync(prepared, ct).ConfigureAwait(false)
+                    : RunSinglePrResult.Rejected(prepared.RejectionReason!.Value);
+            },
+            value => Console.WriteLine(JsonSerializer.Serialize(value, commandOutputOptions)),
+            () => app.StopAsync(),
+            app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping
+        )
+        .ConfigureAwait(false);
+}
+
+if (runPrRequest is { } approvedRun)
+{
+    // Task #81, Command B — round 4, items 2+3: the whole prepare → lease → host-start → admit+run →
+    // host-stop sequence is delegated to RunPrOrchestration.ExecuteAsync so its ordering guarantees (a
+    // rejected prepare never attempts a lease; a refused lease never starts the host; the host always stops,
+    // even on a thrown exception or a graceful cancellation) are proven once, by composition tests, rather
+    // than re-verified by reading this arm. The cancellation token is real: Ctrl+C / application-stopping,
+    // not CancellationToken.None, so a long-running review can be interrupted and still stop the host
+    // cleanly instead of leaving it running past process shutdown.
+    var runPrCancellationToken = app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+
+    var result = await RunPrOrchestration.ExecuteAsync(
+        prepareAsync: ct =>
+            RunSinglePrCommand.PrepareAsync(
+                app.Services.GetRequiredService<CodeReviewDaemonOptions>(),
+                [.. app.Services.GetServices<IPrProvider>()],
+                app.Services.GetRequiredService<ILogger<Program>>(),
+                approvedRun.RepoKey,
+                approvedRun.PrId,
+                approvedRun.HeadSha,
+                approvedRun.BaseSha,
+                ct
+            ),
+        acquireLease: () =>
+        {
+            // The daemon and --run-pr apply for the SAME OS-level lease (RunPrCoordinatorLease wraps the
+            // identical WorkflowCoordinatorLease.Acquire the daemon uses): an operator must stop the running
+            // daemon before a pilot run, or this fails closed here instead of risking two processes
+            // allocating the same slot workspace directory.
+            var lease = RunPrCoordinatorLease.TryAcquire(databasePath);
+            if (!lease.IsAcquired)
+            {
+                app.Logger.LogWarning(
+                    "run-pr could not acquire the workflow coordinator lease: {Reason}",
+                    lease.FailureReason
+                );
+            }
+            return lease;
+        },
+        // Only from here on is the host started: routes were already mapped above and PrPollingService is
+        // not registered for this mode (see its hosted-service registration above), so this starts exactly
+        // the surface --run-pr needs — nothing polls, nothing else serves.
+        startHostAsync: () => app.StartAsync(),
+        admitAndRunAsync: AdmitApprovedAsync,
+        stopHostAsync: () => app.StopAsync(),
+        runPrCancellationToken
+    );
+
+    Console.WriteLine(JsonSerializer.Serialize(result, commandOutputOptions));
+    return result.Admitted ? 0 : 1;
+}
+
+if (setupWorkspaceRequested)
+{
+    // Ordering constraint (plan §5): the webhook must be listening before any authenticated Git touches
+    // the gateway. `StartAsync` brings Kestrel up without blocking, exactly like `Run` would, but returns
+    // control here so the bootstrap can run before we hand off to `WaitForShutdownAsync`.
+    await app.StartAsync().ConfigureAwait(false);
+
+    var slotWorkspace = app.Services.GetRequiredService<ReviewSlotWorkspace>();
+    var sessionProvisioner = app.Services.GetRequiredService<IReviewSessionProvisioner>();
+    var storeUrl =
+        daemonOptions.ResolvedStoreUrl
+        ?? throw new InvalidOperationException(
+            "--setup-workspace requires a configured review store (CrossRepoStoreUrl or ReviewBotRepoUrl)."
+        );
+
+    await SetupWorkspaceCommand
+        .RunAsync(
+            slotWorkspace.Pool,
+            sessionProvisioner,
+            storeUrl,
+            sanitizedArgv: processArgv,
+            workingDirectory: Directory.GetCurrentDirectory(),
+            app.Logger,
+            CancellationToken.None,
+            app.Services.GetRequiredService<ReviewStore>(),
+            daemonOptions.Limits.CommandTimeout
+        )
+        .ConfigureAwait(false);
+
+    await app.WaitForShutdownAsync().ConfigureAwait(false);
+    return 0;
+}
 
 app.Run();
 

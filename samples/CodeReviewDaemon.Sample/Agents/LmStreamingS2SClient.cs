@@ -132,7 +132,9 @@ internal sealed class LmStreamingS2SClient
         string? systemPromptAppendix,
         string? subAgentModelId,
         string? reasoningEffort,
-        CancellationToken ct
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? env = null,
+        string? workingDirectoryRelPath = null
     )
     {
         using var response = await ExecuteAsync(
@@ -148,6 +150,10 @@ internal sealed class LmStreamingS2SClient
                 // Do not normalize empty to null: empty explicitly asks the host to omit effort, while null
                 // leaves the provider's default intact.
                 ReasoningEffort = reasoningEffort,
+                // Values may contain secrets and are deliberately never logged. The host validates the map
+                // before persisting it and applies it only when the conversation's sandbox activates.
+                Env = env is { Count: > 0 } ? env : null,
+                WorkingDirectoryRelPath = workingDirectoryRelPath,
             },
             ct
         );
@@ -248,14 +254,18 @@ internal sealed class LmStreamingS2SClient
     public Task EnsureWorkflowPublicationAsync(
         CancellationToken ct,
         string? providerId = null,
-        string? modeId = null
+        string? modeId = null,
+        bool requireSandboxEnv = false,
+        bool requireConversationWorkingDirectory = false
     ) =>
         EnsureHostContractAsync(
             ct,
             requireActionToolSuppression: true,
             requireWorkflowPublication: true,
-            providerId,
-            modeId
+            requireSandboxEnv: requireSandboxEnv,
+            requireConversationWorkingDirectory: requireConversationWorkingDirectory,
+            publicationProviderId: providerId,
+            publicationModeId: modeId
         );
 
     /// <summary>
@@ -281,6 +291,8 @@ internal sealed class LmStreamingS2SClient
         CancellationToken ct,
         bool requireActionToolSuppression = false,
         bool requireWorkflowPublication = false,
+        bool requireSandboxEnv = false,
+        bool requireConversationWorkingDirectory = false,
         string? publicationProviderId = null,
         string? publicationModeId = null
     )
@@ -341,6 +353,16 @@ internal sealed class LmStreamingS2SClient
         if (requireWorkflowPublication && !ReadBoolProperty(body, "workflowPublication"))
         {
             missing.Add("workflowPublication");
+        }
+
+        if (requireSandboxEnv && !ReadBoolProperty(body, "sandboxEnv"))
+        {
+            missing.Add("sandboxEnv");
+        }
+
+        if (requireConversationWorkingDirectory && !ReadBoolProperty(body, "conversationWorkingDirectory"))
+        {
+            missing.Add("conversationWorkingDirectory");
         }
 
         if (publicationProviderId is not null)
@@ -509,6 +531,24 @@ internal sealed class LmStreamingS2SClient
             ct
         );
         return ParseStatus(body);
+    }
+
+    internal async Task RequireIdleAsync(string threadId, CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations/{Uri.EscapeDataString(threadId)}/run-state",
+                body: null,
+                ct
+            )
+            .ConfigureAwait(false);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (
+            root.GetProperty("threadId").GetString() != threadId
+            || root.GetProperty("isInProgress").ValueKind != JsonValueKind.False
+        )
+            throw new InvalidOperationException("Hosted conversation is not proven idle.");
     }
 
     /// <summary>

@@ -207,6 +207,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     private static string ProcessDelegateThatThrowsIfInvoked =>
         "{ param() throw 'TEST FAILURE: process enumeration must not be invoked for this destination state' }";
 
+    private const string NoRunningDestinationProcess = "{ param() return @() }";
+
     private static string ProcessDelegateReportingRunningOnCall(int callNumber, string executablePath)
     {
         var quotedPath = PublishLaunchScriptHost.QuoteSingle(executablePath);
@@ -522,6 +524,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
                 + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess} "
                 + $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}"
         );
 
@@ -573,7 +576,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
@@ -637,7 +641,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
@@ -690,6 +695,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
                 + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess} "
                 + $"-MoveDelegate {MoveDelegateThatFailsOnCalls(2, 3)}"
         );
 
@@ -746,7 +752,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
@@ -767,7 +774,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
@@ -943,6 +951,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
                 + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess} "
                 + $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}"
         );
 
@@ -998,6 +1007,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
                 + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess} "
                 + $"-MoveDelegate {MoveDelegateThatFailsTransientlyThenSucceeds(2, markerFrom, markerExisting)}"
         );
 
@@ -1045,6 +1055,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
                 + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess} "
                 + $"-MoveDelegate {MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(2, markerFrom, markerExisting)}"
         );
 
@@ -1117,7 +1128,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
@@ -1393,7 +1405,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeFalse("the assembled candidate is not a complete artifact");
@@ -1525,7 +1538,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
-                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {NoRunningDestinationProcess}"
         );
 
         result.Succeeded.Should().BeTrue(result.StandardError);

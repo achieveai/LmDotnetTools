@@ -104,15 +104,18 @@ public static class SampleTriggerRegistrations
                     // relative mkdir run after a cd into a subdirectory drops the files somewhere
                     // the observer never looks and the wait silently parks to TTL (#598 review
                     // F-005). No `~` anchor: the local backend has no '/workspace' mount and the
-                    // tool's home is not the workspace root there.
+                    // tool's home is not the workspace root there. Keep the shell foreground within
+                    // the Gateway-managed background Bash call so its exec remains tracked.
                     Description =
-                        "Fire when a backgrounded sandbox Bash process exits with a matching exit code / stdout. "
-                        + "Start the work yourself via the Bash tool using the wait-file convention. The .lm-waits "
-                        + "directory MUST be directly under the workspace root — the Bash tool's starting directory; "
-                        + "if you have changed directory, anchor these paths with the workspace's absolute path, or a "
-                        + "relative .lm-waits will land where the wait never looks. Then arm with the handle you chose: "
-                        + "mkdir -p .lm-waits/<handle> && { cmd > .lm-waits/<handle>/out 2>&1; echo $? > .lm-waits/<handle>/exit; } & "
-                        + "(handle: letters/digits/._- only, max 64, no leading dot).",
+                        "Fire when a sandbox Bash command exits with a matching exit code / stdout. "
+                        + "From the workspace root, start a Gateway Bash tool call with run_in_background=true "
+                        + "and command: mkdir -p .lm-waits/<handle> && { cmd > .lm-waits/<handle>/out 2>&1; "
+                        + "rc=$?; printf '%s\\n' \"$rc\" > .lm-waits/<handle>/exit; }. "
+                        + "Do not append '&' or daemonize cmd: the shell must stay alive until cmd exits. "
+                        + "Use timeout=0 for unbounded work, or a suitable finite timeout. The .lm-waits directory "
+                        + "MUST be directly under the workspace root; if you changed directory, use an absolute "
+                        + "workspace path. The Gateway task ID is not the wait-file handle. Arm Wait with the "
+                        + "fresh handle you chose (letters/digits/._- only, max 64, no leading dot).",
                     ArgsSchema = ProcessTriggerSource.ArgsSchemaText,
                     Capabilities = ProcessTriggerSource.Capabilities,
                     Source = new ProcessTriggerSource(processExitObserver ?? NoopProcessExitObserver.Instance),

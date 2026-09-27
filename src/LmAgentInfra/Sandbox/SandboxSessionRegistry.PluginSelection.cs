@@ -35,7 +35,7 @@ public sealed partial class SandboxSessionRegistry
     /// creation falls back to the process default exactly as the original create did.
     /// </param>
     internal sealed record PluginSelectionPartition(
-        (string WorkspaceId, string AppId) Key,
+        (string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress) Key,
         Lazy<Task<SandboxSession>> Entry,
         SandboxSession Session,
         SandboxCredential? Credential
@@ -111,7 +111,7 @@ public sealed partial class SandboxSessionRegistry
     /// </param>
     internal sealed record PluginSelectionSnapshot(
         IReadOnlyList<PluginSelectionPartition> Partitions,
-        IReadOnlyList<(string WorkspaceId, string AppId)> Unsettled
+        IReadOnlyList<(string WorkspaceId, string AppId, string? HomeRelativePath, bool BlockProviderEgress)> Unsettled
     );
 
     /// <summary>
@@ -195,7 +195,12 @@ public sealed partial class SandboxSessionRegistry
         // every materialized entry for this workspace is in exactly one of the two, whatever its
         // completion state. A materialized entry whose creation FAULTED is included and is harmless —
         // it has no session, so the reconcile pass's own capture simply will not see it.
-        var captured = new HashSet<(string WorkspaceId, string AppId)>(partitions.Select(partition => partition.Key));
+        var captured = new HashSet<(
+            string WorkspaceId,
+            string AppId,
+            string? HomeRelativePath,
+            bool BlockProviderEgress
+        )>(partitions.Select(partition => partition.Key));
 
         var unsettled = _sessions
             .Where(entry =>
@@ -319,6 +324,7 @@ public sealed partial class SandboxSessionRegistry
         {
             Id = partition.Key.WorkspaceId,
             BlockProviderEgress = partition.Session.BlockProviderEgress,
+            HomeRelativePath = partition.Key.HomeRelativePath,
             // Feeding the session's own resolved leaf back in is idempotent: it is exactly what
             // SandboxGatewayOptions.ResolveWorkspace produced for the original create, and
             // ResolveWorkspace(leaf) returns that same leaf. A blank leaf means the original create

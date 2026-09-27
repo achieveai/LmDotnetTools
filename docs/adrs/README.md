@@ -81,6 +81,9 @@ together with their slugs.
 * [0017 — Infer resolution from absence over exposed PRs, and guard it against cohort drift](0017-resolution-from-absence-over-exposed-prs.md)
 * [0018 — Route improvement feedback to the producer, never to the judge](0018-feedback-to-producer-not-judge.md)
 * [0019 — Agent names are the advertised address; ordinals stay the stored key](0019-agent-names-are-the-advertised-address.md)
+* [0020 — Compaction clears only answered tool results, and the eval ranks by outcome](0020-compaction-eval-answered-only-clear-and-summary-on-demand.md)
+* [0021 — The operator reclaims completed review slots after a fresh activity check](0021-operator-reclaims-completed-review-slots.md) (superseded by 0022)
+* [0022 — Discard a completed review slot on its next admission](0022-discard-completed-review-slot-on-next-admission.md) (supersedes 0021)
 
 Records 0015–0018 are the first ADRs covering `samples/CodeReviewDaemon.Sample`'s own architecture.
 Earlier records name that component only in passing: where it consumes a host or gateway decision

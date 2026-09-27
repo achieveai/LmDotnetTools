@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Tests.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -164,6 +165,52 @@ public sealed class ReviewWorkflowInvokerTests
         var result = await fixture.Create().ReconcileAsync(AgentInvocation("one"));
         result.Status.Should().Be(WorkflowInvocationStatus.Unknown, result.Error);
         fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Built_in_script_dispatches_in_process_instead_of_launching_its_wrapper()
+    {
+        using var fixture = new Fixture();
+        var runDirectory = Path.Combine(
+            fixture.Directory,
+            Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("instance"))
+            )
+        );
+        System.IO.Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(runDirectory, "scope.json"),
+            new JsonObject
+            {
+                ["WorkflowInstanceId"] = "instance",
+                ["ReviewRunId"] = fixture.Workspace.Run.Id,
+                ["Admission"] = fixture.Workspace.Admission.DeepClone(),
+                ["FrozenContext"] = fixture.Workspace.Context.DeepClone(),
+            }.ToJsonString()
+        );
+        var marker = Path.Combine(fixture.Directory, "wrapper-ran.txt");
+        await File.WriteAllTextAsync(
+            Path.Combine(fixture.Directory, "prepare-review.py"),
+            $"from pathlib import Path\nPath({JsonValue.Create(marker)!.ToJsonString()}).write_text('ran')\n"
+        );
+        await fixture.Workspace.Workspace.AcquireAsync(fixture.Workspace.Run, "instance", default);
+        var invocation = AgentInvocation("built-in") with
+        {
+            Input = fixture.Workspace.Admission.DeepClone(),
+            Task = new WorkflowTask
+            {
+                Id = "prepare-review",
+                PromptTemplate = "",
+                Delegate = DelegateKind.Script,
+                Script = "prepare-review.py",
+            },
+        };
+
+        var result = await fixture.CreateWithRunDirectory(runDirectory).InvokeAsync(invocation);
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Completed, result.Error);
+        fixture.Workspace.Preparer.Calls.Should().Be(1);
+        File.Exists(marker).Should().BeFalse("the trusted operation must not cross a process boundary");
     }
 
     [Fact]
@@ -628,7 +675,7 @@ public sealed class ReviewWorkflowInvokerTests
                 .OnJson(
                     HttpMethod.Get,
                     "/capabilities",
-                    "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true,\"workflowPublicationProviderId\":\"provider\",\"workflowPublicationModeId\":\"code-review-daemon\"}"
+                    "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true,\"sandboxEnv\":true,\"conversationWorkingDirectory\":true,\"workflowPublicationProviderId\":\"provider\",\"workflowPublicationModeId\":\"code-review-daemon\"}"
                 )
                 .On(
                     request =>
@@ -672,7 +719,13 @@ public sealed class ReviewWorkflowInvokerTests
             await Workspace.Workspace.PrepareAssignedAsync(Workspace.Run, Workspace.Admission, "instance", default);
         }
 
-        public ReviewWorkflowInvoker Create(CodeReviewDaemonOptions? configuredOptions = null)
+        public ReviewWorkflowInvoker Create(CodeReviewDaemonOptions? configuredOptions = null) =>
+            CreateWithRunDirectory(Directory, configuredOptions);
+
+        public ReviewWorkflowInvoker CreateWithRunDirectory(
+            string runDirectory,
+            CodeReviewDaemonOptions? configuredOptions = null
+        )
         {
             var options =
                 configuredOptions
@@ -686,14 +739,15 @@ public sealed class ReviewWorkflowInvokerTests
                 Workspace.Workspace,
                 options,
                 Directory,
+                () => ReviewArtifactBranchCapability.Denied,
                 (_, _) => throw new InvalidOperationException("No artifact operation is configured for this test.")
             );
             return new(
                 Workspace.Run,
                 "instance",
+                runDirectory,
                 Directory,
-                Directory,
-                new WorkflowScriptInvoker(),
+                new WorkflowScriptInvoker(OperatingSystem.IsWindows() ? "python" : "python3"),
                 dispatcher,
                 _client,
                 Workspace.Workspace,

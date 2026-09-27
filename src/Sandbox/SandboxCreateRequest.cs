@@ -14,6 +14,10 @@ public sealed class SandboxCreateRequest
     /// </summary>
     public string Workspace { get; }
 
+    /// <summary>Immutable workspace-relative default for Gateway MCP tools. Null uses the workspace root.
+    /// This does not change the mount or confine access to the home directory.</summary>
+    public string? Home { get; }
+
     /// <summary>
     /// Marketplace aliases to activate for this sandbox, defensively copied at construction. Empty
     /// means "omit the field" so the gateway applies its own default set, matching the gateway's
@@ -52,7 +56,8 @@ public sealed class SandboxCreateRequest
         IReadOnlyList<SandboxNetworkRule>? networkRules = null,
         SandboxDiscoverySettings? discovery = null,
         IReadOnlyList<SandboxPluginRef>? pluginSelection = null,
-        IReadOnlyDictionary<string, string>? env = null
+        IReadOnlyDictionary<string, string>? env = null,
+        string? home = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -60,6 +65,8 @@ public sealed class SandboxCreateRequest
         ArgumentNullException.ThrowIfNull(workspace);
 
         Workspace = workspace;
+        var normalizedHome = Command.WorkspaceRelativePath.Normalize(home, nameof(home));
+        Home = normalizedHome.Length == 0 ? null : normalizedHome;
         Marketplaces = marketplaces is null ? [] : [.. marketplaces];
         AuthProviders = authProviders is null ? [] : [.. authProviders];
         NetworkRules = networkRules is null ? [] : [.. networkRules];

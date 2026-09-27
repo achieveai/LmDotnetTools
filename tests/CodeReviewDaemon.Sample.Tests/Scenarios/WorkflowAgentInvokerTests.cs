@@ -133,10 +133,39 @@ public sealed class WorkflowAgentInvokerTests : IDisposable
             .Should()
             .Contain("TRUSTED SKILL")
             .And.Contain(invocation.Task.PromptTemplate)
-            .And.Contain(invocation.Input.ToJsonString())
+            .And.Contain("```yaml\nDecision: true\nDescription: literal {{not-a-binding}}\n```")
             .And.Contain(invocation.Task.OutputSchema!.ToJsonString())
             .And.Contain("No Markdown fences, extra fields or surrounding prose.");
         body["suppressActionTools"]!.GetValue<bool>().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Communicates_an_earlier_absolute_deadline_for_model_wrap_up()
+    {
+        var handler = Handler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var hardDeadline = DateTimeOffset.UtcNow.AddHours(1);
+        var invocation = Invocation() with { DeadlineUtc = hardDeadline };
+        var invoker = new WorkflowAgentInvoker(
+            _workspace,
+            (_, _, _) => Task.FromResult<S2SReviewAgent?>(Agent(http)),
+            (_, _, _) => Task.FromResult<WorkflowInvocationResult?>(null),
+            reviewerDeadlineLeadTime: TimeSpan.FromMinutes(20)
+        );
+
+        var result = await invoker.InvokeAsync(invocation);
+
+        result.Status.Should().Be(WorkflowInvocationStatus.Completed);
+        var post = handler.Requests.Single(request => request.Method == HttpMethod.Post);
+        var prompt = JsonNode.Parse(post.Body!)!["text"]!.GetValue<string>();
+        var reviewerDeadline = hardDeadline.AddMinutes(-20).UtcDateTime.ToString("O");
+        prompt
+            .Should()
+            .Contain(reviewerDeadline)
+            .And.Contain("stop starting new investigations")
+            .And.Contain("settle all specialists")
+            .And.Contain("validate the final JSON")
+            .And.Contain("Do not use the remaining host time for more analysis");
     }
 
     [Fact]

@@ -334,6 +334,12 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             string prId,
             CancellationToken cancellationToken
         ) => throw new InvalidOperationException("simulated provider failure");
+
+        public Task<PullRequestDescriptor?> GetPullRequestAsync(
+            RepoIdentity repo,
+            string prId,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("simulated provider failure");
     }
 
     [Fact]

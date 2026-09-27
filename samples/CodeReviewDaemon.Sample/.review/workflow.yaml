@@ -21,6 +21,7 @@ types:
       HeadSha: {type: string}
       WindowId: {type: string}
       ContextArtifact: {type: string, minLength: 1}
+      PublicationMode: {type: string}
   Finding:
     type: object
     additionalProperties: false
@@ -161,6 +162,61 @@ types:
       ArtifactCountsByKind: {type: object, additionalProperties: {type: integer, minimum: 0}}
       ReceiptCount: {type: integer, minimum: 0}
       ReceiptCountsByStatus: {type: object, additionalProperties: {type: integer, minimum: 0}}
+  MarkdownReport:
+    type: object
+    additionalProperties: false
+    required: [Format, Markdown]
+    properties:
+      Format: {type: string, const: markdown}
+      Markdown: {type: string, minLength: 1}
+  MarkdownGradeInput:
+    type: object
+    required: [Prepared, Review]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Review: {$ref: '#/$defs/MarkdownReport'}
+  MarkdownCommentsInput:
+    type: object
+    required: [Prepared, Review, Grade]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Review: {$ref: '#/$defs/MarkdownReport'}
+      Grade: {$ref: '#/$defs/MarkdownReport'}
+  DiscussionSnapshot:
+    type: object
+    required: [ReviewRunId, HeadSha, CapturedAt, CommentBaseline, CommentWindow]
+    properties:
+      ReviewRunId: {type: integer}
+      HeadSha: {type: string}
+      CapturedAt: {type: string}
+      CommentBaseline: {type: array}
+      CommentWindow: {type: array}
+  PerformanceInput:
+    type: object
+    required: [Prepared, Review, Grade, Comments, Discussion]
+    properties:
+      Prepared: {$ref: '#/$defs/Prepared'}
+      Review: {$ref: '#/$defs/MarkdownReport'}
+      Grade: {$ref: '#/$defs/MarkdownReport'}
+      Comments: {$ref: '#/$defs/MarkdownReport'}
+      Discussion: {$ref: '#/$defs/DiscussionSnapshot'}
+  MarkdownCanonical:
+    type: object
+    required: [Review, Grade, Comments, Discussion, Performance, Publication]
+    properties:
+      Review: {$ref: '#/$defs/MarkdownReport'}
+      Grade: {$ref: '#/$defs/MarkdownReport'}
+      Comments: {$ref: '#/$defs/MarkdownReport'}
+      Discussion: {$ref: '#/$defs/DiscussionSnapshot'}
+      Performance: {$ref: '#/$defs/MarkdownReport'}
+      Publication: {$ref: '#/$defs/Publication'}
+  MarkdownRetentionInput:
+    type: object
+    required: [Admission, Extractions, Canonical]
+    properties:
+      Admission: {$ref: '#/$defs/Admission'}
+      Extractions: {type: array, maxItems: 0}
+      Canonical: {$ref: '#/$defs/MarkdownCanonical'}
   RetentionInput:
     type: object
     additionalProperties: false
@@ -193,19 +249,109 @@ steps:
     kind: branch
     branches:
       - when: inputs.Route == "new_head"
-        goto: prepare-review
+        goto: prepare-independent
       - when: inputs.Route == "discussion"
         goto: prepare-discussion
     else: prepare-history
 
-  - id: prepare-review
+  - id: prepare-independent
     kind: script
-    script: scripts/prepare-review.py
+    script: scripts/prepare-independent.py
     inputType: Admission
     input: {from: inputs}
     outputType: Prepared
     saveAs: PreparedReview
-    next: review
+    next: review-mode
+  - id: review-mode
+    kind: branch
+    branches:
+      - when: state.PreparedReview.PublicationMode == "collect_only"
+        goto: independent-review
+    else: review
+  - id: independent-review
+    kind: agent
+    session: review-parent
+    skills: [skills/artifact-boundary.md, skills/independent-review.md]
+    prompt: Review independently without reading existing PR discussions. Return a complete Markdown review.
+    inputType: Prepared
+    input: {from: state.PreparedReview}
+    outputType: MarkdownReport
+    saveAs: IndependentReview
+    next: independent-grade
+  - id: independent-grade
+    kind: agent
+    session: review-grader
+    skills: [skills/artifact-boundary.md, skills/independent-grade.md]
+    prompt: Grade the proposed findings against source evidence without reading PR discussion. Return Markdown.
+    inputType: MarkdownGradeInput
+    input:
+      Prepared: {from: state.PreparedReview}
+      Review: {from: state.IndependentReview}
+    outputType: MarkdownReport
+    saveAs: IndependentGrade
+    next: collect-comments
+  - id: collect-comments
+    kind: agent
+    session: review-parent
+    skills: [skills/artifact-boundary.md, skills/collect-comments.md]
+    prompt: Incorporate the independent grade and write final proposed review comments in Markdown. Do not read PR discussion or post comments.
+    inputType: MarkdownCommentsInput
+    input:
+      Prepared: {from: state.PreparedReview}
+      Review: {from: state.IndependentReview}
+      Grade: {from: state.IndependentGrade}
+    outputType: MarkdownReport
+    saveAs: CollectedComments
+    next: fetch-discussion
+  - id: fetch-discussion
+    kind: script
+    script: scripts/fetch-discussion.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: DiscussionSnapshot
+    saveAs: DeferredDiscussion
+    next: assess-performance
+  - id: assess-performance
+    kind: agent
+    session: review-parent
+    skills: [skills/artifact-boundary.md, skills/assess-performance.md]
+    prompt: Assess your frozen review against the newly supplied discussion. Explain misses and their causes, your false positives, and incorrect existing findings. Return an evidence-based Markdown self-assessment.
+    inputType: PerformanceInput
+    input:
+      Prepared: {from: state.PreparedReview}
+      Review: {from: state.IndependentReview}
+      Grade: {from: state.IndependentGrade}
+      Comments: {from: state.CollectedComments}
+      Discussion: {from: state.DeferredDiscussion}
+    outputType: MarkdownReport
+    saveAs: Performance
+    next: collect-publication
+  - id: collect-publication
+    kind: script
+    script: scripts/collect-publication.py
+    inputType: Admission
+    input: {from: inputs}
+    outputType: Publication
+    saveAs: CollectedPublication
+    next: retain-independent
+  - id: retain-independent
+    kind: script
+    script: scripts/retain-artifacts.py
+    inputType: MarkdownRetentionInput
+    input:
+      Admission: {from: inputs}
+      Extractions: []
+      Canonical:
+        Review: {from: state.IndependentReview}
+        Grade: {from: state.IndependentGrade}
+        Comments: {from: state.CollectedComments}
+        Discussion: {from: state.DeferredDiscussion}
+        Performance: {from: state.Performance}
+        Publication: {from: state.CollectedPublication}
+    outputType: Retention
+    saveAs: ReviewRetention
+    next: complete
+
   - id: review
     kind: agent
     session: review-parent

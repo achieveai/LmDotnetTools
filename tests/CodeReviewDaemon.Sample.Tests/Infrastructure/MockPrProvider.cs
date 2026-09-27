@@ -10,13 +10,13 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// </summary>
 internal sealed class MockPrProvider : IPrProvider, IReviewCommentReader
 {
-    private readonly IReadOnlyList<PullRequestDescriptor> _pullRequests;
+    private readonly List<PullRequestDescriptor> _pullRequests;
     private readonly OpaqueCursor _nextCursor;
 
     public MockPrProvider(string provider, IReadOnlyList<PullRequestDescriptor> pullRequests, OpaqueCursor nextCursor)
     {
         Provider = provider;
-        _pullRequests = pullRequests;
+        _pullRequests = [.. pullRequests];
         _nextCursor = nextCursor;
     }
 
@@ -85,4 +85,50 @@ internal sealed class MockPrProvider : IPrProvider, IReviewCommentReader
         ReviewCommentTarget target,
         CancellationToken cancellationToken
     ) => Task.FromResult(ExistingComments);
+
+    /// <summary>Number of times <see cref="GetPullRequestAsync"/> was called — the non-vacuity signal for a
+    /// test that a single-PR command actually re-read the host rather than trusting a seeded page.</summary>
+    public int GetPullRequestCalls { get; private set; }
+
+    /// <summary>
+    /// Fresh single-PR lookup, modelled by scanning the seeded <c>pullRequests</c> for a matching
+    /// <see cref="PullRequestDescriptor.PrId"/>. Absent-from-the-seed IS the not-found simulation — no
+    /// separate flag is needed, mirroring what a real provider's 404 means.
+    /// </summary>
+    public Task<PullRequestDescriptor?> GetPullRequestAsync(
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
+    {
+        GetPullRequestCalls++;
+        return Task.FromResult(_pullRequests.FirstOrDefault(pr => pr.PrId == prId));
+    }
+
+    /// <summary>
+    /// Mutates the seeded data in place so a test can simulate the PR's host-side state changing BETWEEN
+    /// two <see cref="GetPullRequestAsync"/> calls (task #81, round 4, item 1 — the TOCTOU window between
+    /// <c>RunSinglePrCommand.PrepareAsync</c>'s fresh read and <c>AdmitAndRunAsync</c>'s re-read). Replaces
+    /// the entry sharing <paramref name="updated"/>'s <see cref="PullRequestDescriptor.PrId"/>, adding it if
+    /// no such entry exists yet.
+    /// </summary>
+    public void ReplacePullRequest(PullRequestDescriptor updated)
+    {
+        var index = _pullRequests.FindIndex(pr => pr.PrId == updated.PrId);
+        if (index >= 0)
+        {
+            _pullRequests[index] = updated;
+        }
+        else
+        {
+            _pullRequests.Add(updated);
+        }
+    }
+
+    /// <summary>
+    /// Removes the entry for <paramref name="prId"/> in place, modelling the PR disappearing from the host
+    /// between a Prepare-time read and an Admit-time re-read — the same not-found simulation
+    /// <see cref="GetPullRequestAsync"/> already relies on for an absent seed.
+    /// </summary>
+    public void RemovePullRequest(string prId) => _pullRequests.RemoveAll(pr => pr.PrId == prId);
 }

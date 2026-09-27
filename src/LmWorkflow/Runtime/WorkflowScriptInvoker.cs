@@ -54,9 +54,13 @@ public sealed class WorkflowScriptInvoker
         _forceFinalContainmentProbeFailure = forceFinalContainmentProbeFailure;
     }
 
-    internal WorkflowScriptInvoker(bool forceContainmentProbeFailure, bool forceFinalContainmentProbeFailure = false)
+    internal WorkflowScriptInvoker(
+        bool forceContainmentProbeFailure,
+        bool forceFinalContainmentProbeFailure = false,
+        string pythonExecutable = "python"
+    )
         : this(
-            "python",
+            pythonExecutable,
             "pwsh",
             environment: null,
             8 * 1024 * 1024,

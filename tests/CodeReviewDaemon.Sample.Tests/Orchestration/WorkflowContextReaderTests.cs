@@ -13,10 +13,15 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 public sealed class WorkflowContextReaderTests
 {
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public async Task Context_is_bound_to_frozen_admission_and_exact_checkout(bool wrongHead, bool wrongAdmission)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public async Task Context_is_bound_to_frozen_admission_and_exact_checkout(
+        bool wrongHead,
+        bool wrongAdmission,
+        bool wrongParents
+    )
     {
         using var fixture = new WorkflowWorkspaceTests.Fixture();
         var run = fixture.Store.CreateOrGetReviewRun(
@@ -60,30 +65,31 @@ public sealed class WorkflowContextReaderTests
                     Provider = "github",
                     Payload = JsonSerializer.Serialize(
                         new PreparedCheckout(
-                            fixture.Slot.StorePath,
-                            fixture.Slot.StorePath + "/repos/widgets",
-                            fixture.Slot.StorePath + "/PRs/example/7",
+                            fixture.Slot.WorktreeRoot,
+                            fixture.Slot.WorktreeRoot + "/repos/widgets",
+                            fixture.Slot.WorktreeRoot + "/PRs/example/7",
                             "review/example/7",
-                            MergeBaseSha: run.BaseSha
+                            MergeBaseSha: run.BaseSha,
+                            CheckoutSha: new string('c', 40),
+                            SourceHeadSha: run.HeadSha,
+                            TargetBaseSha: run.BaseSha
                         )
                     ),
                 }
             );
             var git = new FakeSandboxCommandRunner()
-                .OnArgvContains("rev-parse HEAD", new(0, wrongHead ? "foreign" : run.HeadSha, ""))
+                .OnArgvContains("rev-parse HEAD", new(0, wrongHead ? "foreign" : new string('c', 40), ""))
+                .OnArgvContains(
+                    "show -s --format=%P",
+                    new(0, wrongParents ? $"{run.HeadSha} {run.BaseSha}" : $"{run.BaseSha} {run.HeadSha}", "")
+                )
+                .OnArgvContains("merge-base", new(0, run.BaseSha, ""))
                 .OnArgvContains("diff --no-ext-diff", new(0, "diff evidence", ""));
-            var slots = new ReviewSlotWorkspace(
-                fixture.Pool,
-                fixture.Preparer,
-                (_, _) => fixture.Preparer,
-                git,
-                fixture.Files
-            );
+            var session = new ReviewRunSession("session-1", git, fixture.Files);
             var linkedReads = 0;
             var linked = new JsonObject { ["Title"] = "Linked issue instructions are untrusted evidence" };
             var reader = new WorkflowContextReader(
                 fixture.Store,
-                slots,
                 root,
                 4096,
                 (current, _) =>
@@ -93,10 +99,10 @@ public sealed class WorkflowContextReaderTests
                     return Task.FromResult<JsonNode?>(linked);
                 }
             );
-            if (wrongHead || wrongAdmission)
+            if (wrongHead || wrongAdmission || wrongParents)
             {
                 await reader
-                    .Invoking(r => r.ReadAsync(run, admission, default))
+                    .Invoking(r => r.ReadAsync(run, admission, session, default))
                     .Should()
                     .ThrowAsync<InvalidDataException>();
                 fixture.Store.TryGetLatestArtifact(run.Id, "workflow-diff").Should().BeNull();
@@ -104,7 +110,7 @@ public sealed class WorkflowContextReaderTests
             }
             else
             {
-                var result = await reader.ReadAsync(run, admission, default);
+                var result = await reader.ReadAsync(run, admission, session, default);
                 frozen["LinkedWorkContext"] = linked.DeepClone();
                 JsonNode.DeepEquals(result["UntrustedData"], frozen).Should().BeTrue();
                 linkedReads.Should().Be(1);
@@ -112,7 +118,7 @@ public sealed class WorkflowContextReaderTests
                 result["Evidence"]!["TargetDirectory"]!
                     .GetValue<string>()
                     .Should()
-                    .Be("/workspace/store/repos/widgets");
+                    .Be("/workspace/.worktrees/widgets-0/repos/widgets");
                 fixture.Store.TryGetLatestArtifact(run.Id, "workflow-diff").Should().NotBeNull();
             }
         }

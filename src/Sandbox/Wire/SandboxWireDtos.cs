@@ -20,7 +20,8 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("pluginSelection")] IReadOnlyList<PluginRefDto>? PluginSelection = null,
     // Per-sandbox environment variables (gateway PR #183 / v0.1.11). Omitted entirely when the
     // caller's request has none, matching this SDK's nulls-omitted REST convention.
-    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null
+    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null,
+    [property: JsonPropertyName("home")] string? Home = null
 );
 
 internal sealed record PluginRefDto(
@@ -119,7 +120,8 @@ internal sealed record WorkspaceVolumeDto(
     // The persisted session_mounts.id (issue #119) — the integer every direct file/command API is
     // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
     // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
-    [property: JsonPropertyName("id")] long? Id
+    [property: JsonPropertyName("id")] long? Id,
+    [property: JsonPropertyName("home")] string? Home = null
 );
 
 /// <summary>

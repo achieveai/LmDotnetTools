@@ -194,6 +194,7 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     private readonly IReadOnlyCollection<string>? _adoOrgs;
     private readonly TimeSpan _idleTimeout;
     private readonly TimeSpan _maxDuration;
+    private readonly HostGitPushAuthorization? _pushAuthorization;
 
     /// <param name="credentialsSource">Signed-in provider tokens, injected per command via the environment.</param>
     /// <param name="logger">Where the start/progress/finish of a remote operation is reported.</param>
@@ -210,12 +211,20 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     /// Backstop for the one case inactivity cannot catch: a remote that dribbles bytes forever, never
     /// silent and never finished.
     /// </param>
+    /// <param name="pushAuthorization">
+    /// Task #85 — the scoped grant every <c>git push</c> this runner executes is checked against. <c>null</c>
+    /// (default) means every push is allowed unconditionally, unchanged from before this parameter existed;
+    /// pass one to gate pushes to exactly the branch(es) it currently authorizes. Only the retention runner
+    /// (the one that can reach <c>ReviewBranchManager</c>) is ever constructed with one — the clone-only
+    /// runners never push, so they are unaffected either way.
+    /// </param>
     public HostGitCommandRunner(
         Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> credentialsSource,
         ILogger<HostGitCommandRunner> logger,
         IReadOnlyCollection<string>? adoOrgs = null,
         TimeSpan? idleTimeout = null,
-        TimeSpan? maxDuration = null
+        TimeSpan? maxDuration = null,
+        HostGitPushAuthorization? pushAuthorization = null
     )
     {
         _credentialsSource = credentialsSource ?? throw new ArgumentNullException(nameof(credentialsSource));
@@ -223,6 +232,7 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
         _adoOrgs = adoOrgs;
         _idleTimeout = idleTimeout ?? TimeSpan.FromMinutes(5);
         _maxDuration = maxDuration ?? TimeSpan.FromMinutes(60);
+        _pushAuthorization = pushAuthorization;
     }
 
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
@@ -255,6 +265,31 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
 
         var isGit = string.Equals(command.Argv[0], "git", StringComparison.OrdinalIgnoreCase);
         var verb = isGit ? GitVerb(command.Argv) : null;
+
+        // Task #85 — the shared host git boundary's own push gate. `EnableGitPush` used to be consulted
+        // HERE directly (allow/refuse every push identically); it now lives one level up, as
+        // HostGitPushAuthorization.AllowAllPushes, so a `false` profile still lets an exactly-scoped grant
+        // through instead of refusing every push including ones a capability upstream already authorized.
+        // Checked on the RAW argv (before --progress is ever inserted below), so what is matched against a
+        // grant is exactly what the caller asked for.
+        if (isGit && string.Equals(verb, "push", StringComparison.Ordinal) && _pushAuthorization is { } authorization)
+        {
+            var verbIndex = GitVerbIndex(command.Argv);
+            var pushArgs = command.Argv.Skip(verbIndex + 1).ToArray();
+            if (!authorization.IsAuthorized(pushArgs))
+            {
+                _logger.LogWarning(
+                    "Host git push refused: 'push {PushArgs}' does not match an authorized push or delete grant.",
+                    string.Join(' ', pushArgs)
+                );
+                return new SandboxCommandResult(
+                    1,
+                    string.Empty,
+                    "git push refused: this exact push is not authorized by the current grant."
+                );
+            }
+        }
+
         var isRemote = verb is not null && S_remoteVerbs.Contains(verb);
 
         // --progress is added HERE rather than at the call sites, for the same reason the hardening flags
@@ -856,6 +891,17 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     /// </summary>
     private static string? GitVerb(IReadOnlyList<string> argv)
     {
+        var index = GitVerbIndex(argv);
+        return index < 0 ? null : argv[index];
+    }
+
+    /// <summary>
+    /// Index of <see cref="GitVerb"/>'s result in <paramref name="argv"/>, or -1 when there is no verb.
+    /// Exposed separately (Task #85) so a caller — the push-authorization gate — can slice everything AFTER
+    /// the verb without re-deriving the same <c>-c</c>/<c>-C</c> skip logic a second time.
+    /// </summary>
+    private static int GitVerbIndex(IReadOnlyList<string> argv)
+    {
         for (var i = 1; i < argv.Count; i++)
         {
             if (argv[i] is "-c" or "-C")
@@ -866,11 +912,11 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
 
             if (!argv[i].StartsWith('-'))
             {
-                return argv[i];
+                return i;
             }
         }
 
-        return null;
+        return -1;
     }
 
     /// <summary>

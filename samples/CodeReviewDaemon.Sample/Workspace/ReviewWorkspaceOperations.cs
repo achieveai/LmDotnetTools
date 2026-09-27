@@ -1,5 +1,4 @@
 using CodeReviewDaemon.Sample.Configuration;
-using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
@@ -9,10 +8,8 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// <summary>Shared deterministic preparation, containment policy and exact Git evidence extracted from the legacy executor.</summary>
 internal sealed class ReviewWorkspaceOperations(CodeReviewDaemonOptions options, ILogger logger)
 {
-    private const string ReviewBotDefaultBranch = "main";
     private readonly CodeReviewDaemonOptions _options = options;
     private readonly ILogger _logger = logger;
-    private readonly SlotPrepareFailureEscalator _slotPrepareFailureEscalator = new();
 
     private static string PosixJoin(string root, string relative) => $"{root.TrimEnd('/')}/{relative.Trim('/')}";
 
@@ -20,80 +17,6 @@ internal sealed class ReviewWorkspaceOperations(CodeReviewDaemonOptions options,
 
     public static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
         GitRemoteUrl.CloneUrlFor(provider, repo.OrgOrOwner, repo.Project, repo.RepoName);
-
-    public async Task<PreparedCheckout> PrepareWithRecoveryAsync(
-        IReviewSlotPreparer preparer,
-        ReviewRun run,
-        string storeRoot,
-        string scratchRoot,
-        string storeUrl,
-        string submoduleRelPath,
-        string branch,
-        string notesRelPath,
-        OperationPolicy policy,
-        CancellationToken cancellationToken
-    )
-    {
-        Task<PreparedCheckout> PrepareOnceAsync() =>
-            preparer.PrepareAsync(
-                run,
-                storeRoot,
-                scratchRoot,
-                storeUrl,
-                submoduleRelPath,
-                branch,
-                ReviewBotDefaultBranch,
-                notesRelPath,
-                policy,
-                cancellationToken
-            );
-
-        async Task<PreparedCheckout> RecloneAndRetryOnceAsync()
-        {
-            await preparer.RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
-            var retried = await PrepareOnceAsync().ConfigureAwait(false);
-            _slotPrepareFailureEscalator.RecordSuccess(storeRoot);
-            return retried;
-        }
-
-        try
-        {
-            var prepared = await PrepareOnceAsync().ConfigureAwait(false);
-            _slotPrepareFailureEscalator.RecordSuccess(storeRoot);
-            return prepared;
-        }
-        catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Run {RunId}: pooled store {StoreRoot} is corrupt; re-cloning and retrying prepare once.",
-                run.Id,
-                storeRoot
-            );
-            return await RecloneAndRetryOnceAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-            when (ex is not (SlotAddressUnusableException or SlotProbeUnansweredException or OperationCanceledException)
-            )
-        {
-            if (!_slotPrepareFailureEscalator.RecordFailureAndShouldEscalate(storeRoot, ex.Message))
-            {
-                throw;
-            }
-
-            _logger.LogWarning(
-                ex,
-                "Run {RunId}: pooled store {StoreRoot} failed prepare identically {Count} times in a row with a "
-                    + "failure the classifier does not recognize as corruption; escalating to a re-clone "
-                    + "REGARDLESS of classification so an unmodelled git failure shape cannot wedge the slot "
-                    + "forever (issue #582).",
-                run.Id,
-                storeRoot,
-                SlotPrepareFailureEscalator.MaxConsecutiveFailures
-            );
-            return await RecloneAndRetryOnceAsync().ConfigureAwait(false);
-        }
-    }
 
     public async Task<string?> ResolveStoreSubmodulePathAsync(
         ISandboxFileSystem fileSystem,

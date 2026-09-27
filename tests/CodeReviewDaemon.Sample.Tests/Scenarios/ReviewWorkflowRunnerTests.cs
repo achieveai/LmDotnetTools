@@ -15,7 +15,10 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class ReviewWorkflowRunnerTests
 {
     [Theory]
-    [InlineData("new_head", "prepare-review,review,grade,publish,retain-review")]
+    [InlineData(
+        "new_head",
+        "prepare-independent,independent-review,independent-grade,collect-comments,fetch-discussion,assess-performance,collect-publication,retain-independent"
+    )]
     [InlineData("discussion", "prepare-discussion,discussion,retain-discussion")]
     [InlineData(
         "merged",
@@ -39,6 +42,8 @@ public sealed class ReviewWorkflowRunnerTests
 
         status.Should().Be(WorkflowInvocationStatus.Completed);
         invoker.Invoked.Select(Step).Should().Equal(expected.Split(','));
+        if (route == "new_head")
+            invoker.Invoked.Select(Step).Should().NotContain("publish", "collect-only reviews never post to the PR");
         fixture.Pool.Leased.Should().Be(1);
         fixture.Pool.Returned.Should().Be(1);
         fixture.Pool.Retired.Should().Be(0);
@@ -155,7 +160,7 @@ public sealed class ReviewWorkflowRunnerTests
     {
         using var fixture = new Fixture();
         var frozen = new JsonObject { ["messages"] = new JsonArray("c-1") };
-        var first = new RecordingInvoker { UnknownTask = "review" };
+        var first = new RecordingInvoker { UnknownTask = "independent-review" };
         var runner = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(first));
         (await runner.RunAsync(fixture.Run, null, frozen, default)).Should().Be(WorkflowInvocationStatus.Unknown);
 
@@ -235,7 +240,9 @@ public sealed class ReviewWorkflowRunnerTests
             (_, _, _, _) =>
             {
                 factoryCalls++;
-                return Task.FromResult<IWorkflowTaskInvoker>(new RecordingInvoker { UnknownTask = "prepare-review" });
+                return Task.FromResult<IWorkflowTaskInvoker>(
+                    new RecordingInvoker { UnknownTask = "prepare-independent" }
+                );
             }
         );
         var first = new JsonObject { ["messages"] = new JsonArray(1) };
@@ -292,7 +299,7 @@ public sealed class ReviewWorkflowRunnerTests
     public async Task Unknown_run_holds_the_only_slot_but_does_not_block_its_own_next_reconciliation_pass()
     {
         using var fixture = new Fixture();
-        var firstInvoker = new RecordingInvoker { UnknownTask = "review" };
+        var firstInvoker = new RecordingInvoker { UnknownTask = "independent-review" };
         var firstRunner = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(firstInvoker));
         (await firstRunner.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Unknown);
         var waitingRun = fixture.CreateRun("8", "other-head");
@@ -311,7 +318,7 @@ public sealed class ReviewWorkflowRunnerTests
     public async Task Unknown_primary_blocks_a_discussion_until_the_primary_owner_reconciles()
     {
         using var fixture = new Fixture();
-        var primary = new RecordingInvoker { UnknownTask = "review" };
+        var primary = new RecordingInvoker { UnknownTask = "independent-review" };
         var runner = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(primary));
         (await runner.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Unknown);
         var round = fixture.CreateRound("discussion", new JsonObject { ["through"] = 12 });
@@ -424,6 +431,7 @@ public sealed class ReviewWorkflowRunnerTests
             .Single();
         var scope = JsonNode.Parse(await File.ReadAllTextAsync(scopePath))!;
         var scripts = new WorkflowScriptInvoker(
+            pythonExecutable: OperatingSystem.IsWindows() ? "python" : "python3",
             environment: new Dictionary<string, string>
             {
                 ["REVIEW_DAEMON_EXECUTABLE"] = typeof(ReviewWorkflowRunner).Assembly.Location,
@@ -464,12 +472,7 @@ public sealed class ReviewWorkflowRunnerTests
     public async Task Containment_uncertainty_keeps_only_its_owner_while_an_independent_run_completes()
     {
         using var fixture = new Fixture();
-        var pool = new ReviewSlotPool(
-            2,
-            Path.Combine(fixture.RunDirectoryRoot, "pool"),
-            "scratch",
-            NullLogger<ReviewSlotPool>.Instance
-        );
+        var pool = new ReviewSlotPool(["widgets"], 2, NullLogger<ReviewSlotPool>.Instance);
         var workspace = fixture.CreateWorkspace(pool);
         var runner = fixture.CreateRunner(
             (run, _, _, _) =>
@@ -496,12 +499,7 @@ public sealed class ReviewWorkflowRunnerTests
         var instanceId = $"review-run-{fixture.Run.Id}";
         var saved = (await fixture.WorkflowStore.LoadAsync(instanceId))!;
         await fixture.WorkflowStore.SaveAsync(instanceId, saved with { IsComplete = true, Tasks = [] });
-        var restartPool = new ReviewSlotPool(
-            2,
-            Path.Combine(fixture.RunDirectoryRoot, "pool"),
-            "scratch",
-            NullLogger<ReviewSlotPool>.Instance
-        );
+        var restartPool = new ReviewSlotPool(["widgets"], 2, NullLogger<ReviewSlotPool>.Instance);
         var recovery = fixture.CreateRunner(
             (_, _, _, _) => throw new InvalidOperationException("recovery must not dispatch"),
             workspace: fixture.CreateWorkspace(restartPool)
@@ -515,9 +513,11 @@ public sealed class ReviewWorkflowRunnerTests
         (await runner.RunAsync(independent, null, [], default)).Should().Be(WorkflowInvocationStatus.Completed);
         workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
         fixture.Store.ListActiveWorkflowWorkspaceRuns().Select(run => run.Id).Should().Equal(fixture.Run.Id);
-        var available = await pool.TryLeaseAsync(default);
+        var available = await pool.TryLeaseAsync("widgets", default);
         available.Should().NotBeNull();
-        (await pool.TryLeaseAsync(default)).Should().BeNull("only the quarantined owner's capacity remains occupied");
+        (await pool.TryLeaseAsync("widgets", default))
+            .Should()
+            .BeNull("only the quarantined owner's capacity remains occupied");
         await pool.ReturnAsync(available!, default);
     }
 
@@ -649,7 +649,8 @@ public sealed class ReviewWorkflowRunnerTests
             Directory.CreateDirectory(_tempRoot);
             RunDirectoryRoot = Path.Combine(_tempRoot, "runs");
             WorkflowStore = workflowStore ?? new InMemoryWorkflowStore();
-            Pool = new FakePool(new ReviewSlot(0, "/pool/slot-0", "/pool/slot-0/store", "/pool/slot-0/scratch"));
+            Pool = new FakePool(new ReviewSlot("widgets", 0));
+            Sessions = new FakeReviewSessionProvisioner(new ReviewRunSession("session-1", CommandRunner, Files));
             Workspace = CreateWorkspace();
         }
 
@@ -660,6 +661,9 @@ public sealed class ReviewWorkflowRunnerTests
         public string RunDirectoryRoot { get; }
         public FakePool Pool { get; }
         public FakePreparer Preparer { get; } = new();
+        public FakeSandboxFileSystem Files { get; } = new();
+        public FakeSandboxCommandRunner CommandRunner { get; } = new();
+        public FakeReviewSessionProvisioner Sessions { get; }
         public WorkflowWorkspace Workspace { get; }
         public int InvokerFactoryCalls { get; private set; }
 
@@ -719,13 +723,8 @@ public sealed class ReviewWorkflowRunnerTests
             new(
                 Store,
                 new CodeReviewDaemonOptions(),
-                new ReviewSlotWorkspace(
-                    pool ?? Pool,
-                    Preparer,
-                    (_, _) => Preparer,
-                    new FakeSandboxCommandRunner(),
-                    new FakeSandboxFileSystem()
-                ),
+                new ReviewSlotWorkspace(pool ?? Pool, _ => Preparer),
+                Sessions,
                 (_, _, _) => throw new InvalidOperationException("runner must not prepare the workspace"),
                 NullLoggerFactory.Instance
             );
@@ -786,8 +785,15 @@ public sealed class ReviewWorkflowRunnerTests
                 WorkflowInvocationStatus.Completed,
                 taskId switch
                 {
-                    "prepare-review" or "prepare-discussion" or "prepare-history" =>
+                    "prepare-independent" =>
+                        """{"PrId":"7","HeadSha":"head","WindowId":"window","ContextArtifact":"context.json","PublicationMode":"collect_only"}""",
+                    "prepare-discussion" or "prepare-history" =>
                         """{"PrId":"7","HeadSha":"head","WindowId":"window","ContextArtifact":"context.json"}""",
+                    "independent-review" or "independent-grade" or "collect-comments" or "assess-performance" =>
+                        """{"Format":"markdown","Markdown":"Review complete."}""",
+                    "fetch-discussion" =>
+                        """{"ReviewRunId":1,"HeadSha":"head","CapturedAt":"2026-01-01T00:00:00Z","CommentBaseline":[],"CommentWindow":[]}""",
+                    "collect-publication" => """{"Outcome":"no_op","Description":"collect only","Actions":[]}""",
                     "review" => """{"Findings":[],"ReviewText":"review"}""",
                     "grade" => """{"Assessments":[],"Description":"grade"}""",
                     "publish" => """{"Outcome":"no_op","Description":"nothing to publish","Actions":[]}""",
@@ -798,7 +804,7 @@ public sealed class ReviewWorkflowRunnerTests
                     "process-judge" => """{"Assessment":"ok","Description":"complete"}""",
                     "collect-statistics" =>
                         """{"RunId":"7","ArtifactCount":0,"ArtifactCountsByKind":{},"ReceiptCount":0,"ReceiptCountsByStatus":{}}""",
-                    "retain-review" or "retain-discussion" or "retain-merged" =>
+                    "retain-independent" or "retain-review" or "retain-discussion" or "retain-merged" =>
                         """{"ArtifactBranch":"artifacts/7","RetainedSha":"abc"}""",
                     "close-artifact-branch" => """{"ArtifactBranch":"artifacts/7","Closed":true}""",
                     _ => throw new InvalidOperationException($"No result for task '{taskId}'."),
@@ -843,14 +849,16 @@ public sealed class ReviewWorkflowRunnerTests
         public int Returned { get; private set; }
         public int Retired { get; private set; }
 
-        public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
+        public IReadOnlyList<ReviewSlot> Slots => [slot];
+
+        public Task<ReviewSlot> LeaseAsync(string repositoryName, CancellationToken cancellationToken)
         {
             Available = false;
             Leased++;
             return Task.FromResult(slot);
         }
 
-        public Task<ReviewSlot?> TryLeaseAsync(CancellationToken cancellationToken)
+        public Task<ReviewSlot?> TryLeaseAsync(string repositoryName, CancellationToken cancellationToken)
         {
             if (!Available)
                 return Task.FromResult<ReviewSlot?>(null);
@@ -901,14 +909,9 @@ public sealed class ReviewWorkflowRunnerTests
         public int Calls { get; private set; }
 
         public Task<PreparedCheckout> PrepareAsync(
-            ReviewSlot slot,
             ReviewRun run,
-            string storeUrl,
-            string submoduleRelPath,
-            string branch,
-            string defaultBranch,
-            string notesRelPath,
-            CodeReviewDaemon.Sample.Workspace.OperationPolicy policy,
+            ReviewSlot slot,
+            RepoIdentity repository,
             CancellationToken cancellationToken
         )
         {

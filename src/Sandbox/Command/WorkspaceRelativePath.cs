@@ -21,10 +21,17 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Command;
 /// <para>
 /// This is a <i>necessary</i> guard, not a sufficient one: the gateway remains the authority for
 /// filesystem containment (in particular, symlink traversal — a component that is a symlink pointing
-/// outside the workspace cannot be detected lexically and is enforced remotely).
+/// outside the workspace cannot be detected lexically and is enforced remotely). Container paths
+/// must never be treated as local host paths for validation or local process working directories.
+/// </para>
+/// <para>
+/// <b>Public</b> rather than internal because the same rule now has to hold in three places that do
+/// not share an assembly: <see cref="SandboxCommand"/>'s gateway working directory, the review
+/// daemon's slot-relative command scoping, and the LmStreaming host's per-conversation working
+/// directory. Copying the rules would let them drift, and a drifted copy here is a containment bug.
 /// </para>
 /// </remarks>
-internal static class WorkspaceRelativePath
+public static class WorkspaceRelativePath
 {
     private const char Nul = '\0';
 

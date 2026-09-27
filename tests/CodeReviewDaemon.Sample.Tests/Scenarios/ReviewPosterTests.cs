@@ -812,6 +812,12 @@ public sealed class ReviewPosterTests : LoggingTestBase
             OnHeadRead?.Invoke();
             return Task.FromResult<string?>(head);
         }
+
+        public Task<PullRequestDescriptor?> GetPullRequestAsync(
+            RepoIdentity repo,
+            string prId,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
     }
 
     private static long SeedRun(ReviewStore store)

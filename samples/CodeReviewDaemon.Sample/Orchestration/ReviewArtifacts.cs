@@ -24,6 +24,26 @@ internal static class ReviewArtifactKinds
     public const int VariantReviewArtifactSchemaVersion = 1;
     public const string JudgeArtifactKind = "judge";
     public const int JudgeArtifactSchemaVersion = 2;
+
+    /// <summary>
+    /// The durable record of a retained review-artifact branch — its name and the SHA that was actually
+    /// pushed (task #82, requirement 3). This is the ONLY thing
+    /// <see cref="RedoReviewArtifactBranchCommand"/> will act on, so a branch the daemon never recorded can
+    /// never be deleted by it.
+    /// </summary>
+    public const string ArtifactBranchKind = "review-artifact-branch";
+
+    /// <summary>An explicit redo removed the branch this run had retained.</summary>
+    public const string ArtifactBranchRedoKind = "review-artifact-branch-redo";
+
+    /// <summary>
+    /// A redo could not establish whether the branch is gone. Its presence stops every later redo of the
+    /// same run dead — the operator reconciles by hand rather than the daemon retrying into the unknown.
+    /// </summary>
+    public const string ArtifactBranchQuarantineKind = "review-artifact-branch-quarantine";
+
+    public const int ArtifactBranchSchemaVersion = 1;
+
     internal static readonly JsonSerializerOptions PayloadOptions = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>Compatibility classifier used only when reading the historical sentinel metric.</summary>
@@ -31,6 +51,24 @@ internal static class ReviewArtifactKinds
         reviewText is not null
         && reviewText.TrimStart().StartsWith("No new findings", StringComparison.OrdinalIgnoreCase);
 }
+
+/// <summary>
+/// What one authorized retention actually pushed (kind <see cref="ReviewArtifactKinds.ArtifactBranchKind"/>).
+/// <para>
+/// Every field is an identity the redo path re-verifies before it deletes anything: the branch must be the
+/// one this repo+PR derives, the repo/PR/head must be this run's, and <see cref="PushedSha"/> must still be
+/// the retention receipt's recorded response AND the remote's current tip. Nothing here is a secret —
+/// SHAs, a branch name and a repository key — so it is equally safe to publish on the branch itself.
+/// </para>
+/// </summary>
+internal sealed record ReviewArtifactBranchReceipt(
+    string Branch,
+    string PushedSha,
+    string RepoKey,
+    string PrId,
+    string HeadSha,
+    string WorkflowInstanceId
+);
 
 /// <summary>The persisted PR diff/context (kind <c>review-context</c>). <see cref="FileManifest"/> is the
 /// newline-joined tracked-file list of the head checkout (bounded); <see cref="CheckoutRoot"/> is the absolute

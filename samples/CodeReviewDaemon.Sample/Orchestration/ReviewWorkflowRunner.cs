@@ -142,6 +142,9 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         var admittedWorkflow = await WorkflowPackageSnapshot
             .PrepareAsync(_workflowPath, runDirectory, saved is not null, cancellationToken)
             .ConfigureAwait(false);
+        if (saved is not null && storedRound is null)
+            saved = await RecoverFailedDiscussionReadAsync(storedRun, saved, admission, cancellationToken)
+                .ConfigureAwait(false);
         var runtime = saved is null
             ? CreateRuntime(admission, admittedWorkflow, cancellationToken)
             : RestoreRuntime(saved, instanceId, admission);
@@ -250,6 +253,70 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         }
     }
 
+    private async Task<WorkflowInstanceSnapshot> RecoverFailedDiscussionReadAsync(
+        ReviewRun run,
+        WorkflowInstanceSnapshot saved,
+        JsonObject admission,
+        CancellationToken ct
+    )
+    {
+        if (run.Mode != "collect-only" || saved.CurrentNodeId != "fetch-discussion")
+            return saved;
+        var failed = saved.Tasks.SingleOrDefault(task =>
+            task.NodeId == "fetch-discussion" && task.Status == WorkflowTaskStatus.Failed
+        );
+        if (failed is null)
+            return saved;
+        ValidateSnapshot(saved, saved.InstanceId, admission);
+        var node = saved.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "fetch-discussion");
+        var task = node.TaskList?.SingleOrDefault();
+        if (
+            task?.Delegate != DelegateKind.Script
+            || task.Id != failed.TaskId
+            || Path.GetFileNameWithoutExtension(task.Script) != "fetch-discussion"
+            || failed.Attempts != 0
+            || saved.Tasks.Any(t => t != failed && t.Status != WorkflowTaskStatus.Validated)
+            || new[] { "independent-review", "independent-grade", "collect-comments" }.Any(id =>
+                !saved.Tasks.Any(t => t.NodeId == id && t.Status == WorkflowTaskStatus.Validated)
+            )
+            || _reviewStore.GetOutboxForRun(run.Id).Any()
+        )
+            throw new InvalidOperationException("Only the isolated failed discussion read can be recovered.");
+        var failedId = failed.ToolCallId ?? $"{saved.InstanceId}/{failed.Name}/{failed.Attempts}";
+        var failedPath = Path.Combine(
+            RunDirectory(saved.InstanceId),
+            "private",
+            "invocation-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(failedId))) + ".json"
+        );
+        var receipt = JsonNode.Parse(await File.ReadAllTextAsync(failedPath, ct).ConfigureAwait(false));
+        if (
+            receipt?["Invocation"]?["InvocationId"]?.GetValue<string>() != failedId
+            || receipt["Invocation"]?["InstanceId"]?.GetValue<string>() != saved.InstanceId
+            || receipt["Result"]?["Status"]?.GetValue<int>() != (int)WorkflowInvocationStatus.Failed
+        )
+            throw new InvalidDataException("Failed discussion receipt does not match the frozen task.");
+        await _workspace
+            .RestoreDiscussionReadAssignmentAsync(run, saved.InstanceId, admission, ct)
+            .ConfigureAwait(false);
+        var recovered = saved with
+        {
+            Tasks = saved
+                .Tasks.Select(t =>
+                    t == failed
+                        ? t with
+                        {
+                            Status = WorkflowTaskStatus.InFlight,
+                            ToolCallId = failedId + ":read-recovery",
+                            LastError = null,
+                        }
+                        : t
+                )
+                .ToArray(),
+        };
+        await _workflowStore.SaveAsync(saved.InstanceId, recovered, ct).ConfigureAwait(false);
+        return recovered;
+    }
+
     /// <summary>Resumes a durable workflow from the immutable context stored in its scope.</summary>
     public async Task<WorkflowInvocationStatus> ResumeAsync(
         ReviewRun run,
@@ -273,6 +340,39 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         return File.Exists(Path.Combine(RunDirectory(instanceId), ScopeFileName))
             ? ResumeAsync(run, round, cancellationToken)
             : RunAsync(run, round, initialFrozenContext, cancellationToken);
+    }
+
+    /// <summary>Fail-closed gate for an operator's fresh attempt, never an automatic task replay.</summary>
+    public async Task<bool> CanStartFreshAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var stored = ReadAndValidateRun(run);
+        if (
+            stored.WorkflowStatus != WorkflowStatus.RetryPending
+            || stored.Stage != ReviewStage.Discovered
+            || _reviewStore.ListActiveWorkflowWorkspaceRuns().Any(value => value.Id == stored.Id)
+            || WorkflowWorkspace.HasAnyUnsettledPreparation(_reviewStore)
+            || _reviewStore.GetOutboxForRun(stored.Id).Count != 0
+            || _reviewStore.TryGetLatestArtifact(stored.Id, ReviewArtifactKinds.ArtifactBranchKind) is not null
+            || _reviewStore.TryGetLatestArtifact(stored.Id, ReviewArtifactKinds.ArtifactBranchQuarantineKind)
+                is not null
+        )
+            return false;
+
+        try
+        {
+            _ = await ReadFrozenContextAsync(stored, null, cancellationToken).ConfigureAwait(false);
+            var instanceId = InstanceIdFor(stored, null);
+            var snapshot = await _workflowStore.LoadAsync(instanceId, cancellationToken).ConfigureAwait(false);
+            if (snapshot is null || snapshot.IsComplete)
+                return false;
+            ValidateSnapshot(snapshot, instanceId, BuildAdmission(stored, null));
+            return snapshot.Tasks.Any(task => task.Status == WorkflowTaskStatus.Failed)
+                && snapshot.Tasks.All(task => task.Status is WorkflowTaskStatus.Failed or WorkflowTaskStatus.Validated);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+        {
+            return false;
+        }
     }
 
     public bool HasFrozenContext(ReviewRun run, WorkflowRound? round)

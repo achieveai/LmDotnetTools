@@ -12,6 +12,34 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Configuration section name: <c>CodeReviewDaemon</c>.</summary>
     public const string SectionName = "CodeReviewDaemon";
 
+    internal static CodeReviewDaemonOptions FromConfiguration(IConfigurationSection section)
+    {
+        // The binder appends to initialized arrays. Start explicit selections empty so an operator's
+        // marketplace aliases replace the defaults instead of retaining aliases absent on that gateway.
+        var defaults = new CodeReviewDaemonOptions();
+        var options = new CodeReviewDaemonOptions
+        {
+            Marketplaces = section.GetSection(nameof(Marketplaces)).Exists() ? [] : defaults.Marketplaces,
+            SubAgentMarketplaces = section.GetSection(nameof(SubAgentMarketplaces)).Exists()
+                ? []
+                : defaults.SubAgentMarketplaces,
+        };
+        section.Bind(options);
+        // Dictionary binding can silently drop values that cannot convert to int. Refuse those
+        // entries explicitly rather than accidentally falling back to the global pool size.
+        var overrides = section.GetSection(nameof(ReviewPoolSizesByRepository));
+        if (overrides.Value is not null)
+            throw new InvalidOperationException("ReviewPoolSizesByRepository must be a repository-to-count map.");
+        foreach (var entry in overrides.GetChildren())
+        {
+            if (entry.GetChildren().Any() || !int.TryParse(entry.Value, out var count) || count is < 1 or > 6)
+                throw new InvalidOperationException(
+                    "Each repository slot override must be an integer from 1 through 6."
+                );
+        }
+        return options;
+    }
+
     /// <summary>Old stage controls cannot silently change the authored workflow's behavior.</summary>
     internal static void ValidateWorkflowConfiguration(IConfigurationSection section, Action<string>? warn = null)
     {
@@ -66,11 +94,26 @@ internal sealed class CodeReviewDaemonOptions
     public bool EnableCommentPosting { get; init; }
 
     /// <summary>
+    /// Allows host-side <c>git push</c> operations used by artifact retention. Defaults to <c>true</c> to
+    /// preserve existing configured profiles. Set to <c>false</c> for disposable validation runs; clone and
+    /// fetch remain available, and every push still authorized by a live, exactly-scoped grant (see
+    /// <see cref="Workspace.Sandbox.HostGitPushAuthorization"/>) still succeeds — this flag only removes the
+    /// blanket allow-everything fallback, it does not add a second gate on top of the scoped grants.
+    /// </summary>
+    public bool EnableGitPush { get; init; } = true;
+
+    /// <summary>
     /// When <c>false</c> (default) the Azure DevOps provider is not registered, so the daemon is
     /// GitHub-only and an <c>ado</c> webhook call is denied as an unknown provider. Enabling it
     /// registers the ADO OAuth provider and (later) its poller.
     /// </summary>
     public bool EnableAdoProvider { get; init; }
+
+    /// <summary>
+    /// Starts periodic PR discovery for <see cref="EnabledRepos"/>. Defaults to <c>true</c> for existing
+    /// profiles. Set to <c>false</c> while preparing and validating workspaces without selecting any PR.
+    /// </summary>
+    public bool EnablePrPolling { get; init; } = true;
 
     /// <summary>
     /// Allow-list of <c>owner/repo</c> (GitHub) or <c>org/project/repo</c> (ADO) identifiers the daemon
@@ -256,6 +299,12 @@ internal sealed class CodeReviewDaemonOptions
     public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
 
     /// <summary>
+    /// Provision-layer environment variables applied to every newly-created hosted review conversation.
+    /// Values are never logged. Resumed conversations retain the immutable map from their original provision.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> WorkspaceEnv { get; init; } = new Dictionary<string, string>();
+
+    /// <summary>
     /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
     /// <c>Agent</c> templates — INDEPENDENT of <see cref="Marketplaces"/> (which controls what the gateway
     /// loads for skills + discovery): a marketplace can stay loaded for its skills yet be excluded here. The
@@ -322,21 +371,20 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Warm review-checkout slots kept ready to skip re-cloning. Default 2.</summary>
     public int ReviewPoolSize { get; init; } = 2;
 
-    /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
-    public string? ReviewPoolHostRoot { get; init; }
+    /// <summary>Optional slot-count overrides keyed by enabled source repository name; each count is 1–6.</summary>
+    public Dictionary<string, int> ReviewPoolSizesByRepository { get; init; } = [];
 
     /// <summary>
-    /// Whether the sandbox gateway roots every workspace at <c>WORKSPACE_BASE_PATH/&lt;app-dir&gt;/&lt;workspace&gt;</c>
-    /// (SandboxedOstoolsMcpServer ADR 0028). When <c>true</c>, the daemon prepares its pooled store — and measures
-    /// slot paths — under <c>&lt;app-dir&gt;</c> (derived from <c>SandboxGateway:AppId</c>) so the app-dir-less
-    /// <c>workspace</c> field it sends re-roots to the prepared store instead of an empty gateway-created dir.
-    /// Default <c>false</c> = pre-ADR-0028 flat behavior, matching a gateway image that predates per-app rooting;
-    /// set <c>true</c> only against a gateway that does the per-app rooting.
+    /// Discards a completed slot when admitting its next review. Disable while preserving a slot for debugging.
+    /// An active, unknown, or mismatched slot still refuses preparation regardless of this setting.
     /// </summary>
-    public bool PerAppWorkspaceRooting { get; init; }
+    public bool AutoDiscardCompletedSlotOnAdmission { get; init; } = true;
 
-    /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
-    public string ScratchDirName { get; init; } = "scratch";
+    /// <summary>
+    /// The single Gateway/LmStreaming workspace leaf that contains the outer review repository and every linked
+    /// slot worktree. Slot names are paths inside this workspace, never sibling Gateway workspaces.
+    /// </summary>
+    public string ReviewWorkspaceLeaf { get; init; } = "nova-reviews";
 
     /// <summary>
     /// Maximum ContextReady attempts (including the re-clone escalation) before a run is parked with a

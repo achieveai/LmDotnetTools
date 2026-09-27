@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -338,6 +339,77 @@ public sealed class WorkflowScriptOperationsTests
             ["KnowledgeEntryCount"] = 0,
         }.ToJsonString();
 
+    /// <summary>
+    /// Task #82 requirement 1 — with no command-scoped capability the daemon's retention path is
+    /// push-less. It refuses BEFORE the branch is checked out, so a denied run leaves no git trace at all.
+    /// </summary>
+    [Fact]
+    public async Task Retention_without_a_command_capability_never_reaches_git()
+    {
+        using var fixture = new Fixture();
+        var operations = fixture.CreateOperations(capability: ReviewArtifactBranchCapability.Denied);
+
+        await operations
+            .Invoking(x => x.RetainArtifactsAsync(fixture.Files, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*capability*");
+        fixture.Runner.Commands.Should().BeEmpty();
+        fixture.Store.GetOutboxForRun(fixture.Run.Id).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("8", Fixture.Sha)]
+    [InlineData("7", "cccccccccccccccccccccccccccccccccccccccc")]
+    public async Task Retention_refuses_a_capability_that_names_a_different_run(string prId, string headSha)
+    {
+        using var fixture = new Fixture();
+        var operations = fixture.CreateOperations(
+            capability: ReviewArtifactBranchCapability.Grant("github/example/widgets", prId, headSha)
+        );
+
+        await operations
+            .Invoking(x => x.RetainArtifactsAsync(fixture.Files, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*capability*");
+        fixture.Runner.Commands.Should().BeEmpty();
+    }
+
+    /// <summary>Task #82 requirement 3 — the branch name and the pushed SHA become a durable receipt.</summary>
+    [Fact]
+    public async Task An_authorized_retention_records_the_branch_and_pushed_sha()
+    {
+        using var fixture = new Fixture();
+
+        await fixture.Operations.RetainArtifactsAsync(fixture.Files, default);
+
+        var artifact = fixture.Store.TryGetLatestArtifact(fixture.Run.Id, ReviewArtifactKinds.ArtifactBranchKind)!;
+        var receipt = JsonSerializer.Deserialize<ReviewArtifactBranchReceipt>(artifact.Payload)!;
+        receipt.Branch.Should().Be("review/widgets-7");
+        receipt.PushedSha.Should().Be(Fixture.Sha);
+        receipt.RepoKey.Should().Be("github/example/widgets");
+        receipt.PrId.Should().Be("7");
+        fixture
+            .Store.GetOutboxForRun(fixture.Run.Id)
+            .Single()
+            .Should()
+            .BeEquivalentTo(new { Status = OutboxStatus.Posted, ProviderResponseId = Fixture.Sha });
+    }
+
+    /// <summary>Task #82 requirement 5 — retention preserves the branch; nothing here deletes it.</summary>
+    [Fact]
+    public async Task An_authorized_retention_never_deletes_the_branch()
+    {
+        using var fixture = new Fixture();
+
+        await fixture.Operations.RetainArtifactsAsync(fixture.Files, default);
+
+        fixture
+            .Runner.Commands.Should()
+            .NotContain(command => command.Argv.Contains("--delete") || command.Argv.Contains("-D"));
+    }
+
     private sealed class Fixture : IDisposable
     {
         public const string Sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -385,7 +457,10 @@ public sealed class WorkflowScriptOperationsTests
             Operations = CreateOperations();
         }
 
-        public WorkflowArtifactOperations CreateOperations(Func<CancellationToken, Task>? verifyOrigin = null) =>
+        public WorkflowArtifactOperations CreateOperations(
+            Func<CancellationToken, Task>? verifyOrigin = null,
+            ReviewArtifactBranchCapability? capability = null
+        ) =>
             new(
                 Store,
                 Run,
@@ -394,6 +469,7 @@ public sealed class WorkflowScriptOperationsTests
                 "main",
                 new ReviewBranchManager(new GitRunner(Runner), FileSystem, NullLogger<ReviewBranchManager>.Instance),
                 _gitGate,
+                capability ?? ReviewArtifactBranchCapability.Grant(_repo.NormalizedKey, "7", Sha),
                 new WorkflowKnowledgeEdits(RepoRoot, _repo, FileSystem, NullLogger.Instance),
                 verifyOrigin
             );

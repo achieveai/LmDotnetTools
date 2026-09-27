@@ -16,7 +16,4 @@ internal sealed class RegistrySessionSource(SandboxSessionRegistry inner) : ISan
 
     public Task<SandboxSession> GetOrCreateLiveSessionAsync(WorkspaceRef workspaceRef, CancellationToken ct) =>
         _inner.GetOrCreateLiveSessionAsync(workspaceRef, ct);
-
-    public Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct) =>
-        _inner.DestroyWorkspaceSessionAsync(workspaceId, ct);
 }

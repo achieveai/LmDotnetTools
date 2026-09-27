@@ -518,7 +518,7 @@ internal sealed class AdoPrProvider : IPrProvider
     /// </summary>
     public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
-        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        using var document = await GetPullRequestDocumentAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         return MapPrLifecycle(document.RootElement.GetProperty("status").GetString());
     }
 
@@ -544,16 +544,77 @@ internal sealed class AdoPrProvider : IPrProvider
         CancellationToken cancellationToken
     )
     {
-        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        using var document = await GetPullRequestDocumentAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         var head = CommitId(document.RootElement, "lastMergeSourceCommit");
         return string.IsNullOrWhiteSpace(head) ? null : head;
+    }
+
+    /// <summary>
+    /// Reads a single PR fresh from the host, mapped the same way <see cref="ListOpenPullRequestsAsync"/>
+    /// maps a list entry (task #81). Returns <c>null</c> only on a confirmed 404 (PR does not exist); any
+    /// other non-success status or transport failure throws via <see cref="HttpResponseMessage.EnsureSuccessStatusCode"/>,
+    /// since "unreachable" and "confirmed absent" must never be conflated.
+    /// <para>
+    /// Recency (<see cref="PullRequestDescriptor.UpdatedAt"/>) is left null here — a single-PR re-read has no
+    /// need for the bounded <c>/pushes</c> recency lookup <see cref="ListOpenPullRequestsAsync"/> uses, since
+    /// this method's only caller (task #81) checks head/base identity and lifecycle, not recency.
+    /// </para>
+    /// </summary>
+    public async Task<PullRequestDescriptor?> GetPullRequestAsync(
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrEmpty(prId);
+
+        var org = repo.OrgOrOwner;
+        var project = repo.Project;
+        var repoName = repo.RepoName;
+        var url =
+            $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repoName}/pullrequests/{prId}"
+            + $"?api-version={ApiVersion}";
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        httpRequest.Headers.Accept.ParseAdd("application/json");
+
+        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var pr = document.RootElement;
+        return new PullRequestDescriptor
+        {
+            PrId = pr.GetProperty("pullRequestId")
+                .GetInt64()
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            HeadSha = CommitId(pr, "lastMergeSourceCommit"),
+            BaseSha = CommitId(pr, "lastMergeTargetCommit"),
+            TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
+            LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
+            CreatedAt = ParseTimestamp(pr, "creationDate"),
+            Author = UniqueNameOf(pr, "createdBy"),
+            Title = StringOf(pr, "title"),
+            Description = StringOf(pr, "description"),
+        };
     }
 
     /// <summary>
     /// <c>GET .../pullrequests/{id}</c> — the single-PR resource both per-PR reads parse. The caller owns
     /// the returned document.
     /// </summary>
-    private async Task<JsonDocument> GetPullRequestAsync(
+    private async Task<JsonDocument> GetPullRequestDocumentAsync(
         RepoIdentity repo,
         string prId,
         CancellationToken cancellationToken

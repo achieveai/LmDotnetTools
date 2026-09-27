@@ -66,14 +66,6 @@ internal sealed class PrPollingService : BackgroundService
     private readonly ReviewProgressReporter? _progress;
     private readonly int _firstReviewLookbackDays;
     private readonly IReadOnlyList<IReviewCommentReader> _commentReaders;
-    private static readonly string[] PublicationOperations =
-    [
-        ReviewPoster.PostReviewCommentOperation,
-        ReviewParkNotifier.PostParkNoticeOperation,
-        "workflow-publish-summary",
-        "workflow-publish-inline",
-        "workflow-publish-reply",
-    ];
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -266,9 +258,7 @@ internal sealed class PrPollingService : BackgroundService
 
     private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
     {
-        var provider = _providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase)
-        );
+        var provider = PrPollTargetBuilder.ResolveProvider(_providers, target);
         if (provider is null)
         {
             _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
@@ -279,10 +269,7 @@ internal sealed class PrPollingService : BackgroundService
 
         // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
         // signal for borderline PRs) and the filter below agree on the same instant.
-        var cutoff =
-            target.MaxPrAgeDays > 0
-                ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
-                : (DateTimeOffset?)null;
+        var cutoff = PrRecencyFilter.ComputeCutoff(target.MaxPrAgeDays, _timeProvider);
 
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
@@ -358,14 +345,17 @@ internal sealed class PrPollingService : BackgroundService
         var run = _store.CreateOrGetReviewRun(seed);
         if (run.WorkflowStatus != WorkflowStatus.Completed)
         {
-            var initial = await ReadCommentContextAsync(
-                    target,
-                    descriptor,
-                    run,
-                    new Dictionary<string, string>(StringComparer.Ordinal),
-                    cancellationToken
-                )
-                .ConfigureAwait(false);
+            var initial =
+                run.Mode == "collect-only"
+                    ? WorkflowMarkdown.InitialContext(descriptor)
+                    : await ReadCommentContextAsync(
+                            target,
+                            descriptor,
+                            run,
+                            new Dictionary<string, string>(StringComparer.Ordinal),
+                            cancellationToken
+                        )
+                        .ConfigureAwait(false);
             run = await _orchestrator.RunAsync(seed, initial, cancellationToken).ConfigureAwait(false);
             if (run.WorkflowStatus != WorkflowStatus.Completed)
             {
@@ -423,6 +413,15 @@ internal sealed class PrPollingService : BackgroundService
         var previousContext = await _orchestrator
             .ReadFrozenContextAsync(run, previousRound, cancellationToken)
             .ConfigureAwait(false);
+        if (previousRound is null && previousContext["DiscussionDeferred"]?.GetValue<bool>() == true)
+        {
+            previousContext = JsonNode
+                .Parse(
+                    _store.TryGetLatestArtifact(run.Id, "workflow-deferred-discussion")?.Payload
+                        ?? throw new InvalidDataException("Deferred discussion baseline is missing.")
+                )!
+                .AsObject();
+        }
         var previousVersions = ReadVersions(previousContext);
         var current = await ReadCommentContextAsync(target, descriptor, run, previousVersions, cancellationToken)
             .ConfigureAwait(false);
@@ -446,25 +445,24 @@ internal sealed class PrPollingService : BackgroundService
         _ = await _orchestrator.RunRoundAsync(run, round, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<JsonObject> ReadCommentContextAsync(
+    private Task<JsonObject> ReadCommentContextAsync(
         PrPollTarget target,
         PullRequestDescriptor descriptor,
         ReviewRun run,
         IReadOnlyDictionary<string, string> previousVersions,
         CancellationToken cancellationToken
-    )
-    {
-        var reader =
-            _commentReaders.SingleOrDefault(value =>
-                string.Equals(value.Provider, target.Provider, StringComparison.OrdinalIgnoreCase)
-            )
-            ?? throw new InvalidOperationException($"No review comment reader is registered for '{target.Provider}'.");
-        var comments = await reader
-            .ListExistingReviewCommentsAsync(new ReviewCommentTarget(target.Repo, run.PrId), cancellationToken)
-            .ConfigureAwait(false);
-        var ownIds = _store.GetConfirmedProviderResponseIds(run.RepoId, run.PrId, PublicationOperations);
-        return BuildCommentContext(descriptor, comments, ownIds, previousVersions);
-    }
+    ) =>
+        PrCommentContextReader.ReadAsync(
+            _commentReaders,
+            _store,
+            target.Repo,
+            target.Provider,
+            run.RepoId,
+            run.PrId,
+            descriptor,
+            previousVersions,
+            cancellationToken
+        );
 
     internal static JsonObject BuildCommentContext(
         PullRequestDescriptor descriptor,
@@ -570,20 +568,7 @@ internal sealed class PrPollingService : BackgroundService
         IReadOnlyList<PullRequestDescriptor> pullRequests
     )
     {
-        if (cutoff is null || pullRequests.Count == 0)
-        {
-            return pullRequests;
-        }
-
-        var kept = new List<PullRequestDescriptor>(pullRequests.Count);
-        foreach (var pr in pullRequests)
-        {
-            var activity = pr.UpdatedAt ?? pr.CreatedAt;
-            if (activity is null || activity.Value >= cutoff.Value)
-            {
-                kept.Add(pr);
-            }
-        }
+        var kept = PrRecencyFilter.Apply(cutoff, pullRequests);
 
         if (kept.Count < pullRequests.Count)
         {

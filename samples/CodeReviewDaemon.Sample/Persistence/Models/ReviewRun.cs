@@ -125,4 +125,19 @@ internal sealed record ReviewRun
     /// the log line scrolled past. Null exactly when <see cref="ParkedAt"/> is.
     /// </summary>
     public string? ParkReason { get; init; }
+
+    // ── Durable redo generation (migration v12, task #81 round 5 / task #82 coordination) ──────────
+    /// <summary>
+    /// Ordering-only signal, NOT part of <c>review_run</c>'s UNIQUE constraint (uniqueness at the same
+    /// head/base is <see cref="TriggerWatermark"/>'s job — see task #82's <c>review_rerun_authorization</c>
+    /// table). Every pre-existing row and every ordinarily-admitted row is <c>0</c>, so it is a no-op for
+    /// <see cref="ReviewStore.FindReviewRunByIdentity"/>'s existing stage-rank ordering everywhere except
+    /// the one deliberate case: <c>RunSinglePrCommand.AdmitAndRunAsync</c> inserts a fresh row at
+    /// <c>generation = priorCompletedRun.Generation + 1</c> once a <see cref="ReviewRerunAuthorization"/>
+    /// is consumed, so that row — and only that row — outranks the completed run it supersedes for every
+    /// later lookup (including <see cref="Orchestration.PrOrchestrator.RunAsync"/>'s own internal
+    /// <see cref="ReviewStore.CreateOrGetReviewRun"/> call), without erasing or reordering the completed
+    /// row itself.
+    /// </summary>
+    public int Generation { get; init; }
 }

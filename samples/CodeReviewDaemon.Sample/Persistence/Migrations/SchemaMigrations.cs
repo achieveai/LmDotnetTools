@@ -24,6 +24,12 @@ internal static class SchemaMigrations
         new Migration(8, V8Sql),
         new Migration(9, V9Sql),
         new Migration(10, V10Sql),
+        new Migration(
+            11,
+            "CREATE TABLE shared_workspace_bootstrap (id INTEGER PRIMARY KEY CHECK (id = 1), operation_id TEXT NOT NULL);"
+        ),
+        new Migration(12, V12Sql),
+        new Migration(13, V13Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -350,5 +356,62 @@ internal static class SchemaMigrations
             INSERT INTO active_workflow_workspace (review_run_id, artifact_id)
             SELECT NEW.review_run_id, NEW.id WHERE json_extract(NEW.payload, '$.Active') = 1;
         END;
+        """;
+
+    // ── v12: one-use rerun authorization (task #82, requirement 4) ────────────────────────────────
+    // A verified artifact-branch deletion is the ONLY thing that may authorize re-reviewing a PR whose
+    // run already completed. It is recorded here as durable, single-use evidence rather than by mutating
+    // the completed run: that row is the record of a review that really happened, and resetting it in
+    // place would overwrite the evidence the deletion was supposed to preserve.
+    //
+    // rerun_watermark is the key to creating the new run without violating review_run's UNIQUE
+    // (repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode). A rerun is
+    // usually at the SAME head and base as the run it replaces, so every other column collides; the
+    // watermark is the one that does not, and giving each authorization its own makes the new run a new
+    // row by construction instead of by a uniqueness workaround at the call site.
+    //
+    // consumed_at is what makes it single-use. Consumption is a conditional UPDATE that re-checks the
+    // head and base in its own WHERE clause, so a head that moved between the caller's fresh identity
+    // read and the write cannot be consumed at all — the check and the claim are one atomic statement,
+    // not a read followed by a hopeful write.
+    //
+    // The partial UNIQUE index allows any number of consumed rows per PR (the audit trail) but at most
+    // one outstanding authorization, so two redos cannot leave two live reruns behind.
+    private const string V12Sql = """
+        CREATE TABLE review_rerun_authorization (
+            id                    INTEGER PRIMARY KEY,
+            repo_id               INTEGER NOT NULL REFERENCES repo (id),
+            pr_id                 TEXT NOT NULL,
+            head_sha              TEXT NOT NULL,
+            base_sha              TEXT NOT NULL,
+            prior_review_run_id   INTEGER NOT NULL REFERENCES review_run (id),
+            deleted_branch        TEXT NOT NULL,
+            deleted_branch_sha    TEXT NOT NULL,
+            rerun_watermark       TEXT NOT NULL,
+            created_at            TEXT NOT NULL,
+            consumed_at           TEXT NULL,
+            consumed_by_run_id    INTEGER NULL REFERENCES review_run (id)
+        );
+
+        CREATE UNIQUE INDEX ux_review_rerun_authorization_outstanding
+            ON review_rerun_authorization (repo_id, pr_id)
+            WHERE consumed_at IS NULL;
+
+        CREATE UNIQUE INDEX ux_review_rerun_authorization_watermark
+            ON review_rerun_authorization (rerun_watermark);
+        """;
+
+    // ── v13: durable redo generation ordering signal (task #81 round 5) ─────────────────────────────
+    // Purely an ORDERING signal for FindReviewRunByIdentity — deliberately NOT part of review_run's
+    // UNIQUE constraint (that stays trigger_watermark's job, per v1's rationale and task #82's
+    // rerun_watermark). NOT NULL DEFAULT 0 means every pre-existing row and every ordinarily-admitted row
+    // is 0, so prepending "generation DESC" to the existing stage-rank ordering is a provable no-op for
+    // every scenario except the one this exists for: RunSinglePrCommand.AdmitAndRunAsync inserts a fresh
+    // row at generation = priorCompletedRun.Generation + 1 once a review_rerun_authorization (v12) is
+    // consumed, so that row alone outranks the completed run it supersedes for every later identity
+    // lookup — including PrOrchestrator.RunAsync's own internal CreateOrGetReviewRun call — without
+    // erasing, resetting, or reordering the completed row itself.
+    private const string V13Sql = """
+        ALTER TABLE review_run ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
         """;
 }

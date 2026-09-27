@@ -233,7 +233,7 @@ public sealed class S2SReviewAgentTests
 
         Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
 
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Completed*no review text*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*completed without final review text*");
     }
 
     [Fact]

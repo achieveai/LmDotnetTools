@@ -20,6 +20,7 @@ internal sealed class WorkflowArtifactOperations(
     string defaultBranch,
     ReviewBranchManager branchManager,
     SemaphoreSlim gitGate,
+    ReviewArtifactBranchCapability artifactBranchCapability,
     WorkflowKnowledgeEdits? knowledgeEdits = null,
     Func<CancellationToken, Task>? verifyStoreOrigin = null
 )
@@ -53,6 +54,78 @@ internal sealed class WorkflowArtifactOperations(
             ),
         };
     }
+
+    /// <summary>
+    /// The run's artifact and receipt inventory with every row THIS retention creates removed, so the
+    /// numbers do not depend on when the snapshot was taken (task #82, requirement 2).
+    /// <para>
+    /// <see cref="CollectStatistics"/> cannot be used for the exported <c>receipts.json</c> and the reason is
+    /// not a rounding error. Retention enqueues its own outbox row and writes its own
+    /// <c>review-artifact-branch</c> artifact as part of the very operation being counted, so a snapshot
+    /// taken before the push and a snapshot taken after it disagree — and because the retained bundle is
+    /// cached and replayed on resume, whichever one happened to be taken first is then frozen forever. A
+    /// count that means "however far along we were when someone looked" is not an inventory.
+    /// </para>
+    /// <para>
+    /// The fix is to make the counts INVARIANT rather than to time them better: the retention operation's
+    /// own receipts and the three artifact kinds that describe the branch's lifecycle are excluded by name,
+    /// which leaves a number that is identical before the push, after the push, and on every later replay.
+    /// What is excluded is listed in the output, and the excluded facts are not lost — they are exactly the
+    /// separately-verifiable branch receipt, which the redo path reads from the private store and proves
+    /// against origin.
+    /// </para>
+    /// </summary>
+    public JsonObject CollectRetentionInventory()
+    {
+        var artifacts = store
+            .GetArtifacts(run.Id)
+            .Where(artifact => !SelfReferentialArtifactKinds.Contains(artifact.ArtifactKind))
+            .ToList();
+        var receipts = store
+            .GetOutboxForRun(run.Id)
+            .Where(entry => !string.Equals(entry.Operation, RetentionOperation, StringComparison.Ordinal))
+            .ToList();
+        return new JsonObject
+        {
+            ["RunId"] = run.Id.ToString(CultureInfo.InvariantCulture),
+            // Not a phase. The point is that there is no phase: these counts are the same whenever they
+            // are taken, which is what makes a cached bundle's copy of them still true.
+            ["SnapshotSemantics"] = "retention-independent",
+            ["ExcludedArtifactKinds"] = new JsonArray([.. SelfReferentialArtifactKinds.Select(kind => (JsonNode)kind)]),
+            ["ExcludedOperations"] = new JsonArray(RetentionOperation),
+            ["ArtifactCount"] = artifacts.Count,
+            ["ArtifactCountsByKind"] = JsonSerializer.SerializeToNode(
+                artifacts
+                    .GroupBy(a => a.ArtifactKind)
+                    .OrderBy(g => g.Key, StringComparer.Ordinal)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal)
+            ),
+            ["ReceiptCount"] = receipts.Count,
+            ["ReceiptCountsByStatus"] = JsonSerializer.SerializeToNode(
+                receipts
+                    .GroupBy(a => a.Status.ToString())
+                    .OrderBy(g => g.Key, StringComparer.Ordinal)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal)
+            ),
+            // Where to check the one thing this file deliberately does not count.
+            ["RetentionReceiptVerification"] =
+                "This run's own retention receipt and branch receipt are excluded above because counting "
+                + "them would make this file's numbers depend on when it was written. Verify them instead "
+                + "against the private 'review-artifact-branch' artifact, whose recorded branch and pushed "
+                + "SHA the redo command re-proves against origin before it will delete anything.",
+        };
+    }
+
+    /// <summary>
+    /// The artifact kinds retention and its redo write ABOUT the artifact branch. Counting them in the
+    /// branch's own exported inventory is the self-reference that makes the count time-dependent.
+    /// </summary>
+    private static readonly HashSet<string> SelfReferentialArtifactKinds = new(StringComparer.Ordinal)
+    {
+        ReviewArtifactKinds.ArtifactBranchKind,
+        ReviewArtifactKinds.ArtifactBranchRedoKind,
+        ReviewArtifactKinds.ArtifactBranchQuarantineKind,
+    };
 
     /// <summary>Builds knowledge files from explicitly bound validated extractions while holding only the Git operation gate.</summary>
     public async Task<IReadOnlyList<ReviewArtifactFile>> PrepareKnowledgeFilesAsync(
@@ -95,6 +168,11 @@ internal sealed class WorkflowArtifactOperations(
     }
 
     /// <summary>Retains trusted, allowlisted files under this PR only, acknowledging the push before returning.</summary>
+    /// <remarks>
+    /// Task #82, requirement 1 — the capability check happens BEFORE the outbox is touched and before the
+    /// git gate is taken, so an unauthorized daemon leaves neither a receipt nor a git trace. Requirement 5
+    /// is the absence below: this method commits and pushes, and never deletes.
+    /// </remarks>
     public async Task<JsonObject> RetainArtifactsAsync(
         IReadOnlyList<ReviewArtifactFile> files,
         CancellationToken cancellationToken,
@@ -102,6 +180,13 @@ internal sealed class WorkflowArtifactOperations(
     )
     {
         ValidateFiles(files);
+        if (!artifactBranchCapability.AuthorizesPush(repo, run))
+        {
+            throw new InvalidOperationException(
+                "Artifact-branch retention requires a command-scoped push capability naming this exact "
+                    + "repository, pull request and head; this daemon has none."
+            );
+        }
         var hash = FilesHash(files);
         await gitGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -129,7 +214,9 @@ internal sealed class WorkflowArtifactOperations(
             }
             if (receipt.Status == OutboxStatus.Posted)
             {
-                return RetentionResult(RequireRetainedSha(receipt));
+                var replayed = RequireRetainedSha(receipt);
+                RecordBranchReceipt(replayed, workflowInstanceId);
+                return RetentionResult(replayed);
             }
             if (receipt.Status != OutboxStatus.Pending)
             {
@@ -174,6 +261,7 @@ internal sealed class WorkflowArtifactOperations(
             {
                 throw new InvalidOperationException("Could not durably acknowledge artifact retention.");
             }
+            RecordBranchReceipt(result.PushedSha, workflowInstanceId);
             return RetentionResult(result.PushedSha);
         }
         finally
@@ -297,7 +385,18 @@ internal sealed class WorkflowArtifactOperations(
             .GetOutboxForRun(run.Id)
             .SingleOrDefault(entry => entry.IdempotencyKey == RetentionKey(workflowInstanceId));
 
-    private string RetentionKey(string? workflowInstanceId) =>
+    private string RetentionKey(string? workflowInstanceId) => BuildRetentionKey(repo, run, workflowInstanceId);
+
+    /// <summary>
+    /// The idempotency key of the retention receipt one workflow instance owns. Exposed because a run can
+    /// accumulate SEVERAL retention rows — the key includes the workflow instance id, so a re-run under a new
+    /// instance enqueues its own row rather than replaying the first — and the redo path must therefore
+    /// identify the receipt belonging to the branch receipt it recorded instead of assuming there is only one.
+    /// </summary>
+    /// <param name="repo">Identity of the reviewed repository.</param>
+    /// <param name="run">The review run the receipt belongs to.</param>
+    /// <param name="workflowInstanceId">The workflow instance, or <c>null</c> for the run-scoped default.</param>
+    internal static string BuildRetentionKey(RepoIdentity repo, ReviewRun run, string? workflowInstanceId) =>
         IdempotencyKey.Build(
             new IdempotencyKeyComponents(
                 RepoIdentity.ToPublisherNamespace(repo.Provider),
@@ -315,6 +414,44 @@ internal sealed class WorkflowArtifactOperations(
 
     private JsonObject RetentionResult(string sha) =>
         new() { ["ArtifactBranch"] = ArtifactBranch, ["RetainedSha"] = sha };
+
+    /// <summary>
+    /// Persists the branch name and the SHA that was actually pushed (task #82, requirement 3). The outbox
+    /// receipt already carries the SHA, but only as an opaque <c>ProviderResponseId</c>; the redo path needs
+    /// the branch, repo key and head alongside it to prove ownership before it deletes anything, and
+    /// re-deriving the branch at redo time would prove nothing about what was pushed.
+    /// <para>
+    /// Written on the replay path too, so a retention that short-circuits on an existing receipt still
+    /// leaves the record the redo path reads. Identical payloads are not duplicated.
+    /// </para>
+    /// </summary>
+    private void RecordBranchReceipt(string pushedSha, string? workflowInstanceId)
+    {
+        var payload = JsonSerializer.Serialize(
+            new ReviewArtifactBranchReceipt(
+                ArtifactBranch,
+                pushedSha,
+                repo.NormalizedKey,
+                run.PrId,
+                run.HeadSha,
+                workflowInstanceId ?? run.Id.ToString(CultureInfo.InvariantCulture)
+            )
+        );
+        if (store.TryGetLatestArtifact(run.Id, ReviewArtifactKinds.ArtifactBranchKind)?.Payload == payload)
+        {
+            return;
+        }
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactKind = ReviewArtifactKinds.ArtifactBranchKind,
+                ArtifactSchemaVersion = ReviewArtifactKinds.ArtifactBranchSchemaVersion,
+                Provider = RepoIdentity.ToPublisherNamespace(repo.Provider),
+                Payload = payload,
+            }
+        );
+    }
 
     private static string RequireRetainedSha(OutboxEntry receipt) =>
         receipt.Status == OutboxStatus.Posted && !string.IsNullOrWhiteSpace(receipt.ProviderResponseId)
@@ -359,7 +496,10 @@ internal sealed class WorkflowArtifactOperations(
                 );
             }
             if (path.StartsWith("PRs/", StringComparison.Ordinal))
-                WorkflowOperationDispatcher.ValidatePublicArtifact(file, run.Id);
+                WorkflowOperationDispatcher.ValidatePublicArtifact(
+                    file,
+                    ReviewArtifactExportBinding.Build(run, repo, ArtifactBranch)
+                );
         }
     }
 }

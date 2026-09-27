@@ -43,13 +43,15 @@ public sealed class WorkspaceWaitFileReader(IWorkspaceFileBrowser browser, strin
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Convention.</b> The agent backgrounds its own work through the Bash tool and captures the
-/// outcome into files under <see cref="WaitRootRelativePath"/> at the workspace root:
+/// <b>Convention.</b> The agent starts a Gateway Bash tool call with
+/// <c>run_in_background=true</c> and keeps the shell command in the foreground of that managed
+/// task. From the workspace root, it captures the outcome under <see cref="WaitRootRelativePath"/>:
 /// <code>
-/// mkdir -p .lm-waits/&lt;handle&gt; &amp;&amp; { cmd &gt; .lm-waits/&lt;handle&gt;/out 2&gt;&amp;1; echo $? &gt; .lm-waits/&lt;handle&gt;/exit; } &amp;
+/// mkdir -p .lm-waits/&lt;handle&gt; &amp;&amp; { cmd &gt; .lm-waits/&lt;handle&gt;/out 2&gt;&amp;1; rc=$?; printf '%s\n' "$rc" &gt; .lm-waits/&lt;handle&gt;/exit; }
 /// </code>
-/// then arms <c>{kind:"process", handle:"&lt;handle&gt;"}</c>. The files — not any MCP tool output —
-/// are the source of truth for the exit code and stdout, which resolves #107's flagged ambiguity.
+/// No trailing <c>&amp;</c>: the Bash tool tracks the command until it exits. Then the agent arms
+/// <c>{kind:"process", handle:"&lt;handle&gt;"}</c>. The wait-file handle differs from the Gateway
+/// task ID. The files — not any MCP tool output — are the source of truth for exit code and stdout.
 /// </para>
 /// <para>
 /// <b>Level-triggered by construction.</b> The exit file persists after the process exits, so a

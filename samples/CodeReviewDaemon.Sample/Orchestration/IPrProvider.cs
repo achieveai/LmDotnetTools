@@ -44,6 +44,23 @@ internal interface IPrProvider
     /// </para>
     /// </summary>
     Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads a single PR fresh from the host, mapped the same way <see cref="ListOpenPullRequestsAsync"/>
+    /// maps a list entry. This is the re-read an operator-triggered single-PR run (task #81) checks the
+    /// caller-supplied head/base and lifecycle against before admission — a run seeded from stale or
+    /// operator-typed values must never be trusted without one live look at the host.
+    /// <para>
+    /// Returns <c>null</c> only when the host confirms the PR does not exist (e.g. GitHub 404). A transport
+    /// or auth failure must throw, for the same reason as <see cref="GetCurrentHeadShaAsync"/>: "unreachable"
+    /// and "confirmed absent" are different answers, and only the second is safe to reject on.
+    /// </para>
+    /// </summary>
+    Task<PullRequestDescriptor?> GetPullRequestAsync(
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    );
 }
 
 /// <summary>

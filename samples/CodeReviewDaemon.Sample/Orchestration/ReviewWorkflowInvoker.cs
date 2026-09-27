@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -41,7 +42,8 @@ internal sealed class ReviewWorkflowInvoker(
         string ThreadId,
         string WorkspaceId,
         string ModeId,
-        int PublicationPolicyVersion
+        int PublicationPolicyVersion,
+        string? WorkingDirectoryRelPath = null
     );
 
     private sealed record RawResult(int SchemaVersion, WorkflowInvocation Invocation, WorkflowInvocationResult Result);
@@ -92,7 +94,12 @@ internal sealed class ReviewWorkflowInvoker(
                 {
                     return admission;
                 }
-                var agent = new WorkflowAgentInvoker(packageRoot, ResolveSessionAsync, SettleAsync);
+                var agent = new WorkflowAgentInvoker(
+                    packageRoot,
+                    ResolveSessionAsync,
+                    SettleAsync,
+                    synthesisIntent: SynthesisIntentAsync
+                );
                 result = reconcile
                     ? await agent.ReconcileAsync(invocation, ct).ConfigureAwait(false)
                     : await agent.InvokeAsync(invocation, ct).ConfigureAwait(false);
@@ -125,15 +132,34 @@ internal sealed class ReviewWorkflowInvoker(
                 {
                     try
                     {
-                        var output = await scripts
-                            .InvokeAsync(invocation.Task.Script, packageRoot, context, invocation.Input, ct)
-                            .ConfigureAwait(false);
+                        string output;
+                        var operation = Path.GetFileNameWithoutExtension(invocation.Task.Script);
+                        if (WorkflowOperationDispatcher.Supports(operation))
+                        {
+                            var dispatched = await dispatcher
+                                .DispatchAsync(operation, context, invocation.Input, ct)
+                                .ConfigureAwait(false);
+                            output = dispatched.ToJsonString();
+                        }
+                        else
+                        {
+                            output = await scripts
+                                .InvokeAsync(invocation.Task.Script, packageRoot, context, invocation.Input, ct)
+                                .ConfigureAwait(false);
+                        }
                         result = new(WorkflowInvocationStatus.Completed, output);
                     }
-                    catch (InvalidOperationException ex) when (ex is not WorkflowScriptTerminationException)
+                    catch (Exception ex)
+                        when (ex is InvalidOperationException and not WorkflowScriptTerminationException
+                            || ex is Win32Exception
+                        )
                     {
+                        // Process-start failures (for example, a missing configured interpreter) happen before
+                        // the script can execute or produce an external effect. Record them as a settled failure
+                        // so the runtime does not strand the occurrence InFlight and reconcile it forever.
                         result = new(
                             HasUnresolvedReceipt("workflow-")
+                            || Path.GetFileNameWithoutExtension(invocation.Task.Script) == "fetch-discussion"
                                 ? WorkflowInvocationStatus.Unknown
                                 : WorkflowInvocationStatus.Failed,
                             Error: WorkflowAgentInvoker.Diagnostic(ex)
@@ -241,7 +267,15 @@ internal sealed class ReviewWorkflowInvoker(
             artifact?.Provider
             ?? requestedModel
             ?? (string.IsNullOrWhiteSpace(run.ModelId) ? options.LmStreamingProviderId : run.ModelId);
-        await client.EnsureWorkflowPublicationAsync(ct, providerId, options.LmStreamingModeId).ConfigureAwait(false);
+        await client
+            .EnsureWorkflowPublicationAsync(
+                ct,
+                providerId,
+                options.LmStreamingModeId,
+                requireSandboxEnv: options.WorkspaceEnv.Count > 0,
+                requireConversationWorkingDirectory: true
+            )
+            .ConfigureAwait(false);
         SessionBinding binding;
         if (artifact is null)
         {
@@ -253,10 +287,19 @@ internal sealed class ReviewWorkflowInvoker(
                     systemPromptAppendix: null,
                     options.SubAgentModelId,
                     options.ToolAssistedReasoningEffort,
-                    ct
+                    ct,
+                    options.WorkspaceEnv,
+                    prepared.WorkingDirectoryRelPath
                 )
                 .ConfigureAwait(false);
-            binding = new(session, threadId, prepared.WorkspaceId, options.LmStreamingModeId, 1);
+            binding = new(
+                session,
+                threadId,
+                prepared.WorkspaceId,
+                options.LmStreamingModeId,
+                1,
+                prepared.WorkingDirectoryRelPath
+            );
             // Provision has no model turn. Persist its identity before the adapter may enqueue one.
             store.AddArtifact(
                 new ReviewArtifact
@@ -285,6 +328,7 @@ internal sealed class ReviewWorkflowInvoker(
                 || string.IsNullOrWhiteSpace(binding.ThreadId)
                 || binding.PublicationPolicyVersion != 1
                 || binding.ModeId != options.LmStreamingModeId
+                || binding.WorkingDirectoryRelPath != prepared.WorkingDirectoryRelPath
             )
                 throw new InvalidOperationException("Persisted agent session does not match the prepared workspace.");
         }
@@ -306,7 +350,9 @@ internal sealed class ReviewWorkflowInvoker(
             overallTimeout: TimeSpan.FromMinutes(options.ReviewStageDeadlineMinutes),
             existingThreadId: binding.ThreadId,
             subAgentModelId: options.SubAgentModelId,
-            reasoningEffort: options.ToolAssistedReasoningEffort
+            reasoningEffort: options.ToolAssistedReasoningEffort,
+            env: options.WorkspaceEnv,
+            workingDirectoryRelPath: prepared.WorkingDirectoryRelPath
         );
     }
 
@@ -403,6 +449,52 @@ internal sealed class ReviewWorkflowInvoker(
             || !ids.ToHashSet(StringComparer.Ordinal).SetEquals(graded)
         )
             throw new InvalidOperationException("Assessment IDs must match every admitted finding exactly once.");
+    }
+
+    private Task<bool> SynthesisIntentAsync(
+        WorkflowInvocation invocation,
+        string threadId,
+        bool create,
+        CancellationToken ct
+    )
+    {
+        ct.ThrowIfCancellationRequested();
+        var kind = "workflow-synthesis:" + Hash(invocation.InvocationId);
+        var expected = new JsonObject
+        {
+            ["InvocationId"] = invocation.InvocationId,
+            ["WorkflowInstanceId"] = invocation.InstanceId,
+            ["ThreadId"] = threadId,
+            ["OriginalInputId"] = AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+                WorkflowAgentInvoker.InvocationKey(invocation),
+                invocation.IsCorrection,
+                invocation.IsCorrection
+            ),
+            ["Key"] = WorkflowAgentInvoker.InvocationKey(invocation) + ":synthesis",
+            ["Prompt"] = WorkflowAgentInvoker.SynthesisPrompt,
+            ["DeadlineUtc"] = invocation.DeadlineUtc?.ToString("O"),
+            ["SuppressSubAgentSpawning"] = true,
+            ["SuppressActionTools"] = true,
+        };
+        if (store.TryGetLatestArtifact(run.Id, kind) is { } saved)
+        {
+            if (!JsonNode.DeepEquals(JsonNode.Parse(saved.Payload), expected))
+                throw new InvalidDataException("Synthesis intent does not match its invocation.");
+            return Task.FromResult(true);
+        }
+        if (!create)
+            return Task.FromResult(false);
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactKind = kind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = expected.ToJsonString(),
+            }
+        );
+        return Task.FromResult(true);
     }
 
     private bool HasUnresolvedReceipt(string kindPrefix) =>

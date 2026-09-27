@@ -15,7 +15,7 @@ namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 /// </description></item>
 /// <item><description>
 /// A gateway already responds <c>200</c> at <c>{SANDBOX_GATEWAY_URL ?? http://localhost:3000}/health</c>
-/// — the host adopts it.
+/// and serves the marketplace catalog to this test's app identity — the host adopts it.
 /// </description></item>
 /// </list>
 /// <para>
@@ -99,8 +99,8 @@ public sealed class SandboxGatewayPrerequisites
             );
         }
 
-        // No exe configured — adopt a gateway only if one is already healthy.
-        if (IsHealthy(baseUrl))
+        // No exe configured — a health-only gateway may still refuse the catalog the host needs.
+        if (IsHealthy(baseUrl) && CanReadMarketplaceCatalog(baseUrl))
         {
             return new SandboxGatewayPrerequisites(
                 available: true,
@@ -113,9 +113,9 @@ public sealed class SandboxGatewayPrerequisites
         }
 
         return Unavailable(
-            "No sandbox gateway is configured. Set SANDBOX_GATEWAY_EXE to mcp-gateway.exe "
+            "No usable sandbox gateway is configured. Set SANDBOX_GATEWAY_EXE to mcp-gateway.exe "
                 + "(with agent-cli.exe beside it) or run a gateway reachable at "
-                + $"{baseUrl}/health to enable this test."
+                + $"{baseUrl}/health that also permits this app to read the marketplace catalog."
         );
     }
 
@@ -155,17 +155,21 @@ public sealed class SandboxGatewayPrerequisites
 
     private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private static bool IsHealthy(string baseUrl)
+    private static bool IsHealthy(string baseUrl) => CanRead(baseUrl, "health");
+
+    private static bool CanReadMarketplaceCatalog(string baseUrl) => CanRead(baseUrl, "api/v1/marketplaces/preview");
+
+    private static bool CanRead(string baseUrl, string path)
     {
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            using var response = http.GetAsync($"{baseUrl.TrimEnd('/')}/health").GetAwaiter().GetResult();
+            using var response = http.GetAsync($"{baseUrl.TrimEnd('/')}/{path}").GetAwaiter().GetResult();
             return response.IsSuccessStatusCode;
         }
         catch
         {
-            // Any failure (connection refused, timeout, DNS) means "no gateway to adopt".
+            // An unreachable gateway cannot satisfy this test's sandbox session prerequisites.
             return false;
         }
     }

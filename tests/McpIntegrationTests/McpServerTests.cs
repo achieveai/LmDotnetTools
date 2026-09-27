@@ -14,7 +14,9 @@ public class McpServerTests
 {
     public static readonly string ServerLocation = Path.Combine(
         Path.GetDirectoryName(typeof(McpServerTests).Assembly.Location)!,
-        "AchieveAi.LmDotnetTools.McpSampleServer.exe"
+        OperatingSystem.IsWindows()
+            ? "AchieveAi.LmDotnetTools.McpSampleServer.exe"
+            : "AchieveAi.LmDotnetTools.McpSampleServer"
     );
 
     [Fact]

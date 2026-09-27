@@ -13,13 +13,17 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <summary>Combines immutable admission data with exact checkout evidence. No semantic selection occurs here.</summary>
 internal sealed class WorkflowContextReader(
     ReviewStore store,
-    ReviewSlotWorkspace slots,
     string runDirectoryRoot,
     int maximumCharacters,
     Func<ReviewRun, CancellationToken, Task<JsonNode?>>? readLinkedContext = null
 )
 {
-    public async Task<JsonObject> ReadAsync(ReviewRun run, JsonObject admission, CancellationToken ct)
+    public async Task<JsonObject> ReadAsync(
+        ReviewRun run,
+        JsonObject admission,
+        ReviewRunSession session,
+        CancellationToken ct
+    )
     {
         var roundKind =
             admission["Route"]?.GetValue<string>() == "merged"
@@ -63,10 +67,37 @@ internal sealed class WorkflowContextReader(
                 store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.CheckoutArtifactKind)?.Payload
                     ?? throw new InvalidDataException("Prepared checkout evidence is missing.")
             ) ?? throw new InvalidDataException("Prepared checkout evidence is invalid.");
-        var git = new GitRunner(slots.HostRunner);
+        var git = new GitRunner(session.CommandRunner);
         var head = await git.RunAsync(["rev-parse", "HEAD"], checkout.TargetDir, ct).ConfigureAwait(false);
-        if (!head.Succeeded || !string.Equals(head.Stdout.Trim(), run.HeadSha, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Prepared checkout is not at the admitted head.");
+        if (
+            !head.Succeeded
+            || !IsSha(checkout.CheckoutSha ?? "")
+            || !string.Equals(head.Stdout.Trim(), checkout.CheckoutSha, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(checkout.SourceHeadSha, run.HeadSha, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(checkout.TargetBaseSha, run.BaseSha, StringComparison.OrdinalIgnoreCase)
+            || (
+                run.MergeSha is not null
+                && !string.Equals(checkout.CheckoutSha, run.MergeSha, StringComparison.OrdinalIgnoreCase)
+            )
+        )
+            throw new InvalidDataException("Prepared checkout does not match admitted merge provenance.");
+        var parents = await git.RunAsync(["show", "-s", "--format=%P", "HEAD"], checkout.TargetDir, ct)
+            .ConfigureAwait(false);
+        if (
+            !parents.Succeeded
+            || !parents
+                .Stdout.Trim()
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .SequenceEqual([run.BaseSha, run.HeadSha], StringComparer.OrdinalIgnoreCase)
+        )
+            throw new InvalidDataException("Prepared merge parents do not match admitted target/source commits.");
+        var actualBase = await git.RunAsync(["merge-base", run.BaseSha, run.HeadSha], checkout.TargetDir, ct)
+            .ConfigureAwait(false);
+        if (
+            !actualBase.Succeeded
+            || !string.Equals(actualBase.Stdout.Trim(), checkout.MergeBaseSha, StringComparison.OrdinalIgnoreCase)
+        )
+            throw new InvalidDataException("Prepared merge base is not the exact admitted merge base.");
         var baseSha =
             checkout.MergeBaseSha
             ?? throw new InvalidDataException("An exact merge base is required for workflow review.");
@@ -106,12 +137,41 @@ internal sealed class WorkflowContextReader(
                 ["Diff"] = diff.Stdout,
                 ["TargetDirectory"] = MountedPath(checkout.TargetDir, checkout.StoreRoot),
                 ["HistoryDirectory"] = MountedPath(checkout.NotesDir, checkout.StoreRoot),
-                ["KnowledgeEntryPaths"] = await WorkflowKnowledgeEdits
-                    .ReadEntryPathsAsync(checkout.StoreRoot, store.GetRepo(run.RepoId)!, slots.HostFileSystem, ct)
-                    .ConfigureAwait(false),
                 ["RepositorySlug"] = ReviewBranchManager.RepoSlug(store.GetRepo(run.RepoId)!),
             },
         };
+        if (frozen["ContextManifestVersion"]?.GetValue<int>() == 1)
+        {
+            result["ContextManifestVersion"] = 1;
+            var repo = store.GetRepo(run.RepoId)!;
+            result["Evidence"]!["Repository"] = new JsonObject
+            {
+                ["Provider"] = RepoIdentity.ToPublisherNamespace(repo.Provider),
+                ["Organization"] = repo.OrgOrOwner,
+                ["Project"] = repo.Project,
+                ["Name"] = repo.RepoName,
+            };
+            result["Evidence"]!["TargetBaseSha"] = run.BaseSha;
+            result["Evidence"]!["CheckoutSha"] = checkout.CheckoutSha;
+            result["Evidence"]!["KnowledgeRoots"] = new JsonArray(
+                MountedPath(Path.Combine(checkout.StoreRoot, "KnowledgeBase", "system"), checkout.StoreRoot),
+                MountedPath(
+                    Path.Combine(
+                        checkout.StoreRoot,
+                        "KnowledgeBase",
+                        ReviewBranchManager.RepoSlug(store.GetRepo(run.RepoId)!)
+                    ),
+                    checkout.StoreRoot
+                )
+            );
+        }
+        else
+        {
+            // Frozen older workflows still require their exact-entry knowledge contract.
+            result["Evidence"]!["KnowledgeEntryPaths"] = await WorkflowKnowledgeEdits
+                .ReadEntryPathsAsync(checkout.StoreRoot, store.GetRepo(run.RepoId)!, session.FileSystem, ct)
+                .ConfigureAwait(false);
+        }
         if (readLinkedContext is not null)
             result["UntrustedData"]!["LinkedWorkContext"] = (
                 await readLinkedContext(run, ct).ConfigureAwait(false)
@@ -126,7 +186,8 @@ internal sealed class WorkflowContextReader(
         var relative = Path.GetRelativePath(storeRoot, path).Replace('\\', '/');
         if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith("../", StringComparison.Ordinal))
             throw new InvalidDataException("Checkout path is outside its assigned store.");
-        return relative == "." ? "/workspace/store" : "/workspace/store/" + relative;
+        var root = storeRoot.TrimEnd('/', '\\');
+        return relative == "." ? root : root + "/" + relative;
     }
 
     private static bool IsSha(string value) => value.Length is 40 or 64 && value.All(Uri.IsHexDigit);

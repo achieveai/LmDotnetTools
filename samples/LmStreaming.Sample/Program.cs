@@ -972,6 +972,15 @@ try
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
+                var provisionedWorkingDirectory = ConversationWorkingDirectory
+                    .ReadAsync(conversationStore, threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                ConversationWorkingDirectory.EnsureProviderSupportsHome(
+                    provisionedWorkingDirectory,
+                    normalizedProviderId,
+                    caps.NeedsSandbox
+                );
                 // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
                 SandboxEstablishedBinding? stagedBinding = null;
@@ -1020,7 +1029,10 @@ try
                         : workspaceId;
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
-                    var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
+                    var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace) with
+                    {
+                        HomeRelativePath = provisionedWorkingDirectory,
+                    };
                     if (publicationCallback is not null && mode.Id == WorkflowPublicationOptions.ModeId)
                         workspaceRef = workspaceRef with { BlockProviderEgress = true };
                     var envApplier = sp.GetRequiredService<SandboxEnvApplier>();
@@ -1102,11 +1114,12 @@ try
                         )
                         .GetAwaiter()
                         .GetResult();
-                    // The suffix must name the tools this agent ACTUALLY has, or the model will
-                    // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
-                    // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
-                    // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    // These are remote container paths. Gateway has acknowledged the native tool home;
+                    // formatting the prompt must never inspect the LmStreaming host filesystem.
+                    var toolHome = sandboxSession.HomeRelativePath is null
+                        ? sandboxSession.HostPath
+                        : sandboxSession.HostPath.TrimEnd('/') + "/" + sandboxSession.HomeRelativePath;
+                    var wsSuffix = BuildWorkspaceSuffix(toolHome, caps.SandboxToolAllowList);
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1344,7 +1357,7 @@ try
                                         sandboxMcpHeaders!
                                     )
                                     : null,
-                                workingDirectoryOverride: hasFullSandboxSurface ? sandboxSession!.HostPath : null,
+                                workingDirectoryOverride: null,
                                 lifecycleServices: lifecycleServices
                             ),
                             cliHostedSearch.Resource is null ? null : [cliHostedSearch.Resource]

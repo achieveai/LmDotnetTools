@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Security;
 
 namespace AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 
@@ -39,41 +40,20 @@ internal static class TriggerContentRedactor
 
     // Same rationale as FileTailTriggerSource.MatchTimeout: NonBacktracking already guarantees
     // linear time, so this is an independent backstop rather than the primary defense.
-    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan MatchTimeout = CredentialPatterns.MatchTimeout;
 
     private static Regex Pattern(string pattern) =>
         new(pattern, RegexOptions.NonBacktracking | RegexOptions.IgnoreCase, MatchTimeout);
 
-    // Ordered most-specific first: a labelled `Authorization: Bearer <tok>` is redacted as a whole
-    // key/value pair before the generic token shapes get a chance to redact only the value and leave
-    // the label looking like it still carries one.
-    private static readonly Regex[] Patterns =
+    /// <summary>
+    /// The PII shapes, which are this redactor's own policy. The credential shapes live in
+    /// <see cref="CredentialPatterns"/> and are shared with the review-artifact export, because a shape
+    /// added for one of them is a shape the other must not silently lack. The split is by policy, not by
+    /// convenience: personal data has a different false-positive cost and is not something a git-branch
+    /// export has any business refusing on.
+    /// </summary>
+    private static readonly Regex[] PersonalDataPatterns =
     [
-        // PEM private key header. Only the header line: this redactor is line-oriented, and a PEM
-        // body arrives as its own lines, which no pattern here matches. Redacting the header is
-        // therefore a marker that key material is present, NOT containment of the key itself — a
-        // deployment tailing a file that can carry PEM bodies wants FileTailContentMode.MetadataOnly.
-        Pattern(@"-----BEGIN[A-Z ]*PRIVATE KEY-----"),
-        // Labelled secret assignments: `password=...`, `api_key: ...`, `Authorization: Bearer x`,
-        // and the quoted forms — `password: "hunter2"`, `api_key='sk_live_x'`, `{"password": "p"}`.
-        // The quoted forms are why the value alternation leads with the quoted branches: a value
-        // class that merely EXCLUDED the quote (`[^\s,;"']+`) did not leave the quotes behind, it
-        // failed to match the assignment at all and forwarded the secret verbatim — and JSON-shaped
-        // logs (this repo's own Serilog output) are the common case, not the exotic one. An
-        // unterminated quote still redacts, bounded to the line so a stray quote cannot swallow the
-        // rest of a multi-line payload. The whole key/value pair is replaced, deliberately: see the
-        // ordering note above on why leaving a bare label behind is worse than removing it.
-        Pattern(
-            @"[""']?\b(?:authorization|password|passwd|pwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token)\b[""']?\s*[:=]\s*(?:bearer\s+|basic\s+)?(?:""[^""\r\n]*""?|'[^'\r\n]*'?|[^\s,;""']+)"
-        ),
-        // Connection-string fields, which are `;`-delimited rather than whitespace-delimited.
-        Pattern(@"\b(?:password|pwd|user\s?id|uid|account\s?key|shared\s?access\s?key)\s*=\s*[^;]+"),
-        // Vendor token shapes, each self-identifying by prefix.
-        Pattern(@"\bgh[pousr]_[A-Za-z0-9]{16,}\b"), // GitHub PAT / OAuth / refresh
-        Pattern(@"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), // Slack
-        Pattern(@"\bAKIA[0-9A-Z]{16}\b"), // AWS access key id
-        Pattern(@"\bsk-[A-Za-z0-9_-]{16,}\b"), // OpenAI-style secret key
-        Pattern(@"\bey[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), // JWT
         // Email addresses (PII).
         Pattern(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
     ];
@@ -131,8 +111,10 @@ internal static class TriggerContentRedactor
 
     private static string ApplyPatterns(string content)
     {
-        var result = content;
-        foreach (var pattern in Patterns)
+        // Credentials first (shared catalogue, most-specific-first within itself), then this
+        // redactor's own PII policy.
+        var result = CredentialPatterns.Redact(content, Placeholder);
+        foreach (var pattern in PersonalDataPatterns)
         {
             result = pattern.Replace(result, Placeholder);
         }
