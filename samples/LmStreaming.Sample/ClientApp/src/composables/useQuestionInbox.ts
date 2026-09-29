@@ -224,7 +224,8 @@ export function useQuestionInbox(
     isRefreshing.value = true;
     const failures: unknown[] = [];
     try {
-      const listed = await allConversations();
+      // A deleted original is listed only because forks still read it; it has no questions to ask.
+      const listed = (await allConversations()).filter((conversation) => !conversation.deleted);
       const active = toValue(currentThreadId);
       const ordered = [...listed].sort((a, b) =>
         a.threadId === active ? -1 : b.threadId === active ? 1 : 0

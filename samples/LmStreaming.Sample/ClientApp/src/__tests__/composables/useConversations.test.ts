@@ -458,3 +458,39 @@ describe('useConversations provisioning (#435)', () => {
     expect(currentThreadId.value).toBeNull();
   });
 });
+
+describe('useConversations — deleting a fork family (found by hand)', () => {
+  const fork = (id: string, from: string, root: string): ConversationSummary => ({
+    ...summary(id),
+    forkedFrom: { threadId: from, messageId: 'm', seq: 2 },
+    rootThreadId: root,
+  });
+
+  it('keeps an original its forks still read, marked deleted, and drops it with its last fork', async () => {
+    queue = [[summary('orig'), fork('f1', 'orig', 'orig'), fork('f2', 'orig', 'orig')]];
+    const { api, scope } = harness();
+    await api.loadConversations();
+
+    await api.removeConversation('orig');
+    expect(api.conversations.value.find((c) => c.threadId === 'orig')?.deleted).toBe(true);
+    expect(ids(api.conversations.value)).toEqual(['orig', 'f1', 'f2']);
+
+    await api.removeConversation('f1');
+    expect(ids(api.conversations.value)).toEqual(['orig', 'f2']);
+
+    await api.removeConversation('f2');
+    expect(ids(api.conversations.value)).toEqual([]);
+    scope.stop();
+  });
+
+  it('removes an original without forks outright', async () => {
+    queue = [[summary('solo'), summary('other')]];
+    const { api, scope } = harness();
+    await api.loadConversations();
+
+    await api.removeConversation('solo');
+
+    expect(ids(api.conversations.value)).toEqual(['other']);
+    scope.stop();
+  });
+});

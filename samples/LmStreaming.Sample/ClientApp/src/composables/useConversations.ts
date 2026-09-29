@@ -215,12 +215,28 @@ export function useConversations() {
   }
 
   /**
-   * Removes a conversation from the list and backend.
+   * Removes a conversation from the list and backend, mirroring what the server does with a fork
+   * family: an original its forks still read is only marked deleted, and a deleted original goes
+   * with its last fork. Only loaded forks are seen; the next list load corrects anything paged out.
    */
   async function removeConversation(threadId: string): Promise<void> {
     try {
       await apiDeleteConversation(threadId);
-      conversations.value = conversations.value.filter((c) => c.threadId !== threadId);
+      const hasForks = (id: string) => conversations.value.some((c) => c.forkedFrom?.threadId === id);
+      if (hasForks(threadId)) {
+        conversations.value = conversations.value.map((c) =>
+          c.threadId === threadId ? { ...c, deleted: true } : c
+        );
+      } else {
+        let parentId = conversations.value.find((c) => c.threadId === threadId)?.forkedFrom?.threadId;
+        conversations.value = conversations.value.filter((c) => c.threadId !== threadId);
+        while (parentId) {
+          const parent = conversations.value.find((c) => c.threadId === parentId);
+          if (!parent?.deleted || hasForks(parent.threadId)) break;
+          conversations.value = conversations.value.filter((c) => c.threadId !== parent.threadId);
+          parentId = parent.forkedFrom?.threadId;
+        }
+      }
       if (currentThreadId.value === threadId) {
         currentThreadId.value = null;
       }

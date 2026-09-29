@@ -52,6 +52,9 @@ import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
 import HeaderActionsMenu from './HeaderActionsMenu.vue';
+import ForkBanner from './ForkBanner.vue';
+import { useConversationFork } from '@/composables/useConversationFork';
+import { isCliBackedProvider } from '@/utils/conversationForks';
 
 const {
   conversations,
@@ -208,6 +211,35 @@ async function provisionThread(): Promise<string> {
 async function handleCancel(): Promise<void> {
   await cancelStream();
 }
+
+const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
+
+// Fork a conversation (⑂ Fork from here / ✎ Edit in fork) and the branch switcher's data. The fork
+// opens through handleSelectConversation, exactly like a sidebar click.
+const {
+  fork,
+  forkError,
+  branchPoints,
+  refreshBranches,
+} = useConversationFork({
+  currentThreadId,
+  conversations,
+  addOrUpdateConversation,
+  openConversation: (threadId) => handleSelectConversation(threadId),
+  setComposerText: (text) => chatInputRef.value?.setText(text),
+});
+
+/**
+ * Fork buttons show only on a STARTED conversation (it has a sidebar row, so the server has its
+ * history) whose provider reads our stored messages. CLI-backed providers keep their own session and
+ * the server refuses to fork them in v1. The provider is the row's binding, falling back to the header
+ * selection that `restoreBindingsFromConversation` keeps in step with it (legacy rows carry none).
+ */
+const forkActionsEnabled = computed(() => {
+  const conversation = currentConversation.value;
+  if (!currentThreadId.value || !conversation || conversation.deleted) return false;
+  return !isCliBackedProvider(conversation.provider ?? selectedProviderId.value);
+});
 
 // Conversation-wide cost for the usage banner (#196). Prefers a provider-reported figure over the public
 // estimate; renders null (no configured rate — e.g. flat-rate Copilot) as nothing rather than a bogus $0.
@@ -980,8 +1012,18 @@ const headerTitle = computed(() => {
   return conversation?.title?.trim() || appName;
 });
 
+/**
+ * Counts the user's choices of what the chat shows: New chat, or opening a conversation. Every
+ * switch awaits before it commits, and so does the load-time restore, so a switch compares this
+ * after its awaits and gives way when a newer choice was made meanwhile. Without it the restore,
+ * which only runs once every catalog has loaded, took over a New chat clicked in that window and
+ * the next message went into the old conversation.
+ */
+let selectionEpoch = 0;
+
 // Load conversations and modes on mount
 onMounted(async () => {
+  const epoch = selectionEpoch;
   // Load modes, tools, and providers in parallel with conversations
   await Promise.all([
     loadConversations(),
@@ -990,6 +1032,8 @@ onMounted(async () => {
     loadProviders(),
     loadWorkspaces(),
   ]);
+  // The user already chose what to show while the catalogs loaded.
+  if (epoch !== selectionEpoch) return;
 
   // A ?threadId= deep link takes priority over the "select most recent" default below — it's an
   // explicit navigation to one conversation, so an unknown id should surface as not-found rather
@@ -1000,9 +1044,10 @@ onMounted(async () => {
     // not "does not exist" - and a deep link is most often to an older conversation, which is the
     // case this screen used to report as not-found. Membership stays as a fast path for a link into
     // a conversation already on screen; anything else is resolved against the server.
-    const exists =
-      conversations.value.some((c) => c.threadId === deepLinkThreadId) ||
-      (await conversationExists(deepLinkThreadId));
+    // A deleted original is still listed while forks read it, but it is gone: not-found.
+    const listed = conversations.value.find((c) => c.threadId === deepLinkThreadId);
+    const exists = listed ? !listed.deleted : await conversationExists(deepLinkThreadId);
+    if (epoch !== selectionEpoch) return;
     if (exists) {
       await handleSelectConversation(deepLinkThreadId);
     } else {
@@ -1018,10 +1063,9 @@ onMounted(async () => {
   // recently but started long ago can sit on a later page and lose to this reduce. Paging the whole
   // list on mount to make it exact would defeat the incremental loading this sits on top of; under
   // the default `lastUsed` sort the first page always holds the true maximum anyway.
-  if (conversations.value.length > 0) {
-    const mostRecent = conversations.value.reduce((best, c) =>
-      c.lastUpdated > best.lastUpdated ? c : best
-    );
+  const openable = conversations.value.filter((c) => !c.deleted);
+  if (openable.length > 0) {
+    const mostRecent = openable.reduce((best, c) => (c.lastUpdated > best.lastUpdated ? c : best));
     await handleSelectConversation(mostRecent.threadId);
   }
 });
@@ -1029,11 +1073,13 @@ onMounted(async () => {
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
   if (questionBusy.value) return;
+  const epoch = ++selectionEpoch;
   notFoundThreadId.value = null;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  if (epoch !== selectionEpoch) return;
   // A fresh chat is always idle — return the Send/Stop control to "Send" if we came from a
   // streaming conversation (clearMessages no longer lowers the flags to avoid a switch-back
   // flicker; see useChat.markStreamIdle).
@@ -1047,6 +1093,8 @@ async function handleNewChat(): Promise<void> {
   // the provisioning hook useChat calls when it needs an id (see `provisionThread`).
   currentThreadId.value = null;
   setThreadId(null);
+  forkError.value = null;
+  void refreshBranches(null);
 }
 
 /** Starts an unreserved draft bound to the workspace whose sidebar folder launched it. */
@@ -1067,16 +1115,22 @@ async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
   if (questionBusy.value) return;
+  const epoch = ++selectionEpoch;
   notFoundThreadId.value = null;
   if (threadId === currentThreadId.value) return;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  // A newer New chat or selection, made while this one awaited, wins.
+  if (epoch !== selectionEpoch) return;
 
   // Switch to selected conversation
   selectConversation(threadId);
   setThreadId(threadId);
+  forkError.value = null;
+  // Branch switcher data for the conversation being opened (also how a new fork shows "1 / 2").
+  void refreshBranches(threadId);
 
   // Restore the conversation's bound provider/mode/workspace so opening (or refreshing into) a
   // conversation shows its actual bindings instead of the process defaults. Without this, a refresh
@@ -1501,16 +1555,31 @@ onBeforeUnmount(() => {
         <div id="conversation-main-view" v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view"
           role="region" :aria-labelledby="tabs.length > 1 ? 'conversation-main-selector' : undefined"
           :aria-label="tabs.length > 1 ? undefined : 'Main conversation'">
+          <ForkBanner
+            :conversation="currentConversation"
+            :conversations="conversations"
+            @open="handleSelectConversation"
+          />
+
           <MessageList
             :display-items="displayItems"
             :is-loading="chatLoading"
             :view-preference="viewPreference"
+            :fork-actions="forkActionsEnabled"
+            :branch-points="branchPoints"
+            @fork-after-run="(runId) => fork({ afterRunId: runId })"
+            @edit-in-fork="(messageId) => fork({ beforeMessageId: messageId })"
+            @open-branch="handleSelectConversation"
           />
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
           <div v-if="error" class="error-banner" data-testid="error-banner">
             {{ error }}
+          </div>
+
+          <div v-if="forkError" class="error-banner" role="alert" data-testid="fork-error">
+            {{ forkError }}
           </div>
 
           <ContextCostPanel
@@ -1556,6 +1625,7 @@ onBeforeUnmount(() => {
             @busy-change="questionBusy = $event" @open-change="questionOpen = $event" @opened="questionOpened" />
 
           <ChatInput
+            ref="chatInputRef"
             :disabled="isSending && !chatLoading"
             :streaming="chatLoading"
             @send="handleSend"

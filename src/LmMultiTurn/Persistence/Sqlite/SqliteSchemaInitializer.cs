@@ -254,6 +254,11 @@ public static class SqliteSchemaInitializer
         ON messages (thread_id, seq);
         """;
 
+    // migration step 6 - conversation fork: each row names the message before it. Nullable for the
+    // same reason as seq: rows written before this step have no stored parent, and readers give such
+    // a row the one before it (MessageSequence.WithParents).
+    private const string AddMessagesParentColumnSql = "ALTER TABLE messages ADD COLUMN parent_message_id TEXT;";
+
     /// <summary>One ordered migration step, applied atomically with its version bump.</summary>
     /// <param name="Version">
     /// The <c>PRAGMA user_version</c> the database holds after this step commits. This array is
@@ -300,6 +305,7 @@ public static class SqliteSchemaInitializer
         new(3, [.. AddThreadMetadataOwnerColumnsSql, CreateThreadMetadataOwnerIndexSql]),
         new(4, [CreateResourceGrantsTableSql, CreateResourceGrantsSubjectIndexSql]),
         new(5, [AddMessagesSeqColumnSql, CreateMessagesSeqIndexSql]),
+        new(6, [AddMessagesParentColumnSql]),
     ];
 
     /// <summary>

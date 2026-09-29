@@ -67,6 +67,8 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
+        var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct).ConfigureAwait(false);
+
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // BEGIN IMMEDIATE, not deferred: the sequence is read (MAX) and then extended (INSERT) inside
@@ -78,6 +80,19 @@ public sealed class SqliteConversationStore
         {
             var next = await BackfillLegacySeqAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
 
+            // A fork with no rows of its own yet continues numbering, and the parent chain, from its
+            // fork point.
+            string? parent;
+            if (next == 0 && forkPoint is not null)
+            {
+                next = forkPoint.Seq;
+                parent = forkPoint.MessageId;
+            }
+            else
+            {
+                parent = await LastMessageIdAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
+            }
+
             foreach (var message in MessageSequence.BatchOrder(messages))
             {
                 using var command = connection.CreateCommand();
@@ -85,15 +100,19 @@ public sealed class SqliteConversationStore
                 command.CommandText = """
                     INSERT INTO messages (
                         id, thread_id, run_id, parent_run_id, generation_id,
-                        message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
+                        message_order_idx, timestamp, message_type, role, from_agent, message_json, seq,
+                        parent_message_id
                     ) VALUES (
                         $id, $thread_id, $run_id, $parent_run_id, $generation_id,
-                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json, $seq
+                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json, $seq,
+                        $parent_message_id
                     );
                     """;
 
-                // The store owns Seq; whatever the caller put on the row is ignored.
+                // The store owns Seq and the parent; whatever the caller put on the row is ignored.
                 _ = command.Parameters.AddWithValue("$seq", ++next);
+                _ = command.Parameters.AddWithValue("$parent_message_id", (object?)parent ?? DBNull.Value);
+                parent = message.Id;
                 _ = command.Parameters.AddWithValue("$id", message.Id);
                 _ = command.Parameters.AddWithValue("$thread_id", message.ThreadId);
                 _ = command.Parameters.AddWithValue("$run_id", message.RunId);
@@ -178,6 +197,21 @@ public sealed class SqliteConversationStore
         return watermark;
     }
 
+    /// <summary>The id of the thread's last row in append order, or null when it has none.</summary>
+    private static async Task<string?> LastMessageIdAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT id FROM messages WHERE thread_id = $thread_id ORDER BY seq DESC LIMIT 1;";
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+    }
+
     /// <inheritdoc />
     public async Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
     {
@@ -185,16 +219,20 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        long own;
+        await using (var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
+            _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
-        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+            own = Convert.ToInt64(
+                await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture
+            );
+        }
 
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture
-        );
+        return await ForkHistory.WatermarkAsync(this, threadId, own, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -208,12 +246,33 @@ public sealed class SqliteConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        return await ForkHistory
+            .RangeAsync(
+                this,
+                threadId,
+                fromSeq,
+                toSeq,
+                limit,
+                (from, to, max) => LoadOwnMessageRangeAsync(threadId, from, to, max, ct),
+                ct
+            )
+            .ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<PersistedMessage>> LoadOwnMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct
+    )
+    {
         if (limit <= 0 || toSeq < fromSeq)
         {
             return [];
         }
-
-        await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
@@ -312,13 +371,17 @@ public sealed class SqliteConversationStore
 
         var messages = new List<PersistedMessage>();
 
-        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            messages.Add(ReadMessage(reader));
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                messages.Add(ReadMessage(reader));
+            }
         }
 
-        return messages;
+        // Release the pooled connection first: the shared history is read through this store again.
+        await connection.DisposeAsync().ConfigureAwait(false);
+        return await ForkHistory.LoadAsync(this, threadId, messages, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -1554,7 +1617,8 @@ public sealed class SqliteConversationStore
 
     private const string MessageSelectSql = """
         SELECT id, thread_id, run_id, parent_run_id, generation_id,
-               message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
+               message_order_idx, timestamp, message_type, role, from_agent, message_json, seq,
+               parent_message_id
         FROM messages
         """;
 
@@ -1574,6 +1638,7 @@ public sealed class SqliteConversationStore
             Role = reader.GetString(8),
             FromAgent = reader.IsDBNull(9) ? null : reader.GetString(9),
             MessageJson = reader.GetString(10),
+            ParentMessageId = reader.IsDBNull(12) ? null : reader.GetString(12),
         };
     }
 
