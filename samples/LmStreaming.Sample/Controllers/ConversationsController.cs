@@ -227,7 +227,9 @@ public class ConversationsController(
     // THREE optional trailing parameters now. Pass them BY NAME from any hand-written call site: a
     // positional argument here binds to whichever one comes first, and when the types happen to be
     // compatible that is a silent mis-binding rather than a compile error.
-    SandboxEnvApplier? envApplier = null
+    SandboxEnvApplier? envApplier = null,
+    SandboxApps.SandboxAppCatalog? sandboxAppCatalog = null,
+    SandboxApps.ISandboxAppModeReadiness? sandboxAppModeReadiness = null
 ) : ControllerBase
 {
     /// <summary>
@@ -242,6 +244,12 @@ public class ConversationsController(
 
     /// <summary>Reason code for an attempt to write into a thread an agent owns.</summary>
     internal const string AgentOwnedThreadWriteCode = "agent_owned_thread";
+
+    private async Task<bool> BuilderModeAvailableAsync(string workspaceId, CancellationToken ct) =>
+        sandboxAppCatalog is not null
+        && sandboxAppModeReadiness is not null
+        && sandboxAppCatalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced)
+        && await sandboxAppModeReadiness.IsReadyAsync(workspaceId, ct);
 
     /// <summary>
     /// The hierarchy/transcript reader shared with the in-agent <c>GetAgentTranscript</c> tool (#244).
@@ -329,6 +337,11 @@ public class ConversationsController(
         {
             return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
         }
+        if (
+            mode.Id == SystemChatModes.MiniWebAppBuilderModeId
+            && !await BuilderModeAvailableAsync(request.WorkspaceId, ct)
+        )
+            return NotFound();
 
         if (!providerRegistry.IsAvailable(request.ProviderId))
         {
@@ -2083,6 +2096,22 @@ public class ConversationsController(
         if (mode == null)
         {
             return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+        }
+        if (mode.Id == SystemChatModes.MiniWebAppBuilderModeId)
+        {
+            var metadata = await store.LoadMetadataAsync(threadId, ct);
+            var workspaceId =
+                metadata?.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceValue)
+                == true
+                    ? workspaceValue switch
+                    {
+                        string id => id,
+                        JsonElement { ValueKind: JsonValueKind.String } value => value.GetString(),
+                        _ => null,
+                    }
+                    : null;
+            if (workspaceId is null || !await BuilderModeAvailableAsync(workspaceId, ct))
+                return NotFound();
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);

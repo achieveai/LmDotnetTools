@@ -231,6 +231,28 @@ public class TaskCheckerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task WaitForPids_RetriesWhileTheCheckerHasItsPidFileOpen()
+    {
+        var pidFile = Path.Combine(_dir, "locked-pids.txt");
+        Task<int[]> waiting;
+        using (var lockedFile = new FileStream(pidFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            using (var writer = new StreamWriter(lockedFile, System.Text.Encoding.UTF8, 1024, leaveOpen: true))
+            {
+                await writer.WriteLineAsync("123");
+                await writer.WriteLineAsync("456");
+                await writer.FlushAsync();
+            }
+
+            waiting = WaitForPids(pidFile, new TaskCompletionSource<J1Result?>().Task);
+            await Task.Delay(200);
+            waiting.IsCompleted.Should().BeFalse("the checker is still writing its pid file");
+        }
+
+        (await waiting).Should().Equal(123, 456);
+    }
+
     /// <summary>The checker's own pid and its child's, once the script has written both.</summary>
     private static async Task<int[]> WaitForPids(string pidFile, Task<J1Result?> judging)
     {
@@ -247,10 +269,17 @@ public class TaskCheckerTests : IDisposable
 
             if (File.Exists(pidFile))
             {
-                var lines = File.ReadAllLines(pidFile).Where(l => l.Trim().Length > 0).ToArray();
-                if (lines.Length == 2 && lines.All(l => int.TryParse(l.Trim(), out _)))
+                try
                 {
-                    return [.. lines.Select(l => int.Parse(l.Trim()))];
+                    var lines = File.ReadAllLines(pidFile).Where(l => l.Trim().Length > 0).ToArray();
+                    if (lines.Length == 2 && lines.All(l => int.TryParse(l.Trim(), out _)))
+                    {
+                        return [.. lines.Select(l => int.Parse(l.Trim()))];
+                    }
+                }
+                catch (IOException)
+                {
+                    // The checker may still hold an exclusive lock during its first write.
                 }
             }
 

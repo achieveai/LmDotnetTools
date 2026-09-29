@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils';
 import TextMessage from '@/components/TextMessage.vue';
 import { type TextMessage as TextMessageType, MessageType } from '@/types';
 import { WORKSPACE_FILE_LINKS } from '@/utils/workspaceLinks';
+import { MINI_WEB_APP_LINKS } from '@/utils/miniWebAppLinks';
 
 describe('TextMessage.vue', () => {
   const createMessage = (overrides: Partial<TextMessageType> = {}): TextMessageType => ({
@@ -142,6 +143,40 @@ describe('TextMessage.vue', () => {
       // and a stray '|' would land in [data-testid="assistant-text"] textContent.
       expect(wrapper.find('.cursor').exists()).toBe(false);
     });
+  });
+});
+
+describe('TextMessage Mini Web App links', () => {
+  it('opens a typed app link through the conversation context without navigating', () => {
+    const open = vi.fn();
+    const wrapper = mount(TextMessage, {
+      props: {
+        message: { $type: MessageType.Text, role: 'assistant', text: '[Open Budget Explorer](#mini-app?workspace=ws-a&app=budget)' },
+        workspaceLinks: true,
+      },
+      global: { provide: { [MINI_WEB_APP_LINKS]: { threadId: ref('thread-9'), open } } },
+      attachTo: document.body,
+    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    wrapper.get('a').element.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(open).toHaveBeenCalledWith({ threadId: 'thread-9', workspaceId: 'ws-a', appId: 'budget' });
+    wrapper.unmount();
+  });
+
+  it('leaves an invalid or context-free app link inert', () => {
+    const open = vi.fn();
+    const wrapper = mount(TextMessage, {
+      props: {
+        message: { $type: MessageType.Text, role: 'assistant', text: '[Forged](#mini-app?app=../other)' },
+        workspaceLinks: true,
+      },
+      global: { provide: { [MINI_WEB_APP_LINKS]: { threadId: ref('thread-9'), open } } },
+    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    wrapper.get('a').element.dispatchEvent(event);
+    expect(open).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 });
 

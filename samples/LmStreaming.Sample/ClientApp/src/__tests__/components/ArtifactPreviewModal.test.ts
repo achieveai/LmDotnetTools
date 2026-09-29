@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { ref } from 'vue';
 import ArtifactPreviewModal from '@/components/ArtifactPreviewModal.vue';
 import { jsonResponse, textPreview, binaryPreview } from '../fixtures/fileBrowser';
 import { clearAllWorkspaceGrants } from '@/api/fileBrowserApi';
-import { ComponentLogger } from '@/utils/logger';
+import { ComponentLogger, logger } from '@/utils/logger';
 import type { DirectoryListing, FileEntry } from '@/types/fileBrowser';
 import { WORKSPACE_FILE_LINKS } from '@/utils/workspaceLinks';
 
@@ -20,6 +20,11 @@ vi.mock('@/components/DiagramViewer.vue', () => ({
  * these tests mock `fetch` the same way `FileBrowser.test.ts` does and assert the modal's four
  * states: rendered markdown, plain text, not-previewable, and the error/no-session message.
  */
+
+beforeEach(() => {
+  // The global logger's timer can flush between viewer requests and consume this file's fetch mocks.
+  vi.spyOn(logger, 'flush').mockResolvedValue(undefined);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
