@@ -75,6 +75,29 @@ public class ModeCapabilitiesTests
     }
 
     [Fact]
+    public void MiniAppDebugOnly_OpensASandboxWithoutGrantingGeneralSandboxTools()
+    {
+        var caps = ModeCapabilities.Resolve(["miniapp-debug:TestMiniAppRequest"]);
+
+        caps.NeedsSandbox.Should().BeTrue();
+        caps.SandboxToolAllowList.Should().BeNull();
+        ModeToolSelection
+            .Parse(["miniapp-debug:TestMiniAppRequest"])
+            .AllowListFor("miniapp-debug")
+            .Should()
+            .BeEquivalentTo(["TestMiniAppRequest"]);
+    }
+
+    [Fact]
+    public void MiniAppDebugWildcard_GrantsOnlyItsOwnGroup()
+    {
+        var caps = ModeCapabilities.Resolve(["miniapp-debug:*"]);
+
+        caps.NeedsSandbox.Should().BeTrue();
+        ModeToolSelection.Parse(["miniapp-debug:*"]).HasWildcard("miniapp-debug").Should().BeTrue();
+    }
+
+    [Fact]
     public void NoSandboxSelection_LeavesTheAllowListNull()
     {
         // A caller must not be able to read "no sandbox" as "connect a sandbox exposing nothing".

@@ -286,7 +286,7 @@ function deselectAll(): void {
         </svg>
       </span>
       <span>
-        Workspace tools are selected, so every conversation in this mode starts its own sandbox
+        Sandbox-backed tools are selected, so every conversation in this mode starts its own sandbox
         session.
       </span>
     </p>

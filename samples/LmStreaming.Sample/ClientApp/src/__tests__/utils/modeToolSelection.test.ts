@@ -72,6 +72,19 @@ function mode(overrides: Partial<ChatMode>): ChatMode {
 }
 
 describe('groupTools', () => {
+  it('treats Mini App debugging as a qualified, sandbox-backed mode group', () => {
+    const debugTools: ToolDefinition[] = [
+      { name: 'All Mini App debug tools', id: 'miniapp-debug:*', group: 'miniapp-debug', isWildcard: true, requiresSandbox: true },
+      { name: 'TestMiniAppRequest', id: 'miniapp-debug:TestMiniAppRequest', group: 'miniapp-debug', requiresSandbox: true },
+    ];
+
+    const [group] = groupTools(debugTools);
+    expect(group.qualified).toBe(true);
+    expect(group.requiresSandbox).toBe(true);
+    expect(selectionToModeFields(['miniapp-debug:*'], debugTools).enabledCapabilityTools).toEqual(['miniapp-debug:*']);
+    expect(selectionFromMode(mode({ enabledCapabilityTools: ['miniapp-debug:*'] }), debugTools)).toContain('miniapp-debug:*');
+  });
+
   it('buckets rows by group and pulls out the wildcard row', () => {
     const groups = groupTools(catalog);
 
