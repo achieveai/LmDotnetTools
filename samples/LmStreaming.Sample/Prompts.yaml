@@ -139,8 +139,8 @@ chatModes:
       also receives HTTP_X_CSRF_TOKEN. Write only Status and Content-Type response headers,
       optionally an app-local Location header, then a blank line and response bytes to stdout.
       The host sets Cache-Control and security headers; do not emit these from the app. Flush
-      stdout for progressive output. Use relative URLs for assets, forms and fetch; paths such as
-      /api/presets belong to the app. Put the CSRF token in a hidden _csrf form field or the
+      stdout for progressive output. Use relative URLs for assets, forms and fetch, such as
+      api/presets (never /api/presets). Root-absolute URLs reach the chat host. Put the CSRF token in a hidden _csrf form field or the
       X-CSRF-Token header for every POST. Keep output within 8 MiB; each request has 30 seconds
       and input is capped at 64 KiB. Test GET /, one asset, one POST, and one fetch endpoint
       with sandbox tools, checking the exact response headers. Registration happens automatically when the

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
@@ -47,6 +49,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly SandboxGatewayOptions? _sandboxOptions;
     private readonly IReadOnlyList<CopilotModelInfo>? _copilotModels;
     private readonly IReadOnlyDictionary<string, string?>? _settings;
+    private readonly X509Certificate2? _httpsCertificate;
+    private readonly string? _localTestSecret;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -87,6 +91,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// configuration rather than a mock is deliberate: the browser must exercise the same wiring a real
     /// deployment turns on, not a stand-in for it. Left null for every other scenario.
     /// </param>
+    /// <param name="httpsCertificate">Dedicated certificate for the opt-in local HTTPS browser scenario.</param>
+    /// <param name="localTestSecret">Per-run browser cookie secret; valid only with the HTTPS test host.</param>
     public BrowserWebAppFactory(
         string providerMode,
         ITestAgentBuilder? builder,
@@ -95,7 +101,9 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
-        IReadOnlyDictionary<string, string?>? settings = null
+        IReadOnlyDictionary<string, string?>? settings = null,
+        X509Certificate2? httpsCertificate = null,
+        string? localTestSecret = null
     )
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
@@ -131,6 +139,14 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             );
         }
 
+        if (
+            (httpsCertificate is null) != (localTestSecret is null)
+            || (httpsCertificate is not null && (fixedPort is null or < 1))
+        )
+        {
+            throw new ArgumentException("Local HTTPS testing requires a certificate, secret, and fixed port together.");
+        }
+
         _providerMode = providerMode;
         _builder = builder;
         _fixedPort = fixedPort;
@@ -139,6 +155,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         _sandboxOptions = sandboxOptions;
         _copilotModels = copilotModels;
         _settings = settings;
+        _httpsCertificate = httpsCertificate;
+        _localTestSecret = localTestSecret;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -182,7 +200,11 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Production");
+        builder.UseEnvironment(_httpsCertificate is null ? "Production" : "MiniAppLocalTest");
+        if (_httpsCertificate is not null)
+        {
+            builder.UseContentRoot(Path.GetFullPath("samples/LmStreaming.Sample"));
+        }
 
         // Per-test host configuration, applied before ConfigureTestServices so the options the sample
         // binds at startup (collaboration above all) see the overridden values.
@@ -196,6 +218,16 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
+            if (_localTestSecret is not null)
+            {
+                services.AddSingleton<LmStreaming.Sample.Identity.IRequestPrincipalSource>(
+                    sp => new MiniAppLocalTestPrincipalSource(
+                        sp.GetRequiredService<IHostEnvironment>(),
+                        _localTestSecret,
+                        _fixedPort!.Value
+                    )
+                );
+            }
             services.RemoveAll<IConversationStore>();
             services.AddSingleton<IConversationStore>(new FileConversationStore(_conversationPath));
 
@@ -289,8 +321,17 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         // registered last, so it wins when the DI container resolves IServer.
         builder.ConfigureWebHost(webHost =>
         {
-            webHost.UseKestrel();
-            webHost.UseUrls($"http://127.0.0.1:{_fixedPort ?? 0}");
+            if (_httpsCertificate is null)
+            {
+                webHost.UseKestrel();
+                webHost.UseUrls($"http://127.0.0.1:{_fixedPort ?? 0}");
+            }
+            else
+            {
+                webHost.UseKestrel(options =>
+                    options.Listen(IPAddress.Loopback, _fixedPort!.Value, listen => listen.UseHttps(_httpsCertificate))
+                );
+            }
         });
 
         var host = builder.Build();
@@ -301,9 +342,10 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             server.Features.Get<IServerAddressesFeature>()
             ?? throw new InvalidOperationException("Kestrel did not expose IServerAddressesFeature.");
 
-        _serverAddress =
-            addressesFeature.Addresses.FirstOrDefault()
-            ?? throw new InvalidOperationException("Kestrel did not bind to any address.");
+        _serverAddress = _httpsCertificate is null
+            ? addressesFeature.Addresses.FirstOrDefault()
+                ?? throw new InvalidOperationException("Kestrel did not bind to any address.")
+            : $"https://site.lvh.me:{_fixedPort}";
         _kestrelHost = host;
 
         return host;

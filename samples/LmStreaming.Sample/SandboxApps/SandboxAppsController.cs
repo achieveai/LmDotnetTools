@@ -18,7 +18,7 @@ public sealed class SandboxAppsController(
     [HttpGet]
     public async Task<IActionResult> List(string threadId, CancellationToken ct)
     {
-        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced))
+        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced, Request.Host.Port))
             return NotFound();
         var context = await access.ResolveContextAsync(threadId, authorizer.Current, ct);
         if (context.Status != 200)
@@ -45,7 +45,7 @@ public sealed class SandboxAppsController(
         CancellationToken ct
     )
     {
-        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced))
+        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced, Request.Host.Port))
             return NotFound();
         var context = await access.ResolveContextAsync(threadId, authorizer.Current, ct);
         if (context.Status != 200)
@@ -76,7 +76,7 @@ public sealed class SandboxAppsController(
     )
     {
         Response.Headers.CacheControl = "no-store";
-        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced))
+        if (!catalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced, Request.Host.Port))
             return NotFound();
         var principal = authorizer.Current;
         var context = await access.ResolveContextAsync(threadId, principal, ct);
@@ -99,6 +99,12 @@ public sealed class SandboxAppsController(
         if (app is null)
             return NotFound();
 
+        var browserOrigin = catalog.SameOriginDevelopment
+            ? catalog.ResolveSameOriginBrowserOrigin(Request.Host.Host, Request.Host.Port, Request.IsHttps)
+            : null;
+        if (catalog.SameOriginDevelopment && browserOrigin is null)
+            return NotFound();
+
         // Grants live at most ten minutes, and never outlive the login token when it carries exp.
         var expiry = authorizer.Clock.GetUtcNow().AddMinutes(10);
         var exp = HttpContext.User.FindFirst("exp")?.Value;
@@ -114,14 +120,24 @@ public sealed class SandboxAppsController(
         SandboxAppLaunch launch;
         try
         {
-            launch = instances.Issue(threadId, context.WorkspaceId!, app, principal!, catalog.AppDomain, expiry);
+            launch = instances.Issue(
+                threadId,
+                context.WorkspaceId!,
+                app,
+                principal,
+                catalog.SameOriginDevelopment ? browserOrigin!.Host : catalog.AppDomain,
+                expiry,
+                sameOrigin: catalog.SameOriginDevelopment
+            );
         }
         catch (InvalidOperationException)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
-        var port = catalog.HttpsPort == 443 ? string.Empty : $":{catalog.HttpsPort}";
-        return Ok(new { url = $"https://{launch.Host}{port}/_launch", ticket = launch.Ticket });
+        var origin = catalog.SameOriginDevelopment
+            ? browserOrigin!.GetLeftPart(UriPartial.Authority)
+            : $"https://{launch.Host}{(catalog.HttpsPort == 443 ? string.Empty : $":{catalog.HttpsPort}")}";
+        return Ok(new { url = $"{origin}{launch.PathPrefix}_launch", ticket = launch.Ticket });
     }
 
     private static object AppDto(SandboxAppDefinition app, string workspaceId) =>

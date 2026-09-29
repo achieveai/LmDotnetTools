@@ -185,7 +185,18 @@ try
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
 
-    _ = builder.Services.AddSingleton(SandboxAppCatalog.Load(builder.Configuration));
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var catalog = SandboxAppCatalog.Load(
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<IHostEnvironment>().IsDevelopment()
+                || sp.GetRequiredService<IHostEnvironment>().IsEnvironment("MiniAppLocalTest")
+        );
+        if (catalog.ProductionActivationBlocked)
+            sp.GetRequiredService<ILogger<SandboxAppCatalog>>()
+                .LogError("Mini Web App activation is disabled outside Development pending front-door trust review");
+        return catalog;
+    });
     _ = builder.Services.AddSingleton<SandboxAppInstanceStore>();
     _ = builder.Services.AddSingleton<SandboxAppAccess>();
     _ = builder.Services.AddSingleton<SandboxAppDiscovery>();
@@ -923,7 +934,10 @@ try
                 {
                     if (
                         !sp.GetRequiredService<SandboxAppCatalog>().Enabled
-                        || !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        || (
+                            !sp.GetRequiredService<SandboxAppCatalog>().SameOriginDevelopment
+                            && !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        )
                     )
                         throw new InvalidOperationException("Mini Web App Builder is unavailable on this host.");
                     mode = mode with
@@ -2995,7 +3009,8 @@ try
                     || !appCatalog.IsAvailableFor(
                         context.Request.Host.Host,
                         context.Request.IsHttps,
-                        appAuthorizer.IsEnforced
+                        appAuthorizer.IsEnforced,
+                        context.Request.Host.Port
                     )
                     || !await context
                         .RequestServices.GetRequiredService<ISandboxAppModeReadiness>()

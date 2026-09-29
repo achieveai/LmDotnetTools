@@ -5,6 +5,7 @@ using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.SandboxApps;
@@ -43,6 +44,61 @@ public sealed class SandboxAppHostSecurityTests
         catalog.IsAvailableFor("chat.example.test", true, false).Should().BeFalse();
         catalog.TryGet("demo", out _).Should().BeTrue();
         catalog.TryGet("other", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Catalog_SameOriginDevelopmentUsesConfiguredBrowserOriginAndDisablesProductionApps()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SandboxApps:Enabled"] = "true",
+                    ["SandboxApps:SameOriginDevelopment"] = "true",
+                    ["SandboxApps:BrowserOrigin"] = "https://site.lvh.me:5011",
+                }
+            )
+            .Build();
+
+        var development = SandboxAppCatalog.Load(configuration, isDevelopment: true);
+        development.SameOriginDevelopment.Should().BeTrue();
+        development
+            .IsAvailableFor("site.lvh.me", isHttps: false, identityEnforced: false, requestPort: 5011)
+            .Should()
+            .BeTrue();
+        development
+            .IsAvailableFor("site.lvh.me", isHttps: false, identityEnforced: false, requestPort: 5012)
+            .Should()
+            .BeFalse();
+        development
+            .IsAvailableFor("localhost", isHttps: true, identityEnforced: false, requestPort: 5011)
+            .Should()
+            .BeTrue();
+        development
+            .ResolveSameOriginBrowserOrigin("localhost", 5011, isHttps: true)!
+            .GetLeftPart(UriPartial.Authority)
+            .Should()
+            .Be("https://localhost:5011");
+        development
+            .IsAvailableFor("localhost", isHttps: false, identityEnforced: false, requestPort: 5011)
+            .Should()
+            .BeFalse();
+        development
+            .IsAvailableFor("localhost", isHttps: true, identityEnforced: false, requestPort: 5012)
+            .Should()
+            .BeFalse();
+        development
+            .IsAvailableFor("evil.test", isHttps: false, identityEnforced: false, requestPort: 5011)
+            .Should()
+            .BeFalse();
+
+        var production = SandboxAppCatalog.Load(configuration, isDevelopment: false);
+        production.Enabled.Should().BeFalse();
+        production.SameOriginDevelopment.Should().BeFalse();
+        production
+            .IsAvailableFor("site.lvh.me", isHttps: true, identityEnforced: true, requestPort: 5011)
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -106,6 +162,31 @@ public sealed class SandboxAppHostSecurityTests
         store.Authenticate(grant!.Cookie, launch.Host)!.ThreadId.Should().Be("thread");
         grant.WorkspaceId.Should().Be("default");
         store.Authenticate(grant.Cookie, "wrong.apps.example.test").Should().BeNull();
+    }
+
+    [Fact]
+    public void SameOriginLaunchTicketAndGrantAreBoundToOneRandomPath()
+    {
+        var store = new SandboxAppInstanceStore(TimeProvider.System);
+        var launch = store.Issue(
+            "thread",
+            "default",
+            DemoApp,
+            null,
+            "site.lvh.me",
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            sameOrigin: true
+        );
+
+        launch.PathPrefix.Should().MatchRegex("^/_mini-app/[A-F0-9]{32}/$");
+        store.Exchange(launch.Ticket, launch.Host, "/_mini-app/OTHER/").Should().BeNull();
+        var grant = store.Exchange(launch.Ticket, launch.Host, launch.PathPrefix);
+        grant.Should().NotBeNull();
+        grant!.PathPrefix.Should().Be(launch.PathPrefix);
+        grant.Principal.Should().BeNull();
+        store.Authenticate(grant.Cookie, launch.Host, "/_mini-app/OTHER/").Should().BeNull();
+        store.Authenticate(grant.Cookie, launch.Host, launch.PathPrefix).Should().NotBeNull();
+        store.Exchange(launch.Ticket, launch.Host, launch.PathPrefix).Should().BeNull();
     }
 
     [Fact]
@@ -180,9 +261,29 @@ public sealed class SandboxAppHostSecurityTests
         ((MemoryStream)context.Response.Body).ToArray().Should().Equal("first second"u8.ToArray());
     }
 
+    [Fact]
+    public async Task CgiParser_RewritesAppLocalRedirectUnderSameOriginPrefix()
+    {
+        var context = new DefaultHttpContext();
+        var parser = new SandboxCgiResponse(context.Response, "/_mini-app/ABCDEF0123456789ABCDEF0123456789/");
+
+        await parser.WriteAsync(
+            "Status: 303 See Other\r\nLocation: /results?sort=new\r\nContent-Type: text/plain\r\n\r\n"u8.ToArray(),
+            default
+        );
+
+        context.Response.StatusCode.Should().Be(303);
+        context
+            .Response.Headers.Location.ToString()
+            .Should()
+            .Be("/_mini-app/ABCDEF0123456789ABCDEF0123456789/results?sort=new");
+    }
+
     [Theory]
     [InlineData("Set-Cookie: x=y\r\nContent-Type: text/html\r\n\r\nx")]
     [InlineData("Location: https://evil.test/\r\nContent-Type: text/html\r\n\r\nx")]
+    [InlineData("Location: /../../api/identity/config\r\nContent-Type: text/html\r\n\r\nx")]
+    [InlineData("Location: /%2e%2e/%2e%2e/api/identity/config\r\nContent-Type: text/html\r\n\r\nx")]
     [InlineData("Content-Type: text/html\r\nX-Frame-Options: DENY\r\n\r\nx")]
     public async Task CgiParser_RejectsForbiddenHeaders(string output)
     {
@@ -725,5 +826,184 @@ public sealed class SandboxAppHostSecurityTests
                 ),
             Times.Exactly(4)
         );
+    }
+
+    [Theory]
+    [InlineData("site.lvh.me", false)]
+    [InlineData("localhost", true)]
+    public async Task SameOriginDevelopment_RoutesOnlyAppPrefixAndScopesTheGrantCookie(string chatHost, bool isHttps)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SandboxApps:Enabled"] = "true",
+                    ["SandboxApps:SameOriginDevelopment"] = "true",
+                    ["SandboxApps:BrowserOrigin"] = "https://site.lvh.me:5011",
+                }
+            )
+            .Build();
+        var catalog = SandboxAppCatalog.Load(configuration, isDevelopment: true);
+        var authorizer = TestAuthorizers.Disabled();
+        var conversations = new Mock<IConversationStore>();
+        conversations
+            .Setup(x => x.LoadMetadataAsync("thread", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new ThreadMetadata
+                {
+                    ThreadId = "thread",
+                    LastUpdated = 0,
+                    Properties = ImmutableDictionary<string, object>.Empty.Add(
+                        MultiTurnAgentPool.WorkspacePropertyKey,
+                        "default"
+                    ),
+                }
+            );
+        var browser = new Mock<IWorkspaceFileBrowser>();
+        browser
+            .Setup(x => x.ResolveThreadWorkspaceSessionAsync("thread", "default", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new SandboxSessionResolution(
+                    SandboxSessionResolutionOutcome.Resolved,
+                    new SandboxSession("default", "session", "/workspace", "/host/workspace"),
+                    null,
+                    null
+                )
+            );
+        browser
+            .Setup(x =>
+                x.ExecuteWorkspaceCommandStreamingAsync(
+                    "session",
+                    It.IsAny<SandboxCommand>(),
+                    It.IsAny<Func<SandboxOutputChunk, CancellationToken, ValueTask>>(),
+                    It.IsAny<ReadOnlyMemory<byte>>(),
+                    It.IsAny<IReadOnlyDictionary<string, string>>(),
+                    It.IsAny<long>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                async (
+                    string _,
+                    SandboxCommand _,
+                    Func<SandboxOutputChunk, CancellationToken, ValueTask> callback,
+                    ReadOnlyMemory<byte> _,
+                    IReadOnlyDictionary<string, string>? env,
+                    long _,
+                    CancellationToken ct
+                ) =>
+                {
+                    env!["PATH_INFO"].Should().Be("/assets/app.js");
+                    await callback(
+                        new SandboxOutputChunk(
+                            SandboxOutputStream.Stdout,
+                            "Content-Type: application/javascript\r\n\r\nwindow.loaded=true"u8.ToArray()
+                        ),
+                        ct
+                    );
+                    return new SandboxStreamResult(0, 62, 0);
+                }
+            );
+        var instances = new SandboxAppInstanceStore(TimeProvider.System);
+        var launch = instances.Issue(
+            "thread",
+            "default",
+            DemoApp,
+            null,
+            chatHost,
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            sameOrigin: true
+        );
+        var fallthrough = 0;
+        var logger = new Mock<ILogger<SandboxAppMiddleware>>();
+        var middleware = new SandboxAppMiddleware(
+            _ =>
+            {
+                fallthrough++;
+                return Task.CompletedTask;
+            },
+            catalog,
+            instances,
+            new SandboxAppAccess(conversations.Object, browser.Object, authorizer),
+            browser.Object,
+            authorizer,
+            logger.Object
+        );
+
+        var exchange = new DefaultHttpContext();
+        exchange.Request.Scheme = isHttps ? "https" : "http";
+        exchange.Request.Method = "POST";
+        exchange.Request.Host = new HostString(chatHost, 5011);
+        exchange.Request.Path = launch.PathPrefix + "_launch";
+        exchange.Request.ContentType = "application/x-www-form-urlencoded";
+        exchange.Request.Body = new MemoryStream(System.Text.Encoding.ASCII.GetBytes($"ticket={launch.Ticket}"));
+        await middleware.InvokeAsync(exchange);
+        exchange.Response.StatusCode.Should().Be(303);
+        exchange.Response.Headers.Location.ToString().Should().Be(launch.PathPrefix);
+        exchange
+            .Response.Headers.SetCookie.ToString()
+            .Should()
+            .Contain("__Secure-sandbox-app=")
+            .And.Contain($"path={launch.PathPrefix}");
+
+        var grantCookie = exchange.Response.Headers.SetCookie.ToString().Split(';')[0];
+        var asset = new DefaultHttpContext();
+        asset.Request.Scheme = isHttps ? "https" : "http";
+        asset.Request.Method = "GET";
+        asset.Request.Host = new HostString(chatHost, 5011);
+        asset.Request.Path = launch.PathPrefix + "assets/app.js";
+        asset.Request.Headers.Cookie = grantCookie;
+        asset.Request.Headers.Origin = $"https://{chatHost}:5011";
+        asset.Response.Body = new MemoryStream();
+        await middleware.InvokeAsync(asset);
+        asset.Response.StatusCode.Should().Be(200);
+        System
+            .Text.Encoding.UTF8.GetString(((MemoryStream)asset.Response.Body).ToArray())
+            .Should()
+            .Contain("window.loaded=true");
+
+        var chat = new DefaultHttpContext();
+        chat.Request.Host = new HostString(chatHost, 5011);
+        chat.Request.Path = "/api/identity/config";
+        await middleware.InvokeAsync(chat);
+        fallthrough.Should().Be(1);
+
+        var wrongHost = new DefaultHttpContext();
+        wrongHost.Request.Host = new HostString("evil.test", 5011);
+        wrongHost.Request.Path = launch.PathPrefix + "assets/app.js";
+        await middleware.InvokeAsync(wrongHost);
+        wrongHost.Response.StatusCode.Should().Be(404);
+        logger.Verify(
+            x =>
+                x.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.IsAny<It.IsAnyType>(),
+                    It.IsAny<Exception?>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.Exactly(2)
+        );
+
+        var production = SandboxAppCatalog.Load(configuration, isDevelopment: false);
+        var productionMiddleware = new SandboxAppMiddleware(
+            _ =>
+            {
+                fallthrough++;
+                return Task.CompletedTask;
+            },
+            production,
+            instances,
+            new SandboxAppAccess(conversations.Object, browser.Object, authorizer),
+            browser.Object,
+            authorizer,
+            NullLogger<SandboxAppMiddleware>.Instance
+        );
+        var productionApp = new DefaultHttpContext();
+        productionApp.Request.Host = new HostString("site.lvh.me", 5011);
+        productionApp.Request.Path = launch.PathPrefix + "assets/app.js";
+        await productionMiddleware.InvokeAsync(productionApp);
+        productionApp.Response.StatusCode.Should().Be(404);
+        fallthrough.Should().Be(1);
     }
 }
