@@ -284,7 +284,7 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
     /// Builds the <see cref="ProcessStartInfo"/> for the gateway, including the exact environment
     /// the gateway requires for the local backend.
     /// </summary>
-    private ProcessStartInfo BuildStartInfo(string exePath, string agentCliPath)
+    internal ProcessStartInfo BuildStartInfo(string exePath, string agentCliPath)
     {
         var psi = new ProcessStartInfo
         {
@@ -329,6 +329,11 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(_options.PluginsDirs))
         {
             psi.Environment["PLUGINS_DIRS"] = _options.PluginsDirs;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_options.PluginsBasePath))
+        {
+            psi.Environment["PLUGINS_BASE_PATH"] = _options.PluginsBasePath;
         }
 
         // Egress proxy: when configured, tell the gateway where the proxy listens (it injects this as

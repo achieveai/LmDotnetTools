@@ -26,6 +26,41 @@ public class SandboxClientLifecycleTests
     }
 
     [Fact]
+    public async Task CreateAsync_PluginMountsUsePluginsWireField_SeparateFromPluginSelection()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(
+            new SandboxCreateRequest(
+                "ws",
+                pluginSelection: [new SandboxPluginRef("official", "code-review")],
+                pluginMounts: [new SandboxPluginMount("sandbox-apps", "sandbox-apps", "global")]
+            )
+        );
+
+        using var sent = JsonDocument.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Post).Body!);
+        var root = sent.RootElement;
+        var mount = root.GetProperty("plugins")[0];
+        mount.GetProperty("path").GetString().Should().Be("sandbox-apps");
+        mount.GetProperty("name").GetString().Should().Be("sandbox-apps");
+        mount.GetProperty("origin").GetString().Should().Be("global");
+        root.GetProperty("pluginSelection")[0].GetProperty("plugin").GetString().Should().Be("code-review");
+    }
+
+    [Fact]
+    public async Task CreateAsync_OmittedPluginMountsOmitPluginsWireField()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        using var sent = JsonDocument.Parse(handler.Requests.Single(r => r.Method == HttpMethod.Post).Body!);
+        sent.RootElement.TryGetProperty("plugins", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task CreateAsync_ExactRestWireShape_MatchesGatewayContract()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
