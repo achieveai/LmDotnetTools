@@ -64,7 +64,7 @@ public static class TranscriptProjection
                 continue;
             }
 
-            if (ElapsedTimeNotice.IsNotice(msg))
+            if (EmptyReplyNudge.IsLoopAuthored(msg))
             {
                 continue;
             }

@@ -29,10 +29,15 @@ public static class AgentTextCollector
     /// <param name="agent">The agent to drive. Its lifetime stays with the caller.</param>
     /// <param name="input">The single user turn to send.</param>
     /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="observe">
+    /// Optional. Sees every message of the run, in order, before it is collected. For a caller that
+    /// needs more of the run than its prose, such as the tools it called.
+    /// </param>
     public static async Task<AgentTextResult> CollectAsync(
         IMultiTurnAgent agent,
         string input,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<IMessage>? observe = null
     )
     {
         ArgumentNullException.ThrowIfNull(agent);
@@ -51,6 +56,7 @@ public static class AgentTextCollector
 
         await foreach (var message in agent.ExecuteRunAsync(userInput, cancellationToken).ConfigureAwait(false))
         {
+            observe?.Invoke(message);
             switch (message)
             {
                 case TextMessage finalized:

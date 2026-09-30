@@ -1,0 +1,9 @@
+# Shared fragment cache-legacy. Services pull it in through the `include:` list of their service.yaml.
+# Exceptions must be requested in writing and are granted for a fixed period only. Templates
+# referenced in this section live in the shared drive under the standard folder layout.
+
+mesh:
+  retry_budget: 4
+  cache_ttl_seconds: 450
+  request_timeout_ms: 4250
+  queue_depth: 850

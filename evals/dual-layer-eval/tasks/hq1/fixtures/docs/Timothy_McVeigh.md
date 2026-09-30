@@ -1,0 +1,3 @@
+# Timothy McVeigh
+
+Timothy James McVeigh (April 23, 1968 – June 11, 2001) was an American domestic terrorist convicted and executed for the detonation of an ammonium nitrate fertilizer and nitromethane truck bomb in front of the Alfred P. Murrah Federal Building in Oklahoma City on April 19, 1995. Commonly referred to as the Oklahoma City bombing, the attack killed 168 people and injured over 600. According to the United States government, it was the deadliest act of terrorism within the United States prior to the September 11 attacks, and remains the most significant act of domestic terrorism in United States history.

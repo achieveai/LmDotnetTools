@@ -1,0 +1,3 @@
+# Memphis Belle (film)
+
+Memphis Belle is a 1990 British-American war drama film directed by Michael Caton-Jones and written by Monte Merrick. The film features an all-star cast with Matthew Modine, Eric Stoltz, and Harry Connick Jr. (in his film debut) in leading roles. "Memphis Belle" is a fictionalization of the 1943 documentary "" by director William Wyler, about the 25th and last mission of an American Boeing B-17 Flying Fortress bomber, the "Memphis Belle", based in England during World War II. The 1990 version was co-produced by David Puttnam and Wyler's daughter Catherine, and dedicated to her father. The film closes with a dedication to all airmen, friend or foe, who fought in the skies above Europe during World War II.

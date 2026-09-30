@@ -1,0 +1,3 @@
+# Paixiao
+
+The paixiao (traditional: 排簫; simplified: 排箫; pinyin: "páixiāo"; also pái xiāo, pai-hsiao, pronounced ] ) is an ancient Chinese wind instrument, a form of Pan flute. A major difference between the Chinese Paixiao and the panpipes used in European and South American traditions, is that at the top of the Chinese instrument the pipe holes are each cut angled or with notches. This allows for bending the pitch in similar capacity to the dongxiao down a minor second. This allows Chinese paixiao to be fully chromatic without loss in timbre, even though the included pipes are tuned diatonically.

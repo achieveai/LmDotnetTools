@@ -1,0 +1,3 @@
+# List of The Blacklist characters
+
+Brian Dennehy as Dominic Wilkinson, Katarina's father and Liz's birth grandfather who blamed Reddington. He tasked Dom in hiding a box containing a key for an island off the coast of Brunei. Red explained he was trying to avoid coming back to Dom after the first time because of both the war with Kaplan and his need to protect Dom. He tells Dom that if he does n't return alive and Kaplan kills him, Red asks Dom to find Liz and tell the truth about him being her grandfather. In ``The Invisible Hand '', after Liz questions him about his involvement as a Soviet spy, he calls Red to inform him that she is getting closer to the truth and that he needs to tell her soon.

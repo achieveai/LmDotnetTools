@@ -1,0 +1,3 @@
+# Wilkes Land
+
+Wilkes Land is a large district of land in eastern Antarctica, formally claimed by Australia as part of the Australian Antarctic Territory, though the validity of this claim has been placed for the period of the operation of the Antarctic Treaty, to which Australia is a signatory. It fronts on the southern Indian Ocean between Queen Mary Coast and Adelie Land, extending from Cape Hordern in 100°31' E to Pourquoi Pas Point, in 136°11' E. The region extends as a sector about 2600 km towards the South Pole, with an estimated land area of 2,600,000 km², mostly glaciated. It is further subdivided in the following coastal areas which can also be thought of as sectors extending to the South Pole:

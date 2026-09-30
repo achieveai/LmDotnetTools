@@ -360,7 +360,11 @@ public sealed record SubAgentSummary
     ///     </para>
     /// </remarks>
     public static IReadOnlyList<string> AgentOwnedThreadIdPrefixes { get; } =
-    [SubAgentThreadPrefix, WorkflowThreadPrefix];
+    [
+        SubAgentThreadPrefix,
+        WorkflowThreadPrefix,
+        AchieveAi.LmDotnetTools.LmMultiTurn.DualLayer.DualLayerThreadIds.ExecutorPrefix,
+    ];
 
     /// <summary>
     ///     True when <paramref name="threadId"/> is a thread an AGENT owns rather than a conversation a

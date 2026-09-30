@@ -1,0 +1,22 @@
+{
+  "source": "hotpotqa",
+  "raw_file": "hotpot_distractor_validation.parquet",
+  "raw_file_jsonl": "hotpot_distractor_validation.jsonl",
+  "raw_sha256": "c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6",
+  "seed": 20260925,
+  "levels": [
+    "hard"
+  ],
+  "type_mix": {
+    "bridge": 8,
+    "comparison": 2
+  },
+  "distractor_questions": 110,
+  "max_answer_chars": 40,
+  "max_answer_words": 5,
+  "blurb": "`docs/` holds {files} short encyclopedia articles (the opening paragraph of each), one Markdown file per article; the file name is the article title. Most of them have nothing to do with any of the {n} questions below. Every question needs two articles: either one article leads to the entity the second one describes, or the question compares two entities.",
+  "header": "# hq1 — two-hop QA over a shared corpus with distractors (HotpotQA distractor, hard)\n\nFamily `qa-multihop`, split `dev`. Workspace = `fixtures/` (`docs/*.md`, {files} article files, {mb} MB).\n{n} HotpotQA dev-distractor questions (level `hard`; 8 bridge, 2 comparison; yes/no answers excluded)\nshare one corpus: each question's 10 paragraphs (2 gold, 8 distractors) plus the 10 paragraphs of 110\nother dev questions, merged by title. Stresses: wide search, lookalike distractor articles, carrying a\nbridge entity between reads. Checker: normalized exact match or token F1 >= 0.8; score = correct / {n}.\nKnobs: `hidden/build.json`.",
+  "exclude_source_ids": {
+    "5a7f81425542992097ad2f8e": "two-way choice between titles named in the question: 50% guessable"
+  }
+}

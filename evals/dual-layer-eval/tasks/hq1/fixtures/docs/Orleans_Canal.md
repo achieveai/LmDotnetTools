@@ -1,0 +1,3 @@
+# Orleans Canal
+
+The Orleans Canal is a drainage canal in New Orleans, Louisiana. The canal, along with the 17th Street Canal and the London Avenue Canal, form the New Orleans Outfall Canals. The current version of the canal is about 2 km long, running along the up-river side of City Park, through the Lakeview and Lakeshore neighborhood, and into Lake Pontchartrain. It is part of the system used to pump rain water out of the streets of the city into the Lake. The Canal has also been known as the Orleans Avenue Canal, the Orleans Outfall Canal, the Orleans Tail Race, and early on, the Girod Canal,

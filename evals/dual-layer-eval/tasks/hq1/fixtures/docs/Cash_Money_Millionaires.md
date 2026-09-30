@@ -1,0 +1,3 @@
+# Cash Money Millionaires
+
+Cash Money Millionaires (also known as The Millionaires) was a supergroup of Cash Money recording artists from New Orleans, Louisiana, formed in 1996 and disbanded in 2001. The group was composed of the Big Tymer$ (Birdman and Mannie Fresh) and the Hot Boy$ (B.G., Juvenile, Lil Wayne and Turk). After meeting at Cash Money Records, established in 1991, the young money millionaires were introduced to the world in 2001, largely due to Lil Wayne's album, "500 Degreez". The Cash Money Millionaires went on numerous tours, including tours with the Ruff Ryders and Nelly. In September 2000, the Millionaires released "Baller Blockin", the soundtrack to the "Baller Blockin' " in which they starred. In 2001, the group disbanded due to monetary issues.

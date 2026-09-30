@@ -1,0 +1,8 @@
+# Shared fragment sync-wide. Services pull it in through the `include:` list of their service.yaml.
+# Nothing in this document overrides applicable law or the terms of an individual contract.
+# Where this document conflicts with a local procedure, the local procedure should be updated to
+# match.
+
+mesh:
+  queue_depth: 400
+  compression: gzip

@@ -65,7 +65,7 @@ public sealed class SubAgentEmbeddedChainTests
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
-        var threadId = $"subagent-embedded-{providerMode}-{Guid.NewGuid():N}";
+        var threadId = $"root-subagent-embedded-{providerMode}-{Guid.NewGuid():N}";
         var socket = await factory.ConnectWebSocketAsync(threadId);
         await using var client = new WebSocketTestClient(socket);
 
@@ -114,7 +114,7 @@ public sealed class SubAgentEmbeddedChainTests
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
-        var threadId = $"subagent-bgchain-{providerMode}-{Guid.NewGuid():N}";
+        var threadId = $"root-subagent-bgchain-{providerMode}-{Guid.NewGuid():N}";
         var socket = await factory.ConnectWebSocketAsync(threadId);
         await using var client = new WebSocketTestClient(socket);
 

@@ -1,0 +1,3 @@
+# HMAS Vendetta (D08)
+
+HMAS "Vendetta" was one of three "Daring" class destroyers built for and operated by the Royal Australian Navy (RAN). The destroyer was built by Williamstown Naval Dockyard and entered service in 1958. During her early career, "Vendetta" was deployed to the Far East Strategic Reserve on multiple occasions. In 1965 and 1966, the destroyer undertook deterrence patrols during the Indonesia-Malaysia Confrontation. Along with several runs escorting the troop transport to Vietnam, from late 1969 to early 1970 "Vendetta" was assigned to combat operations, and became the only Australian-built warship to serve in a shore bombardment role during the Vietnam War.

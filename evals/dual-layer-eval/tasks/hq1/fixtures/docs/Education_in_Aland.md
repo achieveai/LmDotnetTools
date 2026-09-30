@@ -1,0 +1,3 @@
+# Education in Åland
+
+The levels of education in Åland are primary, secondary and higher education. Education is compulsory between the ages of 6 and 15. Compulsory education consists of six years of primary and three years of lower secondary education. Upon completion of the third year of lower secondary education students can continue to the upper secondary education which is carried out by the Ålands Gymnasium. Higher education is offered at the Åland University of Applied Sciences. Education in Åland is administered and regulated by the Ministry of Education and Culture (Swedish: "Undervisnings-och kulturministeriet" ).

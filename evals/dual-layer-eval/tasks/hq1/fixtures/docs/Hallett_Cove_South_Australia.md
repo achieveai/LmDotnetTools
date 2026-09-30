@@ -1,0 +1,3 @@
+# Hallett Cove, South Australia
+
+Hallett Cove is a coastal suburb in the south of Adelaide, South Australia, with a population of more than 12,000 people. Adjoining suburbs are Marino to the north, Trott Park and Sheidow Park to the east and Lonsdale to the south. It is within the City of Marion local government area. The Hallett Cove Shopping Centre is the suburb's largest shopping centre, and has recently undergone a major redevelopment. New features include underground parking, a food court, a Big W department store and a Woolworths supermarket in addition to the Drake Foodmarkets owned Foodland already in place.

@@ -1,0 +1,215 @@
+{
+  "task": "fw2",
+  "source": "synthetic",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "int",
+      "question": "How many different people held the confirmed manager post at the depot formed by the 2027 merger, from its formation to the end of 2032?",
+      "answers": [
+        "5"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "council/minutes-0012.md"
+      ],
+      "family": "F5",
+      "trap_flips": [
+        "count_interim",
+        "trust_draft",
+        "trust_rumour",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "norm",
+      "question": "At the end of 2033, who was the confirmed manager of the depot that took over the night routes of the depot that flooded in the spring of 2032?",
+      "answers": [
+        "Rosalind Kerrton"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "reports/report-0015.md",
+        "notices/notice-0024.md",
+        "council/minutes-0074.md"
+      ],
+      "family": "F1",
+      "trap_flips": [
+        "trust_draft",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "int",
+      "question": "How many of the depots that were ever part of the region directed by the person who approved the 2029 merger (the region that person directed when approving it) were still operating at the end of 2029?",
+      "answers": [
+        "3"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "council/minutes-0031.md"
+      ],
+      "family": "F3",
+      "trap_flips": [
+        "count_interim",
+        "trust_draft",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "int",
+      "question": "How many of the depots that were ever part of the region directed by the person who approved the 2027 merger (the region that person directed when approving it) were still operating at the end of 2032?",
+      "answers": [
+        "6"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "council/minutes-0012.md"
+      ],
+      "family": "F3",
+      "trap_flips": [
+        "trust_draft",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "norm",
+      "question": "On 30 November 2032, who was the confirmed regional director responsible for the depot that took over the night routes of the depot that flooded in the autumn of 2030?",
+      "answers": [
+        "Joachim Tarran"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "reports/report-0011.md",
+        "notices/notice-0018.md",
+        "council/minutes-0034.md"
+      ],
+      "family": "F6",
+      "trap_flips": [
+        "count_interim",
+        "trust_draft",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "norm",
+      "question": "Which depot did the fourth person to hold the chair role on a confirmed basis last run, as its confirmed manager, before joining the board?",
+      "answers": [
+        "Fymby",
+        "Fymby yard",
+        "Fymby depot"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "council/minutes-0001.md",
+        "council/minutes-0017.md",
+        "council/minutes-0028.md",
+        "council/minutes-0055.md",
+        "council/minutes-0072.md",
+        "people/p-1034.md"
+      ],
+      "family": "F2",
+      "trap_flips": [
+        "count_interim",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q7",
+      "kind": "int",
+      "question": "In total, how many night routes were handed to depots in the region that the depot flooded in the summer of 2032 belonged to at the start of 2032, because of floods during 2032?",
+      "answers": [
+        "8"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "reports/report-0016.md",
+        "notices/notice-0024.md",
+        "notices/notice-0025.md",
+        "notices/notice-0026.md"
+      ],
+      "family": "F4",
+      "trap_flips": [
+        "trust_draft",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q8",
+      "kind": "norm",
+      "question": "On 30 November 2031, who was the confirmed regional director responsible for the depot that took over the night routes of the depot that flooded in the spring of 2030?",
+      "answers": [
+        "Lorcan Drumwick"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "reports/report-0009.md",
+        "notices/notice-0015.md",
+        "council/minutes-0028.md"
+      ],
+      "family": "F6",
+      "trap_flips": [
+        "count_interim",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q9",
+      "kind": "int",
+      "question": "How many different people held the confirmed manager post at the depot formed by the 2030 merger, from its formation to the end of 2032?",
+      "answers": [
+        "2"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "council/minutes-0036.md"
+      ],
+      "family": "F5",
+      "trap_flips": [
+        "count_interim",
+        "trust_draft",
+        "trust_rumour",
+        "near_miss"
+      ]
+    },
+    {
+      "id": "q10",
+      "kind": "norm",
+      "question": "At the end of 2030, who was the confirmed manager of the depot that took over the night routes of the depot that flooded in the spring of 2028?",
+      "answers": [
+        "Ravi Brasley"
+      ],
+      "evidence": [
+        "handbook/glossary.md",
+        "reports/report-0004.md",
+        "notices/notice-0006.md",
+        "council/minutes-0045.md"
+      ],
+      "family": "F1",
+      "trap_flips": [
+        "trust_draft",
+        "trust_rumour",
+        "first_notice",
+        "near_miss"
+      ]
+    }
+  ]
+}

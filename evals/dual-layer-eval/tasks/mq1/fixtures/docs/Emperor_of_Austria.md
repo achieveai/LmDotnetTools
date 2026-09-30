@@ -1,0 +1,3 @@
+# Emperor of Austria
+
+In the face of aggressions by Napoleon I, who had been proclaimed "Emperor of the French" (French: "Empereur des Français"), by the French constitution on 18 May 1804, Francis II feared for the future of the Holy Roman Empire and wished to maintain his and his family's Imperial status in the event that the Holy Roman Empire should be dissolved. Therefore, on 11 August 1804 he created the new title of "Emperor of Austria" for himself and his successors as heads of the House of Habsburg-Lorraine. For two years, Francis carried two imperial titles: being Holy Roman Emperor Francis II and "by the Grace of God" ("Von Gottes Gnaden") Emperor Francis I of Austria.

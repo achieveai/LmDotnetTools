@@ -1,0 +1,3 @@
+# Guoqing Temple
+
+The Guoqing Temple () is a Buddhist temple on Mount Tiantai, in Taizhou, Zhejiang Province, China. Originally built in 598 during the Sui Dynasty, and renovated during the reign of the Qing Yongzheng Emperor (r. 1722–1735), the temple is located roughly 220 km from the city of Hangzhou. It was the initial site for the creation of the Tiantai school of Mahayana Buddhism, founded by Zhiyi (538–597 AD). The temple covers an area of some 23,000 m2 and features 600 rooms in a total of 14 different halls, including the Grand Hall of Sakyamuni, the Hall of Five Hundred Arhats and the Hall of Monk Jigong. The exterior of the building features Chinese pagodas such as the Sui Pagoda, the Seven Buddha Pagoda, and the Memorial Pagoda of Monk Yi Xing (683–727 AD).

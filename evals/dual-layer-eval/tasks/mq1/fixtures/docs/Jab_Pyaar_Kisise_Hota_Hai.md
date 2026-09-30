@@ -1,0 +1,3 @@
+# Jab Pyaar Kisise Hota Hai
+
+This film is about Sooraj Dhanrajgir (Salman Khan), a rich playboy lightening the financial burden of his industrialist grandfather (Anupam Kher) by spending his riches on alcohol and women. His grandfather calls him for some official work back home, beginning with a hotel project in Ooty. There his true character emerges as he starts running after pretty women. The first one he lays his eyes on is Komal (Twinkle Khanna). He convinces her that she is his childhood friend and sweet-talks her into falling for him. But soon she sees him for the player he is and walks out on him.

@@ -1,0 +1,3 @@
+# East India Company
+
+By 1803, at the height of its rule in India, the British East India company had a private army of about 260,000 -- twice the size of the British Army, with Indian revenues of £13,464,561, and expenses of £14,017,473. The company eventually came to rule large areas of India with its private armies, exercising military power and assuming administrative functions. Company rule in India effectively began in 1757 and lasted until 1858, when, following the Indian Rebellion of 1857, the Government of India Act 1858 led to the British Crown's assuming direct control of the Indian subcontinent in the form of the new British Raj.

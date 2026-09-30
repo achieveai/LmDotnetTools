@@ -1,0 +1,3 @@
+# Ed Brown (end)
+
+Ed Brown (born c. 1931) was an American football player. He played college football for the Fordham Rams football team from 1950 to 1952. He caught 57 passes for 774 yards in eight games during the 1952 season, including 15 catches for 233 yards in the final game of the season against NYU. He led the NCAA that year in both total receptions and receiving yardage. His 57 receptions that year broke the NCAA record of 52 catches set by Barney Poole in 1947. Brown also set an NCAA record with an average of 96.8 receiving yards per game in 1952. In May 1953, Brown signed a contract to play professional football for the Chicago Cardinals.

@@ -1,0 +1,26 @@
+# Platform-wide defaults for every service in the Quillfeather mesh.
+# Every service starts from these values; docs/CONFIG.md explains what can override them.
+# Exceptions must be requested in writing and are granted for a fixed period only. All staff are
+# expected to have read this document and to apply it in their day-to-day work. Previous
+# versions remain available in the document history for audit purposes.
+
+mesh:
+  max_connections: 400
+  request_timeout_ms: 300
+  pool_size: 32
+  queue_depth: 875
+  cache_ttl_seconds: 270
+  circuit_threshold: 59
+  retry_budget: 8
+  lb_policy: random
+  compression: zstd
+
+telemetry:
+  exporter: otlp
+  sample_rate: 0.05
+  flush_interval_s: 15
+
+admin:
+  port: 9100
+  max_connections: 8
+  request_timeout_ms: 2000

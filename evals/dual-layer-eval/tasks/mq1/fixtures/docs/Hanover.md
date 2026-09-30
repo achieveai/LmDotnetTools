@@ -1,0 +1,3 @@
+# Hanover
+
+Hannover 96 (nickname Die Roten or 'The Reds') is the top local football team that plays in the Bundesliga top division. Home games are played at the HDI-Arena, which hosted matches in the 1974 and 2006 World Cups and the Euro 1988. Their reserve team Hannover 96 II plays in the fourth league. Their home games were played in the traditional Eilenriedestadium till they moved to the HDI Arena due to DFL directives. Arminia Hannover is another very traditional soccer team in Hanover that has played in the first league for years and plays now in the Niedersachsen-West Liga (Lower Saxony League West). Home matches are played in the Rudolf-Kalweit-Stadium.

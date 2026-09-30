@@ -1,0 +1,3 @@
+# Basset Hound
+
+Basset Hound Tan and white Basset Hound Common nicknames Basset, Hush Puppy Origin Great Britain France (hide) Traits Weight male: 25 -- 34 kg (55 -- 75 lb) female: 20 -- 29 kg (45 -- 65 lb) Height male: 30 -- 38 cm (12 -- 15 in) female: 28 -- 36 cm (11 -- 14 in) Coat Smooth, short and close Colour Generally black, white and tan (tri-colour) or tan / lemon and white (bi-colour); but any recognised hound colour acceptable. Litter size 6 -- 8 puppies Life span Median 10 -- 12 years (hide) Classification / standards FCI Group 6, Section 1.3 Scenthounds: Small # 163 standard AKC Hound standard ANKC Group 4 (Hounds) standard CKC Group 2 (Hounds) standard KC (UK) Hound standard NZKC Hounds standard UKC Scenthound standard Domestic dog (Canis lupus familiaris)

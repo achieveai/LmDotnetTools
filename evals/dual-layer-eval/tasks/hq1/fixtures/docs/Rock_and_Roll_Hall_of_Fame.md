@@ -1,0 +1,3 @@
+# Rock and Roll Hall of Fame
+
+The Rock and Roll Hall of Fame, located on the shore of Lake Erie in downtown Cleveland, Ohio, recognizes and archives the history of the best-known and most influential artists, producers, engineers, and other notable figures who have had some major influence on the development of rock and roll. The Rock and Roll Hall of Fame Foundation was established on April 20, 1983, by Atlantic Records founder and chairman Ahmet Ertegun. In 1986, Cleveland was chosen as the Hall of Fame's permanent home. Since opening in September 1995, the "Rock Hall" – part of the city's redeveloped North Coast Harbor – has hosted more than 10 million visitors and had a cumulative economic impact estimated at more than $1.8 billion.

@@ -1,0 +1,3 @@
+# Foreplay/Long Time
+
+"Foreplay/Long Time" is a song written by Tom Scholz and first performed by the rock band Boston on the band's eponymous debut album, and as their second single, on Epic Records in 1976. It combines an instrumental introduction, "Foreplay", to the main song "Long Time", generally played as one on the radio and listed as one track on the album. "Long Time" peaked at No. 22 on the "Billboard" Hot 100 the week ending March 5, 1977. It reached the Top 10 in Canada, peaking at No. 9. The standalone "Foreplay" was released as the B-side of Boston's next single "Peace of Mind", which was released in April.

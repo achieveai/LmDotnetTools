@@ -1,0 +1,99 @@
+{
+  "task": "ag1",
+  "source": "synthetic",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "int",
+      "question": "How many units of SKU K-1002 were shipped in total, across all sites and all six weeks?",
+      "answers": [
+        133408
+      ],
+      "trap_flips": [
+        "ignore_case_notes",
+        "count_resent_rows",
+        "ignore_reversals"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "int",
+      "question": "How many units did site LIS receive in total across the six weeks?",
+      "answers": [
+        41455
+      ],
+      "trap_flips": [
+        "ignore_case_notes",
+        "count_resent_rows",
+        "ignore_reversals"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "int",
+      "question": "How many shipments (distinct SHIP transactions) went to region NORD with carrier Brisa in 2026-W11, across all sites?",
+      "answers": [
+        229
+      ],
+      "trap_flips": [
+        "count_resent_rows",
+        "ignore_reversals"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "exact",
+      "question": "Which site shipped the most units of SKU K-1004 in 2026-W11? Answer with the three-letter site code.",
+      "answers": [
+        "DUB"
+      ],
+      "trap_flips": [
+        "ignore_case_notes"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "int",
+      "question": "How many units were shipped in total on 2026-04-03 (UTC date of the timestamp), all sites and SKUs?",
+      "answers": [
+        34185
+      ],
+      "trap_flips": [
+        "ignore_case_notes",
+        "count_resent_rows",
+        "ignore_reversals"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "int",
+      "question": "How many SHIP transactions were cancelled by a REVERSAL row that sits in a LATER week's file than the shipment itself?",
+      "answers": [
+        307
+      ],
+      "trap_flips": []
+    },
+    {
+      "id": "q7",
+      "kind": "int",
+      "question": "How many units did site DUB ship to region SUD with carrier Ostra, across the six weeks?",
+      "answers": [
+        7822
+      ],
+      "trap_flips": [
+        "ignore_case_notes",
+        "count_resent_rows",
+        "ignore_reversals"
+      ]
+    },
+    {
+      "id": "q8",
+      "kind": "int",
+      "question": "How many transaction ids appear on more than one row (re-sent rows), across all files?",
+      "answers": [
+        1041
+      ],
+      "trap_flips": []
+    }
+  ]
+}

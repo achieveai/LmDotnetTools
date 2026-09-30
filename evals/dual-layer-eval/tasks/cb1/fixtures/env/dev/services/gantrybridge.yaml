@@ -1,0 +1,7 @@
+# dev overlay for gantrybridge. Applied after env/dev/global.yaml.
+# Approval workflows described here run in the ticketing system and leave an audit trail by
+# default.
+
+mesh:
+  request_timeout_ms: 4200
+  lb_policy: ringhash

@@ -1,0 +1,3 @@
+# Momodu Koroma
+
+Momodu Koroma (born 1956 in Yonibana, Tonkolili District) is a Sierra Leonean politician. He is a former Minister of Foreign Affairs and a member of the Sierra Leone Peoples Party (SLPP). He became foreign minister in May 2002, as part of a new cabinet appointed following President Ahmed Tejan Kabbah's re-election earlier in the month. Koroma had previously been Minister of Presidential Affairs. Koroma was born in the small town of Yonibana in the Tonkolili District, his father was from the Temne ethnic group, while his mother came from the Mende ethnic group. It is very rare in Sierra Leone to see an inter-ethnic marriages between Sierra Leone's two largest ethnic group the Temne and Mende.

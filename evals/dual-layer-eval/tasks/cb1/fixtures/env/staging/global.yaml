@@ -1,0 +1,11 @@
+# Overlay for every service in the staging environment.
+# Applied after each service's own service.yaml and before env/staging/services/<service>.yaml.
+# Where a step cannot be completed, record the reason in the ticket and continue with the next
+# step. Nothing in this document overrides applicable law or the terms of an individual
+# contract.
+
+mesh:
+  max_connections: 168
+  queue_depth: 100
+  # request_timeout_ms: 1750
+  # compression: brotli

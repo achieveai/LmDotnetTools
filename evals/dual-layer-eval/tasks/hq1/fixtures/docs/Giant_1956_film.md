@@ -1,0 +1,3 @@
+# Giant (1956 film)
+
+Giant is a 1956 American epic Western drama film, directed by George Stevens from a screenplay adapted by Fred Guiol and Ivan Moffat from Edna Ferber's 1952 novel. The film stars Elizabeth Taylor, Rock Hudson and James Dean and features Carroll Baker, Jane Withers, Chill Wills, Mercedes McCambridge, Dennis Hopper, Sal Mineo, Rod Taylor, Elsa Cardenas and Earl Holliman. "Giant " was the last of James Dean's three films as a leading actor, and earned him his second and last Academy Award nomination – he was killed in a car accident before the film was released. Nick Adams was called in to do some voice dubbing for Dean's role.

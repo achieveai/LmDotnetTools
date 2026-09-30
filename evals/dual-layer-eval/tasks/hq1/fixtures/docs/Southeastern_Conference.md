@@ -1,0 +1,3 @@
+# Southeastern Conference
+
+The Southeastern Conference (SEC) is an American college athletic conference whose member institutions are located primarily in the Southern part of the United States. Its fourteen members include the flagship public universities of ten states, three additional public land grant universities, and one private research university. The conference is headquartered in Birmingham, Alabama. The SEC participates in the National Collegiate Athletic Association (NCAA) Division I in sports competitions; for football, it is part of the Football Bowl Subdivision (FBS), formerly known as Division I-A.

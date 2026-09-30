@@ -113,7 +113,13 @@ internal sealed class SweepRunner(
                 log.WriteLine($"[run {runKey}] workspace {workspacePath}");
             }
 
-            threadId = await client.ProvisionConversationAsync(runWorkspaceId, model, modeId, ct);
+            threadId = await client.ProvisionConversationAsync(
+                runWorkspaceId,
+                model,
+                modeId,
+                ct,
+                variant.ReasoningEffort
+            );
             var taskText = TaskTemplateRenderer.Render(task.Template, topic, task.Meta?.SeedForIndex(seedIndex));
             inputId = await client.SendMessageAsync(threadId, taskText, ct);
 

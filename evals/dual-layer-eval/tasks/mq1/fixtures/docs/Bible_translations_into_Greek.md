@@ -1,0 +1,5 @@
+# Bible translations into Greek
+
+The New Testament part of the Christian Bible was originally written in Koine Greek, as most of the Church and scholars believe, and is therefore not a translation (notwithstanding that some reference material may have been from Aramaic). However, like other living languages, the Greek language has developed over time. Therefore, various translations have been completed over the centuries to make it easier for Greek speakers to understand Holy Scripture. Translations of the Old Testament, which is the other part of the Christian Bible, have been completed for similar reasons.
+
+The first known translation of the Bible into Greek is called the Septuagint (LXX; 3rd -- 1st centuries BC). The LXX was written in Koine Greek. It contains the Hebrew Bible translated from Hebrew and Aramaic. It also includes several other documents which are considered to have differing levels of authority by various Christian churches. Some of these other documents are believed to have been written originally in Greek.

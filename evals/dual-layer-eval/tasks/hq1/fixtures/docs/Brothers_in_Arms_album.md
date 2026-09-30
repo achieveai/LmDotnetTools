@@ -1,0 +1,3 @@
+# Brothers in Arms (album)
+
+Brothers in Arms is the fifth studio album by the British rock band Dire Straits, released on 13 May 1985 by Vertigo Records internationally, and by Warner Bros. Records in the United States. It charted at number one worldwide, spending 10 weeks at number one on the UK Albums Chart (between 18 January and 22 March 1986), nine weeks at number one on the "Billboard" 200 in the United States, and 34 weeks at number one on the Australian Albums Chart. "Brothers in Arms" was the first album to be certified 10-times platinum in the UK and is the eighth-best-selling album in UK chart history, is certified nine-times platinum in the United States, and is one of the world's best-selling albums, having sold over 30 million copies worldwide.

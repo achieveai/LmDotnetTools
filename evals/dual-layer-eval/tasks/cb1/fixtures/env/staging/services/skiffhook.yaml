@@ -1,0 +1,6 @@
+# staging overlay for skiffhook. Applied after env/staging/global.yaml.
+# The checklist in the appendix is a convenience and is not exhaustive.
+
+mesh:
+  # cache_ttl_seconds: 840
+  queue_depth: 1825

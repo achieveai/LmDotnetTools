@@ -1,0 +1,3 @@
+# Ottoman Empire
+
+Ottoman cuisine refers to the cuisine of the capital, Istanbul, and the regional capital cities, where the melting pot of cultures created a common cuisine that most of the population regardless of ethnicity shared. This diverse cuisine was honed in the Imperial Palace's kitchens by chefs brought from certain parts of the Empire to create and experiment with different ingredients. The creations of the Ottoman Palace's kitchens filtered to the population, for instance through Ramadan events, and through the cooking at the Yalıs of the Pashas, and from there on spread to the rest of the population.

@@ -1,0 +1,7 @@
+# Shared fragment timeouts-shared. Services pull it in through the `include:` list of their service.yaml.
+# The checklist in the appendix is a convenience and is not exhaustive. Where this document
+# conflicts with a local procedure, the local procedure should be updated to match.
+
+mesh:
+  retry_budget: 6
+  max_connections: 176

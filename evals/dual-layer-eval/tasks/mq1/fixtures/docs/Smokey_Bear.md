@@ -1,0 +1,7 @@
+# Smokey Bear
+
+Smokey Bear is an American advertising mascot created by the Ad Council with artist Albert Staehle, possibly in collaboration with writer and art critic Harold Rosenberg. It is administered by the Ad Council, the United States Forest Service, and the National Association of State Foresters to educate the public about the dangers of wildfires. A campaign featuring Smokey and the slogan ``Smokey Says -- Care Will Prevent 9 out of 10 Forest Fires ''began in 1944. His later slogan,`` Remember... Only YOU Can Prevent Forest Fires'' was created in 1947. In April 2001, the message was updated to ``Only You Can Prevent Wildfires. ''According to the Ad Council, he and his message are recognized in the United States by 95% of adults and 77% of children.
+
+Smokey Bear's name and image are protected by U.S. federal law, the Smokey Bear Act of 1952 (16 U.S.C. 580 (p - 2); 18 U.S.C. 711).
+
+Washington, D.C., radio station WMAL personality Jackson Weaver served as the primary voice representing Smokey until Weaver's death in October 1992. Others who have provided a voice to Smokey include Jim Cummings, Roger C. Carmel, Jack Angel, Los Angeles radio station KNX's George Walsh, and Gene Moss. In June 2008, the Forest Service launched a new series of public service announcements voiced by actor Sam Elliott, simultaneously giving Smokey a new visual design intended to appeal to young adults. Patrick Warburton provides the voice of an anonymous park ranger.

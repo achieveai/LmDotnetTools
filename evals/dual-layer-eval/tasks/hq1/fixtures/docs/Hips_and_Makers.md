@@ -1,0 +1,3 @@
+# Hips and Makers
+
+Hips and Makers is the debut solo album by Kristin Hersh, best known as the primary singer and songwriter of the band Throwing Muses. The album was released by 4AD in the UK on January 24, 1994, and by Sire Records in the US on February 1, 1994. In contrast to Hersh's rock-oriented work with Throwing Muses, the album is primarily acoustic, with Hersh usually playing unaccompanied. Other credited musicians include Jane Scarpantoni on cello and Michael Stipe of R.E.M., who sings backing vocals on the opening track, "Your Ghost." In addition to Hersh's own material, the album features a cover of the traditional song "The Cuckoo".

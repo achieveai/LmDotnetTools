@@ -1,0 +1,3 @@
+# Golovnaya Dam
+
+The Golovnaya Dam is an earth-fill embankment dam on the Vakhsh River just east of Sarband in Khatlon Province, Tajikistan. It serves to provide water to a system of irrigation canals and generate hydroelectric power. The first generator was commissioned in 1962 and the last in 1963. Between 1984 and 1989 three of the Kaplan turbines were upgraded from 35 MW to 45 MW. Two of the turbines in the 240 MW power station discharge water into a canal on the left bank of the river. Water from this canal serves to irrigate but also supplies the 29.9 MW Perepadnaya and 15.1 MW Centralnaya Hydroelectric Power Plants located further down. The reservoir has a design storage volume of 96000000 m3 by an estimated 80 percent of this is now silt.

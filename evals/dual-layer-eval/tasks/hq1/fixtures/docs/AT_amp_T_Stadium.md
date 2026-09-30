@@ -1,0 +1,3 @@
+# AT&amp;T Stadium
+
+AT&T Stadium, formerly Cowboys Stadium, is a retractable roof stadium in Arlington, Texas, United States. It serves as the home of the Dallas Cowboys of the National Football League (NFL) and was completed on May 27, 2009. It is also the home of the Cotton Bowl Classic. The facility, owned by the city of Arlington, can also be used for a variety of other activities such as concerts, basketball games, college and high school football contests, soccer matches, and motocross and Spartan races. It replaced the partially covered Texas Stadium, which served as the Cowboys' home from 1971 through the 2008 season.

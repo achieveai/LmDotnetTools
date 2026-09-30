@@ -1,0 +1,3 @@
+# Black Clover
+
+Black Clover (Japanese: ブラッククローバー , Hepburn: Burakku Kurōbā ) is a Japanese fantasy "shōnen" manga series written and illustrated by Yūki Tabata. The series is published in Shueisha's "Weekly Shōnen Jump" magazine in Japan, and Viz Media is publishing it in their "Weekly Shonen Jump" digital anthology magazine in the United States. The story centers around a young boy named Asta, seemingly born without any magic power, something that is unknown in the world he lives in. With his ambition, newfound abilities, and friends, he aims to be the Wizard king. An original video animation produced by Xebec had its first trailer released on November 27, 2016, while an anime television series adaptation by Pierrot to premiere on October 3, 2017.

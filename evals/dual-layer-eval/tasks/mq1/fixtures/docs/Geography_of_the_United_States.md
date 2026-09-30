@@ -1,0 +1,3 @@
+# Geography of the United States
+
+The United States shares land borders with Canada (to the north) and Mexico (to the south), and a territorial water border with Russia in the northwest, and two territorial water borders in the southeast between Florida and Cuba, and Florida and the Bahamas. The contiguous forty-eight states are otherwise bounded by the Pacific Ocean on the west, the Atlantic Ocean on the east, and the Gulf of Mexico to the southeast. Alaska borders the Pacific Ocean to the south, the Bering Strait to the west, and the Arctic Ocean to the north, while Hawaii lies far to the southwest of the mainland in the Pacific Ocean.

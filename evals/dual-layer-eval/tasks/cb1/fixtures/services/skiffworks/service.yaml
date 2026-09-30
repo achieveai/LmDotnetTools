@@ -1,0 +1,28 @@
+# Service configuration for skiffworks.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Terms in bold are defined in the glossary at the end of the handbook. Where this document
+# conflicts with a local procedure, the local procedure should be updated to match.
+
+include:
+  - shared/pool-standard.yaml
+  - shared/cache-legacy.yaml
+  - shared/retry-relaxed.yaml
+
+mesh:
+  request_timeout_ms: 5000
+  circuit_threshold: 40
+  # queue_depth: 700
+  # retry_budget: 3
+
+telemetry:
+  service_name: skiffworks
+  exporter: statsd
+  sample_rate: 0.01
+  flush_interval_s: 10
+
+labels:
+  tier: gold
+  cost_centre: cc8449
+  paging_channel: ops33
+
+admin_port: 9119

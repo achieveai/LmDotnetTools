@@ -1,0 +1,3 @@
+# Sapho (software)
+
+Sapho is a venture-backed enterprise application infrastructure company based in San Francisco, California, that was founded in 2014 by Fouad ElNaggar, the former of Chief Strategy Officer of CBS Interactive, Peter Yared, the former Chief Technology Officer and Chief Information Officer at CBS Interactive, and Charles Christolini, the former VP Architecture of CBS Interactive. Sapho provides an enterprise software platform for organizations to offer access to corporate information on mobile devices by utilizing software APIs to pull information from a company’s enterprise applications and SaaS vendors.

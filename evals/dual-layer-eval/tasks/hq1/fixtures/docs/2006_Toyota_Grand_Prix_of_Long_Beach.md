@@ -1,0 +1,3 @@
+# 2006 Toyota Grand Prix of Long Beach
+
+The 2006 Toyota Grand Prix of Long Beach was the first round of the 2006 Bridgestone Presents the Champ Car World Series Powered by Ford season, held on April 9, 2006 on the streets of Long Beach, California. The pole and race win were both captured by the two-time running Champ Car champion, Sébastien Bourdais. The race was billed at the time as Jimmy Vasser's final Champ Car race, ending a 15-year career that featured 10 wins and the series championship in 1996, though he would later make a come out of retirement to drive in the 2008 Toyota Grand Prix of Long Beach, the final race run under Champ Car sanction.

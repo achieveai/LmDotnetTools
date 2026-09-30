@@ -1,0 +1,3 @@
+# Circus Lupus
+
+Circus Lupus was a post-hardcore band based in the area of Washington, DC, U.S. The band originally formed in Madison where one-time Ignition and Soul Side bassist Chris Thomson met guitarist Chris Hamley and drummer Arika Casebolt while attending school. The name "Circus Lupus" comes from an SCTV sketch about "Circus Lupus, the Circus of Wolves," a mock TV commercial for an entirely wolf-filled traveling circus, with graphics of wolves on trapeze swings and other circus apparati. Reg Shrader initially played bass with the band. He was replaced by Seth Lorinczi as the band was making its transition from Madison to Washington, DC.

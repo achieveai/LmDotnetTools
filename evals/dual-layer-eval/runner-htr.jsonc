@@ -1,0 +1,73 @@
+// Dual-layer eval — prompt/flow arms for the Opuna pair. Baselines (Opus alone, Luna alone) run
+// from runner.jsonc; this file only varies the pair.
+//
+//   dotnet run -c Release --project samples/TodoEval.Runner -- \
+//     --config evals/dual-layer-eval/runner-htr.jsonc --env-file samples/LmStreaming.Sample/.env \
+//     [--variants briefs,briefs-shape] [--tasks fw1,ag2,cb1] [--seeds 1]
+//
+// Each variant is host settings only (DualLayerTuning): a named prompt file replaces that built-in
+// text, and a file that cannot be read stops the host, so an arm never silently runs the defaults.
+// Paths are absolute because the runner starts a published host copy with its own content root.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+
+  "models": ["opuna"],
+  "variants": [
+    { "name": "base", "extraArgs": [] },
+    {
+      "name": "briefs",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md"
+      ]
+    },
+    {
+      "name": "shape",
+      "extraArgs": [
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md"
+      ]
+    },
+    {
+      "name": "briefs-shape",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md"
+      ]
+    },
+    {
+      "name": "lean-shape",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-lean.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md"
+      ]
+    },
+    {
+      "name": "briefs-shape-noref",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    }
+  ],
+  "tasks": ["fw1", "ag2", "cb1"],
+  "seeds": 1,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 40,
+
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

@@ -1,0 +1,3 @@
+# Château de Bourdeilles
+
+The Château de Bourdeilles is a castle located in the commune of Bourdeilles in the Dordogne "département" in southwestern France. A castle may have existed at Bourdeilles in the 9th century, but the oldest parts of the current castle date from the early 14th century. The castle consists of an octagonal keep, connected to a two story building of which only the outer walls remain. Next to the old castle, a Renaissance palace was built at the end of the 16th century. Much of the interior decoration has been preserved. The castle and the palace are surrounded by a wall. The entrance gate is protected by two round towers. Since 1919, the château has been listed as a "monument historique" by the French Ministry of Culture.

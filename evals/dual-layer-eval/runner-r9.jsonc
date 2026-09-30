@@ -1,0 +1,42 @@
+// Round 9: lower planner thinking. The shipped default (built-in prompts, reference off, nudge) with the
+// conversation's root reasoning effort set to medium. The planner's thinking output is about 30% of a
+// tr1 run. Opus alone at medium runs as the control, so any saving is judged against the same knob.
+// Run: --models opuna,claude-opus-5.5 --variants r9-medium. Compare with round 7 (pair at the default
+// effort) and Opus at the default effort on tr1.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r9-medium",
+      "extraArgs": [],
+      "reasoningEffort": "medium"
+    }
+  ],
+  "tasks": [
+    "tr1"
+  ],
+  "seeds": 3,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

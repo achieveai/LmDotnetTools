@@ -1,0 +1,3 @@
+# The Kentucky Headhunters discography
+
+The Kentucky Headhunters are an American country rock & southern rock band founded in 1968 as Itchy Brother. The band's discography comprises nine studio albums, three compilation albums, two video compilations and twenty-three singles. Of their albums, their 1989 debut "Pickin' on Nashville" is certified double platinum in the United States and Canada, while 1991's "Electric Barnyard" has a gold certification in both countries. Of the band's singles, four have reached Top 40 on the U.S. "Billboard" Hot Country Songs charts. Their highest chart peak is the number 8 "Oh Lonesome Me", which was originally a Number One single for Don Gibson.

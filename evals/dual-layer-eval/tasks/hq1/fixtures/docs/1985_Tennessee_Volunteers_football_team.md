@@ -1,0 +1,3 @@
+# 1985 Tennessee Volunteers football team
+
+The 1985 Tennessee Volunteers football team (variously "Tennessee", "UT" or the "Vols") represented the University of Tennessee in the 1985 NCAA Division I-A football season. Playing as a member of the Southeastern Conference (SEC), the team was led by head coach Johnny Majors, in his ninth year, and played their home games at Neyland Stadium in Knoxville, Tennessee. They finished the season with a record of nine wins, one loss and two ties (9–1–2 overall, 5–1 in the SEC), as SEC champions and with a victory over Miami in the 1986 Sugar Bowl. The Volunteers offense scored 325 points while the defense allowed 140 points. At season’s end, the Volunteers ranked fourth in both the AP Poll and the Coaches' Poll.

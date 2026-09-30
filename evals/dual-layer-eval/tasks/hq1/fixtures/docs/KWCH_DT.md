@@ -1,0 +1,3 @@
+# KWCH-DT
+
+KWCH-DT, virtual channel 12 (UHF digital channel 19), is a CBS-affiliated television station serving Wichita, Kansas, United States that is licensed to Hutchinson. The station is owned by Gray Television, as part of a duopoly with CW affiliate KSCW-DT (channel 33); Gray also operates Univision affiliate KDCU-DT (channel 31) under a joint sales agreement with owner Entravision Communications Corporation. KWCH and KSCW share studio facilities and KDCU's master control operations are located on 37th Street in northeast Wichita; KWCH maintains transmitter facilities located in rural northeastern Reno County (south-southeast of Buhler).

@@ -1,0 +1,3 @@
+# Hugo Sánchez
+
+Hugo Sánchez Márquez (born 11 July 1958) is a retired Mexican professional footballer and manager, who played as a forward. A prolific goalscorer known for his spectacular strikes and volleys, Sánchez is widely regarded as Mexico's greatest-ever footballer, and one of the greatest players of his generation. In 1999, the International Federation of Football History and Statistics voted Sánchez the 26th best footballer of the 20th century, and the best footballer from the CONCACAF region. In 2004 Sánchez was named in the FIFA 100 list of the world's greatest living players. He is the fourth highest scorer in the history of Spain's top division, and is the sixth highest goalscorer in Real Madrid's history.

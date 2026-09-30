@@ -1,0 +1,3 @@
+# Ronald &quot;Slim&quot; Williams
+
+Ronald Jay "Slim" Williams (born 1964) is an American businessman who co-founded the record label Cash Money Records along with his younger brother, rapper Bryan "Birdman" Williams. As with his younger brother, he is the executive producer for much of Cash Money artist's albums, especially Lil Wayne. In February 2009, the Williams brothers were featured in CNBC's "Newbos: The Rise of America's New Black Overclass", a documentary show profiling several black multi-millionaires. Williams appeared in Lil Wayne's "Behind The Music" episode, which premiered September 10, 2009.

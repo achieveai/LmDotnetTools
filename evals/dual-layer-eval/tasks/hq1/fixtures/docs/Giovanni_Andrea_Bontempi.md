@@ -1,0 +1,3 @@
+# Giovanni Andrea Bontempi
+
+Giovanni Andrea Bontempi (ca. 1624 – 1 July 1705) was an Italian castrato singer, later composer, historian, music theorist, and assistant "kapellmeister" to Heinrich Schütz at Dresden from 1657. He was born Giovanni Andrea Angelini, in Perugia but later took the surname of his patron Cesare Bontempi. His "Il Paride" was the first Italian-language opera to be given in Dresden. It was first performed in November 1662 at the Dresden Castle to celebrate the marriage of Erdmude Sophia, the daughter of the Elector of Saxony, and Christian Ernst, Count of Brandenburg. He composed two other operas, both of which also premiered in Dresden: "Dafne" performed in 1671 to open the Opernhaus am Taschenberg, and "Jupiter und Jo" first performed in 1673.

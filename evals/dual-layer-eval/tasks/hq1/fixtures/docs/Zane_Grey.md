@@ -1,0 +1,3 @@
+# Zane Grey
+
+Pearl Zane Grey (January 31, 1872 – October 23, 1939) was an American dentist and author best known for his popular adventure novels and stories associated with the Western genre in literature and the arts; he idealized the American frontier. "Riders of the Purple Sage" (1912) was his best-selling book. In addition to the commercial success of his printed works, they had second lives and continuing influence when adapted as films and television productions. His novels and short stories have been adapted into 112 films, two television episodes, and a television series, "Dick Powell's Zane Grey Theater".

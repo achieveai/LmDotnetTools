@@ -1,0 +1,3 @@
+# Jim Jarmusch
+
+James Robert Jarmusch ( ; born January 22, 1953) is an American film director, screenwriter, actor, producer, editor, and composer. He has been a major proponent of independent cinema since the 1980s, directing such films as "Stranger Than Paradise" (1984), "Down by Law" (1986), "Mystery Train" (1989), "Dead Man" (1995), "" (1999), "Coffee and Cigarettes" (2003), "Broken Flowers" (2005), "Only Lovers Left Alive" (2013), and "Paterson" (2016). "Stranger Than Paradise" was added to the National Film Registry in December 2002. As a musician, Jarmusch has composed music for his films and released two albums with Jozef van Wissem.

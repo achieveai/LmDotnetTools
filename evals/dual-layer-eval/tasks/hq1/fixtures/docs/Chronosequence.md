@@ -1,0 +1,3 @@
+# Chronosequence
+
+A chronosequence (in forest sciences) is a set of forested sites that share similar attributes but are of different ages. Since many processes in forest ecology take a long time (decades or centuries) to develop, chronosequence methods are used to represent and study the time-dependent development of a forest. Field data from a chronosequence can be collected in a short period of several months. For example, chronosequences are often used to study the changes in plant communities during succession. A classic example of using chronosequences to study ecological succession is in the study of plant and microbial succession in recently deglactiated zones. For example, a study from 2005 used the distance from the nose of a glacier as a proxy for site age.

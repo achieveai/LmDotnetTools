@@ -1,0 +1,117 @@
+{
+  "task": "ag1",
+  "fixture_files": 48,
+  "fixture_bytes": 3539062,
+  "approx_tokens": 884765,
+  "rows": 54274,
+  "case_files": [
+    "ams_2026-W14",
+    "bcn_2026-W10",
+    "bcn_2026-W11",
+    "cph_2026-W13",
+    "dub_2026-W11",
+    "dub_2026-W12",
+    "dub_2026-W15",
+    "fra_2026-W11",
+    "lis_2026-W11",
+    "osl_2026-W11",
+    "osl_2026-W14"
+  ],
+  "decoy_files": [
+    "ams_2026-W10",
+    "ams_2026-W15",
+    "cph_2026-W12",
+    "dub_2026-W14",
+    "fra_2026-W12",
+    "mil_2026-W12",
+    "osl_2026-W13",
+    "osl_2026-W15"
+  ],
+  "gold": {
+    "q1": 133408,
+    "q2": 41455,
+    "q3": 229,
+    "q4": "dub",
+    "q5": 34185,
+    "q6": 307,
+    "q7": 7822,
+    "q8": 1041
+  },
+  "trap_answers": {
+    "ignore_case_notes": {
+      "q1": 105215,
+      "q2": 33271,
+      "q3": 229,
+      "q4": "cph",
+      "q5": 25011,
+      "q6": 307,
+      "q7": 4555,
+      "q8": 1041
+    },
+    "count_resent_rows": {
+      "q1": 135659,
+      "q2": 42320,
+      "q3": 234,
+      "q4": "dub",
+      "q5": 35827,
+      "q6": 307,
+      "q7": 8138,
+      "q8": 1041
+    },
+    "ignore_reversals": {
+      "q1": 140593,
+      "q2": 43405,
+      "q3": 242,
+      "q4": "dub",
+      "q5": 35823,
+      "q6": 307,
+      "q7": 7853,
+      "q8": 1041
+    }
+  },
+  "trap_flips": {
+    "q1": [
+      "ignore_case_notes",
+      "count_resent_rows",
+      "ignore_reversals"
+    ],
+    "q2": [
+      "ignore_case_notes",
+      "count_resent_rows",
+      "ignore_reversals"
+    ],
+    "q3": [
+      "count_resent_rows",
+      "ignore_reversals"
+    ],
+    "q4": [
+      "ignore_case_notes"
+    ],
+    "q5": [
+      "ignore_case_notes",
+      "count_resent_rows",
+      "ignore_reversals"
+    ],
+    "q6": [],
+    "q7": [
+      "ignore_case_notes",
+      "count_resent_rows",
+      "ignore_reversals"
+    ],
+    "q8": []
+  },
+  "q4_top3": [
+    [
+      "dub",
+      2940
+    ],
+    [
+      "cph",
+      2644
+    ],
+    [
+      "fra",
+      2328
+    ]
+  ]
+}

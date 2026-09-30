@@ -1,0 +1,3 @@
+# Cal Poly Pomona College of Environmental Design
+
+The Cal Poly Pomona College of Environmental Design (CENV) is a college part of the California State Polytechnic University, Pomona (Cal Poly Pomona). The college houses over 1,600 students; making it one of largest environmental design programs in the United States. The college offers bachelor's degrees in five departments, as well as three master's degree programs. It is the only academic unit within the California State University system to be associated with a Pritzker Prize laureate (often referred to as "The Nobel Prize in Architecture").

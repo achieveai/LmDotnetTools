@@ -1,0 +1,3 @@
+# Amir Gulistan Janjua
+
+Brigadier (R) Amir Gulistan Janjua, SI, was a former governor of the Khyber-Pakhtunkhwa of Pakistan. He born in a village name Gorha Rajgan tehsil Choa Saiden Shah district Chakwal.His father name was Capt.Raja Feroz Khan Janjua, and his uncle's name Capt.(R) Saif Ali Khan Janjua OBI, Capt.(R)Lehrasab Khan Janjua OBI, H/Lt.Sher Afghan Janjua (TK-I)the best hockey/football player and Athlete.They were Army soldier and belong to a marshal family Chakwal. He was named Amer Gulistan cause he said news of his birth reached his father while his father won a decisive battle (while on duty in army)in a place name Gulistan,

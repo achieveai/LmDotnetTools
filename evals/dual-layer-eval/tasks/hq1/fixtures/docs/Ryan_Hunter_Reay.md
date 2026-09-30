@@ -1,0 +1,3 @@
+# Ryan Hunter-Reay
+
+Ryan Christopher Hunter-Reay Azambuja (born December 17, 1980) is a professional American racing driver best known as a winner of both the Indianapolis 500 (2014) and the IndyCar Series championship 2012. In each accomplishment Hunter-Reay became the first American to win since Sam Hornish, Jr. in 2006. Hunter-Reay also won in the defunct Champ World Series twice and the Toyota Grand Prix of Long Beach. In addition to his experience in Indy car racing Hunter-Reay has competed in the Race of Champions, A1 Grand Prix and various forms of sports car racing (the American Le Mans Series, the Rolex Grand-Am Sports Car Series and the IMSA Tudor United SportsCar Championship).

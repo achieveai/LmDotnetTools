@@ -1,0 +1,3 @@
+# Operation Iraqi Children
+
+Operation International Children (formerly Operation Iraqi Children) was a charitable program created in 2004 to send school supplies to Iraqi children. In March 2004, actor Gary Sinise ("Forrest Gump", "Apollo 13") and author Laura Hillenbrand ("","") announced the launch of Operation Iraqi Children, a program that will enable Americans to send School Supply Kits to Iraqi children. OIC is a program administered by People to People International (PTPI), an NGO with a U.S., not-for-profit [501(c)(3)] tax rating. The executive committee consists of Sinise, Hillenbrand and PTPI's President and CEO, Mary Jean Eisenhower.

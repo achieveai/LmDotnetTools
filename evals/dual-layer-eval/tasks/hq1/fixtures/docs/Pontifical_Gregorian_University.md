@@ -1,0 +1,3 @@
+# Pontifical Gregorian University
+
+The Pontifical Gregorian University (Italian: "Pontificia Università Gregoriana" ; also known as the Gregoriana) is a pontifical university located in Rome, Italy. It was originally a part of the Roman College founded in 1551 by Saint Ignatius of Loyola, and included all grades of schooling. The university division of philosophy and theology of the Roman College was given Papal approval in 1556, making it the first university founded by the Society of Jesus (Jesuits). In 1584 the Roman College was given a grandiose new home by Pope Gregory XIII, after whom it was renamed. It was already making its mark not only in sacred but also in natural science.

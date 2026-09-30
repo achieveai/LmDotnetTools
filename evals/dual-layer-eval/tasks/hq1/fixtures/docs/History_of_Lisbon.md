@@ -1,0 +1,3 @@
+# History of Lisbon
+
+The history of Lisbon, the capital city of Portugal, revolves around its strategic geographical position at the mouth of the Tagus, the longest river in the Iberian Peninsula. Its spacious and sheltered natural harbour made the city historically an important seaport for trade between the Mediterranean Sea and northern Europe. Lisbon has long enjoyed the commercial advantages of its proximity to southern and extreme western Europe, as well as sub-Saharan Africa and the Americas, and today its waterfront is lined with miles of docks, wharfs, and drydock facilities that accommodate the largest oil tankers.

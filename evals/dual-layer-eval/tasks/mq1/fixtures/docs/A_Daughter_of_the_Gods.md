@@ -1,0 +1,3 @@
+# A Daughter of the Gods
+
+A Daughter of the Gods was a 1916 American silent fantasy drama film written and directed by Herbert Brenon. The film was controversial because of the sequences of what was regarded as superfluous nudity by the character Anitia, played by Australian swimming star Annette Kellermann. The scene is regarded as the first complete nude scene by a major star, which occurred during a waterfall sequence, though most of Kellerman's body is covered by her long hair. It was filmed by Fox Film Corporation in Kingston, Jamaica, where huge sets were constructed, and directed by Herbert Brenon.

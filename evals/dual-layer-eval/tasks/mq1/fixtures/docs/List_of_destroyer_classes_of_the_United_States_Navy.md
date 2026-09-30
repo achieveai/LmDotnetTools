@@ -1,0 +1,3 @@
+# List of destroyer classes of the United States Navy
+
+The first major warship produced by the U.S. Navy after World War II (and in the Cold War) were "frigates"—the ships were originally designated destroyer leaders but reclassified in 1975 as guided missile cruisers (except the became guided missile destroyers). These grew out of the last all-gun destroyers of the 1950s. In the middle 1970s the s entered service, optimized for anti-submarine warfare. A special class of guided missile destroyers was produced for the Shah of Iran, but due to the Iranian Revolution these ships could not be delivered and were added to the U.S. Navy.

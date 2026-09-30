@@ -1,0 +1,3 @@
+# Suhotra Swami
+
+Suhotra Swami or Suhotra Dasa (born Roger Terrence Crowley, December 11, 1950, Holyoke, Massachusetts – April 8, 2007, Mayapur, India) was a Hindu Vaishnava author, philosopher and a leading guru in the International Society of Krishna Consciousness (ISKCON). He was ISKCON's Governing Body Commissioner (GBC), an initiating spiritual master (diksa guru) and a sannyasi in ISKCON. He also served as a chairman of the GBC. Since joining ISKCON Suhotra Swami has spent much of his time lecturing and teaching in Europe, especially in Germany and Eastern European countries. Suhotra Swami authored several books on Gaudiya Vaishnava philosophy and Vedanta.

@@ -1,0 +1,3 @@
+# Scottish Church Collegiate School
+
+The Scottish Church Collegiate School is a selective boys' school in north Kolkata, West Bengal having a history of more than 180 years. The school was founded in 1830 by Reverend Alexander Duff, who came to Calcutta as the first missionary of the Church of Scotland to India. The Scottish Church Collegiate School is affiliated with the West Bengal Board of Secondary Education, and the West Bengal Council of Higher Secondary Education for the secondary and higher secondary school examinations respectively. The school functions under the Governing Body of Diocesan Schools, the Diocesan Board of Education and the Church of North India.

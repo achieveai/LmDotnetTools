@@ -1,0 +1,6 @@
+# qa overlay for capstanscope. Applied after env/qa/global.yaml.
+# Readers outside the core audience can skip this section without losing context.
+
+mesh:
+  # queue_depth: 475
+  # request_timeout_ms: 3400

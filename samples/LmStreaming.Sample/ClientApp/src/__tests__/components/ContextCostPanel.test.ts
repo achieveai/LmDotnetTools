@@ -239,6 +239,33 @@ describe('ContextCostPanel — structure', () => {
     expect(wrapper.find('[aria-label="Details for Security reviewer"]').exists()).toBe(true);
     wrapper.unmount();
   });
+
+  it('names the two layers of a dual-layer conversation Planner and Executor, each with its own model', async () => {
+    const wrapper = mountPanel([
+      row({ modelId: 'gpt-6-astra' }),
+      row({
+        agentId: 'executor',
+        threadId: 'executor-t1',
+        parentAgentId: 'root',
+        executionKind: 'Executor',
+        modelId: 'gpt-6-luna',
+      }),
+    ]);
+    await wrapper.get('[data-testid="context-panel-toggle"]').trigger('click');
+
+    expect(wrapper.findAll('.context-agent-name').map((n) => n.text())).toEqual(['Planner', 'Executor']);
+    expect(wrapper.findAll('.context-agent-kind').map((n) => n.text())).toEqual(['primary', 'executor']);
+    expect(wrapper.findAll('[data-testid="context-model"]').map((n) => n.text())).toEqual([
+      'gpt-6-astra',
+      'gpt-6-luna',
+    ]);
+    // Without an executor row the root keeps its usual name.
+    wrapper.unmount();
+    const single = mountPanel([row()]);
+    await single.get('[data-testid="context-panel-toggle"]').trigger('click');
+    expect(single.findAll('.context-agent-name').map((n) => n.text())).toEqual(['Main agent']);
+    single.unmount();
+  });
 });
 
 describe('ContextCostPanel — zero is not unknown', () => {

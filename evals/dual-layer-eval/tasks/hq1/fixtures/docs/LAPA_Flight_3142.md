@@ -1,0 +1,3 @@
+# LAPA Flight 3142
+
+LAPA Flight 3142 was a scheduled Buenos Aires–Córdoba flight operated by the Argentine airline Líneas Aéreas Privadas Argentinas. The service was operated with a Boeing 737-204C, registration LV-WRZ, that crashed on 31 August 1999 at 20:54 local time while attempting to take off from Aeroparque Jorge Newbery after it failed to get airborne. The crash resulted in 65 fatalities—63 of them occupants of the aircraft—and at least 40 people injured, some of them in serious condition. The death toll makes the accident the second deadliest one in the history of Argentine aviation, behind Aerolíneas Argentinas Flight 644.

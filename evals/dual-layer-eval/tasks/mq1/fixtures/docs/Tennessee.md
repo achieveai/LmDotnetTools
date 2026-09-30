@@ -1,0 +1,3 @@
+# Tennessee
+
+The capital is Nashville, though Knoxville, Kingston, and Murfreesboro have all served as state capitals in the past. Memphis has the largest population of any city in the state. Nashville's 13-county metropolitan area has been the state's largest since c. 1990. Chattanooga and Knoxville, both in the eastern part of the state near the Great Smoky Mountains, each has approximately one-third of the population of Memphis or Nashville. The city of Clarksville is a fifth significant population center, some 45 miles (72 km) northwest of Nashville. Murfreesboro is the sixth-largest city in Tennessee, consisting of some 108,755 residents.

@@ -1,0 +1,3 @@
+# La Traviata (1983 film)
+
+La Traviata is a 1983 Italian film written, designed, and directed by Franco Zeffirelli. It is based on the opera "La traviata" with music by Giuseppe Verdi and libretto by Francesco Maria Piave. Soprano Teresa Stratas, tenor Plácido Domingo, and baritone Cornell MacNeil starred in the movie, in addition to singing their roles. The film premiered in Italy in 1982 and went into general release there the following year. It opened in theatres in the U.S. on April 22, 1983. The movie's soundtrack with James Levine conducting the Metropolitan Opera Orchestra won a Grammy Award for Best Opera Recording.

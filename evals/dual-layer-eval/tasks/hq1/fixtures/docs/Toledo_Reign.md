@@ -1,0 +1,3 @@
+# Toledo Reign
+
+Thee Toledo Reign (known commonly as Toledo Reign) is a women's full-contact tackle football team in the Women's Football Alliance. Based in Toledo, Ohio they play in the spring and early summer, usually between April and July. The Reign has played home games at various stadiums in the northwest Ohio and southeast Michigan regions including Bedford Public Schools (Michigan) and Central Catholic High School (Toledo, Ohio). In the 2014 season the Reign played home games at both Waite High School (Toledo, Ohio) and Fremont Ross High School. The Reign originally played in the Women's Professional Football League.

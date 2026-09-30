@@ -1,0 +1,3 @@
+# University of Aberdeen
+
+The University of Aberdeen is a public research university in Aberdeen, Scotland. It is an ancient university founded in 1495 when William Elphinstone, Bishop of Aberdeen, petitioned Pope Alexander VI on behalf of James IV, King of Scots to establish King's College, making it Scotland's third-oldest university and the fifth-oldest in the English-speaking world. The university as it is today was formed in 1860 by a merger between King's College and Marischal College, a second university founded in 1593 as a Protestant alternative to the former. Today, Aberdeen is consistently ranked among the top 200 universities in the world and is one of two universities in the city, the other being the Robert Gordon University.

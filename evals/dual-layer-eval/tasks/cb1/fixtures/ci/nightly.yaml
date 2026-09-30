@@ -1,0 +1,14 @@
+# nightly pipeline
+# Feedback on the clarity of this document is welcome at any time through the usual channel.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout.
+
+stages:
+  - name: package
+    timeout_minutes: 20
+  - name: publish
+    timeout_minutes: 20
+  - name: smoke
+    timeout_minutes: 20
+  - name: restore
+    timeout_minutes: 10

@@ -1,0 +1,3 @@
+# Krasnovishersky District
+
+Krasnovishersky District () is an administrative district (raion) of Perm Krai, Russia; one of the thirty-three in the krai. Municipally, it is incorporated as Krasnovishersky Municipal District. It is located in the northeast of the krai, in the valley of the Vishera River, and borders with the Komi Republic in the north, Sverdlovsk Oblast in the east, Cherdynsky District in the west, Solikamsky District in the south, and with the territory of the town of krai significance of Alexandrovsk in the southeast. The area of the district is . Its administrative center is the town of Krasnovishersk. Population: The population of Krasnovishersk accounts for 71.4% of the district's total population.

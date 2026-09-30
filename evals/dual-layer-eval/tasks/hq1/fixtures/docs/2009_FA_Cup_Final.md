@@ -1,0 +1,3 @@
+# 2009 FA Cup Final
+
+The 2009 FA Cup Final was the 128th final of the world's oldest domestic football cup competition, the FA Cup. The final was played at Wembley Stadium in London on 30 May 2009 and marked the third time that the final has been staged at the stadium since it was rebuilt. The match was contested by Chelsea, who beat Arsenal 2–1 in their semi-final, and Everton who beat Manchester United 4–2 on penalties after a 0–0 draw after extra time. After Louis Saha opened the scoring after just 25 seconds, the fastest ever goal in an FA Cup Final, Didier Drogba equalised in the 21st minute before Frank Lampard scored the winner with 19 minutes left to play to give Chelsea their fifth FA Cup success.

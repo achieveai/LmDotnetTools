@@ -1,0 +1,3 @@
+# Dubai
+
+Dubai (/ duːˈbaɪ / doo - BY; Arabic: دبي ‎ Dubay, Gulf pronunciation: (dʊˈbɑj)) is the largest and most populous city in the United Arab Emirates (UAE). It is located on the southeast coast of the Persian Gulf and is the capital of the Emirate of Dubai, one of the seven emirates that make up the country. Abu Dhabi and Dubai are the only two emirates to have veto power over critical matters of national importance in the country's Federal Supreme Council. The city of Dubai is located on the emirate's northern coastline and heads the Dubai - Sharjah - Ajman metropolitan area. Dubai will host World Expo 2020.

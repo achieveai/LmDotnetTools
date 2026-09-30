@@ -1,0 +1,6 @@
+# Shared fragment backpressure-lean. Services pull it in through the `include:` list of their service.yaml.
+# This document is reviewed annually and whenever a material change to the business requires it.
+# The checklist in the appendix is a convenience and is not exhaustive.
+
+mesh:
+  pool_size: 32

@@ -32,6 +32,12 @@ public static class SubAgentThreadIds
     /// <summary>Reserved prefix of every sub-agent transcript thread id.</summary>
     public const string Prefix = "subagent-";
 
+    /// <summary>
+    /// Reserved prefix of a dual-layer executor's thread (<c>executor-{conversationThreadId}</c>). The
+    /// executor is half of one conversation, so its sub-agents take that conversation's scope.
+    /// </summary>
+    public const string PairedExecutorPrefix = "executor-";
+
     /// <summary>Prefix of an ordinal agent id (<c>agent-N</c>).</summary>
     public const string AgentIdPrefix = "agent-";
 
@@ -78,13 +84,23 @@ public static class SubAgentThreadIds
     /// The scope segment for children of <paramref name="parentThreadId"/>: inherited verbatim from a
     /// parent that is itself a scoped sub-agent thread, otherwise the digest of the parent (root) id.
     /// A null/empty parent (a CLI-backed parent with no thread) digests to a stable value so the shape
-    /// stays uniform.
+    /// stays uniform. A dual-layer executor thread digests as its conversation: the pair is one agent,
+    /// its sub-agents are that conversation's, and every reader forms their ids from the conversation's id.
     /// </summary>
     public static string ScopeTag(string? parentThreadId)
     {
         if (parentThreadId is not null && ScopedShape.Match(parentThreadId) is { Success: true } scoped)
         {
             return scoped.Groups["scope"].Value;
+        }
+
+        if (
+            parentThreadId is not null
+            && parentThreadId.Length > PairedExecutorPrefix.Length
+            && parentThreadId.StartsWith(PairedExecutorPrefix, StringComparison.Ordinal)
+        )
+        {
+            parentThreadId = parentThreadId[PairedExecutorPrefix.Length..];
         }
 
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(parentThreadId ?? string.Empty));

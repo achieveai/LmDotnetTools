@@ -1,0 +1,3 @@
+# Wiraqucha (Cusco)
+
+Wiraqucha (Quechua "wira" fat, "qucha" lake, "wiraqucha" or "Wiraqucha" mister, sir, gentleman / god / one of the greatest Andean divinities (Wiraqucha) / the eighth emperor of the Tawantinsuyu (Wiraqucha Inka), also spelled "Wiracocha") or Wiraquchan ("-n" is a suffix, Hispanicized "Huirajochan") is a mountain in the Andes of Peru, about high. It is situated in the Cusco Region, Quispicanchi Province, in the districts Andahuaylillas, Huaro and Urcos, south-east of the higher mountain named Quri and north-west of Huaro (Waru). The Willkanuta River flows along the mountain. The lake Quyllur Urmana lies at its feet.

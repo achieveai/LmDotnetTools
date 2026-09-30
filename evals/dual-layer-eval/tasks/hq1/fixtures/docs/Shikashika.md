@@ -1,0 +1,3 @@
+# Shikashika
+
+Shikashika is a shaved ice drink made from glacier ice in Peru and Bolivia. In some rural communities, the extraction and sale of ice continues to be a primary natural resource for local economies. Ice merchants extract the blocks with an axe by hand and transport them down from the mountains atop mules. The unit of sale is usually an ice block weighing approximately 40 kilos which is sold to Shikashika vendors. Each block sells for approximately 17 USD. In turn, Shikashika is sold for approximately 15 cents in plastic bags with colorful sweet syrups at Andean festivals and on market day. The word Shikashika is onomatopeia from the Amerindian language Quechua. An alternative word for Shikashika in Spanish is "raspadilla."

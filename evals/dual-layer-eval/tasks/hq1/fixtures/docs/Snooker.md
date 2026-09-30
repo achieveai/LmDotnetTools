@@ -1,0 +1,3 @@
+# Snooker
+
+Snooker ( , ) is a cue sport which originated among British Army officers in Etawah, India in the latter half of the 19th century. It is played on a rectangular table covered with a green cloth, or baize, with pockets at each of the four corners and in the middle of each long side. Using a cue and 22 coloured balls, players must strike the white ball (or "cue ball") to pot the remaining balls in the correct sequence, accumulating points for each pot. An individual game, or frame, is won by the player who scores the most points. A match is won when a player wins a predetermined number of frames.

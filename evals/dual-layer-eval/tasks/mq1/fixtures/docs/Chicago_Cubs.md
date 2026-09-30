@@ -1,0 +1,5 @@
+# Chicago Cubs
+
+The team played its first games in 1876 as a founding member of the National League (NL), eventually becoming known officially as the Chicago Cubs for the 1903 season. Officially, the Cubs are tied for the distinction of being the oldest currently active U.S. professional sports club, along with the Atlanta Braves, which also began play in the NL in 1876 as the Boston Red Stockings (Major League Baseball does not officially recognize the National Association of Professional Base Ball Players as a major league.)
+
+The Chicago Cubs are an American professional baseball team based in Chicago, Illinois. The Cubs compete in Major League Baseball (MLB) as a member club of the National League (NL) Central division. The team plays its home games at Wrigley Field, located on the city's North Side. The Cubs are one of two major league teams in Chicago; the other, the Chicago White Sox, is a member of the American League (AL) Central division. The Cubs, first known as the White Stockings, was a founding member of the NL in 1876, becoming the Chicago Cubs in 1903.

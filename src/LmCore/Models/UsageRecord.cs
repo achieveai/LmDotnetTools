@@ -41,6 +41,12 @@ public enum UsageExecutionKind
     ///     <see cref="UsageRecord.CompactionCheckpointId" />.
     /// </summary>
     Compaction,
+
+    /// <summary>
+    ///     The executor layer of a dual-layer conversation: the loop that carries out the planner's tool
+    ///     calls on its own thread, whose spend is part of the one conversation's total.
+    /// </summary>
+    Executor,
 }
 
 /// <summary>

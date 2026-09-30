@@ -1,0 +1,3 @@
+# Adjoint equation
+
+An adjoint equation is a linear differential equation, usually derived from its primal equation using integration by parts. Gradient values with respect to a particular quantity of interest can be efficiently calculated by solving the adjoint equation. Methods based on solution of adjoint equations are used in wing shape optimization, fluid flow control and uncertainty quantification. For example formula_1 this is an Itō stochastic differential equation. Now by using Euler scheme, we integrate the parts of this equation and get another equation, formula_2, here formula_3 is a random variable, later one is an adjoint equation.

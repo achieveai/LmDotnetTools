@@ -1,0 +1,3 @@
+# Frank Ragano
+
+Frank Ragano (January 25, 1923 – May 13, 1998) was a self-styled "mob lawyer" from Florida, who made his name representing organized crime figures such as Santo Trafficante, Jr. and Carlos Marcello, and also served as lawyer for Teamsters leader Jimmy Hoffa. In his 1994 autobiography "Mob Lawyer", Ragano recounted his career in defending members of organized crime, and made the controversial allegation that Florida mob boss Santo Trafficante, Jr. confessed to him shortly before he died in 1987 that he and Carlos Marcello had arranged for the assassination of President John F. Kennedy in 1963. These Kennedy assassination conspiracy theories have been called into serious question by others.

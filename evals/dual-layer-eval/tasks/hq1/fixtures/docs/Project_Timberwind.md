@@ -1,0 +1,3 @@
+# Project Timberwind
+
+Project Timberwind aimed to develop nuclear thermal rockets. Initial funding by the Strategic Defense Initiative ("Star Wars") from 1987 through 1991 totaled $139 million (then-year). The proposed rocket was later expanded into a larger design after the project was transferred to the Air Force Space Nuclear Thermal Propulsion (SNTP) program and underwent an audit in 1992 due to concerns raised by Steven Aftergood. This special access program provided the motivation for starting the FAS Government Secrecy project. Convicted spy Stewart Nozette was found to be on the master access list for the TIMBER WIND project.

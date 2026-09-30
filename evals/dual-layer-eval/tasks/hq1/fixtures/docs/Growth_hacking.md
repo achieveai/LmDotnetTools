@@ -1,0 +1,3 @@
+# Growth hacking
+
+Growth hacking is a process of rapid experimentation across marketing channels and product development to identify the most efficient ways to grow a business. Growth hacking refers to a set of both conventional and unconventional marketing experiments that lead to growth of a business. Growth hackers are marketers, engineers and product managers that specifically focus on building and engaging the user base of a business. Growth hackers often focus on low-cost alternatives to traditional marketing, e.g. using social media, viral marketing or targeted advertising instead of buying advertising through more traditional media such as radio, newspaper, and television.

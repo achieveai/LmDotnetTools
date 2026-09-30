@@ -1,0 +1,3 @@
+# Solar energy
+
+Urban heat islands (UHI) are metropolitan areas with higher temperatures than that of the surrounding environment. The higher temperatures are a result of increased absorption of the Solar light by urban materials such as asphalt and concrete, which have lower albedos and higher heat capacities than those in the natural environment. A straightforward method of counteracting the UHI effect is to paint buildings and roads white and plant trees. Using these methods, a hypothetical "cool communities" program in Los Angeles has projected that urban temperatures could be reduced by approximately 3 °C at an estimated cost of US$1 billion, giving estimated total annual benefits of US$530 million from reduced air-conditioning costs and healthcare savings.

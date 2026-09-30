@@ -1,0 +1,5 @@
+# dev overlay for ferryrelay. Applied after env/dev/global.yaml.
+# Training material that accompanies this document is available on the learning portal.
+
+mesh:
+  circuit_threshold: 59

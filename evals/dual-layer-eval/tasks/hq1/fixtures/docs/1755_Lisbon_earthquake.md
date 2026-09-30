@@ -1,0 +1,3 @@
+# 1755 Lisbon earthquake
+
+The 1755 Lisbon earthquake, also known as the Great Lisbon earthquake, occurred in the Kingdom of Portugal on Saturday, 1 November, the holy day of All Saints' Day, at around 09:40 local time. In combination with subsequent fires and a tsunami, the earthquake almost totally destroyed Lisbon and adjoining areas. Seismologists today estimate the Lisbon earthquake had a magnitude in the range 8.5–9.0 on the moment magnitude scale, with its epicentre in the Atlantic Ocean about 200 km (120 mi) west-southwest of Cape St. Vincent. Estimates place the death toll in Lisbon alone between 10,000 and 100,000 people, making it one of the deadliest earthquakes in history.

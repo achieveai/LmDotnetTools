@@ -1,0 +1,3 @@
+# Horace and Pete
+
+Horace and Pete is a Peabody Award-winning American web series created, written, and directed by Louis C.K., who describes it as a tragedy rather than a comedy. In addition to C.K., the series also stars Alan Alda, Steve Buscemi, Edie Falco, Laurie Metcalf and Jessica Lange. Dealing with the themes of abuse, mental illness, politics and family dynamics, the series focuses on Horace (played by C.K.), Pete (Buscemi), and Sylvia (Falco) the owners of Horace and Pete's, a run-down Brooklyn bar. The first episode was released on January 30, 2016, on C.K.'s website without any prior announcements. New episodes premiered weekly until the tenth episode was released on April 2, 2016. In June 2016, C.K. expressed interest in a second season.

@@ -1,0 +1,3 @@
+# Thomas Henry Moray
+
+Thomas Henry Moray (August 28, 1892 - May 18, 1974) was an inventor from Salt Lake City, Utah. He received a US patent 2,460,707 in February 1949, after a process of 17 years in discussions with the patent office. The main components of the patent were an LC circuit resonator and a set of vacuum power tubes of diode type using uranium and radium power sources and doped germanium semiconductors on the cathodes. It was an early example of doped semiconductors and a forerunner of radioactive power supplies using radioactive isotopes in space research. Moray's device followed other work on nuclear batteries first done in 1913 by Henry Moseley using a radium source.

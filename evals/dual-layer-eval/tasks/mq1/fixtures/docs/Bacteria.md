@@ -1,0 +1,3 @@
+# Bacteria
+
+Bacteria were first observed by the Dutch microscopist Antonie van Leeuwenhoek in 1676, using a single-lens microscope of his own design. He then published his observations in a series of letters to the Royal Society of London. Bacteria were Leeuwenhoek's most remarkable microscopic discovery. They were just at the limit of what his simple lenses could make out and, in one of the most striking hiatuses in the history of science, no one else would see them again for over a century. Only then were his by-then-largely-forgotten observations of bacteria — as opposed to his famous "animalcules" (spermatozoa) — taken seriously.

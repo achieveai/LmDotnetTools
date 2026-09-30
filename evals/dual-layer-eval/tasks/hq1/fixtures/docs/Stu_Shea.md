@@ -1,0 +1,3 @@
+# Stu Shea
+
+K. Stuart "Stu" Shea (born January 9, 1957) is an American business executive and leader and intelligence professional serving in a leadership capacity to public and private companies, as well as an advisor to government agencies, private equity investors, and academic institutions. Shea is Chief Executive Officer of Peraton, a national security technology company. He is the former President & Chief Operating Officer of Leidos, Chief Operating Officer of Science Applications International Corporation (SAIC), and founder and emeritus chairman of the United States Geospatial Intelligence Foundation.

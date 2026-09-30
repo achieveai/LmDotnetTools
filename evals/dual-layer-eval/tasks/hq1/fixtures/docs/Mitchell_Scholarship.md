@@ -1,0 +1,3 @@
+# Mitchell Scholarship
+
+The George J. Mitchell Scholarship is a fellowship awarded annually by the U.S.-Ireland Alliance funding graduate study in Ireland. Although relatively young—the first class of scholars began their studies in 2000—the Mitchell Scholarship has quickly established itself as one of the most selective fellowships in the United States. The scholarship is often considered one of the four primary and most competitive international fellowships for American students, alongside the Rhodes Scholarship, Marshall Scholarship, and Gates Scholarship. Each year, approximately 300 young Americans apply for the 12 scholarships.

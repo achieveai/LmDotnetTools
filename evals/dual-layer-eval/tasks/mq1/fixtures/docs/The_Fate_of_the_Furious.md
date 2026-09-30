@@ -1,0 +1,3 @@
+# The Fate of the Furious
+
+Tego Calderón and Don Omar reprise their roles from previous films as Tego Leo and Rico Santos, former members of Dom's team from the Dominican Republic and Rio de Janeiro, respectively. Luke Evans reprises his role from Fast & Furious 6 (2013) as Owen Shaw, Deckard's younger brother and a former Special Air Service (SAS) soldier who formerly opposed Dom's team in Europe, and who helps his brother in rescuing Dom's son. Kristofer Hivju appears as Connor Rhodes, Cipher's enforcer and right - hand man. Helen Mirren makes an uncredited cameo appearance as Magdalene Shaw, the mother of Deckard and Owen Shaw.

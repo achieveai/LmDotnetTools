@@ -1,0 +1,3 @@
+# Benicio del Toro
+
+Benicio Monserrate Rafael del Toro Sánchez (born February 19, 1967) is a Puerto Rican actor. He won an Academy Award, BAFTA Award, Golden Globe Award and Screen Actors Guild Award for his portrayal of the jaded but morally upright police officer Javier Rodriguez in the film "Traffic" (2000). Del Toro's performance as ex-con turned religious fanatic in despair, Jack Jordan, in Alejandro González Iñárritu's "21 Grams" (2003) earned him a second Academy Award nomination for Best Supporting Actor, as well as a second Screen Actors Guild Awards nomination and a BAFTA Awards nomination for Best Actor in a Leading Role.

@@ -1,0 +1,3 @@
+# Westminster Choir College
+
+Westminster Choir College is a residential conservatory of music located in Princeton, New Jersey, United States. Westminster Choir College educates students at the undergraduate and graduate levels for musical careers in music education, voice performance, piano performance, organ performance, pedagogy, music theory and composition, conducting, sacred music, and arts management; professional training in musical skills with an emphasis on performance is complemented by studies in the liberal arts. All students study with Westminster's voice faculty, the largest voice faculty in the world. The school's proximity to New York City and Philadelphia provides students with easy access to the musical resources of both cities.

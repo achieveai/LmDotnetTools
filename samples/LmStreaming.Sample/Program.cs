@@ -26,6 +26,7 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.DualLayer;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -314,8 +315,24 @@ try
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var copilotModels = DiscoverCopilotModels(loggerFactory);
         var anthropicCompatModels = AnthropicCompatProviders.DiscoverFromEnv(loggerFactory);
-        return new ProviderRegistry(copilotModels, probe, mockHost, anthropicCompatModels);
+        var registryLogger = loggerFactory.CreateLogger<ProviderRegistry>();
+        var dualLayerPresets = DualLayerModelPresets.Load(builder.Configuration, registryLogger);
+        return new ProviderRegistry(
+            copilotModels,
+            probe,
+            mockHost,
+            anthropicCompatModels,
+            dualLayerPresets,
+            registryLogger
+        );
     });
+    _ = builder.Services.AddSingleton(sp =>
+        DualLayerTuning.Load(
+            builder.Configuration,
+            builder.Environment.ContentRootPath,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<DualLayerTuning>()
+        )
+    );
 
     // Register the FunctionRegistry with sample tools
     _ = builder.Services.AddSingleton(sp =>
@@ -961,7 +978,14 @@ try
 
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
-                var normalizedProviderId = providerId.ToLowerInvariant();
+                // A dual-layer preset (DualLayerModels) is one provider id to the user and to the pool,
+                // which persists it as the conversation's provider. Inside this factory it is two
+                // models: everything below that builds "the" model builds the PLANNER, and the
+                // executor is wired in the dual-layer branch further down.
+                var dualLayerPreset = providerRegistry.TryGetDualLayerPreset(providerId, out var foundPreset)
+                    ? foundPreset
+                    : null;
+                var normalizedProviderId = dualLayerPreset?.PlannerId ?? providerId.ToLowerInvariant();
 
                 // What this mode is allowed to do, derived from its OWN tool selection rather than
                 // from its id. The previous `mode.Id == WorkspaceAgentModeId` checks meant a COPY of
@@ -1396,6 +1420,19 @@ try
                     throw new AgentBusyException(threadId);
                 }
 
+                // A dual-layer conversation is TWO loops, a planner and the executor that owns its tools,
+                // so there is no single loop to reconfigure. A switch into, out of, or between dual-layer
+                // modes rebuilds the conversation (the same construct-before-evict recreate a cross-arm
+                // switch gets). History is kept because both loops rehydrate from the store.
+                var dualLayer = dualLayerPreset is not null;
+                var dualLayerRecreate =
+                    liveLoop is not null
+                    && (dualLayer || providerRegistry.TryGetDualLayerPreset(context.Existing!.ProviderId, out _));
+                if (dualLayerRecreate)
+                {
+                    liveLoop = null;
+                }
+
                 // Instances this configuration TOOK OVER from the live one rather than building. They
                 // belong to the conversation, not to this attempt, so the construction-failure path at
                 // the bottom must leave them alone — the loop still serving the conversation is holding
@@ -1438,7 +1475,12 @@ try
                 // digests) would otherwise be added a second time by the second switch. The collaboration
                 // handle is resolved here, with it, for the same reason — the loop keeps its own across a
                 // reconfigure, so a second one minted for the new mode would be a directory nothing reads.
-                var scope = ReusedResource<ConversationToolScope>(context.Existing, ConversationToolScope.ResourceKey);
+                // Not reused across a dual-layer recreate: the wiring that subscribes to the scope's board
+                // runs once per NEW loop, so a reused scope would get every subscriber a second time. The
+                // fresh scope hydrates the board from the store, and the pool ends the old one.
+                var scope = dualLayerRecreate
+                    ? null
+                    : ReusedResource<ConversationToolScope>(context.Existing, ConversationToolScope.ResourceKey);
                 if (scope is null)
                 {
                     var persistedBoard = ConversationTodoProjection
@@ -1999,7 +2041,7 @@ try
                     // so leaving the store null keeps it from being attached to a thrown-away options value.)
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
-                        subAgentManagerAccessor: () => agent?.SubAgentManager,
+                        subAgentManagerAccessor: () => DualLayerConversation.SubAgentHost(agent)?.SubAgentManager,
                         loggerFactory: loggerFactory,
                         // #142: the real Bash-tool exit bridge. Scoped to THIS conversation's sandbox
                         // session via the registry's credentialed file surface; the observer polls the
@@ -2221,7 +2263,10 @@ try
                                 // tools — the launching conversation is the first non-WorkflowAgent ancestor, and its
                                 // SubAgentManager snapshot is already the sandbox tools MINUS the workflow/launch
                                 // tools. Late-bound for the same reason as rootUsageSink.
-                                inheritedToolSnapshot: () => agent?.SubAgentManager?.GetInheritableToolSnapshot(),
+                                inheritedToolSnapshot: () =>
+                                    DualLayerConversation
+                                        .SubAgentHost(agent)
+                                        ?.SubAgentManager?.GetInheritableToolSnapshot(),
                                 // Persist the controller loop's OWN conversation (the workflow agent's orchestration
                                 // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
                                 // viewable after the run completes. Non-owning so controller teardown never disposes
@@ -2414,6 +2459,154 @@ try
                             // would destroy the run now in flight.
                             throw new AgentBusyException(threadId);
                         }
+                    }
+                    else if (dualLayer)
+                    {
+                        // THE DUAL-LAYER PAIR. The executor, on the mode's cheaper model, gets everything
+                        // this factory built for a normal loop: the real tools, sub-agents, collaboration
+                        // and compaction. The planner, on the selected model, gets a mirror of each of
+                        // those tools (plus a required rationale) that routes to the executor, and keeps
+                        // only the tools that talk to the human. Both keep their full history in the
+                        // store and compact on their own.
+                        var executorProviderId = dualLayerPreset!.ExecutorId;
+                        var executorWireModelId =
+                            providerRegistry.TryGetCopilotModel(executorProviderId, out var executorCopilotModel)
+                                ? executorCopilotModel.Id
+                            : providerRegistry.TryGetAnthropicCompatModel(
+                                executorProviderId,
+                                out var executorCompatModel
+                            )
+                                ? executorCompatModel.ModelName
+                            : GetModelIdForProvider(executorProviderId);
+                        IStreamingAgent executorProviderAgent;
+                        try
+                        {
+                            executorProviderAgent = agentFactory(executorProviderId);
+                        }
+                        catch (ProviderUnavailableException ex)
+                        {
+                            // Without this, the error names only a model id the user never picked for
+                            // this conversation, and it reads as if their selected model were broken.
+                            throw new ProviderUnavailableException(
+                                ex.ProviderId,
+                                $"it is the executor model of '{dualLayerPreset.Id}': {ex.Reason}",
+                                ex
+                            );
+                        }
+
+                        var dualLayerTuning = sp.GetRequiredService<DualLayerTuning>();
+                        var executorUsage = new DeferredUsageSink();
+                        var executorLoop = new MultiTurnAgentLoop(
+                            executorProviderAgent,
+                            filteredRegistry,
+                            DualLayerThreadIds.ExecutorFor(threadId),
+                            includeAskUserQuestionTool: false,
+                            includeNotifyClientTool: false,
+                            systemPrompt: DualLayerPrompts.ComposeExecutorSystemPrompt(
+                                composedSystemPrompt,
+                                dualLayerTuning.PairInstructions,
+                                dualLayerTuning.ExecutorInstructions
+                            ),
+                            defaultOptions: outputTokenPolicy.ApplyPrimary(
+                                new GenerateReplyOptions
+                                {
+                                    ModelId = executorWireModelId,
+                                    RequestResponseDumpFileName = requestResponseDumpFileName is null
+                                        ? null
+                                        : requestResponseDumpFileName + ".executor",
+                                    PromptCaching = PromptCachingMode.Auto,
+                                },
+                                useDelegatedFallback: executorProviderId is "openai"
+                            ),
+                            maxTurnsPerRun: 150,
+                            outputChannelCapacity: outputChannelCapacity,
+                            store: conversationStore,
+                            logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
+                            subAgentOptions: subAgentOptions,
+                            subAgentTemplateSource: sharedSubAgentSource,
+                            loggerFactory: loggerFactory,
+                            persistRunLedger: true,
+                            pricingResolver: pricingResolver,
+                            // Rolled into the planner's ledger, so the conversation's usage and cost cover
+                            // both layers.
+                            externalUsageSink: executorUsage,
+                            collaboration: rootCollaboration,
+                            compaction: CompactionHostSetup.Create(
+                                compactionOptions,
+                                capacityResolver,
+                                executorProviderId
+                            )
+                        )
+                        {
+                            // A question from one of the executor's sub-agents still has to reach the tabs.
+                            PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            OwnsProviderAgent = true,
+                        };
+                        var executor = new AgentDelegatedToolExecutor(
+                            executorLoop,
+                            loggerFactory.CreateLogger<AgentDelegatedToolExecutor>()
+                        );
+                        ownedResources.Add(executor);
+
+                        var plannerLoop = new MultiTurnAgentLoop(
+                            providerAgent,
+                            // Built from the executor's registry AFTER the executor's constructor added its
+                            // own built-ins to it, so the planner mirrors those too (sub-agent tools included).
+                            DelegatingToolProvider.CreatePlannerRegistry(
+                                filteredRegistry,
+                                executor,
+                                loggerFactory: loggerFactory
+                            ),
+                            threadId,
+                            includeAskUserQuestionTool: askUserQuestionToolEnabled,
+                            includeNotifyClientTool: true,
+                            systemPrompt: DualLayerPrompts.ComposePlannerSystemPrompt(
+                                composedSystemPrompt,
+                                dualLayerTuning.PairInstructions,
+                                dualLayerTuning.PlannerInstructions
+                            ),
+                            defaultOptions: loopDefaultOptions,
+                            maxTurnsPerRun: 150,
+                            outputChannelCapacity: outputChannelCapacity,
+                            store: conversationStore,
+                            logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
+                            loggerFactory: loggerFactory,
+                            persistRunLedger: true,
+                            pricingResolver: pricingResolver,
+                            lifecycleServices: lifecycleServices,
+                            compaction: CompactionHostSetup.Create(
+                                compactionOptions,
+                                capacityResolver,
+                                normalizedProviderId
+                            ),
+                            elapsedTimeNotice: ElapsedTimeNoticeHostSetup.Create(elapsedTimeNoticeOptions)
+                        )
+                        {
+                            PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            OwnsProviderAgent = true,
+                        };
+                        agent = plannerLoop;
+                        executorUsage.Target = plannerLoop.UsageSink!;
+                        // One agent to the outside: every input the planner gets is shown to the
+                        // executor for reference, and anything raised inside the executor (its
+                        // sub-agents' notices, peers' messages) is routed to the planner to act on.
+                        DualLayerInputRouting.Link(
+                            plannerLoop,
+                            executorLoop,
+                            executor,
+                            loggerFactory.CreateLogger(nameof(DualLayerInputRouting)),
+                            dualLayerTuning.ShareReferenceContext
+                        );
+                        loggerFactory
+                            .CreateLogger<Program>()
+                            .LogInformation(
+                                "Thread {ThreadId} runs dual-layer preset {PresetId}: planner {PlannerModel}, executor {ExecutorModel} on {ExecutorThreadId}",
+                                threadId,
+                                dualLayerPreset.Id,
+                                modelId,
+                                executorWireModelId,
+                                executor.ExecutorThreadId
+                            );
                     }
                     else
                     {
@@ -2619,14 +2812,18 @@ try
                                 taskManager.GetTasks,
                                 // A name that resolves to a live sub-agent is nudged there; anything else
                                 // would land in the root conversation and is gated on the explicit opt-in.
-                                name => TodoNotificationDelivery.ResolveTargetKind(nudgeAgent.SubAgentManager, name),
+                                name =>
+                                    TodoNotificationDelivery.ResolveTargetKind(
+                                        DualLayerConversation.SubAgentHost(nudgeAgent)?.SubAgentManager,
+                                        name
+                                    ),
                                 // #690: delivered through the manager's lifecycle path, never straight at the
                                 // child's loop — a finished child's loop still accepts input but its owned
                                 // provider is gone, so a direct send starts a run that dies on its first call.
                                 (name, message, ct) =>
                                     TodoNotificationDelivery.DeliverAsync(
                                         nudgeAgent,
-                                        nudgeAgent.SubAgentManager,
+                                        DualLayerConversation.SubAgentHost(nudgeAgent)?.SubAgentManager,
                                         name,
                                         message,
                                         ct
@@ -2646,8 +2843,9 @@ try
                                         nudgeService,
                                         agentId =>
                                         {
-                                            var snapshot = nudgeAgent
-                                                .SubAgentManager?.ListAgents()
+                                            var snapshot = DualLayerConversation
+                                                .SubAgentHost(nudgeAgent)
+                                                ?.SubAgentManager?.ListAgents()
                                                 .FirstOrDefault(s =>
                                                     string.Equals(s.AgentId, agentId, StringComparison.Ordinal)
                                                 );
@@ -2679,13 +2877,17 @@ try
                             var digestService = new TodoDigestService(
                                 todoDigestOptions,
                                 taskManager.GetTasks,
-                                name => TodoNotificationDelivery.ResolveTargetKind(digestAgent.SubAgentManager, name),
+                                name =>
+                                    TodoNotificationDelivery.ResolveTargetKind(
+                                        DualLayerConversation.SubAgentHost(digestAgent)?.SubAgentManager,
+                                        name
+                                    ),
                                 // A null name is the primary digest's address: the root conversation. Same
                                 // manager-routed delivery as the nudges (#690) for a sub-agent target.
                                 (name, message, ct) =>
                                     TodoNotificationDelivery.DeliverAsync(
                                         digestAgent,
-                                        digestAgent.SubAgentManager,
+                                        DualLayerConversation.SubAgentHost(digestAgent)?.SubAgentManager,
                                         name,
                                         message,
                                         ct
@@ -2801,6 +3003,8 @@ try
     _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
+    // Resolved now so a missing prompt file stops startup instead of the first dual-layer conversation.
+    _ = app.Services.GetRequiredService<DualLayerTuning>();
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
@@ -2893,6 +3097,21 @@ try
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 await context.Response.WriteAsync("threadId must not be blank", cancellationToken);
+                return;
+            }
+
+            // An agent-owned thread (a sub-agent's, a workflow controller's, a dual-layer executor's) already
+            // has a writer: the agent that owns it. Attaching here would make the pool start a second
+            // top-level agent on the same thread, and two writers corrupt it. The REST send and compaction
+            // routes refuse these ids with the same code; a focused sub-agent is watched through the
+            // read-only /ws/subagent instead. Before the gate and before any work, like the blank-id check.
+            if (SubAgentSummary.IsAgentOwnedThreadId(suppliedThreadId))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.Response.WriteAsJsonAsync(
+                    new { error = "forbidden", code = ConversationsController.AgentOwnedThreadWriteCode },
+                    cancellationToken
+                );
                 return;
             }
 

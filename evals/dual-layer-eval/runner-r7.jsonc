@@ -1,0 +1,43 @@
+// Round 7: the shipped default. Built-in prompts now carry the records guidance ("let the executor do the
+// reading", no keyword pre-filter), reference context off, per-streak empty-reply nudge. No prompt files.
+// Opuna only: --models opuna --variants r7-base. Compare with round 4 (Opus on fw2, mq1, cb1) and rounds 5/5b
+// (Opus on tr1, 4 seeds).
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r7-base",
+      "extraArgs": []
+    }
+  ],
+  "tasks": [
+    "fw2",
+    "mq1",
+    "cb1",
+    "tr1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

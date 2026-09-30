@@ -1,0 +1,20 @@
+{
+  "family": "qa-multihop",
+  "split": "dev",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 40,
+  "requiredFixtures": [
+    {
+      "glob": "docs/*.md",
+      "count": 1006
+    }
+  ],
+  "note": "Restored 2026-09-24 for the Opuna-vs-Opus comparison only: both arms plan with Opus, so its memory helps both; Opus read (15 calls) and Luna trailed (0.625 vs 0.875). Luna-vs-Opus comparisons on mq1 stay suspect (memory-exposed public questions).",
+  "memoryExposed": "Public multi-hop questions; answer entities are article titles in docs/ (e.g. Casa_Loma.md). Kept for Opus-planned arm comparisons only, see note."
+}

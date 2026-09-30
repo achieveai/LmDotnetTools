@@ -585,6 +585,7 @@ const EXECUTION_KIND_LABEL: Record<UsageExecutionKind, string> = {
   WorkflowController: 'workflow controller',
   WorkflowTask: 'workflow task',
   Compaction: 'compaction',
+  Executor: 'executor',
 };
 
 export function executionKindLabel(kind: UsageExecutionKind): string {

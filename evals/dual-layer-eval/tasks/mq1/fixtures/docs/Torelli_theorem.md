@@ -1,0 +1,3 @@
+# Torelli theorem
+
+In mathematics, the Torelli theorem, named after Ruggiero Torelli, is a classical result of algebraic geometry over the complex number field, stating that a non-singular projective algebraic curve (compact Riemann surface) "C" is determined by its Jacobian variety "J"("C"), when the latter is given in the form of a principally polarized abelian variety. In other words, the complex torus "J"("C"), with certain 'markings', is enough to recover "C". The same statement holds over any algebraically closed field. From more precise information on the constructed isomorphism of the curves it follows that if the canonically principally polarized Jacobian varieties of curves of genus formula_1 are "k"-isomorphic for "k" any perfect field, so are the curves.

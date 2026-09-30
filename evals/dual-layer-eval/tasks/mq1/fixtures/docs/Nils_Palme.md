@@ -1,0 +1,3 @@
+# Nils Palme
+
+Nils Palme was the son of Sven Palme and Hanna von Born, the brother of Olof and Gunnar Palme and the paternal uncle of late Swedish Prime Minister Olof Palme. He was an officer at Göta Artillery Regiment before he became head of the fourth battery at the Artillery School in Jacobstad. During the hunger- and military demonstrations in 1917 in Gothenburg, he contributed to force down the demonstrations. During the Finnish Civil War, he participated on the white side as battery manager to the Battle of Länkipohja and Battle of Tampere. After the war, he took over the management of Ånga herrgård, a manor house, near Nyköping.

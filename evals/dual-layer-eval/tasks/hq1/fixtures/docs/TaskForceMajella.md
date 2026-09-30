@@ -1,0 +1,3 @@
+# TaskForceMajella
+
+The TaskForceMajella (TFM) is an industry-funded geoscientific research project conducted between the years 1998 and 2005. The project involved numerous universities distributed worldwide, and was sponsored by a number of international major oil companies. The area of research was the Majella Mountain in Central Italy, regarded as an analogue of a faulted and fractured hydrocarbon reservoir as can be found in major provinces like the Middle East, Caspian Basin, Mediterranean Basin, and other areas. The scope was to obtain knowledge on the relation between fracture and fault generation, and all types of geological aspects of the evolution of the geological structure

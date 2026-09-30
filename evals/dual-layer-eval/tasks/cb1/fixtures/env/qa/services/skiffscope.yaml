@@ -1,0 +1,5 @@
+# qa overlay for skiffscope. Applied after env/qa/global.yaml.
+# Exceptions must be requested in writing and are granted for a fixed period only.
+
+mesh:
+  request_timeout_ms: 2400

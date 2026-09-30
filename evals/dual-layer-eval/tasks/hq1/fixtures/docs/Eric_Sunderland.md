@@ -1,0 +1,3 @@
+# Eric Sunderland
+
+Eric Sunderland, {'1': ", '2': ", '3': ", '4': "} (18 March 1930 – 24 March 2010) was a Welsh anthropologist and academic. He served as Principal and then Vice-Chancellor of the University College of North Wales from 1984 to 1995, and Vice-Chancellor of the University of Wales from 1989 to 1991. He had previously taught at the University of Durham, where he had risen to be Professor of Anthropology (1971 to 1984) and Pro Vice-Chancellor (1979 to 1984). In retirement, he held a number of royal appointments: he served as High Sheriff of Gwynedd for 1998/1999, and as Lord Lieutenant of Gwynedd from 2000 to 2006.

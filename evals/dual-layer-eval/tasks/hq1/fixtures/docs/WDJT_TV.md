@@ -1,0 +1,3 @@
+# WDJT-TV
+
+WDJT-TV, virtual channel 58 (UHF digital channel 46), is a CBS-affiliated television station licensed to Milwaukee, Wisconsin, United States. The station is owned by Chicago-based Weigel Broadcasting, as part of a duopoly with Racine-licensed independent station WMLW-TV (channel 49), and is also a sister station to MeTV owned-and-operated station WBME-CD (channel 41, which is also carried via WDJT's DT2 subchannel) and Telemundo affiliate WYTU-LD (channel 63). All four stations share studio facilities located on South 60th Street in Milwaukee (near West Allis); WDJT's transmitter is located in Milwaukee's Lincoln Park (next to the transmitter belonging to ABC affiliate WISN-TV, channel 12).

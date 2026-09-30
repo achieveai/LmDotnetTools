@@ -1,0 +1,3 @@
+# Smokey Mayfield
+
+Smokey Mayfield resided in Hutchinson County near Spearman, which is the seat of Hansford County in the northern Panhandle. He and worked for a half century for the historic Turkey Track Ranch in Hutchinson County. Herb Mayfield was born in Erick, Oklahoma, but lived in Dimmitt and graduated from Dimmitt High School. During World War II, he participated in troop lifts in Normandy and, like Smokey, the Battle of the Bulge. Thereafter, he was a welder for cattle feedlots in Dimmitt. He was for many years the president of the Dimmitt Rodeo Association and a member of the Panhandle Blue Grass Association. He died some three months prior to the passing of Smokey.

@@ -58,7 +58,7 @@ public sealed class SubAgentFocusEndpointTests
         // message so the parent MultiTurnAgentLoop is created + pooled, then reuse that threadId as
         // parentThreadId. Keep the parent socket open across the sub-agent connect so the pooled agent
         // is unambiguously present.
-        var parentThreadId = $"subagent-focus-{Guid.NewGuid():N}";
+        var parentThreadId = $"root-subagent-focus-{Guid.NewGuid():N}";
         var parentSocket = await factory.ConnectWebSocketAsync(parentThreadId);
         await using var parentClient = new WebSocketTestClient(parentSocket);
 
@@ -102,7 +102,7 @@ public sealed class SubAgentFocusEndpointTests
         // Same parent setup as the unknown-agent test: the handler resolves the parent via
         // _agentPool.TryGet, so open a parent /ws connection and send one message to create + pool the
         // parent MultiTurnAgentLoop, then keep it open across the sub-agent connect.
-        var parentThreadId = $"subagent-replay-{Guid.NewGuid():N}";
+        var parentThreadId = $"root-subagent-replay-{Guid.NewGuid():N}";
         var parentSocket = await factory.ConnectWebSocketAsync(parentThreadId);
         await using var parentClient = new WebSocketTestClient(parentSocket);
 

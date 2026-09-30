@@ -1,0 +1,3 @@
+# Esther Schapira
+
+Schapira is co-author of "The Act of Alois Brunner", and producer of two award-winning documentaries, "Drei Kugeln und ein totes Kind" ("Three bullets and a dead child") (2002), about the death of Muhammad al-Durrah in Gaza in 2000, and "Der Tag, als Theo van Gogh ermordet wurde" ("The day Theo van Gogh was murdered") (2007), about the killing in 2004 of Dutch filmmaker, Theo van Gogh. The latter won her and her co-producer, Kamil Taylan, a Prix Europa award. In 2009, she produced a second documentary about the death of al-Durrah, "Das Kind, Der Tod, und Die Wahrheit" ("The Child, the Death, and the Truth").

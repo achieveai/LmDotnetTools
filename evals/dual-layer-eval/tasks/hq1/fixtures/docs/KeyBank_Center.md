@@ -1,0 +1,3 @@
+# KeyBank Center
+
+KeyBank Center, formerly known as Marine Midland Arena, HSBC Arena and First Niagara Center, is a multipurpose indoor arena located in downtown Buffalo, New York. It is the largest indoor arena in Western New York, seating 19,070 fans in its normal configuration, and was constructed primarily for the Buffalo Sabres of the National Hockey League (NHL), who have called the arena home since 1996, when it replaced the now-demolished Memorial Auditorium. The arena was renamed as KeyBank Center starting with the 2016–2017 NHL season. It is owned by Erie County and operated by Pegula Sports and Entertainment (as Hockey Western New York, LLC).

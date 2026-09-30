@@ -1,0 +1,5 @@
+# qa overlay for bollardbridge. Applied after env/qa/global.yaml.
+# Training material that accompanies this document is available on the learning portal.
+
+mesh:
+  max_connections: 328

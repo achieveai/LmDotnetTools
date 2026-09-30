@@ -1,0 +1,3 @@
+# The Farewell Party
+
+The Farewell Party (Hebrew: מיתה טובה‎ ‎ Mita Tova) is a 2014 Israeli drama film about the use of a euthanasia device, directed by Tal Granit and Sharon Maymon. It was nominated for the Ophir Award for Best Film. The film was screened in the Venice Days section of the 71st Venice International Film Festival and has been selected to be screened in the Contemporary World Cinema section at the 2014 Toronto International Film Festival. The film was also screened in the 44th edition of the International Film Festival Rotterdam, reaching the second place in the IFFR audience award.

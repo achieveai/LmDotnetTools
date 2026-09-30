@@ -1,0 +1,3 @@
+# The Gogo Building
+
+The Gogo Building, formerly known as the River Center, is located at 111 N. Canal Street in the West Loop community area of Chicago, Illinois. Originally constructed as a warehouse in the early 1900s, the vintage, loft-style building is now home to various commercial tenants, most notably Gogo Inflight Internet, as seen by their logo on the cube topping the building. Other tenants include Twitter, Uber, Vivid Seats, Fieldglass, Potbelly and Solstice. The building is one of the best surviving examples in downtown Chicago of the once vibrant industrial district along the Chicago River.

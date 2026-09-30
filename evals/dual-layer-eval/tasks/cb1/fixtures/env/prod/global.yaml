@@ -1,0 +1,9 @@
+# Overlay for every service in the prod environment.
+# Applied after each service's own service.yaml and before env/prod/services/<service>.yaml.
+# Links in this section point to the internal mirror; external copies may be out of date.
+# Approval workflows described here run in the ticketing system and leave an audit trail by
+# default.
+
+mesh:
+  retry_budget: 1
+  # pool_size: 20

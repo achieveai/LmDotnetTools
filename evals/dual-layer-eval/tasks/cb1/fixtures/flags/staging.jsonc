@@ -1,0 +1,14 @@
+// Feature flag values for staging. A flag not listed here keeps its default from flags/catalog.json.
+// Lines starting with // are ignored by the loader (platform/FeatureFlags.cs).
+{
+  "berthyard.lazy_init": true,
+  "bollardbridge.early_flush": false,
+  "capstanscope.lazy_init": false,
+  "coraclescope.early_flush": true,
+  "ledgerbridge.fast_lane": false,
+  "manifestbridge.strict_tls": true,
+  "parcelrelay.quiet_retries": true,
+  "parcelscope.quiet_retries": false,
+  // "parcelscope.strict_tls": true,
+  "sluicehook.strict_tls": false
+}

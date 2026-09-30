@@ -1,0 +1,3 @@
+# Nha Trang Oceanography Institute
+
+The Nha Trang Oceanography Institute or Institute of Oceanography in Nha Trang is an oceanography institute located at 1 Cau Da St., next to Cau Da Wharf, about 6km from the center of Nha Trang, Khánh Hòa Province, Vietnam. Established in 1923, it was one of the first centers for scientific research in Vietnam and is an important location for tropical oceanographic research. Since the establishment, the center has published approximately 1,100 scientific studies comprising 62.6% about marine biodiversity, 11.6% about marine physics, 7.6% about ecology and environment; 5.4% about marine geology, and 4.4% about marine chemistry and biochemistry

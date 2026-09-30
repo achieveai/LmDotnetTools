@@ -1,0 +1,43 @@
+// Round 8: compact records on tr1. The built-in prompts plus a record cap (about 40 words, fields only)
+// and "verbatim means in full" for the executor, so the planner stops reading a document twice. Tests
+// whether the planner's cache writes, the largest cost on tr1, fall without losing quality.
+// Opuna only: --models opuna --variants r8-compact. Compare with round 7 (r7-base) and Opus on tr1.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r8-compact",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-compact.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-compact.md"
+      ]
+    }
+  ],
+  "tasks": [
+    "tr1"
+  ],
+  "seeds": 3,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

@@ -1,0 +1,3 @@
+# Thomas Henry Thompson House
+
+The Thomas Henry Thompson House is a historic house in St. Croix Falls, Wisconsin, United States, built in 1882. It was added to the National Register of Historic Places in 1984. It was listed for its local significance in architecture and association with a significant individual. It is a locally notable example of Italianate architecture and was the home of business leader Thomas Henry Thompson, an Irish immigrant whose 1866 general store was the primary mercantile outfit in northwest Polk County. Thompson later served as vice-president of the Bank of St. Croix Falls, and was a local promoter of telephones and automobiles. He died in 1911.

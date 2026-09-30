@@ -1,0 +1,65 @@
+// Round 4: every Opuna arm runs with the reference context OFF (round 3: with it on, the executor took over
+// the whole task on fw1 and fw2). 2 seeds. r4-base runs the Opus-alone baseline again, for its variance.
+// Opuna arms: --models opuna --variants r4-briefs-shape-noref,r4-candidates-noref,r4-lean-shape-noref.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r4-base",
+      "extraArgs": []
+    },
+    {
+      "name": "r4-briefs-shape-noref",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    },
+    {
+      "name": "r4-candidates-noref",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-candidates.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-candidates.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    },
+    {
+      "name": "r4-lean-shape-noref",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-lean.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    }
+  ],
+  "tasks": [
+    "fw2",
+    "mq1",
+    "cb1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 40,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

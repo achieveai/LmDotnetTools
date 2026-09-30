@@ -1,0 +1,3 @@
+# Cicaré CK.1
+
+The Cicaré CK.1 (originally, the CH.III Colibrí) was a light helicopter developed in Argentina in the 1970s. It was a small, single-rotor aircraft of pod-and-boom configuration with a fully enclosed bubble canopy that could seat three people side-by-side. Cicaré's previous helicopter designs had attracted the attention of the Argentine Air Force, which in 1974 contracted him to develop a light helicopter for training and also marketed for agricultural use. A prototype, registered "LV-X62" flew in September 1976, and the Air Force placed an order for five pre-production machines. However, development was terminated at this point.

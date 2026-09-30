@@ -1,0 +1,6 @@
+# Shared fragment retry-relaxed. Services pull it in through the `include:` list of their service.yaml.
+# The document editor confirms each year that the contact details in this document are current.
+# This document is reviewed annually and whenever a material change to the business requires it.
+
+mesh:
+  retry_budget: 2

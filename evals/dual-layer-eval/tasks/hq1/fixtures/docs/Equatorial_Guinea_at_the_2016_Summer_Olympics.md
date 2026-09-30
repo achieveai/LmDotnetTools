@@ -1,0 +1,3 @@
+# Equatorial Guinea at the 2016 Summer Olympics
+
+Equatorial Guinea competed at the 2016 Summer Olympics in Rio de Janeiro, Brazil, which was held from 5 to 21 August 2016. The country's participation at Rio marked its ninth appearance in the Summer Olympics since its début in the 1984 Summer Olympics. The delegation included two track and field athletes, Benjamin Enzema and Reïna-Flor Okori who both qualified for the Games through wildcard places since their fastest times did not meet the required qualification standards, Okori was selected as the flag bearer for the opening and closing ceremonies. Enzema did not advance beyond the qualification round for the men's 800 metres event and Okori was unable to start the women's 100 metre hurdles contest.

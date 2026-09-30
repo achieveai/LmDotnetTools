@@ -1,0 +1,10 @@
+# Shared fragment latency-steady. Services pull it in through the `include:` list of their service.yaml.
+# Previous versions remain available in the document history for audit purposes. All staff are
+# expected to have read this document and to apply it in their day-to-day work.
+
+mesh:
+  circuit_threshold: 54
+  lb_policy: random
+  pool_size: 88
+  queue_depth: 1075
+  max_connections: 448

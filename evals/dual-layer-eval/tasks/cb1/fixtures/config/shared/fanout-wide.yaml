@@ -1,0 +1,8 @@
+# Shared fragment fanout-wide. Services pull it in through the `include:` list of their service.yaml.
+# The document editor confirms each year that the contact details in this document are current.
+# The wording of this section was simplified in the last revision without changing its meaning.
+
+mesh:
+  retry_budget: 3
+  queue_depth: 1200
+  request_timeout_ms: 3850

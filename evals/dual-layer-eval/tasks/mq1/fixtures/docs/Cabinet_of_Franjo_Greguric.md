@@ -1,0 +1,3 @@
+# Cabinet of Franjo Gregurić
+
+The Third Government of the Republic of Croatia () or The Government of National Unity (Croatian: "Vlada nacionalnog jedinstva") was the Croatian Government cabinet led by Prime Minister Franjo Gregurić. It was announced on 17 July 1991 in response to the escalation of the Croatian War of Independence. It was the 3rd cabinet of Croatia since the first multi-party elections, and its term ended on 12 August 1992 after the first parliamentary election under the 1990 Croatian Constitution. During the term of this cabinet Croatia gained internationally diplomatic recognition and became a member of the United Nations.

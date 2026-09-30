@@ -1,0 +1,3 @@
+# Czech language
+
+Bohemia (as Czech civilization was known by then) increased in power over the centuries, as its language did in regional importance. This growth was expedited during the fourteenth century by Holy Roman Emperor Charles IV, who founded Charles University in Prague in 1348. Here, early Czech literature (a biblical translation, hymns and hagiography) flourished. Old Czech texts, including poetry and cookbooks, were produced outside the university as well. Later in the century Jan Hus contributed significantly to the standardization of Czech orthography, advocated for widespread literacy among Czech commoners (particularly in religion) and made early efforts to model written Czech after the spoken language.

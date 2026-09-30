@@ -1,0 +1,3 @@
+# Christian McCaffrey
+
+Christian Jackson McCaffrey (born June 7, 1996) is an American football running back for the Carolina Panthers of the National Football League (NFL). He played college football at Stanford, and was drafted by the Panthers with the eighth overall pick in the 2017 NFL Draft. As a sophomore in 2015, McCaffrey was the AP College Football Player of the Year and the runner-up for the Heisman Trophy. He holds the NCAA record for most all-purpose yards in a season with 3,864. He is the son of former Stanford and NFL wide receiver Ed McCaffrey and former Stanford soccer star Lisa McCaffrey, who is the daughter of U.S. Olympian Dave Sime.

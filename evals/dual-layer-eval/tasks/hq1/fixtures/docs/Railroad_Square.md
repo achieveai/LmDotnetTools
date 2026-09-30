@@ -1,0 +1,3 @@
+# Railroad Square
+
+Railroad Square Art Park is an arts, culture and entertainment district of Tallahassee, Florida, located off Railroad Avenue (just south of the Amtrak station and FAMU), filled with a variety of metal art sculptures and stores selling artwork and collectibles. Railroad Square is mainly known for its small locally owned shops and working artist studios, and its alternative art scene. It is also known as home to the second location of Tallahassee's long-serving local business staple Black Dog Cafe. On the first Friday of every month, Railroad Square is home to a free gallery hop known as First Friday from 6pm-9pm, where a diverse group of upwards of 5000-7000+ Tallahasseeans of all ages come to meet their friends and experience art.

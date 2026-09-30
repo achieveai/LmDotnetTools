@@ -1,0 +1,3 @@
+# Elizabeth Rodriguez
+
+Elizabeth Rodriguez (born December 27, 1980) is an American actress. Rodriguez is best known for her role as Aleida Diaz in the Netflix comedy-drama series, "Orange Is the New Black" (2013–present). She received a Tony Award nomination, and won an Outer Critics Circle Award and a Theatre World Award for her performance in Stephen Adly Guirgis' 2011 play, "The Motherfucker with the Hat". In 2015, she starred as a series regular on the first season of AMC's pre-apocalyptic drama series, "Fear the Walking Dead". She played a nurse working in a secret research facility in the 2017 film "Logan".

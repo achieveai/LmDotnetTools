@@ -1,0 +1,6 @@
+# qa overlay for parcelrelay. Applied after env/qa/global.yaml.
+# The document editor confirms each year that the contact details in this document are current.
+
+mesh:
+  cache_ttl_seconds: 1020
+  request_timeout_ms: 250

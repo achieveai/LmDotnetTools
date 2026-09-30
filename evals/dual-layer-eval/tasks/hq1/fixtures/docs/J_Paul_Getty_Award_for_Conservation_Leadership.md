@@ -1,0 +1,3 @@
+# J. Paul Getty Award for Conservation Leadership
+
+The J. Paul Getty Award for Conservation Leadership has been awarded annually since 2006 in recognition of outstanding leadership in global conservation. The award aims to acknowledge individuals making "pioneering and substantial" contributions to conservation as well as foster the development of future leaders in conservation. The $200,000 cash award goes to fund graduate fellowships for students in conservation-related fields. These fellowships are established at the institution of higher learning of the awardee's choice and named in honor of the award recipient and J. Paul Getty.

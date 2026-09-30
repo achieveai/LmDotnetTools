@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.DualLayer;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Models;
@@ -259,6 +260,15 @@ public static class SubAgentProvenance
         if (parentThreadId is null)
         {
             return null;
+        }
+
+        // A dual-layer conversation's sub-agents are spawned by its executor loop, which stamps its own
+        // thread as their parent. The pair is one agent to the user, so its children are the
+        // conversation's children: every reader of the roster (the agent list, the recursive tree, the
+        // context report) goes through this projection and sees them under the conversation.
+        if (DualLayerThreadIds.TryGetPlannerThreadId(parentThreadId, out var conversationThreadId))
+        {
+            parentThreadId = conversationThreadId;
         }
 
         // The agent id is stamped (#705); a row without the stamp is read back out of the thread id, which

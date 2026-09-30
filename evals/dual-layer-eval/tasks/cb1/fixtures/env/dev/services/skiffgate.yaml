@@ -1,0 +1,5 @@
+# dev overlay for skiffgate. Applied after env/dev/global.yaml.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+
+mesh:
+  circuit_threshold: 6

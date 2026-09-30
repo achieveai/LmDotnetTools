@@ -1,0 +1,3 @@
+# Le Rêve (show)
+
+Le Rêve is a stage production in residence at the Wynn Las Vegas casino resort. It is set in an aquatic stage with a one million-gallon water capacity and features diving and feats of strength with state-of-the-art special effects, where no seat is more than 40 feet (12 m) from the stage. The production was created by Franco Dragone and is similar to the shows produced by Cirque du Soleil. Dragone, who was the director behind "O", "La Nouba", "Mystère", "Alegría", and "Quidam", has not revealed the cost of the production. However, major Las Vegas shows average around $30 to $40 million to produce. The show features 90 performers and 250 cast and crew members.

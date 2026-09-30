@@ -1,0 +1,3 @@
+# Tan-Tan
+
+Tan-Tan (Arabic: طانطان‎ ‎ , Berber: ) is a city in Tan-Tan Province in the region of Guelmim-Oued Noun in south-western Morocco. It is a desert town with a population (2014 census) of 73,209. It is the largest city in the province and second largest city in the region after the capital Guelmim. It is located on the banks of the wadi Oued Ben Jelil, which flows into the Draa River 15 km north of the town. The Draa River, at 1,100 km is the longest in Morocco and flows into the Atlantic Ocean soon after the confluence with the wadi. The town also has an airport, Tan Tan Plage Blanche Airport.

@@ -1,0 +1,3 @@
+# Wytheville, Virginia
+
+Wytheville ( ) is a town in, and the county seat of, Wythe County, Virginia, United States. It is named after George Wythe, a signer of the United States Declaration of Independence, and mentor to Thomas Jefferson. Wytheville's population was 8,211 at the 2010 census. Located at the intersection of Interstate Highways 77 and 81, the town has long been a crossroads for travelers. During the American Civil War, Wytheville had a strategic importance, and was attacked in 1863 (Toland's Raid) and 1865 (Stoneman's 1865 Raid). The town is also the birthplace of Edith Bolling Wilson, wife of President Woodrow Wilson.

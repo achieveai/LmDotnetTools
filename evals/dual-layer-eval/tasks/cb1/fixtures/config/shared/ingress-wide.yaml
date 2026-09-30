@@ -1,0 +1,6 @@
+# Shared fragment ingress-wide. Services pull it in through the `include:` list of their service.yaml.
+# Any personal data handled under this process is subject to the data-protection handbook.
+# Training material that accompanies this document is available on the learning portal.
+
+mesh:
+  pool_size: 88

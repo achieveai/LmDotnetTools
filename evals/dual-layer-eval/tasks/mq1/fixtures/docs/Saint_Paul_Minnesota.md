@@ -1,0 +1,3 @@
+# Saint Paul, Minnesota
+
+Saint Paul (abbreviated St. Paul) is the capital and second-most populous city of the U.S. state of Minnesota. As of 2017, the city's estimated population was 309,180. Saint Paul is the county seat of Ramsey County, the smallest and most densely populated county in Minnesota. The city lies mostly on the east bank of the Mississippi River in the area surrounding its point of confluence with the Minnesota River, and adjoins Minneapolis, the state's largest city. Known as the ``Twin Cities '', the two form the core of Minneapolis -- Saint Paul, the 16th - largest metropolitan area in the United States, with about 3.6 million residents.

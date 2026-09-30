@@ -1,0 +1,3 @@
+# Catherine Jagiellon
+
+Catherine Jagiellon was born in Kraków as the youngest daughter of King Sigismund I the Old of the Polish-Lithuanian Commonwealth and his wife Bona Sforza of Milan. Catherine became the spouse of King John III of Sweden and mother of the future Sigismund III Vasa, King of Poland. After the death of her father in 1548, she and her sisters Anna and Sophia moved to Masovia with their mother. After their mother's departure to Italy in 1558, they lived there alone. The sisters were not close to their brother Sigismund II Augustus of Poland. Catherine could reportedly speak Italian and Latin, and was described as more attractive than Anna, and most marriage suggestions were directed toward her.

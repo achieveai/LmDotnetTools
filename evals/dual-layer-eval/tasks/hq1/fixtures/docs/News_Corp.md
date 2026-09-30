@@ -1,0 +1,3 @@
+# News Corp
+
+News Corporation (officially referred to as News Corp; trading as News Corp) is an American multinational mass media company, formed as a spin-off of the former News Corporation (as founded by Rupert Murdoch in 1979) focusing on newspapers and publishing. It is one of two companies which succeeded the former News Corporation, alongside 21st Century Fox—which consists of the old News Corporation's broadcasting and media properties, such as Fox Entertainment Group. The spin out was structured so that 21st Century Fox would be the legal successor and continuation of the old News Corporation, with the new News Corp being an entirely new company formed by a stock split.

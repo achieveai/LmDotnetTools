@@ -1,0 +1,3 @@
+# List of tributaries of Catawissa Creek
+
+Catawissa Creek is a long creek flowing into the Susquehanna River with 26 named tributaries, of which 19 are direct tributaries. The creek flows through Luzerne, Schuylkill, and Columbia counties in Pennsylvania. The two shortest tributaries are approximately long, while the longest is about in length. The tributaries include seventeen runs, six creeks, and three hollows (unnamed streams named after named valleys that they flow through). By length, the five largest tributaries of Catawissa Creek are Little Catawissa Creek, Tomhicken Creek, Scotch Run, Beaver Run, and Messers Run. By watershed area, the five largest tributaries are Tomhicken Creek, Little Catawissa Creek, Beaver Run, Scotch Run, and Messers Run.

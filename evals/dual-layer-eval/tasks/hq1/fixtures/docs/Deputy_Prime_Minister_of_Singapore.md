@@ -1,0 +1,3 @@
+# Deputy Prime Minister of Singapore
+
+The Deputy Prime Minister of the Republic of Singapore is the deputy head of the government of the Republic of Singapore. The role of Deputy Prime Minister is the second highest post and senior Cabinet Minister in Singapore. The holder will sometimes assume the role of Acting Prime Minister when the PM is temporarily absent from Singapore. Since the mid-1980s, Singapore has usually had two Deputy Prime Ministers at a time. Only Ong Teng Cheong and Tony Tan (who later became Singaporean presidents) served under more than one Prime Minister during their time as Deputy Prime Minister.

@@ -1,0 +1,3 @@
+# Natural satellite
+
+Because of this shift in meaning, the term moon, which had continued to be used in a generic sense in works of popular science and in fiction, has regained respectability and is now used interchangeably with natural satellite, even in scientific articles. When it is necessary to avoid both the ambiguity of confusion with Earth's natural satellite the Moon and the natural satellites of the other planets on the one hand, and artificial satellites on the other, the term natural satellite (using ``natural ''in a sense opposed to`` artificial'') is used. To further avoid ambiguity, the convention is to capitalize the word Moon when referring to Earth's natural satellite, but not when referring to other natural satellites.

@@ -1,0 +1,3 @@
+# Safe Harbor (TV series)
+
+Safe Harbor is an American television drama series that aired on The WB Television Network from September 20, 1999 to November 28, 1999. The series was created and executive produced by Brenda Hampton, who at the time was best known for work on the fellow WB series "7th Heaven", the series was paired with "7th Heaven" on the network's Monday night lineup. Despite "7th Heaven" being the No. 1 show on The WB during the 1999-2000 season, "Safe Harbor" was unable to hold a solid audience after "7th Heaven" and was canceled after ten episodes and one season with the show moving to Sunday nights where the last two episodes aired.

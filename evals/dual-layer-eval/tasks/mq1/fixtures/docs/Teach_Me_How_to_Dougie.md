@@ -1,0 +1,3 @@
+# Teach Me How to Dougie
+
+"Teach Me How to Dougie" is a song recorded by American hip hop group Cali Swag District featuring hook vocals from Fairburn–based rapper Future and Canadian–Nigerian actress Oluniké Adeliyi. It was produced by Runway Star for Cali Swag District's debut studio album, "The Kickback" (2011). The song was written by Chanti Glee, Charon Childs, and Corey Fowler, and was released digitally on April 12, 2010 as the first single from the album through Capitol Records. The title refers to the Dougie dance, which originated in Dallas, Texas by a rapper named Lil' Wil from his song called "My Dougie".This is Adeliyi's first song release as a rapper.

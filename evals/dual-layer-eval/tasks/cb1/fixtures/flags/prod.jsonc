@@ -1,0 +1,15 @@
+// Feature flag values for prod. A flag not listed here keeps its default from flags/catalog.json.
+// Lines starting with // are ignored by the loader (platform/FeatureFlags.cs).
+{
+  "berthbridge.warm_cache": true,
+  // "berthworks.quiet_retries": true,
+  "bollardbridge.strict_tls": true,
+  "coraclegate.shadow_reads": true,
+  "docketmill.warm_cache": true,
+  "ferryrelay.shadow_reads": true,
+  "ledgerbridge.fast_lane": false,
+  // "manifestgate.bulk_mode": false,
+  "skiffrelay.shadow_reads": false,
+  "skiffworks.strict_tls": true
+  // "tallyscope.wide_window": false,
+}

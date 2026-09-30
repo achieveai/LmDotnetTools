@@ -1,0 +1,3 @@
+# Renee Bradshaw
+
+Irene "Renee" Roberts (née Bradshaw) is a fictional character from the British ITV soap opera "Coronation Street", played by Madge Hindle. The character was created by producer Bill Podmore as a new shop keeper. He wanted a mature female to create an atmosphere of gossip the show had previously boasted. While Podmore envisioned Renee as a feisty character, Hindle decided to play down the persona and make her likeable. She believed that no one would visit her shop otherwise. Renee was partnered with Alf Roberts (Bryan Mosley) and they later marry. But Hindle and Mosley did not think the two were compatible. Renee also features in a feud over her shop and comedic stories such as a disastrous fishing trip.

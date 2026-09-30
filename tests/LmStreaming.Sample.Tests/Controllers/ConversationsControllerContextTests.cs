@@ -157,6 +157,189 @@ public class ConversationsControllerContextTests
     }
 
     [Fact]
+    public async Task GetContext_GivesADualLayerConversationsExecutor_ItsOwnRow_UnderTheRoot()
+    {
+        // The executor is a second loop on executor-{root}, not a spawned agent: the descendant scan
+        // does not see it, so the report has to add it by its reserved thread id.
+        const string executorThreadId = "executor-" + ThreadId;
+        var store = new InMemoryConversationStore();
+        await SeedRootAsync(store);
+        await SeedChildAsync(store);
+        await store.SaveMetadataAsync(
+            executorThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = executorThreadId,
+                LastUpdated = 0,
+                TenantId = "tenant-1",
+            }
+        );
+        var ledger = new UsageLedger(ThreadId);
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                    GenerationId = "g1",
+                },
+                ThreadId,
+                UsageExecutionKind.Primary,
+                "model-planner"
+            )
+        );
+        // As the executor's own ledger stamps it before relaying into the root's.
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 900, CompletionTokens = 60 },
+                    GenerationId = "g2",
+                },
+                executorThreadId,
+                UsageExecutionKind.Primary,
+                "model-cheap"
+            ) with
+            {
+                ParentExecutionId = executorThreadId,
+            }
+        );
+        await ConversationUsageProjection.SaveAsync(
+            store,
+            ledger.Snapshot(UsageCompleteness.Complete),
+            ledger.SnapshotRecords()
+        );
+        await ContextObservationProjection.RecordAsync(store, Observation(ThreadId, "root", 2, measured: 5_000));
+        await ContextObservationProjection.RecordAsync(
+            store,
+            Observation(executorThreadId, "executor", 4, measured: 60_000) with
+            {
+                EffectiveModelId = "model-cheap",
+            }
+        );
+        await using var pool = ConversationsControllerTests.CreatePool();
+
+        var result = await ControllerFor(store, pool).GetContext(ThreadId);
+
+        var report = Assert.IsType<ConversationContextReport>(Assert.IsType<OkObjectResult>(result).Value);
+        report
+            .Agents.Select(a => (a.AgentId, a.ThreadId, a.ParentAgentId, a.ExecutionKind))
+            .Should()
+            .Equal(
+                ("root", ThreadId, null, UsageExecutionKind.Primary),
+                ("executor", executorThreadId, "root", UsageExecutionKind.Executor),
+                ("agent-1", ChildThreadId, "root", UsageExecutionKind.SubAgent)
+            );
+        var executor = report.Agents[1];
+        executor.Observation!.MeasuredInputTokens.Should().Be(60_000);
+        executor.Observation.EffectiveModelId.Should().Be("model-cheap");
+        executor.Usage!.InputTokens.Should().Be(900, "the executor's spend is its own row");
+        report.Agents[0].Usage!.InputTokens.Should().Be(100, "and not the planner's");
+        report.Total.TotalTokens.Should().Be(1_100);
+    }
+
+    [Fact]
+    public async Task GetContext_ListsASubAgentTheExecutorSpawned_UnderTheRoot_AndTheTotalIsTheSumOfTheRows()
+    {
+        // Found by hand: the executor's child was missing from the report while its spend was in the
+        // total, so the rows did not add up.
+        const string executorThreadId = "executor-" + ThreadId;
+        var childThreadId = SubAgentThreadIds.For(executorThreadId, "agent-1");
+        var store = new InMemoryConversationStore();
+        await SeedRootAsync(store);
+        await store.SaveMetadataAsync(
+            executorThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = executorThreadId,
+                LastUpdated = 0,
+                TenantId = "tenant-1",
+            }
+        );
+        await store.SaveMetadataAsync(
+            childThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = childThreadId,
+                LastUpdated = 0,
+                TenantId = "tenant-1",
+                Properties = SubAgentProvenance.Build(
+                    executorThreadId,
+                    new SubAgentSnapshot(
+                        "agent-1",
+                        Name: "agent-1",
+                        TemplateName: "worker",
+                        Task: "task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: childThreadId,
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow
+                    )
+                ),
+            }
+        );
+        var ledger = new UsageLedger(ThreadId);
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                    GenerationId = "g1",
+                },
+                ThreadId,
+                UsageExecutionKind.Primary,
+                "model-planner"
+            )
+        );
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 900, CompletionTokens = 60 },
+                    GenerationId = "g2",
+                },
+                executorThreadId,
+                UsageExecutionKind.Primary,
+                "model-cheap"
+            ) with
+            {
+                ParentExecutionId = executorThreadId,
+            }
+        );
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 300, CompletionTokens = 20 },
+                    GenerationId = "g3",
+                },
+                childThreadId,
+                UsageExecutionKind.SubAgent,
+                "model-cheap"
+            )
+        );
+        await ConversationUsageProjection.SaveAsync(
+            store,
+            ledger.Snapshot(UsageCompleteness.Complete),
+            ledger.SnapshotRecords()
+        );
+        await using var pool = ConversationsControllerTests.CreatePool();
+
+        var result = await ControllerFor(store, pool).GetContext(ThreadId);
+
+        var report = Assert.IsType<ConversationContextReport>(Assert.IsType<OkObjectResult>(result).Value);
+        report
+            .Agents.Select(a => (a.AgentId, a.ThreadId, a.ParentAgentId))
+            .Should()
+            .Equal(
+                ("root", ThreadId, null),
+                ("executor", executorThreadId, "root"),
+                ("agent-1", SubAgentThreadIds.For(ThreadId, "agent-1"), "root")
+            );
+        report.Agents[2].Usage!.InputTokens.Should().Be(300);
+        report.Total.TotalTokens.Should().Be(1_420).And.Be(report.Agents.Sum(a => a.Usage?.TotalTokens ?? 0));
+    }
+
+    [Fact]
     public async Task GetContext_PrefersThePooledLoopsLiveObservation_AndReadsItFresh()
     {
         var store = new InMemoryConversationStore();

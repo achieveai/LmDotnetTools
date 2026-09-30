@@ -1,0 +1,3 @@
+# Smart rubber
+
+Smart rubber is a polymeric material that is able to "heal" when torn. Near room temperature this process is reversible and can be cycled several times. Supramolecular self-healing rubber can be processed, re-used, and ultimately recycled. The edges of a tear can be held together, and they will simply re-bond into apparent solidity. This is done by utilizing a hydrogen-bonding polymer, rather than producing a material whose structure would depend on covalent bonding and ionic bonding between chains, which is typical of normal rubber. In this case hydrogen bonding can occur simply by pressing two faces of the substance together, allowing the recovery of a continuous hydrogen bonding network.

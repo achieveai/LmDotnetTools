@@ -1,0 +1,3 @@
+# Rock &amp; Roll Hall of Fame Covers EP
+
+Rock & Roll Hall of Fame Covers EP is EP compilation by American rock band Red Hot Chili Peppers, released in 2012 through iTunes as a digital-only download. The band first announced the EP through their website on April 19, 2012 with the title "We Salute You", although it was changed on the date of the release. The EP consists of six cover songs, live and in the studio, of previous Rock and Roll Hall of Fame inductees all who influenced the band. The EP was released to commemorate the band's own induction into the Rock and Roll Hall of Fame in 2012. All six songs have been previously featured on other releases by the band. Four of the six tracks had never been released digitally before.

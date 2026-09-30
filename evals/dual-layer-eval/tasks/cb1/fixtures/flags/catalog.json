@@ -1,0 +1,233 @@
+{
+  "about": "Feature flag catalog. Each flag's default applies in every environment unless flags/<env>.jsonc sets it.",
+  "flags": [
+    {
+      "name": "berthbridge.shadow_reads",
+      "default": true,
+      "owner": "berthbridge",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "berthbridge.warm_cache",
+      "default": false,
+      "owner": "berthbridge",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "berthworks.quiet_retries",
+      "default": false,
+      "owner": "berthworks",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "berthworks.wide_window",
+      "default": false,
+      "owner": "berthworks",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "berthyard.batch_acks",
+      "default": false,
+      "owner": "berthyard",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "berthyard.lazy_init",
+      "default": false,
+      "owner": "berthyard",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "bollardbridge.early_flush",
+      "default": false,
+      "owner": "bollardbridge",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "bollardbridge.strict_tls",
+      "default": false,
+      "owner": "bollardbridge",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "capstanloom.shadow_reads",
+      "default": false,
+      "owner": "capstanloom",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "capstanscope.lazy_init",
+      "default": false,
+      "owner": "capstanscope",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "coraclegate.shadow_reads",
+      "default": false,
+      "owner": "coraclegate",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "coraclegate.wide_window",
+      "default": true,
+      "owner": "coraclegate",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "coraclescope.early_flush",
+      "default": false,
+      "owner": "coraclescope",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "docketmill.warm_cache",
+      "default": true,
+      "owner": "docketmill",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "docketmill.wide_window",
+      "default": true,
+      "owner": "docketmill",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "ferryrelay.shadow_reads",
+      "default": false,
+      "owner": "ferryrelay",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "gantrybridge.strict_tls",
+      "default": false,
+      "owner": "gantrybridge",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "ledgerbridge.fast_lane",
+      "default": true,
+      "owner": "ledgerbridge",
+      "description": "Kill switch; leave as is unless paged."
+    },
+    {
+      "name": "manifestbridge.shadow_reads",
+      "default": false,
+      "owner": "manifestbridge",
+      "description": "Kill switch; leave as is unless paged."
+    },
+    {
+      "name": "manifestbridge.strict_tls",
+      "default": false,
+      "owner": "manifestbridge",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "manifestgate.bulk_mode",
+      "default": false,
+      "owner": "manifestgate",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "manifestgate.strict_tls",
+      "default": false,
+      "owner": "manifestgate",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "parcelrelay.quiet_retries",
+      "default": false,
+      "owner": "parcelrelay",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "parcelrelay.wide_window",
+      "default": false,
+      "owner": "parcelrelay",
+      "description": "Kill switch; leave as is unless paged."
+    },
+    {
+      "name": "parcelscope.quiet_retries",
+      "default": true,
+      "owner": "parcelscope",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "parcelscope.strict_tls",
+      "default": false,
+      "owner": "parcelscope",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "skiffgate.quiet_retries",
+      "default": true,
+      "owner": "skiffgate",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "skiffhook.wide_window",
+      "default": false,
+      "owner": "skiffhook",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "skiffrelay.shadow_reads",
+      "default": false,
+      "owner": "skiffrelay",
+      "description": "Kill switch; leave as is unless paged."
+    },
+    {
+      "name": "skiffrelay.strict_tls",
+      "default": true,
+      "owner": "skiffrelay",
+      "description": "Kill switch; leave as is unless paged."
+    },
+    {
+      "name": "skiffscope.fast_lane",
+      "default": false,
+      "owner": "skiffscope",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "skiffscope.strict_tls",
+      "default": false,
+      "owner": "skiffscope",
+      "description": "Rollout switch for the change described in the service README."
+    },
+    {
+      "name": "skiffworks.lazy_init",
+      "default": false,
+      "owner": "skiffworks",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "skiffworks.strict_tls",
+      "default": true,
+      "owner": "skiffworks",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "sluicehook.strict_tls",
+      "default": true,
+      "owner": "sluicehook",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "sluicehook.wide_window",
+      "default": true,
+      "owner": "sluicehook",
+      "description": "Temporary; remove after the migration."
+    },
+    {
+      "name": "tallyscope.wide_window",
+      "default": false,
+      "owner": "tallyscope",
+      "description": "Experimental; see the service README."
+    },
+    {
+      "name": "tallyyard.bulk_mode",
+      "default": false,
+      "owner": "tallyyard",
+      "description": "Kill switch; leave as is unless paged."
+    }
+  ]
+}

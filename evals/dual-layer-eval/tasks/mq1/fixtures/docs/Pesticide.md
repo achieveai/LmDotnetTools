@@ -1,0 +1,3 @@
+# Pesticide
+
+The World Health Organization and the UN Environment Programme estimate that each year, 3 million workers in agriculture in the developing world experience severe poisoning from pesticides, about 18,000 of whom die. Owing to inadequate regulation and safety precautions, 99% of pesticide related deaths occur in developing countries that account for only 25% of pesticide usage. According to one study, as many as 25 million workers in developing countries may suffer mild pesticide poisoning yearly. There are several careers aside from agriculture that may also put individuals at risk of health effects from pesticide exposure including pet groomers, groundskeepers, and fumigators.

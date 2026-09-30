@@ -1,0 +1,3 @@
+# Water supply and sanitation in South Africa
+
+Total annual water withdrawal was estimated at 12.5 km3 in 2000, of which about 17% was for municipal water use. In the northern parts of the country, both surface water and groundwater resources are nearly fully developed and utilised. In the well - watered southeastern regions of the country significant undeveloped and little - used resources exist. The Gauteng area around Johannesburg, which is very water scarce, receives water from various dams in the area such as the Vaal Dam and imports water from the Orange River system through the Lesotho Highlands Water Project, in particular from the Katse Dam. Cape Town receives its drinking water from an extensive system of rivers and dams, including the Berg River Dam.

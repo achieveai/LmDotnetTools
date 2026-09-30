@@ -1,0 +1,28 @@
+# Service configuration for ferryrelay.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+# Training material that accompanies this document is available on the learning portal.
+
+include:
+  - shared/core-lean.yaml
+  - shared/batch-baseline.yaml
+  - shared/batch-wide.yaml
+
+mesh:
+  pool_size: 120
+  max_connections: 312
+  # circuit_threshold: 28
+  retry_budget: 4
+
+telemetry:
+  service_name: ferryrelay
+  exporter: otlp
+  sample_rate: 0.25
+  flush_interval_s: 30
+
+labels:
+  tier: silver
+  cost_centre: cc9952
+  paging_channel: ops95
+
+admin_port: 9127

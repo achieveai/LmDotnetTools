@@ -1,0 +1,3 @@
+# Mary Poppins Returns
+
+Mary Poppins Returns is an upcoming American musical fantasy film directed by Rob Marshall, with a screenplay by David Magee and from a story by Magee, Marshall, and John DeLuca. A sequel to the 1964 film Mary Poppins, the film stars Emily Blunt as Mary Poppins with Lin - Manuel Miranda, Ben Whishaw, Emily Mortimer, Pixie Davies, Joel Dawson, Nathanael Saleh, Julie Walters, Colin Firth, and Meryl Streep in supporting roles. Set in 1930s London, 25 years after the events of the 1964 film, it sees Mary Poppins, the former nanny of Jane and Michael Banks, re-visiting them after a family tragedy. Dick Van Dyke is the only original actor to return in the sequel.

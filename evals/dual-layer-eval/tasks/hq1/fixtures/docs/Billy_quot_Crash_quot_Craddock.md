@@ -1,0 +1,3 @@
+# Billy &quot;Crash&quot; Craddock
+
+Billy Wayne "Crash" Craddock (born June 16, 1939) is an American country and rockabilly singer. He first gained popularity in Australia in the 1950s with a string of rockabilly hits, including the Australian number one hit "Boom Boom Baby". Switching to country music, he gained popularity in United States in the 1970s with a string of top ten country hits, several of which were number one hits, including "Rub It In", "Broken Down in Tiny Pieces", and "Ruby Baby". Craddock is known to fans as "The King Of Country Rock Music " and "Mr. Country Rock" for his uptempo rock-influenced style of country music.

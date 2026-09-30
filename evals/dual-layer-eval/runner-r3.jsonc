@@ -1,0 +1,63 @@
+// Round 3: the separating tasks (fw2 Luna-hard, mq1) plus an fw1 probe of the reference-context
+// hypothesis. Variant names carry the round so each run gets a fresh workspace folder (the runner
+// never reuses one, and earlier rounds' folders are kept). Baselines use r3-base with all models;
+// the Opuna arms use --models opuna. Raw transcripts go to .logs/dual-eval-raw (off-repo).
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r3-base",
+      "extraArgs": []
+    },
+    {
+      "name": "r3-shape",
+      "extraArgs": [
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md"
+      ]
+    },
+    {
+      "name": "r3-briefs-shape",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md"
+      ]
+    },
+    {
+      "name": "r3-briefs-shape-noref",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    }
+  ],
+  "tasks": [
+    "fw2",
+    "mq1",
+    "fw1"
+  ],
+  "seeds": 1,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 40,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

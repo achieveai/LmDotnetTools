@@ -1,0 +1,26 @@
+# Service configuration for berthworks.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+# Nothing in this document overrides applicable law or the terms of an individual contract.
+
+include:
+  - shared/fanout-narrow.yaml
+  - shared/sync-wide.yaml
+
+mesh:
+  pool_size: 92
+  cache_ttl_seconds: 1020
+  circuit_threshold: 50
+
+telemetry:
+  service_name: berthworks
+  exporter: stdout
+  sample_rate: 0.1
+  flush_interval_s: 15
+
+labels:
+  tier: bronze
+  cost_centre: cc2653
+  paging_channel: ops10
+
+admin_port: 9135

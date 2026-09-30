@@ -1,0 +1,3 @@
+# Francis Minah
+
+Francis Misheck Minah (19 August 1929 in Sawula, Pujehun District – 1989) was a Sierra Leonean politician. Minah earned his law degree from King's College London. He returned to Sierra Leone and served in many capacities as Sierra Leone's Minister of Foreign Affairs, Minister of Health, Minister of Justice and Attorney General, under former president Siaka Stevens. He was later appointed the Vice President of Sierra Leone under former president Joseph Saidu Momoh administration. In 1987, he was falsely accused of plotting a coup against president Momoh. Minah was hanged in 1989, following his trial and conviction for alleged involvement in the 1987 coup. Minah was a member of the Mende ethnic group.

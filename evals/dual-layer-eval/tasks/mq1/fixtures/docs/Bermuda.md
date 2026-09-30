@@ -1,0 +1,3 @@
+# Bermuda
+
+Because of its limited land area, Bermuda has had difficulty with over-population. In the first two centuries of settlement, it relied on steady human emigration to keep the population manageable.[citation needed] Before the American Revolution more than ten thousand Bermudians (over half of the total population through the years) gradually emigrated, primarily to the Southern United States. As Great Britain displaced Spain as the dominant European imperial power, it opened up more land for colonial development. A steady trickle of outward migration continued. With seafaring the only real industry in the early decades, by the end of the 18th century, at least a third of the island's manpower was at sea at any one time.

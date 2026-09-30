@@ -1,0 +1,3 @@
+# Arizona
+
+Arizona ( (listen); Navajo: Hoozdo Hahoodzo Navajo pronunciation: [xòːztò xɑ̀xòːtsò]; O'odham: Alĭ ṣonak Uto-Aztecan pronunciation: [ˡaɺi ˡʂonak]) is a state in the southwestern region of the United States. It is also part of the Western and the Mountain states. It is the sixth largest and the 14th most populous of the 50 states. Its capital and largest city is Phoenix. Arizona shares the Four Corners region with Utah, Colorado, and New Mexico; its other neighboring states are Nevada and California to the west and the Mexican states of Sonora and Baja California to the south and southwest.

@@ -255,6 +255,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     public IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
 
     /// <summary>
+    /// Sees every input offered through <see cref="SendAsync(UserInput, CancellationToken)"/> and
+    /// <see cref="TrySendAsync(UserInput, CancellationToken)"/> before anything else happens to it, and
+    /// may take it so that it is never queued here. Null, the default, changes nothing. See
+    /// <see cref="IInputTap"/> for what it is for and what a taken input leaves behind (nothing).
+    /// </summary>
+    public IInputTap? InputTap { get; set; }
+
+    /// <summary>
     /// What the host wired up for lifecycle observation and tool approval.
     /// <see cref="MultiTurnLifecycleServices.Disabled"/> when the host wired up nothing.
     /// </summary>
@@ -1629,6 +1637,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+        return InputTap is { } tap ? SendThroughTapAsync(tap, input, ct) : SendQueued(input, ct);
+    }
+
+    private async ValueTask<SendReceipt> SendThroughTapAsync(IInputTap tap, UserInput input, CancellationToken ct)
+    {
+        if (await tap.OnInputAsync(input, ct) == InputTapDecision.Taken)
+        {
+            return TakenReceipt(input);
+        }
+
+        return await SendQueued(input, ct);
+    }
+
+    /// <summary>
+    /// The receipt for an input an <see cref="IInputTap"/> took: nothing is queued here, so it names no
+    /// accepted turn of THIS agent, but the caller delivered its input and is owed a receipt all the same.
+    /// </summary>
+    private static SendReceipt TakenReceipt(UserInput input) =>
+        new(input.InputId ?? Guid.NewGuid().ToString("N"), input.InputId, DateTimeOffset.UtcNow);
+
+    private ValueTask<SendReceipt> SendQueued(UserInput input, CancellationToken ct)
+    {
         var inputId = input.InputId;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
@@ -1733,6 +1763,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        // Before the durable accepted-input write: a taken input is not this agent's turn, and a
+        // record of it here would leave the conversation reading busy for a turn that runs elsewhere.
+        if (InputTap is { } tap && await tap.OnInputAsync(input, ct) == InputTapDecision.Taken)
+        {
+            return TakenReceipt(input);
+        }
 
         var inputId = input.InputId;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");

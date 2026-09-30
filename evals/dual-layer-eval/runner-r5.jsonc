@@ -1,0 +1,57 @@
+// Round 5: the must-read task tr1, where grep cannot skip the reading. 2 seeds.
+// Baselines: --models claude-opus-5.5,gpt-6-luna --variants r5-base.
+// Opuna arms: --models opuna --variants r5-base,r5-lean-shape,r5-briefs-shape.
+// r5-base on Opuna is the shipped default: built-in prompts, reference context off (the host default since round 4).
+// The variant prompt files no longer claim the executor sees the task (FINDINGS finding 13).
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r5-base",
+      "extraArgs": []
+    },
+    {
+      "name": "r5-lean-shape",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-lean.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    },
+    {
+      "name": "r5-briefs-shape",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-briefs.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-report-shape.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    }
+  ],
+  "tasks": [
+    "tr1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

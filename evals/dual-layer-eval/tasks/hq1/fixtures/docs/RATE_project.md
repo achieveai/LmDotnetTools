@@ -1,0 +1,3 @@
+# RATE project
+
+The RATE project (Radioisotopes and the Age of The Earth) was a research project conducted by the Creation Research Society and the Institute for Creation Research between 1997 and 2005 to assess the validity of radiometric dating and other dating techniques in the light of the doctrine of a recent creation. It was funded by $250,000 from the Institute for Creation Research and over $1 million in donations. The RATE team was chaired by Larry Vardiman (meteorology) and included Steven A. Austin (soft rock geology), John Baumgardner (geophysics), Steven W. Boyd (Hebrew), Eugene F. Chaffin (physics), Donald B. DeYoung (physics), Russell Humphreys (physics) and Andrew Snelling (hard rock geology).

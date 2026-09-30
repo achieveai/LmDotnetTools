@@ -1,0 +1,3 @@
+# Tara Hugo Sings Philip Glass
+
+Tara Hugo sings Philip Glass is a 2012 album by mezzo-soprano and actress Tara Hugo of songs of composer Philip Glass. The recording project was initiated by Glass himself who asked collaborator and producer Kurt Munkacsi to present pieces that Glass had composed for larger music ensembles as a song recital for small ensemble. The recital album includes songs Glass had composed with or for singers Leonard Cohen (Book of Longing), Natalie Merchant, Mick Jagger and poet Allen Ginsberg. The album also includes new arrangements by Trevor Gureckis of Glass instrumental music set to new lyrics written by Tara Hugo.

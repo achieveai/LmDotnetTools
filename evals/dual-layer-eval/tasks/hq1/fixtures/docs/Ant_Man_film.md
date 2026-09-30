@@ -1,0 +1,3 @@
+# Ant-Man (film)
+
+Ant-Man is a 2015 American superhero film based on the Marvel Comics characters of the same name: Scott Lang and Hank Pym. Produced by Marvel Studios and distributed by Walt Disney Studios Motion Pictures, it is the twelfth film of the Marvel Cinematic Universe (MCU). The film was directed by Peyton Reed, with a screenplay by the writing teams Edgar Wright and Joe Cornish, and Adam McKay and Paul Rudd, and stars Rudd, Evangeline Lilly, Corey Stoll, Bobby Cannavale, Michael Peña, Tip "T.I." Harris, Anthony Mackie, Wood Harris, Judy Greer, David Dastmalchian, and Michael Douglas. In "Ant-Man", Lang must help defend Pym's Ant-Man shrinking technology and plot a heist with worldwide ramifications.

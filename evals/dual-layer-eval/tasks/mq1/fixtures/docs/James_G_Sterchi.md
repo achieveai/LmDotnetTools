@@ -1,0 +1,3 @@
+# James G. Sterchi
+
+James Gilbert Sterchi (June 23, 1867 – December 9, 1932) was an American businessman, best known as the cofounder and head of the furniture wholesaler, Sterchi Brothers Furniture Company. At its height, Sterchi Brothers was the world's largest furniture store chain, with sixty-five stores across the southeastern United States and a worldwide customer base. In 1946, the company became the first Knoxville-based firm to be listed on the New York Stock Exchange. The company's ten-story headquarters, now called Sterchi Lofts, stands prominently along Knoxville's skyline, and Sterchi's home in northern Knoxville, Stratford Mansion, is listed on the National Register of Historic Places.

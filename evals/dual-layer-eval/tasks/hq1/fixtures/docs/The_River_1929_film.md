@@ -1,0 +1,3 @@
+# The River (1929 film)
+
+The River is a 1929 partial-talkie drama film directed by Frank Borzage, and starring Charles Farrell and Mary Duncan. Much of the film has been lost. A reconstructed version, using still images and explanatory titlecards to bridge the missing scenes, was produced by the Munich Filmmuseum, in collaboration with the cinémathèques of Switzerland and Luxembourg. This version was screened in 2006 by the American Museum of the Moving Image in New York City. Borzage also directed Farrell, opposite Janet Gaynor, in "Seventh Heaven" (1927), "Street Angel" (1928), and "Lucky Star" (1929) during this period.

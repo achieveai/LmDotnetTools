@@ -1,0 +1,26 @@
+{
+  "family": "judged-aggregation",
+  "split": "dev",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 45,
+  "requiredFixtures": [
+    {
+      "glob": "policy/*.md",
+      "count": 1
+    },
+    {
+      "glob": "status/*.md",
+      "count": 1
+    },
+    {
+      "glob": "tickets/*.md",
+      "count": 157
+    }
+  ]
+}

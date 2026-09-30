@@ -1,0 +1,30 @@
+{
+  "source": "musique",
+  "raw_file": "musique_ans_v1.0_dev.jsonl",
+  "raw_sha256": "15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b",
+  "seed": 20260924,
+  "hop_mix": {
+    "2hop": 2,
+    "3hop": 3,
+    "4hop": 3
+  },
+  "distractor_questions": 52,
+  "max_answer_chars": 40,
+  "max_answer_words": 5,
+  "blurb": "`docs/` holds {files} short encyclopedia articles, one Markdown file per article; the file name is the article title. Most of them have nothing to do with any of the {n} questions below. Every question is multi-hop: its answer takes facts from two to four different articles chained together (find what the first clue points to, then look that up, and so on).",
+  "header": "# mq1 — multi-hop QA over a shared corpus with distractors (MuSiQue)\n\nFamily `qa-multihop`, split `dev`. Workspace = `fixtures/` (`docs/*.md`, {files} article files, {mb} MB).\n{n} MuSiQue-answerable questions (2 two-hop, 3 three-hop, 3 four-hop) share one corpus: the 20\nparagraphs of each target question plus the paragraphs of 52 other MuSiQue questions as distractors,\nmerged by title. Stresses: many opens, most content useless, chained lookups whose intermediate\nentity must be carried between reads. Checker: normalized exact match or token F1 >= 0.8 against\nanswer + aliases (`hidden/key.json`); score = correct / {n}. Knobs: `hidden/build.json`.",
+  "exclude_source_ids": {
+    "2hop__75169_92673": "gold 'latitude 90 ° North' does not answer the question (bad upstream label)",
+    "4hop1__342858_131850_33952_34099": "ambiguous chain: supporting paragraphs mix Yuma, Colorado and Yuma County, Arizona"
+  },
+  "extra_aliases": {
+    "3hop1__90327_78276_68042": {
+      "aliases": [
+        "2010",
+        "2010 elections",
+        "2010 midterm elections"
+      ],
+      "reason": "upstream gold is 'the 2010 election'; the bare year and plural are the same answer"
+    }
+  }
+}

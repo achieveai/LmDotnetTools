@@ -1,0 +1,3 @@
+# Nisbet Balfour
+
+He was born in Dunbog, in the county of Fife, Scotland in 1743. Joining the 4th Regiment of Foot as ensign in 1761, he rose to become one of Cornwallis' most trusted officers during the American Revolution. He fought and was severely injured in the Battle of Bunker Hill (Breed's Hill) and also participated in battles in Elizabethtown, Brandywine, and Germantown, and was made Lieutenant-Colonel (of the 23rd Regiment of Foot) in 1778. He accompanied Cornwallis to Charleston where he was sometimes commandant. He was promoted to Major General in 1793, Colonel of both the 93rd Foot and the 39th Foot in 1794 and served in the war with France.

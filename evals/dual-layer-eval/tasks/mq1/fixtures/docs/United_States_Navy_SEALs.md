@@ -1,0 +1,5 @@
+# United States Navy SEALs
+
+The Navy needed to determine its role within the special operations arena. In March 1961, Admiral Arleigh Burke, the Chief of Naval Operations, recommended the establishment of guerrilla and counter-guerrilla units. These units would be able to operate from sea, air or land. This was the beginning of the Navy SEALs. All SEALs came from the Navy's Underwater Demolition Teams, who had already gained extensive experience in commando warfare in Korea; however, the Underwater Demolition Teams were still necessary to the Navy's amphibious force.
+
+The United States Navy's ``Sea, Air, and Land ''Teams, commonly abbreviated as the Navy SEALs, are the U.S. Navy's primary special operations force and a component of the Naval Special Warfare Command. Among the SEALs' main functions are conducting small - unit maritime military operations that originate from, and return to, a river, ocean, swamp, delta, or coastline. The SEALs are trained to operate in all environments (Sea, Air, and Land) for which they are named.

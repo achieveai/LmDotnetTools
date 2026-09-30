@@ -697,9 +697,9 @@ public class ConversationsController(
                         return m;
                     }
 
-                    // The experimental elapsed-time notice is for the model only: it is persisted so it
-                    // stays in future context, but the browser never renders it, live or on reload.
-                    if (ElapsedTimeNotice.IsNotice(msg))
+                    // Loop-authored texts (the elapsed-time notice, the empty-reply nudge) are for the model
+                    // only: persisted so they stay in future context, but never rendered, live or on reload.
+                    if (EmptyReplyNudge.IsLoopAuthored(msg))
                     {
                         return null;
                     }
@@ -791,6 +791,9 @@ public class ConversationsController(
     /// roster is the persisted descendant scan, so a sub-agent that never persisted a thread has no row.
     /// Returns the existence-hiding 404 only for a thread neither the store nor the pool knows.
     /// </remarks>
+    /// <summary>The agent id the context report gives a dual-layer conversation's executor loop.</summary>
+    public const string ExecutorAgentId = "executor";
+
     [HttpGet("{threadId}/context")]
     public async Task<IActionResult> GetContext(string threadId, CancellationToken ct = default)
     {
@@ -822,6 +825,25 @@ public class ConversationsController(
             ))
             .ToList();
 
+        // A dual-layer conversation has a second loop of its own, the executor, on a thread the
+        // descendant scan does not cover (it is not a spawned agent). Its spend is already folded into
+        // the root ledger under its thread id; this gives it a row so the split between the two
+        // layers is visible.
+        var executorThreadId = AchieveAi.LmDotnetTools.LmMultiTurn.DualLayer.DualLayerThreadIds.ExecutorFor(threadId);
+        if (await store.LoadMetadataAsync(executorThreadId, ct) is not null)
+        {
+            roster.Insert(
+                0,
+                new AgentExecutionRef(
+                    threadId,
+                    executorThreadId,
+                    ExecutorAgentId,
+                    AgentExecutionRef.RootAgentId,
+                    UsageExecutionKind.Executor
+                )
+            );
+        }
+
         // Live lookup walks the parent chain: the root loop is pooled, every descendant hangs off its
         // parent's SubAgentManager. Memoised so a deep roster resolves each ancestor once.
         var liveLoops = new Dictionary<string, MultiTurnAgentLoop?>(StringComparer.Ordinal);
@@ -837,9 +859,17 @@ public class ConversationsController(
             {
                 loop = agentPool.TryGet(id, out var pooled) ? pooled as MultiTurnAgentLoop : null;
             }
+            else if (id == executorThreadId)
+            {
+                // The executor is not in the pool; the pooled planner leads to it.
+                var planner = LiveLoop(threadId);
+                var host = DualLayerConversation.SubAgentHost(planner);
+                loop = ReferenceEquals(host, planner) ? null : host;
+            }
             else if (parentByThread.GetValueOrDefault(id) is { } parentId && parentId != id)
             {
-                var manager = LiveLoop(parentId)?.SubAgentManager;
+                // The root's children hang off the executor's manager when the root is a dual-layer pair.
+                var manager = DualLayerConversation.SubAgentHost(LiveLoop(parentId))?.SubAgentManager;
                 loop =
                     manager is not null && manager.TryGetAgent(AgentExecutionRef.AgentIdFromThreadId(id), out var child)
                         ? child as MultiTurnAgentLoop

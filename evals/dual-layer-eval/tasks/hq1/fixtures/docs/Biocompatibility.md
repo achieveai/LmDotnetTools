@@ -1,0 +1,3 @@
+# Biocompatibility
+
+Biocompatibility is related to the behavior of biomaterials in various contexts. The term refers to the ability of a material to perform with an appropriate host response in a specific situation. The ambiguity of the term reflects the ongoing development of insights into how biomaterials interact with the human body and eventually how those interactions determine the clinical success of a medical device (such as pacemaker, hip replacement or stent). Modern medical devices and prostheses are often made of more than one material so it might not always be sufficient to talk about the biocompatibility of a specific material.

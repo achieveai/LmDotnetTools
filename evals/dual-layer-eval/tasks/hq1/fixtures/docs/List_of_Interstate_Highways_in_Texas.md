@@ -1,0 +1,3 @@
+# List of Interstate Highways in Texas
+
+The Interstate Highways in Texas are all owned and maintained by the U.S. state of Texas. The Texas Department of Transportation (TxDOT) is the agency responsible for the day-to-day maintenance and operations of the Interstate Highways in Texas. The Interstate Highway System in Texas covers 3239.7 mi and consists of twelve primary routes, seven auxiliary routes and Interstate 35 (I-35) which is split into two branches, I-35E and I-35W, that provide access to both Fort Worth and Dallas. The longest segment of Interstate Highway in Texas is I-10 at 878.6 mi ; the shortest is I-110 at 0.9 mi .

@@ -1,0 +1,3 @@
+# California Golden Seals
+
+The California Golden Seals were a team in the National Hockey League (NHL) from 1967 to 1976. Initially named California Seals, the team was renamed Oakland Seals partway through the 1967 -- 68 season (on December 8, 1967), and then to California Golden Seals in 1970. The Seals were one of six teams added to the league as part of the 1967 NHL expansion. Based in Oakland, California, they played their home games at the Oakland -- Alameda County Coliseum Arena. However, the Seals were never successful at the gate, and eventually moved to Cleveland to become the Cleveland Barons in 1976.

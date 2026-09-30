@@ -1,0 +1,14 @@
+# deploy pipeline
+# Where a step cannot be completed, record the reason in the ticket and continue with the next
+# step. Where this document conflicts with a local procedure, the local procedure should be
+# updated to match.
+
+stages:
+  - name: compile
+    timeout_minutes: 10
+  - name: package
+    timeout_minutes: 20
+  - name: restore
+    timeout_minutes: 10
+  - name: unit
+    timeout_minutes: 10

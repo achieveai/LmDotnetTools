@@ -1,0 +1,24 @@
+# Service configuration for skiffhook.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# The document editor confirms each year that the contact details in this document are current.
+# Any personal data handled under this process is subject to the data-protection handbook.
+
+include:
+  - shared/sync-wide.yaml
+
+mesh:
+  compression: zstd
+  circuit_threshold: 17
+
+telemetry:
+  service_name: skiffhook
+  exporter: stdout
+  sample_rate: 0.1
+  flush_interval_s: 10
+
+labels:
+  tier: bronze
+  cost_centre: cc8650
+  paging_channel: ops76
+
+admin_port: 9168

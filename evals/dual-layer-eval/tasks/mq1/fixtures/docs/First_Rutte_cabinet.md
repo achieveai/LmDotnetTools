@@ -1,0 +1,3 @@
+# First Rutte cabinet
+
+The First Rutte cabinet, also called the Rutte–Verhagen cabinet was the cabinet of the Netherlands from 14 October 2010 until 5 November 2012. The cabinet was formed by the political parties People's Party for Freedom and Democracy (VVD) and the Christian Democratic Appeal (CDA) after the election of 2010. The right-wing cabinet was a minority government in the House of Representatives but was supported by the Party for Freedom (PVV) for a majority. It was the first of three cabinets of Mark Rutte, the Leader of the People's Party for Freedom and Democracy as Prime Minister, with Maxime Verhagen the Leader of the Christian Democratic Appeal serving as Deputy Prime Minister.

@@ -1,0 +1,3 @@
+# Kentucky Gambler
+
+"Kentucky Gambler" is a 1974 song written and performed by Dolly Parton. "Kentucky Gambler" was issued as a track from Dolly Parton's, "The Bargain Store" album from 1975. That same year, Merle Haggard, covered "Kentucky Gambler" where it was his nineteenth number one song on the country chart. (Coincidentally, Parton's "The Bargain Store" album featured a cover of a Haggard composition, "You'll Always Be Special to Me".) The Merle Haggard version stayed at number one for a single week and spent a total of eleven weeks on the chart. (The following year, Haggard would cover another Dolly Parton song, "The Seeker".)

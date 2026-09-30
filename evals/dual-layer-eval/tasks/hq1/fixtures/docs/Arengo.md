@@ -1,0 +1,3 @@
+# Arengo
+
+The Arengo was the name of the assembly that ruled San Marino from the fifth century C.E. to 1243. It was made up of the heads of San Marino's Great families and had no leader or fixed meeting place. This made San Marino almost unique in the period as a state that had no Head of State. However this form of rule was cumbersome and the Arengo was crippled by feuds between the Great Families. By the early 13th century the Arengo had become so dysfunctional that the citizens of San Marino decided to elect their own assembly, which they called the Grand and General Council. This assembly became very powerful, and by 1243 the Pope, who was the nominal ruler of San Marino, made the Grand and General Council the supreme body of San Marino.

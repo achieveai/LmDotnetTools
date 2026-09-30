@@ -1,0 +1,24 @@
+# Service configuration for coraclescope.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Training material that accompanies this document is available on the learning portal. Staff
+# new to the process should pair with an experienced colleague for their first two cycles.
+
+include:
+  - shared/backpressure-lean.yaml
+
+mesh:
+  # cache_ttl_seconds: 3570
+  request_timeout_ms: 3050
+
+telemetry:
+  service_name: coraclescope
+  exporter: stdout
+  sample_rate: 0.1
+  flush_interval_s: 5
+
+labels:
+  tier: silver
+  cost_centre: cc8188
+  paging_channel: ops81
+
+admin_port: 9173

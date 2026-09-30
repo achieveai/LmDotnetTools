@@ -1,0 +1,3 @@
+# Vulgate
+
+The translation was largely the work of St Jerome, who in 382 had been commissioned by Pope Damasus I to revise the Vetus Latina (``Old Latin '') Gospels then in use by the Roman Church. Jerome, on his own initiative, extended this work of revision and translation to include most of the Books of the Bible, and once published, the new version was widely adopted and eventually eclipsed the Vetus Latina; so that by the 13th century, it took over from the former version the appellation of`` versio vulgata'' (the ``version commonly used '') or vulgata for short, and in Greek as βουλγάτα (`` Voulgata'').

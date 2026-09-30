@@ -1,0 +1,3 @@
+# Benjamin Burnley
+
+Benjamin Jackson "Ben" Burnley IV (born March 10, 1978) is an American musician, composer, and record producer, best known as the founder and frontman of the American rock band Breaking Benjamin. As the sole constant of the group, Burnley has served as its principal songwriter, lead vocalist, and guitarist since its inception in 1992. Since signing with Hollywood Records in 2002, Burnley has composed five studio albums under the name Breaking Benjamin, two of which have reached platinum and one of which has reached gold in the United States. Outside of Breaking Benjamin, Burnley has also collaborated with acts such as Adam Gontier and Red.

@@ -1,0 +1,3 @@
+# Athanasius of Alexandria
+
+However Cornelius Clifford places his birth no earlier than 296 and no later than 298, based on the fact that Athanasius indicates no first hand recollection of the Maximian persecution of 303, which he suggests Athanasius would have remembered if he had been ten years old at the time. Secondly, the Festal Epistles state that the Arians had accused Athanasius, among other charges, of not having yet attained the canonical age (30) and thus could not have been properly ordained as Patriarch of Alexandria in 328. The accusation must have seemed plausible. The Orthodox Church places his year of birth around 297.

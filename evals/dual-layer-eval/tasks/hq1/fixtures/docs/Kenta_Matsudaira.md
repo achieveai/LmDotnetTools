@@ -1,0 +1,3 @@
+# Kenta Matsudaira
+
+Kenta Matsudaira (松平 健太 , Matsudaira Kenta , born April 11, 1991) is a Japanese table tennis player. Winner of the 2006 World Junior Championships in singles, he was the world number one junior player in 2008. He is world-renowned for his tomahawk serve, which he has popularized throughout his career. The serve itself is rather unorthodox but still ample in efficiency, making it even more effective due to its unfamiliar nature. His serve has been one of the imperative factors in his illustrious junior career, alongside making him a top 50 player for many years. He also utilizes its reverse variation.

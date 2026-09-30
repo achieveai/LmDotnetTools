@@ -1,0 +1,3 @@
+# Urbain Grandier
+
+Urbain Grandier (born in 1590 in Bouère, died in Mayenne – 18 August 1634 in Loudun) was a French Catholic priest who was burned at the stake after being convicted of witchcraft, following the events of the so-called "Loudun Possessions". The circumstances of Father Grandier's trial and execution have attracted the attention of writers Alexandre Dumas, père, Aldous Huxley and the playwright John Whiting, composers like Krzysztof Penderecki and Peter Maxwell Davies, as well as historian Jules Michelet and various scholars of European witchcraft. Most modern commentators have concluded that Grandier was the victim of a politically motivated persecution led by the powerful Cardinal Richelieu.

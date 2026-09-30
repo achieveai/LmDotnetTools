@@ -1,0 +1,3 @@
+# Marshall Islands
+
+Legislative power lies with the Nitijela. The upper house of Parliament, called the Council of Iroij, is an advisory body comprising twelve tribal chiefs. The executive branch consists of the President and the Presidential Cabinet, which consists of ten ministers appointed by the President with the approval of the Nitijela. The twenty-four electoral districts into which the country is divided correspond to the inhabited islands and atolls. There are currently four political parties in the Marshall Islands: Aelon̄ Kein Ad (AKA), United People's Party (UPP), Kien Eo Am (KEA) and United Democratic Party (UDP). Rule is shared by the AKA and the UDP. The following senators are in the legislative body:

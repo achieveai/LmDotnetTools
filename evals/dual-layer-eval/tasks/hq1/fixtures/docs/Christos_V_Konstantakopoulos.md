@@ -1,0 +1,3 @@
+# Christos V. Konstantakopoulos
+
+Christos V. Konstantakopoulos is a Greek film producer and writer working in Faliro House Productions. He began producing in 2009, and in 2011 he served as executive producer in Jeff Nichols' "Take Shelter". In 2013 he produced Richard Linklater's "Before Midnight", the third entry of the "Before" trilogy, for which he has been nominated for several awards. He made his screenwriting debut in 2014 with Yannis Economides' "Mikro psari". In 2014 he worked in the Cannes-selected "Only Lovers Left Alive" and "Love Is Strange", amongst many anothers. Among his upcoming works as producer or executive producer are Terrence Malick's "Knight of Cups" and "Weightless" and he has an executive producer credit on "The Blue Meanie".

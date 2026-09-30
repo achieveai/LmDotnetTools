@@ -1,0 +1,10 @@
+# Shared fragment stream-narrow. Services pull it in through the `include:` list of their service.yaml.
+# Nothing in this document overrides applicable law or the terms of an individual contract.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance.
+
+include:
+  - shared/core-lean.yaml
+
+mesh:
+  cache_ttl_seconds: 720

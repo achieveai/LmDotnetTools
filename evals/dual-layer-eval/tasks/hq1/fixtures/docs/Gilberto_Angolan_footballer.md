@@ -1,0 +1,3 @@
+# Gilberto (Angolan footballer)
+
+Felisberto Sebastião da Graça Amaral, more commonly known as Gilberto (born 21 September 1982), is a retired Angolan footballer. He was formerly playing for Egypt's Al-Ahly and then played for Belgian club Lierse S.K.. He suffered a knee injury that lasted about a year. He was the first choice left winger. He came from Angola team AS Luanda and is in the Angolan team. An Achilles tendon injury made him miss the 2006 African Cup of Nations and the 2006 FIFA World Cup in Germany. He was part of the Angolan national team during the 2008 African Cup of Nations in Ghana.

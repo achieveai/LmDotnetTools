@@ -1,0 +1,3 @@
+# Plymouth County Correctional Facility
+
+Plymouth County Correctional Facility is a maximum-security prison located in Plymouth, Massachusetts Operated by the Plymouth County Sheriff's Department. The prison is the largest prison in Plymouth, and is much larger than the Massachusetts Correctional Institution - Plymouth, located in the Myles Standish State Forest. The prison is known for housing several celebrity inmates, most notably "" winner Richard Hatch, shoe-bomber Richard Reid, former President of Liberia Charles Taylor, reputed Boston mob boss James "Whitey" Bulger, as well as multiple murderer Gary Sampson, and former New England crime boss Francis "Cadillac Frank" Salemme.

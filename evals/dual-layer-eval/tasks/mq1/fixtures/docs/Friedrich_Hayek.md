@@ -1,0 +1,3 @@
+# Friedrich Hayek
+
+During Hayek's years at the University of Vienna, Carl Menger's work on the explanatory strategy of social science and Friedrich von Wieser's commanding presence in the classroom left a lasting influence on him. Upon the completion of his examinations, Hayek was hired by Ludwig von Mises on the recommendation of Wieser as a specialist for the Austrian government working on the legal and economic details of the Treaty of Saint Germain. Between 1923 and 1924 Hayek worked as a research assistant to Prof. Jeremiah Jenks of New York University, compiling macroeconomic data on the American economy and the operations of the US Federal Reserve.

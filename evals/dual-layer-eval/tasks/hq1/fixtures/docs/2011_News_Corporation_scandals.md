@@ -1,0 +1,3 @@
+# 2011 News Corporation scandals
+
+In mid-2011, out of a series of investigations following up the "News of the World" royal phone hacking scandal of 2005–2007, a series of related scandals developed surrounding other News Corporation properties—where initially the scandal appeared contained to a single journalist at the "News of the World" (with the 2007 jailing of Clive Goodman and the resignation of then-editor Andy Coulson), investigations eventually revealed a much wider pattern of wrongdoing. This led to the closure of the "News of the World" on 10 July 2011, an apology by Rupert Murdoch in an advertisement in most British national newspapers, and the withdrawing of News Corporation's bid to take over the majority of BSkyB shares it did not own.

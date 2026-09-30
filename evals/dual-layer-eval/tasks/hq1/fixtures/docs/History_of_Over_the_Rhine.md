@@ -1,0 +1,3 @@
+# History of Over-the-Rhine
+
+The history of Over-the-Rhine is almost deep as the history of Cincinnati. Over-the-Rhine's built environment has undergone many cultural and demographic changes. The toponym "Over-the-Rhine" is a reference to the Miami and Erie Canal as the Rhine of Ohio. An early reference to the canal as "the Rhine" appears in the 1853 book "White, Red, Black", in which traveler Ferenc Pulszky wrote, "The Germans live all together across the Miami Canal, which is, therefore, here jocosely called the 'Rhine.' " In 1875 writer Daniel J. Kenny referred to the area exclusively as "Over the Rhine." He noted, "Germans and Americans alike love to call the district 'Over the Rhine.' "

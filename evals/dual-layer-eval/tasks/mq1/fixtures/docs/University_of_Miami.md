@@ -1,0 +1,3 @@
+# University of Miami
+
+University of Miami Latin: Universitas Miamiensis Motto Magna est veritas (Latin) Motto in English Great is the truth Type Private Established 1925; 93 years ago (1925) Academic affiliations NAICU SURA ORAU Endowment $949 million (2017) Budget $3.3 billion (2016) Chairman Richard D. Fain President Julio Frenk Provost Jeffrey Duerk Academic staff 3,045 Administrative staff 10,985 Students 16,801 Undergraduates 10,849 Postgraduates 5,952 Location Coral Gables, Florida, U.S. Campus Suburban Total 453 acres (1.83 km) Colors Orange, Green, White Nickname Hurricanes Sporting affiliations NCAA Division I -- ACC Mascot Sebastian the Ibis Website www.miami.edu

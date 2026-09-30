@@ -1,0 +1,3 @@
+# William Shakespeare
+
+William Shakespeare was the son of John Shakespeare, an alderman and a successful glover (glove-maker) originally from Snitterfield, and Mary Arden, the daughter of an affluent landowning farmer. He was born in Stratford-upon-Avon and baptised there on 26 April 1564. His actual date of birth remains unknown, but is traditionally observed on 23 April, Saint George's Day. This date, which can be traced to a mistake made by an 18th-century scholar, has proved appealing to biographers because Shakespeare died on the same date in 1616. He was the third of eight children, and the eldest surviving son.

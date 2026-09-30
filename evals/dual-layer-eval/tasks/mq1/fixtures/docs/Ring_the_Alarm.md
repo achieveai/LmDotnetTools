@@ -1,0 +1,3 @@
+# Ring the Alarm
+
+"Ring the Alarm" is a song recorded by American singer Beyoncé for her second studio album, "B'Day" (2006). It was written by Knowles, Kasseem "Swizz Beatz" Dean and Sean Garrett. Columbia Records released "Ring the Alarm" as the second single from "B'Day" in the United States on October 17, 2006, while "Irreplaceable" (2006) was serviced as the album's second international and third US single. The song's development was motivated by Knowles' role in the Broadway musical adaptation "Dreamgirls" (2006). The cover art of "Ring the Alarm" proved controversial because Knowles used alligators during the photography session. PETA declared that Knowles' posing with a baby alligator was arguably abusive to an animal.

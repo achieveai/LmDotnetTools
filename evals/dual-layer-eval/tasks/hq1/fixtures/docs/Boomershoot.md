@@ -1,0 +1,3 @@
+# Boomershoot
+
+The Boomershoot is a long range precision rifle event held near Orofino, Idaho, each year in late spring. The targets are filled with explosives at ranges from 375 to . Shooters are allowed to engage as many targets as they are able during the all-day event. Nearly every year the amount of explosives has increased; in 2004, the amount of explosives put out for people to shoot was greater than all of the other years combined. In 2005, new targets were introduced with smaller amounts of explosives to reduce window breakage in the surrounding countryside. In recent years, the event has also featured an explosive fireball and an Anvil firing to start the event and entertain the participants.

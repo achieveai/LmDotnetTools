@@ -1,0 +1,25 @@
+# Service configuration for capstanscope.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Readers outside the core audience can skip this section without losing context. Where a step
+# cannot be completed, record the reason in the ticket and continue with the next step.
+
+include:
+  - shared/core-lean.yaml
+
+mesh:
+  queue_depth: 425
+  max_connections: 400
+  request_timeout_ms: 4400
+
+telemetry:
+  service_name: capstanscope
+  exporter: statsd
+  sample_rate: 0.1
+  flush_interval_s: 30
+
+labels:
+  tier: gold
+  cost_centre: cc2665
+  paging_channel: ops91
+
+admin_port: 9138

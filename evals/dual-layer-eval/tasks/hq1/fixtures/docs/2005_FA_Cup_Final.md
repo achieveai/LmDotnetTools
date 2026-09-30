@@ -1,0 +1,3 @@
+# 2005 FA Cup Final
+
+The 2005 FA Cup Final was a football match played between Arsenal and Manchester United on 21 May 2005 at the Millennium Stadium, Cardiff. It was the final match of the 2004–05 FA Cup, the 124th season of English football’s primary cup competition, the FA Cup. Arsenal became the first team to win the FA Cup via a penalty shoot-out, despite being outplayed throughout the game, after neither side managed to score in the initial 90 minutes or in 30 minutes of extra time. The shoot-out finished 5–4 to Arsenal, with Patrick Vieira scoring the winning penalty after Paul Scholes' shot was saved by Arsenal goalkeeper Jens Lehmann.

@@ -1,0 +1,3 @@
+# The Golden Palace
+
+"The Golden Palace" begins where "The Golden Girls" had ended, in the quartet's now-sold Miami house. With Dorothy Zbornak having married and left in the previous series finale, the three remaining roommates (Sophia Petrillo, Rose Nylund, and Blanche Devereaux) decide to invest in a Miami hotel that is up for sale. The hotel, however, is revealed to have been stripped of all of its personnel in an effort to appear more profitable, leaving only two employees: Roland Wilson, the hotel's manager, and Chuy Castillos, the hotel's chef. This requires the women to perform all the tasks of the hotel's staff.

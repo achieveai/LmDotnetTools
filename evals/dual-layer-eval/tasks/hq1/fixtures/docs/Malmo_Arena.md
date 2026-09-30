@@ -1,0 +1,3 @@
+# Malmö Arena
+
+Malmö Arena is a multi-use indoor arena in Malmö, Sweden, and the home of SHL ice hockey club Malmö Redhawks. It is the largest arena in the SHL, and the second-largest indoor arena in Sweden. Apart from hosting Redhawks hockey matches, the arena is often the venue for team handball, floorball, concerts, and other events. It has also hosted indoor athletics. Owned and operated by Parkfast AB, the arena was designed by Mats Matson of MM Matsson Konsult AB, Hannu Helkiö of Pöyry Architects, and Gert Wingårdh of Wingårdh arkitektkontor. Naming rights for the venue are owned by Malmö Stad, in a ten-year contract, agreed in 2007. Malmö Arena hosted the Eurovision Song Contest 2013 between 14 and 18 May 2013.

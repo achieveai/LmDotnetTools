@@ -1,0 +1,3 @@
+# Korean War
+
+With the end of the war with Japan, the Chinese Civil War resumed between the Chinese Communists and the Chinese Nationalists. While the Communists were struggling for supremacy in Manchuria, they were supported by the North Korean government with matériel and manpower. According to Chinese sources, the North Koreans donated 2,000 railway cars worth of matériel while thousands of Koreans served in the Chinese People's Liberation Army (PLA) during the war. North Korea also provided the Chinese Communists in Manchuria with a safe refuge for non-combatants and communications with the rest of China.

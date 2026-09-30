@@ -1,0 +1,3 @@
+# Glass wool
+
+Glass wool is an insulating material made from fibres of glass arranged using a binder into a texture similar to wool. The process traps many small pockets of air between the glass, and these small air pockets result in high thermal insulation properties. Glass wool is produced in rolls or in slabs, with different thermal and mechanical properties. It may also be produced as a material that can be sprayed or applied in place, on the surface to be insulated. The modern method for producing glass wool is the invention of Games Slayter working at the Owens-Illinois Glass Co. (Toledo, Ohio). He first applied for a patent for a new process to make glass wool in 1933.

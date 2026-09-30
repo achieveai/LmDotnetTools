@@ -1,0 +1,8 @@
+# Shared fragment timeouts-standard. Services pull it in through the `include:` list of their service.yaml.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+# Feedback on the clarity of this document is welcome at any time through the usual channel.
+
+mesh:
+  circuit_threshold: 17
+  retry_budget: 3
+  request_timeout_ms: 500

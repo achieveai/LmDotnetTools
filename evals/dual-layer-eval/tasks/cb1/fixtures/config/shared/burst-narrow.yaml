@@ -1,0 +1,6 @@
+# Shared fragment burst-narrow. Services pull it in through the `include:` list of their service.yaml.
+# Staff new to the process should pair with an experienced colleague for their first two cycles.
+# The checklist in the appendix is a convenience and is not exhaustive.
+
+mesh:
+  retry_budget: 7

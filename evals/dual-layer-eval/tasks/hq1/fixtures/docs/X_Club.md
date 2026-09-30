@@ -1,0 +1,3 @@
+# X Club
+
+The X Club was a dining club of nine men who supported the theories of natural selection and academic liberalism in late 19th-century England. Thomas Henry Huxley was the initiator: he called the first meeting for 3 November 1864. The club met in London once a month—except in July, August and September—from November 1864 until March 1893, and its members are believed to have wielded much influence over scientific thought. The members of the club were George Busk, Edward Frankland, Thomas Archer Hirst, Joseph Dalton Hooker, Thomas Henry Huxley, John Lubbock, Herbert Spencer, William Spottiswoode, and John Tyndall, united by a "devotion to science, pure and free, untrammelled by religious dogmas."

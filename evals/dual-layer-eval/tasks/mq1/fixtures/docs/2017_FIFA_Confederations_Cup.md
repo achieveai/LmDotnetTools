@@ -1,0 +1,5 @@
+# 2017 FIFA Confederations Cup
+
+Russia was announced as the hosts on 2 December 2010 after the country was awarded the hosting rights of the 2018 FIFA World Cup. The matches were played in four different stadiums across four cities: Saint Petersburg, Moscow, Kazan, and Sochi. It was the first time Russia has hosted the tournament, and the third time the Confederations Cup has been held in the European continent. As hosts, Russia qualified automatically for the tournament; they were joined by the six winners of the FIFA confederation championships and the 2014 FIFA World Cup champions, Germany.
+
+Russia was announced as the host on 2 December 2010 after the country was awarded the hosting rights of the 2018 FIFA World Cup. The matches were played in four different stadiums across four cities: Saint Petersburg, Moscow, Kazan, and Sochi. It was the first time Russia has hosted the tournament, and the third time the Confederations Cup has been held in the European continent. As hosts, Russia qualified automatically for the tournament; they were joined by the six winners of the FIFA confederation championships and the 2014 FIFA World Cup champions, Germany.

@@ -1,0 +1,3 @@
+# 110th United States Congress
+
+The Democratic Party controlled a majority in both chambers for the first time since the end of the 103rd Congress in 1995. Although the Democrats held fewer than 50 Senate seats, they had an operational majority because the two independent senators caucused with the Democrats for organizational purposes. No Democratic - held seats had fallen to the Republican Party in the 2006 elections. Democrat Nancy Pelosi became the first woman Speaker of the House. The House also received the first Muslim (Keith Ellison) and Buddhist (Hank Johnson and Mazie Hirono) members of Congress.

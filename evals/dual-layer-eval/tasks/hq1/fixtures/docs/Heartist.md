@@ -1,0 +1,3 @@
+# Heartist
+
+Heartist is an American rock band that started in Southern California in 2011. They formed in early 2011 after guitarists Jonathan Gaytan and Tim Koch left their band, and found Bryce Beckley, who had also left his band, Evan Ranallo and Matt Marquez, who was playing with Norma Jean. Following the departure of Gaytan, Robby DeVito took over as guitarist. They released their first full-length album, "Feeding Fiction", in 2014. It was produced by David Bendeth, who has previously worked with artists including Paramore, Of Mice and Men, and Breaking Benjamin. On April 14, 2014, the band released the first single, "Pressure Point", from their first album.

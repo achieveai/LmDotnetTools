@@ -1,0 +1,3 @@
+# 2011 TicketCity Bowl
+
+The 2011 TicketCity Bowl was a college football bowl game played at Cotton Bowl in Dallas, Texas. The game was played on January 1, 2011, at 12:00 p.m. ET and was telecast on ESPNU. This game replaced the Cotton Bowl Classic, which moved from its long-time home to Cowboys Stadium in nearby Arlington in 2010, and pitted the Northwestern Wildcats from the Big Ten Conference against the Texas Tech Red Raiders from the Big 12 Conference. The game was originally labeled "The Dallas Football Classic," but on November 8, 2010, a deal was announced for TicketCity to become the title sponsor of the bowl.

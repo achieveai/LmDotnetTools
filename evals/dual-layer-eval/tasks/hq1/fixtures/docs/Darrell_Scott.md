@@ -1,0 +1,3 @@
+# Darrell Scott
+
+James Darrell Scott, known as Darrell Scott (born August 6, 1959), is an American singer-songwriter and multi-instrumentalist. The son of musician Wayne Scott, he moved as a child to East Gary, Indiana (known today as Lake Station, Indiana). He was playing professionally by his teens in Southern California. Later, Darrell moved to Toronto then Boston. He attended Tufts University, where he studied poetry and literature. He has lived in Nashville, Tennessee since about 1995. He has written several mainstream country hits, and he has also established himself as one of Nashville's premier session instrumentalists. His younger brother, David Scott, occasionally accompanies Darrell on the keyboard.

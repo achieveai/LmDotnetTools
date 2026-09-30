@@ -1,0 +1,3 @@
+# Gilles (stock character)
+
+Gilles (] )—sometimes Gille—is a stock character of French farce and Commedia dell'Arte. He enjoyed his greatest vogue in 18th-century France, in entertainments both at the fairgrounds of the capital and in private and public theaters, though his origins can be traced back to the 17th century and, possibly, the century previous. A "zanni", or comic servant, he is a type of bungling clown, stupid, credulous, and lewd—a character that shares little, problematically, with the sensitive figure in Watteau's famous portrait that, until the latter half of the 20th century, bore his name alone. Gilles fades from view in the 19th century, to persist in the 20th and 21st as the Belgian Gilles of Binche Carnival.

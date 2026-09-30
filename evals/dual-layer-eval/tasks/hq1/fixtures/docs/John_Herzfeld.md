@@ -1,0 +1,3 @@
+# John Herzfeld
+
+John Herzfeld is an American film and television director, screenwriter, actor and producer. His feature film directing credits include "Two of a Kind" (1983), "2 Days in the Valley" (1996), "15 Minutes" (2001) and "The Death and Life of Bobby Z" (2007). He has also directed numerous made-for-television movies, including "The Ryan White Story" (1989), "The Preppie Murder" (1989), "" (1993) and "" (1997) for which he was nominated for an Emmy and won the DGA award for Outstanding Directorial Achievement in Dramatic Specials. He won a Daytime Emmy Award for directing the 1980 "ABC Afterschool Special" titled "Stoned".

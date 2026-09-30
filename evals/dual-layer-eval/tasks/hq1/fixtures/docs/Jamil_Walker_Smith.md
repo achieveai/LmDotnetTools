@@ -1,0 +1,3 @@
+# Jamil Walker Smith
+
+Jamil Walker Smith (born August 20, 1982) is an American actor. His best known role is as the voice of Gerald, a fourth grader and Arnold's best friend in the Nickelodeon TV series "Hey Arnold!". He also appeared on various shows like "Sister, Sister"; "Girlfriends"; "Bones"; "The X-Files"; and "The Bernie Mac Show". He is an actor by trade and writes, acts and directs his own short film projects. He played Master Sergeant Ronald Greer in both seasons of "Stargate Universe". His voice acting for Gerald Johanssen on "Hey Arnold!" and in "" was digitally mastered to a higher pitch by using sound audio.

@@ -1,0 +1,3 @@
+# Dom Sébastien
+
+At the time, Donizetti was attempting to compose an opera competitive with similar historical operas by Daniel Auber, Fromental Halévy and Giacomo Meyerbeer. One critical description of the nature of "Dom Sébastien" is "a funeral in five acts". By contrast, Winton Dean has described the main characteristic of the opera as "uncompromising dramatic honesty" in his comments on unusual dramatic facets of the work. Mary Ann Smart has prepared a critical edition of the opera in French, which includes appendices with variants and additions that Donizetti made for a production in German in Vienna in 1845.

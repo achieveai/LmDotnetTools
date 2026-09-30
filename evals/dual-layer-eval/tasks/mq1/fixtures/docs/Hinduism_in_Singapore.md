@@ -1,0 +1,3 @@
+# Hinduism in Singapore
+
+Hindu religion and culture in Singapore can be traced back to the 7th century AD, when Temasek was a trading post of Hindu-Buddhist Srivijaya empire. A millennium later, a wave of immigrants from southern India were brought to Singapore, mostly as coolies and indentured labourers by the British East India Company and colonial British Empire. As with Malay peninsula, the British administration sought to stabilise a reliable labour force in its regional plantation and trading activities; it encouraged Hindus to bring family through the "kangani" system of migration, settle, build temples and segregated it into a community that later became Little India.

@@ -1,0 +1,3 @@
+# Failure (Breaking Benjamin song)
+
+"Failure" is a song by American rock band Breaking Benjamin. The song was released on March 23, 2015 as the lead single on the band's fifth studio album, "Dark Before Dawn". The track marks the band's first release since the start of an extended hiatus entered upon in mid-2010, and is also the first recording to feature a different lineup alongside singer, writer, and guitarist Benjamin Burnley. The track is their third single to reach No. 1 on the Mainstream Rock Tracks chart, after "Breath" (2006) and "I Will Not Bow" (2009), and spent nine weeks there. On January 9, 2017, the single was certified Gold by the RIAA.

@@ -1,0 +1,3 @@
+# Poincaré–Steklov operator
+
+In mathematics, a Poincaré–Steklov operator (after Henri Poincaré and Vladimir Steklov) maps the values of one boundary condition of the solution of an elliptic partial differential equation in a domain to the values of another boundary condition. Usually, either of the boundary conditions determines the solution. Thus, a Poincaré–Steklov operator encapsulates the boundary response of the system modelled by the partial differential equation. When the partial differential equation is discretized, for example by finite elements or finite differences, the discretization of the Poincaré–Steklov operator is the Schur complement obtained by eliminating all degrees of freedom inside the domain.

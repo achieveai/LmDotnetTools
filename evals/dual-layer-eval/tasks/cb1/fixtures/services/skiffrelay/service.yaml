@@ -1,0 +1,26 @@
+# Service configuration for skiffrelay.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Exceptions must be requested in writing and are granted for a fixed period only. Any personal
+# data handled under this process is subject to the data-protection handbook.
+
+include:
+  - shared/latency-steady.yaml
+  - shared/core-lean.yaml
+
+mesh:
+  pool_size: 44
+  queue_depth: 975
+  max_connections: 264
+
+telemetry:
+  service_name: skiffrelay
+  exporter: statsd
+  sample_rate: 0.25
+  flush_interval_s: 10
+
+labels:
+  tier: gold
+  cost_centre: cc9263
+  paging_channel: ops71
+
+admin_port: 9161

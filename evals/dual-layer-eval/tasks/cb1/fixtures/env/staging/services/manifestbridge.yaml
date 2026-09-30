@@ -1,0 +1,5 @@
+# staging overlay for manifestbridge. Applied after env/staging/global.yaml.
+# Readers outside the core audience can skip this section without losing context.
+
+admin:
+  request_timeout_ms: 637

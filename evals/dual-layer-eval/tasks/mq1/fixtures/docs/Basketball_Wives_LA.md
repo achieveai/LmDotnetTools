@@ -1,0 +1,3 @@
+# Basketball Wives LA
+
+The sixth season of ``Basketball Wives LA ''was confirmed by VH1 with a premiere date of April 17, 2017. Filming started in October 2016 and Evelyn Lozada a former cast member of Basketball Wives has confirmed her return on social media and via The Real where she severed as a guest host for a week. Jennifer Williams also a former cast member of Basketball Wives has been spotted filming with cast member Tami Roman. Also this season four newbies Aja Metoyer, Keonna Green, Bonnie - Jill Laflil, and Evelyn Lozada taking on the main cast replacing departing cast members Angel Brinks, LaTosha Duffey, Angel Love.

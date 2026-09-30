@@ -1,0 +1,3 @@
+# Vernacular Press Act
+
+In British India, the Vernacular Press Act (Act of 1878) was enacted to curtail the freedom of the Indian press and prevent the expression of criticism toward British policies -- notably, the opposition that had grown with the outset of the Second Anglo - Afghan War (1878 -- 80). The act was proposed by Lord Lytton, then Viceroy of India, and was unanimously passed by the Viceroy's Council on March 14, 1878. The act excluded English - language publications as it was meant to control seditious writing in 'publications in Oriental languages' everywhere in the country, except for the South. But the British totally discriminated the Indian Press.

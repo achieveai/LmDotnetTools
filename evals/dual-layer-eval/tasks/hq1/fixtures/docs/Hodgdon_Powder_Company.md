@@ -1,0 +1,3 @@
+# Hodgdon Powder Company
+
+The Hodgdon Powder Company began in 1952 as B.E. Hodgdon, Inc., and has become a major distributor of smokeless powder for the ammunition industry, as well as for individuals who load their own ammunition by hand. The company's corporate office and manufacturing facilities are located in Kansas, United States. Hodgdon acquired IMR Powder Company in 2003. Winchester branded reloading powders have been distributed in the United States by Hodgdon since March 2006. In January 2009 Hodgdon acquired GOEX Powder, Inc., located in Minden, Louisiana, the only manufacturer of black powder in the USA. Together these product lines make Hodgdon one of the largest manufacturers and distributors of gunpowder in the world.

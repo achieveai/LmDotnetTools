@@ -1,0 +1,3 @@
+# Dalhousie University
+
+Dalhousie University (commonly known as Dal) is a public research university in Nova Scotia, Canada, with three campuses in Halifax, a fourth in Bible Hill, and medical teaching facilities in Saint John, New Brunswick. Dalhousie offers more than 4,000 courses and 180 degree programs in twelve undergraduate, graduate, and professional faculties. The university is a member of the U15, a group of research-intensive universities in Canada.

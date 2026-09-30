@@ -1,0 +1,3 @@
+# Field equation
+
+In theoretical physics and applied mathematics, a field equation is a partial differential equation which determines the dynamics of a physical field, specifically the time evolution and spatial distribution of the field. The solutions to the equation are mathematical functions which correspond directly to the field, as functions of time and space. Since the field equation is a partial differential equation, there are families of solutions which represent a variety of physical possibilities. Usually, there is not just a single equation, but a set of coupled equations which must be solved simultaneously. Field equations are not ordinary differential equations since a field depends on space and time, which requires at least two variables.

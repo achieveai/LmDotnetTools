@@ -192,6 +192,26 @@ public sealed class SubAgentProvenanceTests
         SubAgentProvenance.TryProject(metadata, ParentThreadId).Should().BeNull();
     }
 
+    [Fact]
+    public void TryProject_ReadsAChildTheDualLayerExecutorSpawned_AsTheConversationsChild()
+    {
+        // The executor loop stamps its own thread as the parent. The pair is one agent, so the agent
+        // list, the tree and the usage report must all find the child under the conversation.
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = ChildThreadId,
+            LastUpdated = 1,
+            Properties = SubAgentProvenance.Build(
+                "executor-" + ParentThreadId,
+                MakeSnapshot(SubAgentStatus.Completed, DateTimeOffset.UnixEpoch)
+            ),
+        };
+
+        SubAgentProvenance.TryProject(metadata)!.ParentThreadId.Should().Be(ParentThreadId);
+        SubAgentProvenance.TryProject(metadata, ParentThreadId).Should().NotBeNull();
+        SubAgentProvenance.TryProject(metadata, "executor-" + ParentThreadId).Should().BeNull();
+    }
+
     // ── Model routing ─────────────────────────────────────────────────────────────────────────────
     // The value exists on the snapshot and on the DTO; it was being dropped in the middle, so the panel
     // that names a run's sub-agents — and the daemon artifacts built from it — could not say what any of

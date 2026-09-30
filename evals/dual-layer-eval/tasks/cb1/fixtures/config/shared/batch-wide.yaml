@@ -1,0 +1,7 @@
+# Shared fragment batch-wide. Services pull it in through the `include:` list of their service.yaml.
+# Links in this section point to the internal mirror; external copies may be out of date.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+
+mesh:
+  queue_depth: 700
+  pool_size: 40

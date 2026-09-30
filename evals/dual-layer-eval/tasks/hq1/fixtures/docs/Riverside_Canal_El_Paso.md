@@ -1,0 +1,3 @@
+# Riverside Canal (El Paso)
+
+The Riverside Canal is an irrigation canal in El Paso County beginning southeast of El Paso, Texas. The canal acquires water from the Riverside Diversion Dam on the Rio Grande 15 mi southeast of El Paso. The canal is managed by the US Bureau of Reclamation. The canal extends for 17.2 mi with a capacity of 900 cubic feet per second. Water from the canal irrigates about 39,000 acres (160 km²). The canal and diversion dam is the southernmost system on an irrigation project extending along the Rio Grande in New Mexico and Texas. The canal supplies a canal network extending throughout the Upper Rio Grande Valley.

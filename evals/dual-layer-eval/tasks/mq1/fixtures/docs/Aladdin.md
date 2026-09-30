@@ -1,0 +1,3 @@
+# Aladdin
+
+The opening sentences of the story, in both the Galland and the Burton versions, set it in China and imply, at least, that Aladdin is Chinese. On the other hand, there is practically nothing in the rest of the story that is inconsistent with a Persian or Arabian setting. For instance, the Sultan is referred to as such rather being called the ``Emperor '', as in some re-tellings, and the people we meet in the story are Muslims: their conversation is larded with devout Muslim platitudes. A Jewish merchant buys Aladdin's wares (and incidentally cheats him), but there is no mention of Buddhists or Confucians (or other distinctively Han Chinese people).

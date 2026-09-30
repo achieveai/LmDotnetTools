@@ -1,0 +1,46 @@
+// Round 6: does the records arm (1.0 on both tr1 seeds in round 5b) hold on the grep-friendly tasks?
+// Opuna only: --models opuna --variants r6-records. Compare with round 4 (fw2, mq1, cb1: Opus, lean) and
+// rounds 5/5b (tr1: Opus 4 seeds). Built with the per-streak empty-reply nudge.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "r6-records",
+      "extraArgs": [
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-records.md",
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-records.md",
+        "--DualLayer:ShareReferenceContext=false"
+      ]
+    }
+  ],
+  "tasks": [
+    "fw2",
+    "mq1",
+    "cb1",
+    "tr1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

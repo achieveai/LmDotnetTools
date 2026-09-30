@@ -1,0 +1,3 @@
+# Greeks
+
+Greeks from Cyprus have a similar history of emigration, usually to the English-speaking world because of the island's colonization by the British Empire. Waves of emigration followed the Turkish invasion of Cyprus in 1974, while the population decreased between mid-1974 and 1977 as a result of emigration, war losses, and a temporary decline in fertility. After the ethnic cleansing of a third of the Greek population of the island in 1974, there was also an increase in the number of Greek Cypriots leaving, especially for the Middle East, which contributed to a decrease in population that tapered off in the 1990s. Today more than two-thirds of the Greek population in Cyprus is urban.

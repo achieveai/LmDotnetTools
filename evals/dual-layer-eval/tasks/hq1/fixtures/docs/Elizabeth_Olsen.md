@@ -1,0 +1,3 @@
+# Elizabeth Olsen
+
+Elizabeth Chase Olsen (born February 16, 1989) is an American actress. Her breakthrough came in 2011 when she starred in the independent thriller drama "Martha Marcy May Marlene", for which she was nominated for the Broadcast Film Critics Association Award for Best Actress and Independent Spirit Award for Best Female Lead, among other awards. She subsequently starred in the films "Silent House" (2011), "Liberal Arts" (2012), "Godzilla" (2014), "I Saw the Light" (2015), and "Wind River" (2017). Since 2014, she has portrayed Wanda Maximoff / Scarlet Witch in the Marvel Cinematic Universe.

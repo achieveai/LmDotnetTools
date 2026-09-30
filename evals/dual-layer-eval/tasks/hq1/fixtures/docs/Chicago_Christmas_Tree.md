@@ -1,0 +1,3 @@
+# Chicago Christmas Tree
+
+The first official Christmas tree in the city of Chicago was installed in 1913 in Grant Park and lit on Christmas Eve by then-mayor Carter Harrison. This first tree was a 35 ft tall spruce tree. In December 1956 the official tree, though still installed in Grant Park (at Michigan Avenue and Congress Parkway), was not an individual tree. The tree was a combination of many smaller trees, stood 70 ft tall, and was decorated with over 4000 lights and 2000 ornaments. Beginning with Christmas 1966 the official Chicago Christmas tree was placed in Civic Center Plaza, now known as Daley Plaza. With the exception of 1981, the tree has been installed in Daley Plaza ever since.

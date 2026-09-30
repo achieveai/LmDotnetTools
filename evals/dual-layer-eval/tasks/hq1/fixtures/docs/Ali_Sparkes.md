@@ -1,0 +1,3 @@
+# Ali Sparkes
+
+Ali Sparkes (born 1966) is a British children's author. Her books include "The Shapeshifter" series of 5 books, "Out of this World" (a prequel to "The Shapeshifter" and first released as "Miganium"), "Unleashed," a series of 5 books (a spin-off/sequel series of "The Shapeshifter", centered on some of the other "Shapeshifter" characters), "Dark Summer", "Frozen in Time", "Wishful Thinking", "Destination Earth", the "Monster Makers" series, and "S.W.I.T.C.H". She lives with her husband and two sons in Southampton, England. Her debut book "The Shapeshifter: Finding the Fox" was nominated for the 2007 Bolton Children's Book Award. She has also won two Blue Peter awards: "Book I Couldn't Put Down" and "Book Of The Year", for her book "Frozen in Time".

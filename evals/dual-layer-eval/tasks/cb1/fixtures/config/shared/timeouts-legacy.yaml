@@ -1,0 +1,9 @@
+# Shared fragment timeouts-legacy. Services pull it in through the `include:` list of their service.yaml.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance. All staff are expected to have read this document and to apply it in their
+# day-to-day work.
+
+mesh:
+  queue_depth: 1475
+  pool_size: 8
+  max_connections: 248

@@ -1,0 +1,3 @@
+# Ellen Wheeler
+
+Ellen Jayne Wheeler (born October 9, 1961 in Glendale, California) is an American actress, director and producer. She has appeared in several soap operas, including "Another World" and "All My Children". In 1986, she won the Daytime Emmy Award for Outstanding Younger Actress in a Drama Series for her work as twins Marley and Vicky Love Hudson on "Another World". In 1988, she won another Daytime Emmy for Outstanding Supporting Actress in a Drama Series for her work as Cindy Parker Chandler on "All My Children". Wheeler's character was one of the first characters with AIDS on daytime television. Wheeler also made a memorable guest appearance as Phyllis Wicke in the 1991 primetime revival of the gothic soap opera "Dark Shadows".

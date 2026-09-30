@@ -1,0 +1,3 @@
+# 1930 Tennessee Volunteers football team
+
+The 1930 Tennessee Volunteers football team (variously "Tennessee", "UT" or the "Vols") represented the University of Tennessee in the 1930 college football season. Playing as a member of the Southern Conference (SoCon), the team was led by head coach Robert Neyland, in his fifth year, and played their home games at Shields-Watkins Field in Knoxville, Tennessee. The 1930 Vols won nine and lost one game (9–1 overall, 6–1 in the SoCon). The only loss of the season came on October 18 to eventual Rose Bowl champion, Alabama. Tennessee and Vanderbilt were the only teams to score against Alabama in 1930. The 1930 Volunteers team outscored their opponents 209 to 31 and posted seven shutouts

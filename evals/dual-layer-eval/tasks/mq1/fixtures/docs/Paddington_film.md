@@ -1,0 +1,3 @@
+# Paddington (film)
+
+Paddington is a 2014 live - action animated comedy film written and directed by Paul King from a story by King and Hamish McColl and produced by David Heyman. Based on the stories of the character Paddington Bear created by Michael Bond, the film stars Ben Whishaw as the voice of the title character, with Hugh Bonneville, Sally Hawkins, Julie Walters, Jim Broadbent, Peter Capaldi, and Nicole Kidman in live - action roles. The film tells the story of the eponymous character Paddington, an anthropomorphic bear who migrates from the jungles of Peru to the streets of London, where he is adopted by the Brown family. Kidman plays the role of a taxidermist, who attempts to add him to her collection.

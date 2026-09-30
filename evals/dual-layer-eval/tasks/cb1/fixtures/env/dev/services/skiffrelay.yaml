@@ -1,0 +1,7 @@
+# dev overlay for skiffrelay. Applied after env/dev/global.yaml.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout.
+
+mesh:
+  lb_policy: leastload
+  retry_budget: 8

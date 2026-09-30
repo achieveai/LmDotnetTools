@@ -1,0 +1,6 @@
+# prod overlay for berthworks. Applied after env/prod/global.yaml.
+# The wording of this section was simplified in the last revision without changing its meaning.
+
+mesh:
+  retry_budget: 1
+  cache_ttl_seconds: 2490

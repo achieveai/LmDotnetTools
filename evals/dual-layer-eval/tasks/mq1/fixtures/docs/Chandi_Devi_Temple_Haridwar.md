@@ -1,0 +1,3 @@
+# Chandi Devi Temple, Haridwar
+
+Chandi Devi Temple, Haridwar (Hindi: चण्डी देवी मंदिर, हरिद्वार) is a Hindu temple dedicated to Goddess Chandi Devi in the holy city of Haridwar in the Uttarakhand state of India. The temple is situated atop the Neel Parvat on the Eastern summit of the Sivalik Hills, the southernmost mountain chain of the Himalayas. Chandi Devi Temple was built in 1929 by Suchat Singh in his reign as the King of Kashmir. However, the main murti of Chandi Devi at the temple is said to have been installed in the 8th century by Adi Shankaracharya, one of the greatest priests of Hindu religion. The temple also known as Neel Parvat Teerth is one of the "Panch Tirth" (Five Pilgrimages) located within Haridwar.

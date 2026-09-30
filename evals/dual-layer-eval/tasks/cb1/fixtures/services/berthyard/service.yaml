@@ -1,0 +1,29 @@
+# Service configuration for berthyard.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Training material that accompanies this document is available on the learning portal.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance.
+
+include:
+  - shared/cache-wide.yaml
+  - shared/backpressure-lean.yaml
+  - shared/stream-narrow.yaml
+  - shared/edge-strict.yaml
+
+mesh:
+  lb_policy: leastload
+  max_connections: 336
+  cache_ttl_seconds: 3450
+
+telemetry:
+  service_name: berthyard
+  exporter: otlp
+  sample_rate: 0.1
+  flush_interval_s: 15
+
+labels:
+  tier: silver
+  cost_centre: cc6918
+  paging_channel: ops73
+
+admin_port: 9122

@@ -1,0 +1,42 @@
+{
+  "family": "fictional-multihop",
+  "split": "dev",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 45,
+  "requiredFixtures": [
+    {
+      "glob": "people/*.md",
+      "count": 150
+    },
+    {
+      "glob": "teams/*.md",
+      "count": 14
+    },
+    {
+      "glob": "runbooks/*.md",
+      "count": 48
+    },
+    {
+      "glob": "incidents/*.md",
+      "count": 70
+    },
+    {
+      "glob": "memos/*.md",
+      "count": 80
+    },
+    {
+      "glob": "meetings/*.md",
+      "count": 200
+    },
+    {
+      "glob": "status/*.md",
+      "count": 100
+    }
+  ]
+}

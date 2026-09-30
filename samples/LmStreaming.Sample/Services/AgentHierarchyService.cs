@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
-using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -107,7 +106,8 @@ public sealed class AgentHierarchyService(
     {
         var summaries = new List<SubAgentSummary>();
         var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
-        var loop = isLive ? agent as MultiTurnAgentLoop : null;
+        // A dual-layer pair keeps its sub-agents and collaboration on the executor loop, not the pooled planner.
+        var loop = isLive ? DualLayerConversation.SubAgentHost(agent) : null;
 
         // Agent-tool sub-agents (the historical /subagents contents) — LIVE-ONLY: they live on the main
         // conversation loop's SubAgentManager, so they're gone after a restart until the loop is rehydrated.

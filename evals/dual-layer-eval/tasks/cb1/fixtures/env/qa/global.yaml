@@ -1,0 +1,8 @@
+# Overlay for every service in the qa environment.
+# Applied after each service's own service.yaml and before env/qa/services/<service>.yaml.
+# Nothing in this document overrides applicable law or the terms of an individual contract.
+# Feedback on the clarity of this document is welcome at any time through the usual channel.
+
+mesh:
+  max_connections: 248
+  pool_size: 44

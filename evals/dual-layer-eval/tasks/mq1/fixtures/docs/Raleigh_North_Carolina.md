@@ -1,0 +1,3 @@
+# Raleigh, North Carolina
+
+North Carolina State University is located in southwest Raleigh where the Wolfpack competes nationally in 24 intercollegiate varsity sports as a member of the Atlantic Coast Conference. The university's football team plays in Carter-Finley Stadium, the third largest football stadium in North Carolina, while the men's basketball team shares the PNC Arena with the Carolina Hurricanes hockey club. The Wolfpack women's basketball, volleyball, and gymnastics as well as men's wrestling events are held on campus at Reynolds Coliseum. The men's baseball team plays at Doak Field.

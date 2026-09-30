@@ -1,0 +1,3 @@
+# Tallahassee, Florida
+
+Tallahassee / ˌtæləˈhæsi / is the capital of the U.S. state of Florida. It is the county seat and only incorporated municipality in Leon County. Tallahassee became the capital of Florida, then the Florida Territory, in 1824. In 2016, the population was 190,894, making it the 7th - largest city in the U.S state of Florida, and the 126th - largest city in the United States. The population of the Tallahassee metropolitan area was 379,627 as of 2016. Tallahassee is the largest city in the Florida Panhandle region, and the main center for trade and agriculture in the Florida Big Bend and Southwest Georgia regions.

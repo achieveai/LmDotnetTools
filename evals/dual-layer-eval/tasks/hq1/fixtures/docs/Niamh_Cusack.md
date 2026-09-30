@@ -1,0 +1,3 @@
+# Niamh Cusack
+
+Niamh Cusack ( ; born 20 October 1959 in Dublin, Ireland) is an Irish actress. Born to a family with deep roots in the performing arts, Cusack has been involved in acting since a young age. She has served with the Royal Shakespeare Company and performed in a long line of major stage productions since the mid-1980s. She has made numerous appearances on television including a long-running role as Dr. Kate Rowan in the UK series "Heartbeat" (1992–1995). She has often worked as a voice actress on radio, and her film credits include a starring role in "In Love with Alma Cogan" (2011).

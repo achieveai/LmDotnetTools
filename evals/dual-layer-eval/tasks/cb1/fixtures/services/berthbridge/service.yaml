@@ -1,0 +1,26 @@
+# Service configuration for berthbridge.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Training material that accompanies this document is available on the learning portal. Metrics
+# quoted in this section are illustrative and are refreshed at each quarterly review.
+
+include:
+  - shared/fanout-relaxed.yaml
+  - shared/cache-wide.yaml
+  - shared/latency-wide.yaml
+
+mesh:
+  pool_size: 104
+  queue_depth: 1000
+
+telemetry:
+  service_name: berthbridge
+  exporter: otlp
+  sample_rate: 0.05
+  flush_interval_s: 30
+
+labels:
+  tier: bronze
+  cost_centre: cc4922
+  paging_channel: ops64
+
+admin_port: 9112

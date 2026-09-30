@@ -1,0 +1,3 @@
+# Jean-Luc Bitton
+
+Jean-Luc Bitton (born in 1959 in Lyon, France) is a writer, journalist and author. Together with Raymond Cousse and Jean-Yves Reuzeau, he wrote "Emmanuel Bove : La Vie Comme une Ombre", a biography of the writer Emmanuel Bove. He also participated in the creation of the Bove segment on the television series "A Century of Writers" (1997) and has created a website devoted entirely to Bove. He will also be the first biographer of French poet Jacques Rigaut, in a forthcoming book scheduled for publication in 2014. He has published articles in the journals Jungle, Perpendicular, The Series, the Nouvelle Revue Française and Rue Saint Ambrose.

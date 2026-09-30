@@ -1,0 +1,3 @@
+# Solar power in India
+
+Solar power in India is a fast developing industry. The country's solar installed capacity reached 23 GW as of 30 June 2018. India expanded its solar - generation capacity 8 times from 2,650 MW on 26 May 2014 to over 20 GW as on 31 January 2018. The 20 GW capacity was initially targeted for 2022 but the government achieved the target four years ahead of schedule. The country added 3 GW of solar capacity in 2015 - 2016, 5 GW in 2016 - 2017 and over 10 GW in 2017 - 2018, with the average current price of solar electricity dropping to 18% below the average price of its coal - fired counterpart.

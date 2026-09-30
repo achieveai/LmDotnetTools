@@ -1,0 +1,3 @@
+# Division of Kingston
+
+The Division of Kingston is an Australian Electoral Division in South Australia covering the outer southern suburbs of Adelaide. The 171 km² seat stretches from Hallett Cove and O'Halloran Hill in the north to Sellicks Beach in the south, including the suburbs of Aldinga Beach, Christie Downs, Christies Beach, Hackham, Hallett Cove, Huntfield Heights, Lonsdale, Maslin Beach, Moana, Morphett Vale, Old Noarlunga, Onkaparinga Hills, Port Noarlunga, Reynella, Seaford, Sellicks Beach, Sheidow Park, Port Willunga, Trott Park, Woodcroft, and parts of Happy Valley and McLaren Flat.

@@ -70,6 +70,8 @@ function toggle(): void {
 }
 
 const rootRow = computed(() => props.rows.find((r) => r.parentAgentId === null) ?? props.rows[0] ?? null);
+// A dual-layer conversation: the root is then the planner, and its executor has a row of its own.
+const hasExecutorRow = computed(() => props.rows.some((r) => r.executionKind === 'Executor'));
 
 const summary = computed(() => {
   if (props.rows.length === 0) {
@@ -142,7 +144,9 @@ watch(compactBlockedReason, (reason) => {
 });
 
 function agentName(row: ContextRowView): string {
-  return row.agentId === 'root' ? 'Main agent' : (props.agentNames?.[row.agentId] ?? row.agentId);
+  if (row.agentId === 'root') return row.executionKind === 'Primary' && hasExecutorRow.value ? 'Planner' : 'Main agent';
+  if (row.executionKind === 'Executor') return 'Executor';
+  return props.agentNames?.[row.agentId] ?? row.agentId;
 }
 
 function percentOf(row: ContextRowView): number {

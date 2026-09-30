@@ -1,0 +1,3 @@
+# Battle of Kazan (1774)
+
+The Battle of Kazan (1774) was a major battle during the Pugachev Rebellion. It took place on 12 -- 15 July 1774 in Kazan, Russia, and the surrounding area. The first stage began in the morning of 12 July, when rebels under Yemelyan Pugachev defeated government troops and besieged them in the Kazan Kremlin. During the battle some government forces defected to the rebels' side. However, in the evening, tsarist forces under Johann Michelson reached Kazan and defeated the rebels in two battles which took place on 13 and 15 July, forcing Pugachev to retreat to Tsaryovokokshaysk and then to cross the Volga. Out of 25,000 and 15,000 rebels who participated in the first and last stages of the battle respectively, only 500 escaped.

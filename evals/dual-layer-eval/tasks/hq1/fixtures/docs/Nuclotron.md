@@ -1,0 +1,3 @@
+# Nuclotron
+
+Nuclotron is the world's first superconductive synchrotron, exploited by the Joint Institute for Nuclear Research in Dubna, Russia. This particle accelerator is based on a miniature iron-shaped field superconductive magnets, and has a particle energy up to 7 GeV. It was built in 1987-1992 as a part of Dubna synchrophasotron modernisation program (the Nuclotron ring follows the outer perimeter of the synchrophasotron ring). 5 runs of about 1400 hours total duration have been provided by the present time. The most important experiments tested the cryomagnetic system of a novel type, and obtained data on nuclear collisions using internal target.

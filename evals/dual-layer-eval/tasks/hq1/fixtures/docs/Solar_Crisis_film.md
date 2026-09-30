@@ -1,0 +1,3 @@
+# Solar Crisis (film)
+
+Solar Crisis is a 1990 Japanese-American science fiction film. The screenplay was written by Joe Gannon and Tedi Sarafian (credited as Crispan Bolt), based on the novel "Kuraishisu niju-goju nen" by Takeshi Kawata, and directed by Richard C. Sarafian (credited as Alan Smithee). The cast featured Tim Matheson as Steve Kelso, Charlton Heston as Adm. "Skeet" Kelso, Peter Boyle as Arnold Teague, Annabel Schofield as Alex Noffe, Corin Nemec as Mike Kelso and Jack Palance as Travis. The executive producers were Takeshi Kawata and Takehito Sadamura, with FX cinematographer Richard Edlund and veteran sound editor James Nelson as its producers.

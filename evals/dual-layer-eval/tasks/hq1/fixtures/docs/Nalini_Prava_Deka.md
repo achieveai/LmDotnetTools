@@ -1,0 +1,3 @@
+# Nalini Prava Deka
+
+Nalini Prava Deka (11 March 1944 – 15 June 2014) was an Assamese-language author, poet, storyteller, actress and playwright from Assam, a state encompassing the Brahmaputra Valley in India. She was honoured at a 2012 gathering in Ledo by the Assam Sahitya Sabha (Assam Literary Society). Deka promoted Assamese heritage, traditional customs, weaving and fabric art, cooking and folk music with her husband, Bhabananda Deka. They researched traditional Assamese lifestyle, art, literature and culture. Deka was the first female editor and publisher of a children's magazine, "Phul" ("Flower"), and wrote 30 critically praised books. All India Radio broadcast Deka's radio plays on issues related to women and children.<br>

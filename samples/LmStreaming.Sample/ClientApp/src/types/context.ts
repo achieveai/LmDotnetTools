@@ -30,7 +30,8 @@ export type UsageExecutionKind =
   | 'SubAgent'
   | 'WorkflowController'
   | 'WorkflowTask'
-  | 'Compaction';
+  | 'Compaction'
+  | 'Executor';
 
 /** How current an observation is (`ContextFreshness`, §4.5). */
 export type ContextFreshness = 'Fresh' | 'Stale' | 'None';

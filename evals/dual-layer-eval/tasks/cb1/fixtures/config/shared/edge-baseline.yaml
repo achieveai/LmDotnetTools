@@ -1,0 +1,11 @@
+# Shared fragment edge-baseline. Services pull it in through the `include:` list of their service.yaml.
+# Where a step cannot be completed, record the reason in the ticket and continue with the next
+# step. This section is informative and does not introduce new obligations.
+
+include:
+  - shared/fanout-wide.yaml
+
+mesh:
+  retry_budget: 7
+  queue_depth: 225
+  request_timeout_ms: 1900

@@ -1,0 +1,3 @@
+# The English Cat
+
+The English Cat (in German, Die englische Katze) is an opera in two acts by Hans Werner Henze to an English libretto by Edward Bond, based on "Les peines de coeur d'une chatte anglaise " ("The heartbreak of an English cat") by Honoré de Balzac. The opera was first performed in a German translation by the Stuttgart Opera at the Schlosstheater Schwetzingen at the Schwetzingen Festival on 2 June 1983. The French premiere was at the Opéra-Comique, Paris in 1984. The first performance using the original English text was at Santa Fe on 13 July 1985. The UK premiere was at the Leith Theatre, Edinburgh, on 19 August 1987. A revised version was performed at Montepulciano in 1990 and this was given in London in 1991.

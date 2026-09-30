@@ -1,0 +1,3 @@
+# Spanish language in the United States
+
+Spanish is currently the most widely taught non-English language in American secondary schools and of higher education. More than 1.4 million university students were enrolled in language courses in autumn of 2002 and Spanish is the most widely taught language in American colleges and universities with 53 percent of the total number of people enrolled, followed by French (14.4%), German (7.1%), Italian (4.5%), American Sign language (4.3%), Japanese (3.7%), and Chinese (2.4%) although the totals remain relatively small in relation to the total U.S population.

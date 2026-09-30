@@ -1,0 +1,3 @@
+# Smokey and the Bandit
+
+Burt Reynolds as Bo Darville (``Bandit '') Sally Field as Carrie (`` Frog'') Jerry Reed as Cledus Snow (``Snowman '') Jackie Gleason as Sheriff Buford T. Justice (`` Smokey'') Mike Henry as Junior Justice Pat McCormick as Big Enos Burdette Paul Williams as Little Enos Burdette Macon McCalman as Mr. B Susan McIver as Hot Pants George Reynolds as Sheriff Branford Laura Lizer Sommers as Little Beaver Michael Mann as Branford's Deputy Lamar Jackson as Sugar Bear Ronnie Gay as Georgia Trooper Quinnon Sheffield as Alabama Trooper Alfie Wise as Patrolman Pat Hustis as Tow Truck Driver Ingeborg Kjeldsen as Foxy Lady Ben Jones as Trucker # 1 Joe Klecko as Trucker # 2 Hank Worden as Trucker # 3

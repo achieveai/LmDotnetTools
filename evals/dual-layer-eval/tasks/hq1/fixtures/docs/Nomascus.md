@@ -1,0 +1,3 @@
+# Nomascus
+
+Nomascus is the second-most speciose genus of gibbons (family Hylobatidae). Originally, this genus was a subgenus of "Hylobates", and all individuals were considered one species, "Hylobates concolor". Species within "Nomascus" are characterized by 52 chromosomes. Some species are all black, some are light with a distinct black tuft of crown fur, and some have distinct, light-colored cheek patches. "Nomascus" is found from southern China (Yunnan) to southern Vietnam, and also on Hainan Island. One species, "Nomascus nasutus," has been deemed "the most critically endangered ape species in the world". All species in this genus are endangered or critically endangered.

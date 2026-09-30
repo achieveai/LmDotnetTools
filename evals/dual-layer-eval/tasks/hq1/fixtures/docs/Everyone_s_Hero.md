@@ -1,0 +1,3 @@
+# Everyone's Hero
+
+Everyone's Hero is a 2006 American computer-animated sports comedy film directed by Colin Brady, Christopher Reeve, and Daniel St. Pierre. It was produced by IDT Entertainment in Toronto, with portions outsourced to Reel FX Creative Studios. It was distributed by 20th Century Fox and released theatrically on September 15, 2006. "Everyone's Hero" earned $16 million worldwide during its theatrical run. The film stars Jake T. Austin, William H. Macy, Rob Reiner, Brian Dennehy, Raven-Symoné, Robert Wagner, Richard Kind, Dana Reeve, Joe Torre, Mandy Patinkin, Forest Whitaker, Robin Williams and Whoopi Goldberg. "Everyone's Hero" was released on DVD on March 20, 2007, by 20th Century Fox Home Entertainment.

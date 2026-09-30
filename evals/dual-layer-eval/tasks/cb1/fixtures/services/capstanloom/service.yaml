@@ -1,0 +1,24 @@
+# Service configuration for capstanloom.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Nothing in this document overrides applicable law or the terms of an individual contract. The
+# checklist in the appendix is a convenience and is not exhaustive.
+
+include:
+  - shared/latency-steady.yaml
+
+mesh:
+  compression: brotli
+  lb_policy: maglev
+
+telemetry:
+  service_name: capstanloom
+  exporter: otlp
+  sample_rate: 0.01
+  flush_interval_s: 15
+
+labels:
+  tier: gold
+  cost_centre: cc8824
+  paging_channel: ops62
+
+admin_port: 9136

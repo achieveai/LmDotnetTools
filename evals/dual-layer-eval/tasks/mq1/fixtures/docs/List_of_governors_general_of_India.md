@@ -1,0 +1,3 @@
+# List of governors-general of India
+
+After the Indian Rebellion of 1857, the company rule was brought to an end, and the British India along with princely states came under the direct rule of the Crown. The Government of India Act 1858 created the office of Secretary of State for India in 1858 to oversee the affairs of India, which was advised by a new Council of India with 15 members (based in London). The existing Council of Four was formally renamed as the Council of Governor General of India or Executive Council of India. The Council of India was later abolished by Government of India Act 1935.

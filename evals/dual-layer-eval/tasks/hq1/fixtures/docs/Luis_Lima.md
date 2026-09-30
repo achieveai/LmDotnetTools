@@ -1,0 +1,3 @@
+# Luis Lima
+
+Luis Lima (born 12 September 1948 in Córdoba, Argentina) is an Argentine operatic tenor, who studied in Buenos Aires under Carlos Guichandut and in Sicily under Gina Cigna. He made his opera debut in 1974, in Lisbon, in "Cavalleria rusticana", and since then sang in seventy-seven performances at the Metropolitan Opera (from 1977 to 2001) in nine different roles, starting with Alfredo Germont in "La traviata". He has also sung with the New York City Opera (1978–79, debuting in "Madama Butterfly"), at the Teatro alla Scala (first appearing in "Lucia di Lammermoor", 1977) and the Royal Opera House, Covent Garden (from 1984).

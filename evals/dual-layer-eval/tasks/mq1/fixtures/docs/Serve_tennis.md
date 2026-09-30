@@ -1,0 +1,3 @@
+# Serve (tennis)
+
+For any serve, the server stands behind the baseline without touching it. For the first point of any game, the server stands to the right of the center point of the baseline and serves diagonally across the net to the left side (from the server's perspective) of the court, into the service box which extends to the service line about midway into the opponent's court. For the second point of the game, the serve is diagonally from the left to the right side of the court, and for each subsequent point of the same game the positioning is the opposite of that on the previous point. The serve shown above is actually a foot fault.

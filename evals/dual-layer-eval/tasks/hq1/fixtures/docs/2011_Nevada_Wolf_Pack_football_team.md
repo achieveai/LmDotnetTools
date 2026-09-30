@@ -1,0 +1,3 @@
+# 2011 Nevada Wolf Pack football team
+
+The 2011 Nevada Wolf Pack football team represented the University of Nevada, Reno in the 2011 NCAA Division I FBS football season. The Wolf Pack were led by head coach Chris Ault in his 27th overall season and 8th straight since taking over as head coach for the third time in 2004. They played their home games at Mackay Stadium and were members of the Western Athletic Conference. They finished the season 7–6, 5–2 in WAC play to finish in a tie for second place. They were invited to their seventh straight bowl game, the Hawaii Bowl, where they were defeated by Southern Miss 17–24.

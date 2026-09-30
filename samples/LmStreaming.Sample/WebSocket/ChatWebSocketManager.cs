@@ -14,6 +14,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
@@ -417,7 +418,8 @@ public sealed class ChatWebSocketManager
 
             if (
                 _agentPool.TryGet(parentThreadId, out var parentAgent)
-                && parentAgent is MultiTurnAgentLoop loop
+                // A dual-layer pair's sub-agents live on its executor loop, not the pooled planner.
+                && DualLayerConversation.SubAgentHost(parentAgent) is { } loop
                 && loop.SubAgentManager is { } sam
                 && sam.TryGetAgent(agentId, out var childAgent)
                 && childAgent is not null

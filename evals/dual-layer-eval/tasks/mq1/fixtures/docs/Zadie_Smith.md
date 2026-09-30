@@ -1,0 +1,3 @@
+# Zadie Smith
+
+Smith was born Sadie Smith in Willesden in the north-west London borough of Brent to a Jamaican mother, Yvonne Bailey, and an English father, Harvey Smith. At the age of 14, she changed her name to Zadie.Smith's mother grew up in Jamaica, and emigrated to England in 1969. Smith's parents divorced when she was a teenager. She has a half-sister, a half-brother, and two younger brothers (one is the rapper and stand-up comedian Doc Brown, and the other is the rapper Luc Skyz). As a child, Smith was fond of tap dancing, and in her teenage years, she considered a career in musical theatre. While at university, Smith earned money as a jazz singer, and wanted to become a journalist. Despite earlier ambitions, literature emerged as her principal interest.

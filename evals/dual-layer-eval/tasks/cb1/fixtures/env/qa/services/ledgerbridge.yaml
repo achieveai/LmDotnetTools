@@ -1,0 +1,8 @@
+# qa overlay for ledgerbridge. Applied after env/qa/global.yaml.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout.
+
+mesh:
+  # cache_ttl_seconds: 3240
+  lb_policy: random
+  pool_size: 116

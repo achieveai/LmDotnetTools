@@ -1,0 +1,3 @@
+# WFLD
+
+WFLD, virtual channel 32 (UHF digital channel 31), is a Fox owned-and-operated television station licensed to Chicago, Illinois, United States. The station is owned by the Fox Television Stations division of 21st Century Fox, and operates as part of a television duopoly with Gary, Indiana-licensed primary CW affiliate and secondary MyNetworkTV owned-and-operated station WPWR-TV (channel 50). The two stations share studio and office facilities located at Michigan Plaza on North Michigan Avenue in the Chicago Loop; WFLD's transmitter is based at the Willis Tower on South Wacker Drive in the Loop business district. On cable, the station can be seen on Comcast Xfinity channel 12 in most parts of the Chicago area.

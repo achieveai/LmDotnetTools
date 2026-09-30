@@ -1,0 +1,3 @@
+# List of Mersey Beat number-one singles
+
+The "Mersey Beat" is a former British weekly pop music newspaper. "Mersey Beat" was founded initially as a regional bi-weekley publication on 13 July 1961. In 1963 it began compiling a Top 20 chart based on around 10 stores and became a national paper. The charts and paper became weekly on 24 April 1964 and, following an investment in September 1964 by Brian Epstein, expanded the chart and sample size to become the first publication to announce a Top 100 on 3 December 1964. On 6 March 1965 the paper was rebranded "Music Echo" and by 16 April 1966 the chart was no longer published—on 23 April 1966 the newspaper was incorporated into "Disc" which became "Disc and Music Echo".

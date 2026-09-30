@@ -1,0 +1,6 @@
+# qa overlay for sluicehook. Applied after env/qa/global.yaml.
+# Terms in bold are defined in the glossary at the end of the handbook.
+
+mesh:
+  # retry_budget: 1
+  circuit_threshold: 56

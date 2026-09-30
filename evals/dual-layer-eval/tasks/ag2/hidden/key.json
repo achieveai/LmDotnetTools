@@ -1,0 +1,116 @@
+{
+  "task": "ag2",
+  "source": "synthetic",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "int",
+      "question": "How many units of SKU K-2003 were shipped across the network over the whole period?",
+      "answers": [
+        67023
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_unit",
+        "ignore_exclusion",
+        "ignore_window",
+        "superseded_version",
+        "apply_decoy"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "int",
+      "question": "How many units did site LIS receive in weeks 2026-W12 to 2026-W14?",
+      "answers": [
+        19992
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_unit"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "int",
+      "question": "How many shipments (distinct SHIP transactions) does the network count for 2026-03-14 (UTC date of the timestamp)?",
+      "answers": [
+        396
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_exclusion",
+        "ignore_window",
+        "apply_decoy"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "exact",
+      "question": "Which site shipped the most units of SKU K-2001 in 2026-W13? Answer with the three-letter site code.",
+      "answers": [
+        "BCN"
+      ],
+      "trap_flips": [
+        "ignore_memos"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "int",
+      "question": "How many units did the network ship to region WEST with carrier Halden over the whole period?",
+      "answers": [
+        35931
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_unit",
+        "ignore_exclusion",
+        "ignore_window",
+        "superseded_version",
+        "apply_decoy"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "int",
+      "question": "How many units did site BCN ship in weeks 2026-W09 to 2026-W12?",
+      "answers": [
+        101007
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_window",
+        "superseded_version"
+      ]
+    },
+    {
+      "id": "q7",
+      "kind": "int",
+      "question": "How many SHIP transactions across the network were cancelled by a REVERSAL?",
+      "answers": [
+        1184
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_exclusion",
+        "apply_decoy"
+      ]
+    },
+    {
+      "id": "q8",
+      "kind": "int",
+      "question": "How many units did the network ship in total in 2026-W11?",
+      "answers": [
+        150090
+      ],
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_exclusion",
+        "ignore_window",
+        "superseded_version",
+        "apply_decoy"
+      ]
+    }
+  ]
+}

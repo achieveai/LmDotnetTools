@@ -1,0 +1,5 @@
+# Tyndale Bible
+
+The term Tyndale's Bible is not strictly correct, because Tyndale never published a complete Bible. That task was completed by Miles Coverdale who supplemented Tyndale's translations with his own to produce the first complete printed bible in English in 1535. Prior to his execution Tyndale had only finished translating the entire New Testament and roughly half of the Old Testament. Of the latter, the Pentateuch, Jonah and a revised version of the book of Genesis were published during his lifetime. His other Old Testament works were first used in the creation of the Matthew Bible and also heavily influenced every major English translation of the Bible that followed.
+
+The Tyndale Bible generally refers to the body of biblical translations by William Tyndale (). Tyndale's Bible is credited with being the first English translation to work directly from Hebrew and Greek texts. Furthermore, it was the first English biblical translation that was mass-produced as a result of new advances in the art of printing.

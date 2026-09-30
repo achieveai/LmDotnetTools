@@ -1,0 +1,155 @@
+{
+  "task": "fw1",
+  "fixture_files": 662,
+  "fixture_bytes": 2366879,
+  "approx_tokens": 591719,
+  "gold": {
+    "q1": "Jonathan Zelenko",
+    "q2": "Ignatius Halander",
+    "q3": "Tomasz Stenlay",
+    "q4": "Evangelos Lunvall",
+    "q5": "Keziah Keltova",
+    "q6": "Ines Davrick",
+    "q7": "Evangelos Nevuzzi",
+    "q8": "Hedda Morgard",
+    "q9": "Sorrel",
+    "q10": "Wickline"
+  },
+  "trap_answers": {
+    "ignore_memos": {
+      "q1": "Ignatius Halander",
+      "q2": "Ignatius Halander",
+      "q3": "Gwendolyn Stenby",
+      "q4": "Mirela Brendale",
+      "q5": "Keziah Keltova",
+      "q6": "Ottilie Corova",
+      "q7": "Ottilie Corova",
+      "q8": "Ottilie Corova",
+      "q9": "Sorrel",
+      "q10": "Tamarack"
+    },
+    "first_announcement": {
+      "q1": "Jonathan Zelenko",
+      "q2": "Nkechi Toror",
+      "q3": "Tomasz Stenlay",
+      "q4": "Evangelos Lunvall",
+      "q5": "Aurelio Rosquist",
+      "q6": "Ines Davrick",
+      "q7": "Evangelos Nevuzzi",
+      "q8": "Hedda Morgard",
+      "q9": "Quarrystone",
+      "q10": "Wickline"
+    },
+    "ignore_swaps": {
+      "q1": "Sanne Aldandar",
+      "q2": "Farid Stenander",
+      "q3": "Matteo Keluzzi",
+      "q4": "Ottilie Corova",
+      "q5": "Gwendolyn Stenby",
+      "q6": "Ines Davrick",
+      "q7": "Evangelos Nevuzzi",
+      "q8": "Hedda Morgard",
+      "q9": "Sorrel",
+      "q10": "Wickline"
+    },
+    "near_duplicate": {
+      "q1": "Jonathan Zalenko",
+      "q2": "Ignatius Halander",
+      "q3": "Tomasz Stenley",
+      "q4": "Evangelos Lunvall",
+      "q5": "Keziah Kaltova",
+      "q6": "Ines Davrick",
+      "q7": "Evangelos Alduzzi",
+      "q8": "Hedda Morgard",
+      "q9": "Sorrel",
+      "q10": "Wickline"
+    },
+    "nickname_literal": {
+      "q1": "Jonathan Zelenko",
+      "q2": "Iggy",
+      "q3": "Tomasz Stenlay",
+      "q4": "Vangelis",
+      "q5": "Keziah Keltova",
+      "q6": "Memo",
+      "q7": "Evangelos Nevuzzi",
+      "q8": "Mina",
+      "q9": "Sorrel",
+      "q10": "Wickline"
+    },
+    "wrong_date": {
+      "q1": "Jonathan Zelenko",
+      "q2": "Ignatius Halander",
+      "q3": "Tomasz Stenlay",
+      "q4": "Evangelos Lunvall",
+      "q5": "Keziah Keltova",
+      "q6": "Ines Davrick",
+      "q7": "Evangelos Nevuzzi",
+      "q8": "Hedda Morgard",
+      "q9": "Sorrel",
+      "q10": "Tamarack"
+    }
+  },
+  "trap_flips": {
+    "q1": [
+      "ignore_memos",
+      "ignore_swaps",
+      "near_duplicate"
+    ],
+    "q2": [
+      "first_announcement",
+      "ignore_swaps",
+      "nickname_literal"
+    ],
+    "q3": [
+      "ignore_memos",
+      "ignore_swaps",
+      "near_duplicate"
+    ],
+    "q4": [
+      "ignore_memos",
+      "ignore_swaps",
+      "nickname_literal"
+    ],
+    "q5": [
+      "first_announcement",
+      "ignore_swaps",
+      "near_duplicate"
+    ],
+    "q6": [
+      "ignore_memos",
+      "nickname_literal"
+    ],
+    "q7": [
+      "ignore_memos",
+      "near_duplicate"
+    ],
+    "q8": [
+      "ignore_memos",
+      "nickname_literal"
+    ],
+    "q9": [
+      "first_announcement"
+    ],
+    "q10": [
+      "ignore_memos",
+      "wrong_date"
+    ]
+  },
+  "predicted_trap_scores": {
+    "ignore_memos": 0.3,
+    "first_announcement": 0.7,
+    "ignore_swaps": 0.5,
+    "near_duplicate": 0.6,
+    "nickname_literal": 0.6,
+    "wrong_date": 0.9
+  },
+  "counts": {
+    "people": 150,
+    "teams": 14,
+    "runbooks": 48,
+    "incidents": 70,
+    "memos": 80,
+    "meetings": 200,
+    "status": 100
+  }
+}

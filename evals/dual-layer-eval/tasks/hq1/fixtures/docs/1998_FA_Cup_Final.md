@@ -1,0 +1,3 @@
+# 1998 FA Cup Final
+
+The 1998 FA Cup Final was the final match of the 1997–98 staging of English football's primary cup competition, the Football Association Challenge Cup, better known as the FA Cup. The match was contested between Arsenal and Newcastle United at the original Wembley Stadium in London on Saturday 16 May 1998. Six-time winners Arsenal were appearing in their thirteenth final, whereas Newcastle United, having also won the competition six times, appeared in their eleventh final. It was the third time both teams faced each other in a FA Cup final; Newcastle won the previous two encounters in 1932 and 1952.

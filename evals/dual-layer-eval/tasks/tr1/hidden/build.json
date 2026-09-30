@@ -1,0 +1,28 @@
+{
+  "seed": 20261101,
+  "customers": { "Enterprise": 7, "Business": 8, "Standard": 7 },
+  "slots": {
+    "platform_ok": 24,
+    "ent_pre_feb_short": 4,
+    "ent_post_feb_short": 5,
+    "estimate_inflated": 5,
+    "estimate_modest": 2,
+    "maint_announced": 4,
+    "maint_announced_still_ok": 3,
+    "maint_late_notice": 3,
+    "late_report": 5,
+    "nonprod": 6,
+    "partner": 7,
+    "own_provider": 6,
+    "config_written": 4,
+    "config_verbal": 4,
+    "config_plain": 8,
+    "isp": 5,
+    "no_outage": 52
+  },
+  "duplicates": 6,
+  "maintenance_windows": 9,
+  "late_notice_windows": 3,
+  "max_attempts": 400,
+  "min_flips_per_question": 2
+}

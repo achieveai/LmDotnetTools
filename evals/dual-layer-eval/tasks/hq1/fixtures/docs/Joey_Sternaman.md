@@ -1,0 +1,3 @@
+# Joey Sternaman
+
+Joseph Theodore Sternaman (February 1, 1900 – March 10, 1988) was a professional American football player, born in Springfield, Illinois, who played quarterback for nine seasons for the Chicago Bears and Duluth Kelleys. At 5'6" and 135 pounds he was called "the strongest little man I ever met" by sportswriter Grantland Rice. He played quarterback during the years Red Grange starred with the Bears. In 1926, he was the quarterback, head coach, and owner of the Chicago Bulls of the first American Football League. Joey was also the brother of Chicago Bears co-owner Dutch Sternaman.

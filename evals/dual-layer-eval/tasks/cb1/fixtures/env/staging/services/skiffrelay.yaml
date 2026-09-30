@@ -1,0 +1,7 @@
+# staging overlay for skiffrelay. Applied after env/staging/global.yaml.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance.
+
+mesh:
+  circuit_threshold: 6
+  cache_ttl_seconds: 3300

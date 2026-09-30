@@ -1,0 +1,3 @@
+# Maria Callas
+
+Maria Callas, Commendatore OMRI (Greek: Μαρία Κάλλας ; December 2, 1923 – September 16, 1977), was a Greek-American soprano, and one of the most renowned and influential opera singers of the 20th century. Many critics praised her "bel canto" technique, wide-ranging voice and dramatic interpretations. Her repertoire ranged from classical "opera seria" to the "bel canto" operas of Donizetti, Bellini and Rossini and further, to the works of Verdi and Puccini; and, in her early career, to the music dramas of Wagner. Her musical and dramatic talents led to her being hailed as "La Divina".

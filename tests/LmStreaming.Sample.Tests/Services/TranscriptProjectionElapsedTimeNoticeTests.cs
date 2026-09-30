@@ -47,4 +47,22 @@ public class TranscriptProjectionElapsedTimeNoticeTests
         // The input is untouched: the store row is the model's, and Normalize only shapes a copy.
         rows.Should().HaveCount(3);
     }
+
+    [Fact]
+    public void Normalize_DropsTheEmptyReplyNudge_TheOtherLoopAuthoredText()
+    {
+        PersistedMessage[] rows =
+        [
+            MessagePersistenceConverter.ToPersistedMessage(EmptyReplyNudge.Build(), ThreadId, "run-1"),
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "done", Role = Role.Assistant },
+                ThreadId,
+                "run-1"
+            ),
+        ];
+
+        var projected = TranscriptProjection.Normalize(rows, excludeReasoning: false);
+
+        projected.Should().ContainSingle().Which.MessageJson.Should().NotContain(EmptyReplyNudge.MetadataKey);
+    }
 }

@@ -1,0 +1,3 @@
+# Denis Greenhill, Baron Greenhill of Harrow
+
+Denis Arthur Greenhill, Baron Greenhill of Harrow (1913–2000) was the British Permanent Under-Secretary of State for Foreign Affairs and Head of the Diplomatic Service from 1969 to 1973; a respected expert on the US, Europe and the Soviet Union, he was actively involved in setting postwar Britain's role in the world in a new direction, away from its imperial past and a compliant involvement with the United States towards a more active engagement in Europe. He served under three prime ministers, Harold Wilson, Sir Alec Douglas-Home and Edward Heath.

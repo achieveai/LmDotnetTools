@@ -1,0 +1,3 @@
+# Fantastic Four in film
+
+Constantin Film bought the film rights for the characters in 1986. A low - budget film was produced in 1992 by New Horizon Studios owned by Roger Corman. In 2004, with a distribution deal from 20th Century Fox, a second Fantastic Four film entered production. Fantastic Four was released in 2005 and the sequel Fantastic Four: Rise of the Silver Surfer was released in 2007. Both films received mixed to negative reviews from critics, yet earned a combined US $619 million worldwide at the box office. Due to 20th Century Fox's disappointment with the box - office return of Fantastic Four: Rise of the Silver Surfer, a potential third Fantastic Four film and a Silver Surfer spin - off film were canceled.

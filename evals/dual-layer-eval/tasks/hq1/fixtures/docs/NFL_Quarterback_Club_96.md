@@ -1,0 +1,3 @@
+# NFL Quarterback Club 96
+
+NFL Quarterback Club 96 is an American football video game released in December 1995. The game was released on the Sega Saturn, Sega Genesis, Game Boy, Sega Game Gear, DOS, and Super Nintendo Entertainment System. The game's cover features San Francisco 49ers quarterback Steve Young passing while being tackled by Chicago Bears defensive lineman Chris Zorich and an unidentified defender. The Saturn, SNES and DOS versions were developed by Iguana Entertainment, while the Game Boy edition was developed by Condor Inc.

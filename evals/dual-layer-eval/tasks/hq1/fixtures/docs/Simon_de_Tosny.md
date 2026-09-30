@@ -1,0 +1,3 @@
+# Simon de Tosny
+
+Simon de Tosny (Toni, Tonei, Toeni, Toeny, Toney) was a 12th-century Cistercian monk and prelate. Simon was a monk of Melrose Abbey, and served there until he moved to become Abbot of Coggeshall Abbey in Essex. He resigned this abbey in 1168, and returned to Melrose. In 1171, he was elected as Bishop of Moray, and was consecrated at St Andrews on 23 January 1172. His cathedral was at Birnie, Moray. He witnessed several charters and was present at the Council of Northampton in 1176. He is the first bishop named on the bishop-list in the "Moray Registrum". He died on 17 September 1184 and was buried in Birnie Kirk. Aside from the brief episcopate of Andrew (consecrated 1184, died 1185) he was succeeded as bishop by Richard de Lincoln.

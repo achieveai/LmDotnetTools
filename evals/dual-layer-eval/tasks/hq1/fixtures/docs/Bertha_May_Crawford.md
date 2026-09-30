@@ -1,0 +1,3 @@
+# Bertha May Crawford
+
+Bertha May Crawford (June 20, 1886 - May 26, 1937) was a Canadian opera singer. She built an international reputation as a lyric coloratura soprano in the early 20th century in eastern Europe, performing prima donna roles with opera companies in Russia and Poland between 1914 and 1934. At her death in 1937, music critics considered her the most distinguished soprano produced in that century in Canada. She is remembered as having "a high lyric soprano of great beauty and agility" and was most famous for her performances as Rosina in The Barber of Seville, Violetta in La traviata, and Gilda in Rigoletto.

@@ -1,0 +1,3 @@
+# Donna Noble
+
+Donna Noble is a fictional character in the long-running British science fiction television series "Doctor Who". Portrayed by British actress and comedian Catherine Tate, she is a companion of the Tenth Doctor (David Tennant). Originally appearing in the closing scene of the show's 2006 series and as a special guest star in its following Christmas special, "The Runaway Bride", Tate was not expected to reprise her role as Donna; for series 3 (2007), the Doctor travelled alongside medical student Martha Jones (Freema Agyeman). However, Tate expressed interest in returning to the role, and she returned as Donna for the duration of the series 4 (2008), and in a subsequent 2009-10 Christmas and New Year's special.

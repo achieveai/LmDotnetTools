@@ -1,0 +1,6 @@
+# prod overlay for coraclescope. Applied after env/prod/global.yaml.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance.
+
+mesh:
+  cache_ttl_seconds: 2310

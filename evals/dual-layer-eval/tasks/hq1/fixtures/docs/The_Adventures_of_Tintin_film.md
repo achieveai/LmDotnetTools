@@ -1,0 +1,3 @@
+# The Adventures of Tintin (film)
+
+The Adventures of Tintin, known as The Adventures of Tintin: The Secret of the Unicorn outside North America, is a 2011 3D motion capture computer-animated mystery adventure comedy film based on "The Adventures of Tintin", the comics series by Belgian cartoonist Hergé. Directed by Steven Spielberg, produced by Peter Jackson, and written by Steven Moffat, Edgar Wright and Joe Cornish, the film is based on three of Hergé's albums: "The Crab with the Golden Claws" (1941), "The Secret of the Unicorn" (1943), and "Red Rackham's Treasure" (1944). The cast includes Jamie Bell, Andy Serkis, Daniel Craig, Nick Frost and Simon Pegg.

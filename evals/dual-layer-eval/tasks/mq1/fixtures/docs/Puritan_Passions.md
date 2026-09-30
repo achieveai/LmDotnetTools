@@ -1,0 +1,3 @@
+# Puritan Passions
+
+Puritan Passions is a 1923 silent film directed by Frank Tuttle, based on Percy MacKaye's 1908 play "The Scarecrow", which was itself based on Nathaniel Hawthorne's short story "Feathertop". The film stars Glenn Hunter, Mary Astor, and stage actor Osgood Perkins. It follows the play faithfully, except that Osgood Perkins' character is called Dickon in the play and Dr. Nicholas in the movie, and Justice Gilead Merton is renamed Justice Gilead Wingate in the film. It is the only theatrical film version – so far – of Percy MacKaye's play, though there were previously two silent film versions of Hawthorne's original story.

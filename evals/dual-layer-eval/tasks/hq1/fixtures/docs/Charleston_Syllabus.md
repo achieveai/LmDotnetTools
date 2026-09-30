@@ -1,0 +1,3 @@
+# Charleston Syllabus
+
+These texts provide information about racial violence in the United States and provide background on the history of race relations in South Carolina in particular and the United States in general. They also offer education on race, racial identities, global white supremacy and black resistance. Several of the suggested readings shed light on race and racism on a global scale. On June 23, 2015, NPR's Renee Montagne reported on Morning Edition that "academics, librarians and history students have been rallying around the hashtag Charleston Syllabus, suggesting readings that might help inform the public of some of the city's history."

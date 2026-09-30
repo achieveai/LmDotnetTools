@@ -1,0 +1,12 @@
+// Feature flag values for dev. A flag not listed here keeps its default from flags/catalog.json.
+// Lines starting with // are ignored by the loader (platform/FeatureFlags.cs).
+{
+  // "berthbridge.warm_cache": false,
+  "berthworks.quiet_retries": true,
+  "bollardbridge.strict_tls": true,
+  "capstanscope.lazy_init": false,
+  "coraclescope.early_flush": false,
+  "ledgerbridge.fast_lane": true,
+  "sluicehook.wide_window": true,
+  "tallyscope.wide_window": true
+}

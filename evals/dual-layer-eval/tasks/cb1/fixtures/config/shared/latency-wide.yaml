@@ -1,0 +1,8 @@
+# Shared fragment latency-wide. Services pull it in through the `include:` list of their service.yaml.
+# Where this document conflicts with a local procedure, the local procedure should be updated to
+# match. Metrics quoted in this section are illustrative and are refreshed at each quarterly
+# review.
+
+mesh:
+  compression: gzip
+  pool_size: 36

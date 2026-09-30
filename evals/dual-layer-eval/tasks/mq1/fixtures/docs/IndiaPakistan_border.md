@@ -1,0 +1,3 @@
+# India–Pakistan border
+
+Drafted and created based upon the Radcliffe line in 1947, the border, which divides Pakistan and India from each other, traverses a variety of terrains ranging from major urban areas to inhospitable deserts. Since the independence of India and Pakistan (see British India), the border has been a site of numerous conflicts and wars between each country, and is one of the most complex borders in the world. The border's total length is 2,900 km (1,800 mi), according to the figures given by the PBS; it is also one of the most dangerous borders in the world, based on an article written in the Foreign Policy in 2011. It can be seen from space at night due to the 150,000 flood lights installed by India on about 50 thousand poles.

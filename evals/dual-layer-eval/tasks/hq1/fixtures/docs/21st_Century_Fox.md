@@ -1,0 +1,3 @@
+# 21st Century Fox
+
+Twenty-First Century Fox Inc. (stylized as 21st Century Fox, simply known as Fox, and also called 21CF) is an American multinational mass media corporation based in Midtown Manhattan, New York City. It was one of two companies formed from the 2013 spin-off of the publishing assets of News Corporation, as founded by Rupert Murdoch in 1979. 21st Century Fox is the legal successor to News Corporation dealing primarily in the film and television industries and is currently the world's fourth largest media conglomerate (after Comcast, The Walt Disney Company and Time Warner). The other company, the "new" News Corporation, holds Murdoch's print interests (both owned by him and his family via a family trust with 39 percent controlling interest in each).

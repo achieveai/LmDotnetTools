@@ -1,0 +1,13 @@
+// Feature flag values for qa. A flag not listed here keeps its default from flags/catalog.json.
+// Lines starting with // are ignored by the loader (platform/FeatureFlags.cs).
+{
+  "berthbridge.warm_cache": true,
+  "bollardbridge.early_flush": true,
+  "capstanscope.lazy_init": true,
+  // "docketmill.warm_cache": true,
+  "ferryrelay.shadow_reads": true,
+  "parcelscope.strict_tls": true,
+  "skiffrelay.shadow_reads": true,
+  "skiffscope.strict_tls": true,
+  "skiffworks.lazy_init": true
+}

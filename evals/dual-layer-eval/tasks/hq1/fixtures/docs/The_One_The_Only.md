@@ -1,0 +1,3 @@
+# The One, The Only...
+
+The One, The Only... is the debut album of musician Chantal Claret, released on June 19, 2012 by The End Records and was recorded at Studio Edison in New York. "The Pleasure Seeker - EP" appears in the gallery of the iPod Classic on Apple's US site.

@@ -1,0 +1,3 @@
+# 2013 FA Cup Final
+
+The 2013 FA Cup Final was the 132nd final of the FA Cup, the world's oldest football cup competition. The match, contested by Manchester City and Wigan Athletic, took place on 11 May 2013 at Wembley Stadium in London, and kicked off at 5:15 p.m. It was Wigan's first FA Cup final and Manchester City's 10th. Wigan pulled off a shock victory against favourites City, winning in circumstances reminiscent of the 1988 FA Cup Final when Wimbledon overcame Liverpool. Ben Watson's stoppage-time headed goal produced the "greatest FA Cup Final upset for a quarter of a century". In the United Kingdom, the match was televised by ITV and ESPN.

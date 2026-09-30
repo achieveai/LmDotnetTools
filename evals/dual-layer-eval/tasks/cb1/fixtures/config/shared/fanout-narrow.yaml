@@ -1,0 +1,12 @@
+# Shared fragment fanout-narrow. Services pull it in through the `include:` list of their service.yaml.
+# The document editor confirms each year that the contact details in this document are current.
+# Terms in bold are defined in the glossary at the end of the handbook.
+
+include:
+  - shared/fanout-wide.yaml
+
+mesh:
+  request_timeout_ms: 1550
+  queue_depth: 1825
+  max_connections: 32
+  circuit_threshold: 49

@@ -1,0 +1,3 @@
+# Poetical Essay on the Existing State of Things
+
+"Poetical Essay on the Existing State of Things" is an essay by Percy Bysshe Shelley published in 1811. The work was lost since its first appearance until a copy was found in 2006 and made available by the Bodleian Library in 2015. The anti-war and anti-imperialist work was intended to raise money for the radical Irish journalist Peter Finnerty, who had been imprisoned for libeling the Anglo-Irish politician Robert Stewart, Viscount Castlereagh, whom he accused of mistreating United Irish prisoners. The work is a precursor to "The Masque of Anarchy" and "England in 1819".

@@ -1,0 +1,5 @@
+# staging overlay for skiffscope. Applied after env/staging/global.yaml.
+# Teams should budget time for the periodic review described here in their planning cycle.
+
+mesh:
+  request_timeout_ms: 3300

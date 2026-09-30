@@ -1,0 +1,24 @@
+# Service configuration for gantrybridge.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# This section is informative and does not introduce new obligations. Nothing in this document
+# overrides applicable law or the terms of an individual contract.
+
+include:
+  - shared/timeouts-legacy.yaml
+
+mesh:
+  request_timeout_ms: 3400
+  retry_budget: 4
+
+telemetry:
+  service_name: gantrybridge
+  exporter: statsd
+  sample_rate: 0.01
+  flush_interval_s: 10
+
+labels:
+  tier: gold
+  cost_centre: cc1929
+  paging_channel: ops35
+
+admin_port: 9174

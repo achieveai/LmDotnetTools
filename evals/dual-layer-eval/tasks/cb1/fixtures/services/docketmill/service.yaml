@@ -1,0 +1,26 @@
+# Service configuration for docketmill.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Teams should budget time for the periodic review described here in their planning cycle.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout.
+
+include:
+  - shared/core-lean.yaml
+  - shared/latency-steady.yaml
+
+mesh:
+  pool_size: 128
+  compression: brotli
+
+telemetry:
+  service_name: docketmill
+  exporter: otlp
+  sample_rate: 0.1
+  flush_interval_s: 30
+
+labels:
+  tier: gold
+  cost_centre: cc3968
+  paging_channel: ops27
+
+admin_port: 9129

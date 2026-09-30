@@ -1,0 +1,3 @@
+# Oleksandr Zavarov
+
+Oleksandr Anatoliyovych Zavarov, also spelt Aleksandr Anatoljević Zavarov (Ukrainian: Олександр Анатолійович Заваров , Russian: Заваров, Александр Анатольевич ) – (born 26 April 1961 in Luhansk, Ukrainian SSR) is a former Ukrainian football midfielder and the former head coach at FC Arsenal Kyiv. In 1986, he was named the best footballer in the USSR and Ukraine and the 6th best footballer in Europe according to France Football. Zavarov is widely regarded to be among the greatest footballers in the history of the USSR and Ukraine, and in 2000 he was included in the Ukrainian Team of The Century according to a poll by the "Ukrainsky Futbol" weekly.

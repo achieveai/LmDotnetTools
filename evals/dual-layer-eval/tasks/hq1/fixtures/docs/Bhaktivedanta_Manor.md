@@ -1,0 +1,3 @@
+# Bhaktivedanta Manor
+
+Bhaktivedanta Manor is a Gaudiya Vaishnava temple set in the Hertfordshire countryside of England, in the village of Aldenham near Watford. The Manor is owned and run by the International Society for Krishna Consciousness (ISKCON), better known as the Hare Krishna movement. It is ISKCON's largest property in the United Kingdom, and one of the most frequently visited Radha Krishna temples in Europe. It stands in 70 acre of landscaped grounds, consisting of lawns, flower gardens, a children's playground, an artificial lake that attracts many water fowl, and a substantial car park.

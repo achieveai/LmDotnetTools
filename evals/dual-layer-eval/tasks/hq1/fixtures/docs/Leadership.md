@@ -1,0 +1,3 @@
+# Leadership
+
+Leadership is both a research area and a practical skill encompassing the ability of an individual or organization to "lead" or guide other individuals, teams, or entire organizations. The literature debates various viewpoints: contrasting Eastern and Western approaches to leadership, and also (within the West) US vs. European approaches. US academic environments define leadership as "a process of social influence in which a person can enlist the aid and support of others in the accomplishment of a common task". Leadership seen from a European and non-academic perspective encompasses a view of a leader who can be moved not only by communitarian goals but also by the search for personal power.

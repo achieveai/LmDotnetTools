@@ -1,0 +1,3 @@
+# Giuseppe Demachi
+
+Giuseppe Demachi (9 June 1732 – 1791 or after) was a composer born in Alessandria, Italy. He served as a leading violinist in the city of his birth and later in the city of Geneva with the Concerto di Ginevra of the Societé de Musique. He also served in the employ of one Count Sannazzaro in the 1760s and 1770s at Casale Monferrato. Not much is known about his life or death. Other than the records of his birth in 1732, his next known appearance in history is in 1763 when he was listed as playing in Alessandria's orchestra. After 1777 he again falls into obscurity until his last verifiable appearance during some concerts in London in 1791. The date of his death is not known, but is believed to have been shortly after his performances in London.

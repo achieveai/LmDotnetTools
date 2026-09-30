@@ -1,0 +1,3 @@
+# BTR-4
+
+The BTR-4 "Bucephalus" (BTR; / Bronetransporter, literally Armoured Transporter) is an amphibious 8x8 wheeled armoured personnel carrier (APC) designed in Ukraine by the Kharkiv Morozov Machine Building Design Bureau (SOE KMDB) as a private venture. The prototype, which was designed as a private venture, was unveiled at the Aviasvit 2006 exhibition held in Ukraine in June 2006. It is currently operated by Iraq, Kazakhstan, Nigeria, and Ukraine, with up to 500 vehicles produced for all operators. It is availible in multiple different configurations, including but not limited to an ambulance, armoured recovery vehicle, and infantry support version. They have seen action in both the War in Donbass, and the capture of Jurf Al Nasr from ISIL.

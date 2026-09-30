@@ -1,0 +1,25 @@
+# Service configuration for skiffgate.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# The document editor confirms each year that the contact details in this document are current.
+# Teams should budget time for the periodic review described here in their planning cycle.
+
+include:
+  - shared/ingress-wide.yaml
+  - shared/backpressure-lean.yaml
+
+mesh:
+  circuit_threshold: 4
+  request_timeout_ms: 450
+
+telemetry:
+  service_name: skiffgate
+  exporter: statsd
+  sample_rate: 0.01
+  flush_interval_s: 10
+
+labels:
+  tier: bronze
+  cost_centre: cc2477
+  paging_channel: ops18
+
+admin_port: 9160

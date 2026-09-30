@@ -1,0 +1,3 @@
+# 1984 Tennessee Volunteers football team
+
+The 1984 Tennessee Volunteers football team (variously "Tennessee", "UT" or the "Vols") represented the University of Tennessee in the 1984 NCAA Division I-A football season. Playing as a member of the Southeastern Conference (SEC), the team was led by head coach Johnny Majors, in his eighth year, and played their home games at Neyland Stadium in Knoxville, Tennessee. They finished the season with a record of seven wins, four losses and one tie (7–4–1 overall, 3–3 in the SEC) and a loss against Maryland in the Sun Bowl. The Volunteers offense scored 327 points while the defense allowed 276 points.

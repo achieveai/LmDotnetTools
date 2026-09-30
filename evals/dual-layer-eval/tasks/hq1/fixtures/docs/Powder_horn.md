@@ -1,0 +1,3 @@
+# Powder horn
+
+A powder horn was a container for gunpowder, and was generally created from cow, ox or buffalo horn. The term may also be used for any personal container for gunpowder, regardless of material or shape, for which powder flask is the strictly correct term. Typically there was a stopper at both ends, in later examples spring-loaded to close automatically for safety. The wide mouth was used for refilling, while the powder was dispensed from the narrow point. In some cases the point was closed and the mouth used for both, with a powder measure, a type of scoop used to dispense the powder, and in others both ends were open and the horn merely used as a funnel. The horn was typically held by a long strap and slung over the shoulder.

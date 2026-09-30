@@ -1,0 +1,3 @@
+# 2006 San Marino Grand Prix
+
+The 2006 San Marino Grand Prix (formally the XXVI Gran Premio Foster's di San Marino) was a Formula One motor race held at the Autodromo Enzo e Dino Ferrari in Imola, Italy on 23 April 2006. The 62-lap race was the fourth round of the 2006 Formula One season, and the 26th running of the San Marino Grand Prix. It was won by Ferrari driver Michael Schumacher, who had started from pole position. It was both his and Ferrari's first win of the season, thus effectively starting their respective championship bids. Championship leader Fernando Alonso finished second for the Renault team, whilst Juan Pablo Montoya completed the podium with third position for McLaren.

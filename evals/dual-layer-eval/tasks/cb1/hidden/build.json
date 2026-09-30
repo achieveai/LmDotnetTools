@@ -1,0 +1,51 @@
+{
+  "seed": 20260930,
+  "services": 24,
+  "general_fragments": 10,
+  "env_overlays_per_env": 6,
+  "handlers_per_service": 3,
+  "padding": 3,
+  "max_attempts": 20000,
+  "questions": [
+    {
+      "key": "pool_size",
+      "env": "prod",
+      "must_flip": "skip_nested_include"
+    },
+    {
+      "key": "request_timeout_ms",
+      "env": "staging",
+      "must_flip": "wrong_section"
+    },
+    {
+      "key": "lb_policy",
+      "env": "prod",
+      "must_flip": "flag_catalog_default"
+    },
+    {
+      "key": "queue_depth",
+      "env": "qa",
+      "must_flip": "include_order_reversed"
+    },
+    {
+      "key": "max_connections",
+      "env": "prod",
+      "must_flip": "ignore_env"
+    },
+    {
+      "key": "cache_ttl_seconds",
+      "env": "staging",
+      "must_flip": "isprod_literal"
+    },
+    {
+      "key": "compression",
+      "env": "staging",
+      "must_flip": "flag_catalog_default"
+    },
+    {
+      "key": "circuit_threshold",
+      "env": "prod",
+      "must_flip": "skip_nested_include"
+    }
+  ]
+}

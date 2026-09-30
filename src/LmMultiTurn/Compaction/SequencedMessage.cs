@@ -49,12 +49,13 @@ public sealed record SequencedMessage(long Seq, string? MessageId, string? RunId
     ///     it as input is not a cosmetic miscount — a run that received one looks like a run carrying a mid-run
     ///     correction, so the cut declines to take it; its text is quoted into the checkpoint as a current
     ///     instruction and carried forward for the rest of the thread; and it spends the summary's human-row
-    ///     budget. Excluding it here is what makes all three stop, since each reads this one predicate.
+    ///     budget. Excluding it here is what makes all three stop, since each reads this one predicate. The
+    ///     empty-reply nudge (<see cref="EmptyReplyNudge" />) is loop-authored the same way and excluded with it.
     /// </para>
     /// </summary>
     public bool IsHumanRow =>
         Message.Role == Role.User
-        && !ElapsedTimeNotice.IsNotice(Message)
+        && !EmptyReplyNudge.IsLoopAuthored(Message)
         && Message
             is not (
                 NotifyMessage

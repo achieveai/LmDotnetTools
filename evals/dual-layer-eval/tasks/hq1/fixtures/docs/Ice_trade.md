@@ -1,0 +1,3 @@
+# Ice trade
+
+The ice trade, also known as the frozen water trade, was a 19th-century industry, centering on the east coast of the United States and Norway, involving the large-scale harvesting, transport and sale of natural ice for domestic consumption and commercial purposes. Ice was cut from the surface of ponds and streams, then stored in ice houses, before being sent on by ship, barge or railroad to its final destination around the world. Networks of ice wagons were typically used to distribute the product to the final domestic and smaller commercial customers. The ice trade revolutionized the U.S. meat, vegetable and fruit industries, enabled significant growth in the fishing industry, and encouraged the introduction of a range of new drinks and foods.

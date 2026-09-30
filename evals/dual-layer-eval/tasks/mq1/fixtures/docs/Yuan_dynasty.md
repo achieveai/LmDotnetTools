@@ -1,0 +1,3 @@
+# Yuan dynasty
+
+Kublai's government after 1262 was a compromise between preserving Mongol interests in China and satisfying the demands of his Chinese subjects. He instituted the reforms proposed by his Chinese advisers by centralizing the bureaucracy, expanding the circulation of paper money, and maintaining the traditional monopolies on salt and iron. He restored the Imperial Secretariat and left the local administrative structure of past Chinese dynasties unchanged. However, Kublai rejected plans to revive the Confucian imperial examinations and divided Yuan society into three, later four, classes with the Han Chinese occupying the lowest rank. Kublai's Chinese advisers still wielded significant power in the government, but their official rank was nebulous.

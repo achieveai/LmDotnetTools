@@ -1,0 +1,3 @@
+# Gallery 5
+
+Gallery5 is an arts center, museum, gallery, venue, and community space in Richmond, VA. It is located at 200 West Marshall Street in Richmond, VA, in the historic Jackson Ward neighborhood. Gallery5 is housed in the original building of Steamer Company Number 5, which is the oldest firehouse in Virginia, dating back to 1867. This historic building has seen many incarnations; in addition to the original fire station the building has also served as a police station, a Fire and Police Museum, and a hot dog emporium. The gallery is a cornerstone participant in Richmond's monthly First Friday Art Walk, which takes place on the first Friday of every month and draws artists and art-enthusiasts in throngs to Downtown Richmond.

@@ -1,0 +1,3 @@
+# Champion Air
+
+Champion Air was an airline based in Bloomington, Minnesota, USA. It operated general charter services to sports teams, vacation wholesalers and government agencies. It also offered limited scheduled service. Its main base was Minneapolis-Saint Paul International Airport, with hubs at Denver International Airport, Dallas-Fort Worth International Airport, Detroit Metropolitan Wayne County Airport, McCarran International Airport in Las Vegas, Lambert-St. Louis International Airport, and Will Rogers World Airport in Oklahoma City. The airline ceased all operations on May 31, 2008. Until its shutdown, the airline was a prime contractor for the Justice Prisoner and Alien Transportation System.

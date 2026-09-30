@@ -1,0 +1,3 @@
+# Battle of Carberry Hill
+
+The Battle of Carberry Hill took place on 15 June 1567, near Musselburgh, East Lothian, a few miles east of Edinburgh, Scotland. A number of Scottish lords objected to the rule of Mary, Queen of Scots after she had married the Earl of Bothwell, who was widely believed to have murdered her previous husband Lord Darnley. The Lords were intent to avenge Darnley's death. However, Bothwell escaped from the stand-off at Carberry while Queen Mary surrendered. Mary abdicated, escaped from prison, and was defeated at the battle of Langside. She went to exile in England while her supporters continued a civil war in Scotland.

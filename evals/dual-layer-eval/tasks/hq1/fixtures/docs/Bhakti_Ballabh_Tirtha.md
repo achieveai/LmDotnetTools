@@ -1,0 +1,3 @@
+# Bhakti Ballabh Tirtha
+
+Srila Bhakti Ballabh Tirtha Maharaj (13 April 1924 - 20 April 2017) is a disciple of Bhakti Dayita Madhava Goswami Maharaj and an acharya and initiating spiritual master (Sri Guru) in the Gaudiya Math following the philosophy of the Bhakti marg, specifically of Caitanya Mahaprabhu and Gaudiya Vaishnava theology. He was the President Acharya of Sree Chaitanya Gaudiya Math, headquartered at Kolkata, West Bengal, India and having more than 22 branches in India. He was president of WVA (World Vaishnava Association) and founder of GOKUL( Global organization for KrishnaChaitnaya's Universal Love).

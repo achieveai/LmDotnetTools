@@ -1,0 +1,3 @@
+# Terry Nichols
+
+Terry Lynn Nichols (born April 1, 1955) is an American who was convicted of being an accomplice in the Oklahoma City bombing. Prior to his incarceration, he held a variety of short-term jobs, working as a farmer, grain elevator manager, real estate salesman and ranch hand. He met his future conspirator, Timothy McVeigh, during a brief stint in the U.S. Army, which ended in 1989 when he requested a hardship discharge after less than one year of service. In 1994 and 1995, he conspired with McVeigh in the planning and preparation of the Oklahoma City bombing – the truck bombing of the Alfred P. Murrah Federal Building in Oklahoma City, Oklahoma, on April 19, 1995. The bombing claimed the lives of 168 people.

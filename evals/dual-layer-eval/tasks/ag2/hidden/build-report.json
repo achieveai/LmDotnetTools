@@ -1,0 +1,164 @@
+{
+  "task": "ag2",
+  "fixture_files": 198,
+  "fixture_bytes": 2890520,
+  "memo_bytes": 605696,
+  "approx_tokens": 722630,
+  "rows": 35766,
+  "gold": {
+    "q1": 67023,
+    "q2": 19992,
+    "q3": 396,
+    "q4": "BCN",
+    "q5": 35931,
+    "q6": 101007,
+    "q7": 1184,
+    "q8": 150090
+  },
+  "trap_answers": {
+    "ignore_memos": {
+      "q1": 71219,
+      "q2": 1666,
+      "q3": 542,
+      "q4": "DUB",
+      "q5": 38496,
+      "q6": 103869,
+      "q7": 1331,
+      "q8": 189876
+    },
+    "ignore_unit": {
+      "q1": 62799,
+      "q2": 1666,
+      "q3": 396,
+      "q4": "BCN",
+      "q5": 33896,
+      "q6": 101007,
+      "q7": 1184,
+      "q8": 150090
+    },
+    "ignore_exclusion": {
+      "q1": 77058,
+      "q2": 19992,
+      "q3": 456,
+      "q4": "BCN",
+      "q5": 41256,
+      "q6": 101007,
+      "q7": 1331,
+      "q8": 170559
+    },
+    "ignore_window": {
+      "q1": 68136,
+      "q2": 19992,
+      "q3": 470,
+      "q4": "BCN",
+      "q5": 36603,
+      "q6": 103869,
+      "q7": 1184,
+      "q8": 167187
+    },
+    "superseded_version": {
+      "q1": 103950,
+      "q2": 19992,
+      "q3": 396,
+      "q4": "BCN",
+      "q5": 64311,
+      "q6": 668013,
+      "q7": 1184,
+      "q8": 418479
+    },
+    "apply_decoy": {
+      "q1": 57783,
+      "q2": 19992,
+      "q3": 338,
+      "q4": "BCN",
+      "q5": 30537,
+      "q6": 101007,
+      "q7": 1026,
+      "q8": 128073
+    }
+  },
+  "trap_flips": {
+    "q1": [
+      "ignore_memos",
+      "ignore_unit",
+      "ignore_exclusion",
+      "ignore_window",
+      "superseded_version",
+      "apply_decoy"
+    ],
+    "q2": [
+      "ignore_memos",
+      "ignore_unit"
+    ],
+    "q3": [
+      "ignore_memos",
+      "ignore_exclusion",
+      "ignore_window",
+      "apply_decoy"
+    ],
+    "q4": [
+      "ignore_memos"
+    ],
+    "q5": [
+      "ignore_memos",
+      "ignore_unit",
+      "ignore_exclusion",
+      "ignore_window",
+      "superseded_version",
+      "apply_decoy"
+    ],
+    "q6": [
+      "ignore_memos",
+      "ignore_window",
+      "superseded_version"
+    ],
+    "q7": [
+      "ignore_memos",
+      "ignore_exclusion",
+      "apply_decoy"
+    ],
+    "q8": [
+      "ignore_memos",
+      "ignore_exclusion",
+      "ignore_window",
+      "superseded_version",
+      "apply_decoy"
+    ]
+  },
+  "predicted_trap_scores": {
+    "ignore_memos": 0.0,
+    "ignore_unit": 0.625,
+    "ignore_exclusion": 0.375,
+    "ignore_window": 0.375,
+    "superseded_version": 0.5,
+    "apply_decoy": 0.375
+  },
+  "q4_top3": [
+    [
+      "bcn",
+      5568
+    ],
+    [
+      "dub",
+      4842
+    ],
+    [
+      "lis",
+      4044
+    ]
+  ],
+  "q4_top3_ignore_memos": [
+    [
+      "dub",
+      4842
+    ],
+    [
+      "mil",
+      3459
+    ],
+    [
+      "osl",
+      3339
+    ]
+  ]
+}

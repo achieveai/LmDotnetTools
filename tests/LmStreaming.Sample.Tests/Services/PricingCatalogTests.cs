@@ -668,6 +668,9 @@ public class PricingCatalogTests
     [InlineData("claude-fable-5-1")]
     [InlineData("claude-fable-5.1")]
     [InlineData("claude-opus-5")]
+    // The planner of the opuna dual-layer preset; unpriced, every eval arm on it reads $0.
+    [InlineData("claude-opus-5-5")]
+    [InlineData("claude-opus-5.5")]
     [InlineData("claude-sonnet-5")]
     // The `copilot` provider's default when COPILOT_MODEL is unset (Program.cs), so a default run prices.
     [InlineData("claude-sonnet-4.5")]

@@ -111,7 +111,7 @@ public sealed class SubAgentFocusFlowTests
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
-        var threadId = $"subagent-focusflow-{providerMode}-{Guid.NewGuid():N}";
+        var threadId = $"root-subagent-focusflow-{providerMode}-{Guid.NewGuid():N}";
 
         // 2) Parent /ws: send a message that spawns the background child, parse its agent_id from the
         //    spawn receipt. Keep the parent connection OPEN across the REST + /ws/subagent calls so the

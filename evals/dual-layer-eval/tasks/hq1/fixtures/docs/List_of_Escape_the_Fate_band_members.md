@@ -1,0 +1,3 @@
+# List of Escape the Fate band members
+
+Escape the Fate is an American rock band from Las Vegas, Nevada, formed in 2005 and originally from Pahrump, Nevada. The group consists of Robert Ortiz (drummer), Craig Mabbitt (lead vocalist), TJ Bell (rhythm guitarist, bassist and vocalist), Kevin "Thrasher" Gruft (lead guitarist, bassist, backing vocalist) and touring musician Max Georgiev (bassist). The group was founded by original vocalist Ronnie Radke, bassist Max Green and lead guitarist Monte Money. The band has had 10 official members and 5 touring members and throughout 2010-2013 had a fluctuating lineup, and has recorded 5 album with 4 different studio lineups.

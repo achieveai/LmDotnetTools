@@ -1,0 +1,25 @@
+# Service configuration for sluicehook.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Feedback on the clarity of this document is welcome at any time through the usual channel.
+# Exceptions must be requested in writing and are granted for a fixed period only.
+
+include:
+  - shared/timeouts-legacy.yaml
+  - shared/sync-wide.yaml
+
+mesh:
+  circuit_threshold: 10
+  request_timeout_ms: 2650
+
+telemetry:
+  service_name: sluicehook
+  exporter: otlp
+  sample_rate: 0.01
+  flush_interval_s: 15
+
+labels:
+  tier: bronze
+  cost_centre: cc4830
+  paging_channel: ops43
+
+admin_port: 9158

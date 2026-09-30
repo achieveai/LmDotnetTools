@@ -1,0 +1,3 @@
+# Robert Guillaume
+
+Robert Guillaume (born Robert Peter Williams; November 30, 1927 -- October 24, 2017) was an American actor, known for his role as Isaac Jaffe on Sports Night and as Benson on the TV series Soap and the spin - off Benson, as well as for voicing the mandrill Rafiki in The Lion King. In a career that spanned more than 50 years he worked extensively on stage, television and film. For his efforts he was nominated for a Tony Award for his portrayal of Nathan Detroit in Guys and Dolls, and twice won an Emmy Award for his portrayal of the character Benson DuBois, once in 1979 on Soap and in 1985 on Benson. He also won a Grammy Award in 1995 for his spoken word performance of an audiobook version of The Lion King.

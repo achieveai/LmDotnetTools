@@ -1,0 +1,3 @@
+# Kyle Orton
+
+Kyle Raymond Orton (born November 14, 1982) is a former American football quarterback. He played college football for Purdue, where he started four straight bowl games. He was drafted by the Chicago Bears in the fourth round of the 2005 NFL Draft. After an injury to Bears starter Rex Grossman, Orton was pressed into service as the starting quarterback during his rookie year, starting the first 14 games of the 2005 season, but was replaced by Grossman for the playoffs that year. Orton did not play at all in 2006, and sparingly in 2007. Orton regained his starting job from Grossman in 2008, but the team finished a disappointing 9–7 and out of the playoffs. In the offseason of that year, he was traded to the Denver Broncos.

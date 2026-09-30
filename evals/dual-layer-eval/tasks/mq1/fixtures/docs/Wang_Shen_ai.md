@@ -1,0 +1,3 @@
+# Wang Shen'ai
+
+Wang Shen'ai was the daughter of the official Wang Xianzhi, the son of the famed official and calligrapher Wang Xizhi. Her mother Princess Xin'an was the daughter of Emperor Jianwen, making her and her husband cousins. In 396, while he was still crown prince under his father Emperor Xiaowu, they married, and she became crown empress. She was 12, and he was 14. As he was described to be so developmentally disabled that he could not speak or dress himself, or express whether he was full or hungry, it was unlikely that their marriage was consummated; in any case, they had no children. Later that year, after Emperor Xiaowu was killed by his concubine Honoured Lady Zhang after humiliating her, Emperor An became emperor. In 397, she was created empress.

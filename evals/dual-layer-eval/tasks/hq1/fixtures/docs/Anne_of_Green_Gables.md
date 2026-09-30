@@ -1,0 +1,3 @@
+# Anne of Green Gables
+
+Anne of Green Gables is a 1908 novel by Canadian author Lucy Maud Montgomery (published as L. M. Montgomery). Written for all ages, it has been considered a children's novel since the mid-twentieth century. It recounts the adventures of Anne Shirley, an 11-year-old orphan girl who is mistakenly sent to Matthew and Marilla Cuthbert, a middle-aged brother and sister who had intended to adopt a boy to help them on their farm in the fictional town of Avonlea on Prince Edward Island. The novel recounts how Anne makes her way with the Cuthberts, in school, and within the town.

@@ -1,0 +1,50 @@
+{
+  "family": "fictional-multihop",
+  "split": "dev",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 45,
+  "requiredFixtures": [
+    {
+      "glob": "council/*.md",
+      "count": 80
+    },
+    {
+      "glob": "notices/*.md",
+      "count": 26
+    },
+    {
+      "glob": "reports/*.md",
+      "count": 29
+    },
+    {
+      "glob": "papers/*.md",
+      "count": 24
+    },
+    {
+      "glob": "forum/*.md",
+      "count": 41
+    },
+    {
+      "glob": "people/*.md",
+      "count": 150
+    },
+    {
+      "glob": "yards/*.md",
+      "count": 36
+    },
+    {
+      "glob": "misc/*.md",
+      "count": 180
+    },
+    {
+      "glob": "handbook/*.md",
+      "count": 1
+    }
+  ]
+}

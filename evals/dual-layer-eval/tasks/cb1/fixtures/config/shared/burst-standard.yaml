@@ -1,0 +1,11 @@
+# Shared fragment burst-standard. Services pull it in through the `include:` list of their service.yaml.
+# Any personal data handled under this process is subject to the data-protection handbook. This
+# section is informative and does not introduce new obligations.
+
+include:
+  - shared/latency-steady.yaml
+
+mesh:
+  request_timeout_ms: 3250
+  lb_policy: ringhash
+  max_connections: 432

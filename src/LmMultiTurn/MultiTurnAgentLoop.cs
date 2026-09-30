@@ -60,6 +60,11 @@ public sealed class MultiTurnAgentLoop
         IManualCompactionAgent,
         IReconfigurableAgent
 {
+    // How many times in a row the loop asks the model to continue after a turn that replied with
+    // nothing (EmptyReplyNudge). The count resets when a turn makes tool calls again, so a long run
+    // recovers from each silent stretch, while a model that only ever ends silently stops after two.
+    internal const int MaxEmptyReplyNudges = 2;
+
     // The provider-dependent half of this loop. Replaced wholesale by Reconfigure (build-then-assign),
     // never mutated in place; the conversation-owned collaborators below it are kept across a switch.
     private IStreamingAgent _agent;
@@ -1717,6 +1722,7 @@ public sealed class MultiTurnAgentLoop
         // `pendingResume` is what makes the very next turn a continuation instead of an unrelated
         // new turn, and it is cleared as soon as that turn consumes it.
         var recoveryCount = TakeCarriedRecoveryBudget(runId);
+        var nudgesInARow = 0;
         ResumeSentinel? pendingResume = null;
         _compaction?.OnRunStarted();
         _elapsedTimeNotice?.OnRunStarted();
@@ -1946,10 +1952,29 @@ public sealed class MultiTurnAgentLoop
 
             if (!turn.HasToolCalls)
             {
+                // A turn after tool results that replied with nothing (reasoning at most) did not finish
+                // the task; the model ended its turn early. Ask it to continue, a bounded number of times
+                // in a row, instead of reading the silence as done (EmptyReplyNudge).
+                if (turnCount > 1 && turn.Attempt.EndedWithoutReply && nudgesInARow < MaxEmptyReplyNudges)
+                {
+                    nudgesInARow++;
+                    AddToHistory(EmptyReplyNudge.Build());
+                    Logger.LogWarning(
+                        "Turn {Turn} of run {RunId} ended with no reply after tool results; asking the model to continue ({Nudge}/{MaxNudges})",
+                        turnCount,
+                        runId,
+                        nudgesInARow,
+                        MaxEmptyReplyNudges
+                    );
+                    continue;
+                }
+
                 Logger.LogDebug("No tool calls in turn {Turn}, run complete", turnCount);
                 brokeEarly = true;
                 break;
             }
+
+            nudgesInARow = 0;
         }
 
         // Only a genuine cap hit reaches here without brokeEarly: the loop ran out of turn budget

@@ -1,0 +1,3 @@
+# Paris
+
+The remaining group, people born in foreign countries with no French citizenship at birth, are those defined as immigrants under French law. According to the 2012 census, 135,853 residents of the city of Paris were immigrants from Europe, 112,369 were immigrants from the Maghreb, 70,852 from sub-Saharan Africa and Egypt, 5,059 from Turkey, 91,297 from Asia (outside Turkey), 38,858 from the Americas, and 1,365 from the South Pacific. Note that the immigrants from the Americas and the South Pacific in Paris are vastly outnumbered by migrants from French overseas regions and territories located in these regions of the world.

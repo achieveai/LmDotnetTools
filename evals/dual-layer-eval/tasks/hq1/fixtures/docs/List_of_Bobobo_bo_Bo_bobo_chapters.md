@@ -1,0 +1,3 @@
+# List of Bobobo-bo Bo-bobo chapters
+
+This is a list of chapters for the Japanese manga series "Bobobo-bo Bo-bobo" and the spinoff series "Shinsetsu Bobobo-bo Bo-bobo", both written and illustrated by Yoshio Sawai and serialized in "Weekly Shonen Jump". The series was licensed for an English-language release in the United States and Canada by Viz Media, who chose to release a single stand alone released an interlude in the series. The volume was released under their "SJ Advanced" label on November 8, 2005. The next American release of "Bobobo-bo Bo-bobo" would begin serialization in "Shonen Jump" in July 2007 with chapter 110, with Viz then releasing the Japanese volume 11 as volume 1 under Viz's normal Shonen Jump imprint.

@@ -1,0 +1,6 @@
+# prod overlay for manifestbridge. Applied after env/prod/global.yaml.
+# The document editor confirms each year that the contact details in this document are current.
+
+mesh:
+  retry_budget: 8
+  request_timeout_ms: 1300

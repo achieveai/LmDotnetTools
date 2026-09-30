@@ -1,0 +1,49 @@
+{
+  "source": "synthetic",
+  "seed": 20260928,
+  "teams": [
+    "Larkspur",
+    "Obsidian",
+    "Tamarack",
+    "Halyard",
+    "Cinderfall",
+    "Marram",
+    "Petrel",
+    "Basalt",
+    "Wickline",
+    "Sorrel",
+    "Gannet",
+    "Quarrystone",
+    "Fennel",
+    "Brightwater"
+  ],
+  "people": 150,
+  "twins": 12,
+  "services": 48,
+  "incidents": 70,
+  "memos": 80,
+  "meetings": 200,
+  "status_reports": 100,
+  "a_variants": [
+    "move",
+    "postponed",
+    "move",
+    "move",
+    "postponed"
+  ],
+  "b_variants": [
+    "nick_transfer",
+    "twin",
+    "nick_mgr"
+  ],
+  "c_variants": [
+    "cancelled",
+    "supersede"
+  ],
+  "extra_moves": 8,
+  "extra_transfers": 10,
+  "extra_swaps": 30,
+  "decoy_swaps": 12,
+  "decoy_memos": 10,
+  "padding": 1
+}

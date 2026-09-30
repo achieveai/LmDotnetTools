@@ -1,0 +1,181 @@
+{
+  "task": "fw2",
+  "fixture_files": 567,
+  "fixture_bytes": 1319327,
+  "approx_tokens": 329831,
+  "gold": {
+    "q1": 5,
+    "q2": "Rosalind Kerrton",
+    "q3": 3,
+    "q4": 6,
+    "q5": "Joachim Tarran",
+    "q6": "Fymby",
+    "q7": 8,
+    "q8": "Lorcan Drumwick",
+    "q9": 2,
+    "q10": "Ravi Brasley"
+  },
+  "trap_answers": {
+    "count_interim": {
+      "q1": 6,
+      "q2": "Rosalind Kerrton",
+      "q3": "(none)",
+      "q4": 6,
+      "q5": "Anouk Remton",
+      "q6": "Sealmouth",
+      "q7": 8,
+      "q8": "Magnus Gymridge",
+      "q9": 3,
+      "q10": "Ravi Brasley"
+    },
+    "trust_draft": {
+      "q1": 0,
+      "q2": "Hesper Caimlow",
+      "q3": 5,
+      "q4": 4,
+      "q5": "Lorcan Drumwick",
+      "q6": "Fymby",
+      "q7": 5,
+      "q8": "Lorcan Drumwick",
+      "q9": 0,
+      "q10": "Rosalind Kerrton"
+    },
+    "trust_rumour": {
+      "q1": 6,
+      "q2": "Jasper Durrey",
+      "q3": 3,
+      "q4": 7,
+      "q5": "Peregrine Meanwick",
+      "q6": "Soungarth",
+      "q7": 0,
+      "q8": "Clemency Veastard",
+      "q9": 3,
+      "q10": "Leopold Virridge"
+    },
+    "first_notice": {
+      "q1": 5,
+      "q2": "Wendell Hinholt",
+      "q3": "(none)",
+      "q4": 4,
+      "q5": "Clemency Veastard",
+      "q6": "Colbury",
+      "q7": 0,
+      "q8": "Joachim Tarran",
+      "q9": 2,
+      "q10": "Fenella Maillow"
+    },
+    "near_miss": {
+      "q1": 4,
+      "q2": "Verity Fedridge",
+      "q3": 4,
+      "q4": 7,
+      "q5": "Lorcan Drumwick",
+      "q6": "Graidfield",
+      "q7": 6,
+      "q8": "Peregrine Meanwick",
+      "q9": 1,
+      "q10": "Magnus Thoundwick"
+    }
+  },
+  "trap_flips": {
+    "q1": [
+      "count_interim",
+      "trust_draft",
+      "trust_rumour",
+      "near_miss"
+    ],
+    "q2": [
+      "trust_draft",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q3": [
+      "count_interim",
+      "trust_draft",
+      "first_notice",
+      "near_miss"
+    ],
+    "q4": [
+      "trust_draft",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q5": [
+      "count_interim",
+      "trust_draft",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q6": [
+      "count_interim",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q7": [
+      "trust_draft",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q8": [
+      "count_interim",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ],
+    "q9": [
+      "count_interim",
+      "trust_draft",
+      "trust_rumour",
+      "near_miss"
+    ],
+    "q10": [
+      "trust_draft",
+      "trust_rumour",
+      "first_notice",
+      "near_miss"
+    ]
+  },
+  "predicted_trap_scores": {
+    "count_interim": 0.4,
+    "trust_draft": 0.2,
+    "trust_rumour": 0.1,
+    "first_notice": 0.2,
+    "near_miss": 0.0
+  },
+  "families": {
+    "q1": "F5",
+    "q2": "F1",
+    "q3": "F3",
+    "q4": "F3",
+    "q5": "F6",
+    "q6": "F2",
+    "q7": "F4",
+    "q8": "F6",
+    "q9": "F5",
+    "q10": "F1"
+  },
+  "counts": {
+    "council": 80,
+    "notices": 26,
+    "reports": 29,
+    "papers": 24,
+    "forum": 41,
+    "people": 150,
+    "yards": 36,
+    "misc": 180,
+    "handbook": 1
+  },
+  "candidate_pool": {
+    "F1": 47,
+    "F2": 9,
+    "F3": 27,
+    "F4": 16,
+    "F5": 18,
+    "F6": 90
+  }
+}

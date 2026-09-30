@@ -1,0 +1,3 @@
+# Shrek
+
+Mike Myers as Shrek Eddie Murphy as Donkey Cameron Diaz as Princess Fiona John Lithgow as Lord Farquaad Vincent Cassel as ``Monsieur ''Robin Hood Conrad Vernon as Gingerbread Man Chris Miller as Geppetto / Magic Mirror Cody Cameron as Pinocchio / The Three Little Pigs Simon J. Smith as Three Blind Mice Christopher Knights as Three Blind Mice and Thelonius Aron Warner as Big Bad Wolf Jim Cummings as Captain of the Guards Kathleen Freeman as Old Woman (Donkey's ex-owner) Andrew Adamson as Duloc Mascot (a man dressed in a suit that looks like Lord Farquaad) Bobby Block as Baby Bear from the Three Bears Michael Galasso as Peter Pan Elisa Gabrielli as additional voices

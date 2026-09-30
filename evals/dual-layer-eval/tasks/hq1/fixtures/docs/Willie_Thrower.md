@@ -1,0 +1,3 @@
+# Willie Thrower
+
+Willie Lee Thrower (March 22, 1930 – February 20, 2002) was an American football quarterback. Born near Pittsburgh in New Kensington, Pennsylvania, Thrower was known as "Mitts" for his large hands and arm strength, which stood in contrast to his 5'11" frame. He was known to toss a football 70 yards. Thrower was a part of the 1952 Michigan State Spartans who won the national championship, He became one the first African American , in the modern era, to appear at the quarterback position in the National Football League (NFL), playing for the Chicago Bears in 1953 (Fredrick Douglas Fritz Pollard was a pre-modern era African American quarterback; George Taliaferro was a modern era contemporary of Thrower.) .

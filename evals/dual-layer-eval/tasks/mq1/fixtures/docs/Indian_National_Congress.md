@@ -1,0 +1,3 @@
+# Indian National Congress
+
+The Indian National Congress (pronunciation (help info)) (INC, often called Congress) is a broadly based political party in India. Founded in 1885, it was the first modern nationalist movement to emerge in the British Empire in Asia and Africa. From the late 19th century, and especially after 1920, under the leadership of Mahatma Gandhi, Congress became the principal leader of the Indian independence movement, with over 15 million members and over 70 million participants. Congress led India to independence from Great Britain, and powerfully influenced other anti-colonial nationalist movements in the British Empire.

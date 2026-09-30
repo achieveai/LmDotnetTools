@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LmStreaming.Sample.Services;
 
@@ -31,6 +32,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private const string CopilotGoogleGroup = "Copilot · Google";
     private const string CopilotMicrosoftGroup = "Copilot · Microsoft";
     private const string AnthropicCompatGroupSuffix = " (Anthropic-compatible)";
+    private const string DualLayerGroup = "Dual layer";
 
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
     [
@@ -51,6 +53,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;
     private readonly ImmutableDictionary<string, AnthropicCompatModel> _anthropicCompatModelsById;
+    private readonly ImmutableDictionary<string, DualLayerModelPreset> _dualLayerPresetsById;
     private readonly ImmutableHashSet<string> _staticAvailability;
     private readonly Func<string, bool> _dynamicAvailability;
 
@@ -66,13 +69,17 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         IReadOnlyList<CopilotModelInfo> copilotModels,
         IFileSystemProbe? probe = null,
         MockProviderHostLifetime? mockHost = null,
-        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null,
+        IReadOnlyList<DualLayerModelPreset>? dualLayerPresets = null,
+        ILogger<ProviderRegistry>? logger = null
     )
         : this(
             probe,
             mockHost is null ? () => false : () => mockHost.IsRunning,
             copilotModels,
-            anthropicCompatModels: anthropicCompatModels
+            anthropicCompatModels: anthropicCompatModels,
+            dualLayerPresets: dualLayerPresets,
+            logger: logger
         ) { }
 
     // Test-only constructor: lets tests inject a stub IsRunning probe without standing up a
@@ -84,10 +91,13 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         Func<bool> mockHostIsRunning,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
         Func<bool>? copilotTokenAvailable = null,
-        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null,
+        IReadOnlyList<DualLayerModelPreset>? dualLayerPresets = null,
+        ILogger<ProviderRegistry>? logger = null
     )
     {
         ArgumentNullException.ThrowIfNull(mockHostIsRunning);
+        logger ??= NullLogger<ProviderRegistry>.Instance;
 
         probe ??= new FileSystemProbe();
         var bootMode = NormalizeId(Environment.GetEnvironmentVariable("LM_PROVIDER_MODE")) ?? "test";
@@ -191,11 +201,51 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             );
         }
 
+        // Dual-layer pairs (DualLayerModels in configuration). Each is one entry in the picker whose two
+        // members must already be in the catalog above, so a pair can never name a model this host
+        // cannot build. A pair is available exactly when both members are, evaluated live below because
+        // a member may be a mock provider.
+        var dualLayerBuilder = ImmutableDictionary.CreateBuilder<string, DualLayerModelPreset>(
+            StringComparer.OrdinalIgnoreCase
+        );
+        foreach (var preset in dualLayerPresets ?? [])
+        {
+            if (builder.ContainsKey(preset.Id))
+            {
+                logger.LogError(
+                    "DualLayerModels entry '{PresetId}' collides with a provider of the same id; it is dropped",
+                    preset.Id
+                );
+                continue;
+            }
+
+            if (!builder.ContainsKey(preset.PlannerId) || !builder.ContainsKey(preset.ExecutorId))
+            {
+                logger.LogError(
+                    "DualLayerModels entry '{PresetId}' names an unknown model (planner {Planner}, executor {Executor}); it is dropped",
+                    preset.Id,
+                    preset.PlannerId,
+                    preset.ExecutorId
+                );
+                continue;
+            }
+
+            dualLayerBuilder[preset.Id] = preset;
+            builder[preset.Id] = new ProviderDescriptor(preset.Id, preset.DisplayName, false, Group: DualLayerGroup);
+        }
+
         _byId = builder.ToImmutable();
         _copilotModelsById = copilotBuilder.ToImmutable();
         _anthropicCompatModelsById = anthropicCompatBuilder.ToImmutable();
+        _dualLayerPresetsById = dualLayerBuilder.ToImmutable();
         _staticAvailability = staticBuilder.ToImmutable();
-        _dynamicAvailability = id => _staticAvailability.Contains(id) && (!IsMockProvider(id) || mockHostIsRunning());
+        _dynamicAvailability = id =>
+            _dualLayerPresetsById.TryGetValue(id, out var pair)
+                ? SingleAvailable(pair.PlannerId) && SingleAvailable(pair.ExecutorId)
+                : SingleAvailable(id);
+
+        bool SingleAvailable(string id) =>
+            _staticAvailability.Contains(id) && (!IsMockProvider(id) || mockHostIsRunning());
     }
 
     /// <summary>
@@ -282,6 +332,24 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         }
 
         model = null!;
+        return false;
+    }
+
+    /// <summary>
+    ///     Resolves the dual-layer pair behind a provider id, if any. False for every single model, so a
+    ///     caller branches into the two-loop wiring only for a pair. The pair's members are ordinary
+    ///     provider ids of this registry.
+    /// </summary>
+    public bool TryGetDualLayerPreset(string? providerId, out DualLayerModelPreset preset)
+    {
+        var normalized = NormalizeId(providerId);
+        if (normalized != null && _dualLayerPresetsById.TryGetValue(normalized, out var found))
+        {
+            preset = found;
+            return true;
+        }
+
+        preset = null!;
         return false;
     }
 

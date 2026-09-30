@@ -1,0 +1,3 @@
+# Shor language
+
+The Shor language (Шор тили) is a Turkic language spoken by about 2,800 people in a region called Mountain Shoriya, in the Kemerovo Province in southwest Siberia, although the entire Shor population in this area is over 12000 people. Presently, not all ethnic Shors speak Shor, and the language suffered a decline from the late 1930s to the early 1990s. During this period the Shor language was neither written nor taught in schools. However, the dissolution of the Soviet Union brought about the Shor language revival. The language is now taught at the Novokuznetsk branch of the Kemerovo State University.

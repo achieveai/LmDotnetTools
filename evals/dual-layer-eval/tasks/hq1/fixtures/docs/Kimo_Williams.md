@@ -1,0 +1,3 @@
+# Kimo Williams
+
+Kimo Williams is an American composer, musician and professor who has performed with a number of ensembles including his ensemble Kimotion and the Lt. Dan Band, that he co-founded with film/TV actor Gary Sinise. While he is perhaps best known for his work with the Lt. Dan Band, Williams has worked on a number of other projects including: award-winning photography, releasing four CDs, writing a stageplay and working on an opera based on the Courts Martial of Henry O Flipper, the first black graduate from West Point. Cognizant of the opportunities he had, as well as those he did not due to a childhood in which he moved often, Williams speaks to students about his history, their future and their need to combat mediocrity.

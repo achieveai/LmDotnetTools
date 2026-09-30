@@ -1,0 +1,3 @@
+# Toiyabe Range
+
+The Toiyabe Range is a mountain range in Lander and Nye counties, Nevada, United States. Most of the range is included within the Humboldt-Toiyabe National Forest. The highest point in the range, near its southern end, is Arc Dome (11,788 feet, 3592 m), an area protected as the Arc Dome Wilderness. The highest point in Lander County, Bunker Hill, is also located within the Toiyabe Range. The range starts in northwestern Nye County north of Tonopah, Nevada and runs approximately 120 miles (190 km) north-northeast into southern Lander County, making it the second longest range in the state.

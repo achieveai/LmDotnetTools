@@ -1,0 +1,3 @@
+# Money for Nothing (song)
+
+"Money for Nothing" is a single by British rock band Dire Straits, taken from their 1985 studio album "Brothers in Arms". The song's lyrics, considered controversial at the time of the song's release, are written from the point of view of a working-class man watching music videos and commenting on what he sees. The song features a guest appearance by Sting singing background vocals, providing both the signature falsetto introduction and backing chorus of, "I want my MTV." The groundbreaking video was the first to be aired on MTV Europe when the network launched on 1 August 1987.

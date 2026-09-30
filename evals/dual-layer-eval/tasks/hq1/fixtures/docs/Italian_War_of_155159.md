@@ -1,0 +1,3 @@
+# Italian War of 1551–59
+
+The Italian War of 1551 (1551–1559), sometimes known as the Habsburg–Valois War and the Last Italian War, began when Henry II of France, who had succeeded Francis I to the throne, declared war against Holy Roman Emperor Charles V with the intent of recapturing Italy and ensuring French, rather than Habsburg, domination of European affairs. The war was the last of a series of wars between the same parties since 1521. Historians have emphasized the importance of gun powder technology, new styles of fortification to resist cannon fire, and the increased professionalization of the soldiers.

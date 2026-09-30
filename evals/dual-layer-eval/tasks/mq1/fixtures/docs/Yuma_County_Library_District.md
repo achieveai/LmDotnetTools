@@ -1,0 +1,3 @@
+# Yuma County Library District
+
+The Yuma County Library District serves the population of Yuma County, Arizona. Today the library district consists of the nearly 80,000 square foot Main Library located in Yuma as well as branches in downtown Yuma, the Foothills, Somerton, San Luis, Wellton, Dateland, and Roll. The first Yuma Library, a Carnegie library, opened February 24, 1921 with 1,053 volumes and seating for 20 persons. Located in Sunset Park, the Yuma Carnegie Library underwent several expansions and renovations over the years, including a $4.2 million renovation completed in 2009. The Yuma Carnegie library still operates today as the Heritage Branch Library in downtown Yuma.

@@ -1,0 +1,25 @@
+# Service configuration for parcelrelay.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Previous versions remain available in the document history for audit purposes. All staff are
+# expected to have read this document and to apply it in their day-to-day work.
+
+include:
+  - shared/core-lean.yaml
+
+mesh:
+  request_timeout_ms: 4950
+  queue_depth: 925
+  pool_size: 48
+
+telemetry:
+  service_name: parcelrelay
+  exporter: statsd
+  sample_rate: 0.1
+  flush_interval_s: 15
+
+labels:
+  tier: gold
+  cost_centre: cc2875
+  paging_channel: ops52
+
+admin_port: 9152

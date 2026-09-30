@@ -1,0 +1,3 @@
+# Harare
+
+The city was founded in 1890 by the Pioneer Column, a small military force of the British South Africa Company, and named Fort Salisbury after the British prime minister Lord Salisbury. Company administrators demarcated the city and ran it until Southern Rhodesia achieved responsible government in 1923. Salisbury was thereafter the seat of the Southern Rhodesian (later Rhodesian) government and, between 1953 and 1963, the capital of the Central African Federation. It retained the name Salisbury until 1982, when it was renamed Harare on the second anniversary of Zimbabwean independence.

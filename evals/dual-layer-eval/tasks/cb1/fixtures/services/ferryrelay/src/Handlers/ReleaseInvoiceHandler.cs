@@ -1,0 +1,68 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Quillfeather.Platform;
+using Quillfeather.Services.Ferryrelay.Models;
+
+namespace Quillfeather.Services.Ferryrelay.Handlers;
+
+/// <summary>
+/// Handles ReleaseInvoice requests for ferryrelay. Safe to retry.
+/// </summary>
+public sealed class ReleaseInvoiceHandler
+{
+    private readonly IClock _clock;
+    private readonly ILog _log;
+    private readonly IMetrics _metrics;
+
+    public ReleaseInvoiceHandler(IClock clock, ILog log, IMetrics metrics)
+    {
+        _clock = clock;
+        _log = log;
+        _metrics = metrics;
+    }
+
+    public async Task<HandlerResult> HandleAsync(ReleaseInvoiceRequest request, CancellationToken ct)
+    {
+        if (request is null)
+        {
+            return HandlerResult.Rejected("request is required");
+        }
+
+        var started = _clock.UtcNow;
+        _log.Info("releaseInvoice received", request.Id);
+
+        foreach (var line in request.Lines)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (line.Quantity <= 0)
+            {
+                _metrics.Increment("ferryrelay.releaseInvoice.skipped");
+                continue;
+            }
+
+            await PublishAsync(line, ct).ConfigureAwait(false);
+            await MeasureAsync(line, ct).ConfigureAwait(false);
+        }
+
+        _metrics.Observe("ferryrelay.releaseInvoice.duration_ms", (_clock.UtcNow - started).TotalMilliseconds);
+        return HandlerResult.Ok();
+    }
+
+    private Task PublishAsync(ReleaseInvoiceLine line, CancellationToken ct)
+    {
+        var note = line.Note ?? string.Empty;
+        if (note.Length > 200)
+        {
+            _log.Info("publish note truncated", line.Sku);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task MeasureAsync(ReleaseInvoiceLine line, CancellationToken ct)
+    {
+        _metrics.Increment("ferryrelay.releaseInvoice.measure");
+        return Task.CompletedTask;
+    }
+}

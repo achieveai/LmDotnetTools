@@ -1,0 +1,3 @@
+# Institute for Creation Research
+
+The Institute for Creation Research (ICR) is a Creationist apologetics institute in Dallas, Texas that specializes in media promotion of pseudoscientific creation science and interpretation of the Genesis creation narrative as a historical event. The ICR adopts the Bible as an inerrant and literal documentary of scientific and historical fact as well as religious and moral truths, and espouses a Young Earth creationist worldview. It rejects evolutionary biology, which it views as a corrupting moral and social influence and threat to religious belief. The ICR was formed by Henry M. Morris in 1972 following an organizational split with the Creation Science Research Center (CSRC).

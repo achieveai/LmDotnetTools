@@ -1,0 +1,3 @@
+# South America air forces maneuvers
+
+The South American air forces performs several joint aerial combat training exercises. Among the more important are Cruzex ( Portuguese: "Exercício Cruzeiro do Sul" ) which is hosted by the Brazilian Air Force, Salitre ( English: Saltpeter ) hosted by the Chilean Air Force and Ceibo ( English: Erythrina crista-galli flower ) hosted by the Argentine Air Force. The goal is to train together in order to respond to a crisis or integrate into United Nations peacekeeping operations as a unified team; the United States Air Force and the Royal Canadian Air Force have also participated in some of these exercises in recent years.

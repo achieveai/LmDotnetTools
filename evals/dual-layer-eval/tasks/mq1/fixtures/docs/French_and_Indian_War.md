@@ -1,0 +1,3 @@
+# French and Indian War
+
+The outcome was one of the most significant developments in a century of Anglo - French conflict. France ceded to Great Britain its territory east of the Mississippi. It ceded French Louisiana west of the Mississippi River (including New Orleans) to its ally Spain in compensation for Spain's loss to Britain of Florida. (Spain had ceded Florida to Britain in exchange for the return of Havana, Cuba.) France's colonial presence north of the Caribbean was reduced to the islands of Saint Pierre and Miquelon, confirming Great Britain's position as the dominant colonial power in eastern North America.

@@ -1,0 +1,5 @@
+# staging overlay for tallyscope. Applied after env/staging/global.yaml.
+# Readers outside the core audience can skip this section without losing context.
+
+mesh:
+  compression: brotli

@@ -1,0 +1,3 @@
+# WWE 2K18
+
+WWE 2K18 is a professional wrestling video game developed in a collaboration between Yuke's and Visual Concepts and published by 2K Sports. It is the nineteenth installment in the WWE game series (fifth under the WWE 2K banner), serving as the following from their previous game WWE 2K17 (released in 2016). It was released worldwide for Microsoft Windows, PlayStation 4 and Xbox One on October 17, 2017, with the Nintendo Switch version on December 6, 2017. This release marks the return to Nintendo Platforms since WWE '13, as the first title in the series to be released on that platform. WWE 2K18 is the first video game in the series to only be on eighth generation hardware and also first in the series released on PC alongside its console counterparts.

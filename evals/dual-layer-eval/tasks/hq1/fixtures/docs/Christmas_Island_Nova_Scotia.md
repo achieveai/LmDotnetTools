@@ -1,0 +1,3 @@
+# Christmas Island, Nova Scotia
+
+Christmas Island, Nova Scotia "(Scottish Gaelic: Eilean na Nollaig)" is a Canadian community of the Cape Breton Regional Municipality in Cape Breton, Nova Scotia. It has a post office, a firehall and a very small population. It also has a beach with access to the Bras d'Or lakes, and a pond that runs into the lake. Christmas Island got its name because of a native that lived there whose surname was Christmas. He died on Ghost Island, adjacent to the beach. The original inhabitants of the land, the Mi'kmaw people, called the area "Abadakwichéch", which means "the small reserved portion."

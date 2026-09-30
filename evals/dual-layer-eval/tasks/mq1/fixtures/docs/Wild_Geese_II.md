@@ -1,0 +1,3 @@
+# Wild Geese II
+
+Wild Geese II is a 1985 British action-thriller film directed by Peter Hunt, based on the 1982 novel "The Square Circle" by Daniel Carney, in which a group of mercenaries are hired to spring Rudolf Hess from Spandau Prison in Berlin. The film is a sequel to the 1978 film "The Wild Geese", which was also produced by Euan Lloyd and adapted from a novel by Carney. Actor Richard Burton, who starred in the first film as Colonel Allen Faulkner, was planning to reprise his role for the sequel, but he died days before filming began. The sequel has Faulkner's brother (played by Edward Fox) as one of the mercenaries. No characters from the original are featured in the sequel.

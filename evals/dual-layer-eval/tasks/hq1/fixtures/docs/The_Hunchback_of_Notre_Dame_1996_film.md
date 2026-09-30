@@ -1,0 +1,3 @@
+# The Hunchback of Notre Dame (1996 film)
+
+The Hunchback of Notre Dame is a 1996 American animated musical drama film produced by Walt Disney Feature Animation for Walt Disney Pictures. The 34th Disney animated feature film, the film is based on Victor Hugo's novel of the same name. The plot centers on Quasimodo, the deformed bell-ringer of Notre Dame, and his struggle to gain acceptance into society. Directed by Kirk Wise and Gary Trousdale and produced by Don Hahn, the film's voice cast features Tom Hulce, Demi Moore, Tony Jay, Kevin Kline, Paul Kandel, Jason Alexander, Charles Kimbrough, David Ogden Stiers, and Mary Wickes in her final film role.

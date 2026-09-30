@@ -1,0 +1,19 @@
+{
+  "family": "qa-multihop",
+  "split": "retired",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 40,
+  "requiredFixtures": [
+    {
+      "glob": "docs/*.md",
+      "count": 1197
+    }
+  ],
+  "retiredReason": "pilot 20260924-090015-641225f7 (1 seed): claude-opus-5.5 scored 0.9 writing answers.json in one tool call with no file reads; answers come from memory."
+}

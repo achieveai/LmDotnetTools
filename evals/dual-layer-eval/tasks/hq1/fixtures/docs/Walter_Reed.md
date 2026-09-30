@@ -1,0 +1,3 @@
+# Walter Reed
+
+Major Walter Reed, M.D., U.S. Army, (September 13, 1851 – November 22, 1902) was a U.S. Army physician who in 1901 led the team that postulated and confirmed the theory that yellow fever is transmitted by a particular mosquito species, rather than by direct contact. This insight gave impetus to the new fields of epidemiology and biomedicine, and most immediately allowed the resumption and completion of work on the Panama Canal (1904–1914) by the United States. Reed followed work started by Carlos Finlay and directed by George Miller Sternberg who has been called the "first U.S. bacteriologist".

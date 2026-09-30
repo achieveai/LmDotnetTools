@@ -1,0 +1,3 @@
+# Jason Edwards: An Average Man
+
+Jason Edwards: an Average Man is an 1892 novel by American author Hamlin Garland. First published by the Arena Publishing Company in Boston, the novel is divided into two parts entitled "The Mechanic" and "The Farmer", respectively. There are two major settings that accompany each section. In the first part, the setting is in Boston and then moves to Boomtown, a prairie town in the Midwest, in the second part. The book takes place over a period of ten years, beginning in 1879 and finishing in 1889, but an important part of the novel takes place in 1884 as well. Most scenes written about in the novel are set in the summer months. "Jason Edwards" takes place during the Gilded Age in American History.

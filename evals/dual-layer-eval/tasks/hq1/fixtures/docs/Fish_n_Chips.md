@@ -1,0 +1,3 @@
+# Fish 'n' Chips
+
+Fish 'n' Chips is the fourth studio album released by Pub Rock band Eddie and the Hot Rods. It is produced and mixed by Al Kooper, engineered by Bob Edwards and assistant Stuart Henderson and mastered by Mike Reese. The album was the first album for EMI Records who they signed to in 1979. According to Barrie Masters, the record company "just let it slip out" and it wasn't very successful, subsequently resulting in the dissolution of The Hot Rods in late 1981. The band reformed for a year from 1984 to 1985 but it wouldn't be until 1992 that they completed another studio album. The album also sees the departure of Paul Gray with him being replaced by T.C. (Tony Cranney).

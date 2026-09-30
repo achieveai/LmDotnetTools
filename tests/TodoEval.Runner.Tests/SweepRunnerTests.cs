@@ -63,6 +63,71 @@ public class SweepRunnerTests
     }
 
     /// <summary>
+    /// A variant's reasoning effort reaches the host when each run's conversation is provisioned, and
+    /// the default variant sends none, so every older sweep keeps the host's default effort.
+    /// </summary>
+    [Fact]
+    public async Task A_variant_s_reasoning_effort_is_sent_when_provisioning_and_the_default_sends_none()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"todo-eval-effort-{Guid.NewGuid():N}.jsonc");
+        File.WriteAllText(path, """{ "variants": [ { "name": "low-think", "reasoningEffort": "medium" } ] }""");
+        VariantConfig lowThink;
+        try
+        {
+            lowThink = EvalRunnerConfig.Load(path).Variants.Single();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
+        (await ProvisionBodyAsync(lowThink)).Should().Contain("\"reasoningEffort\":\"medium\"");
+        (await ProvisionBodyAsync(VariantConfig.Default)).Should().NotContain("reasoningEffort");
+        lowThink.Signature().Should().EndWith("@effort=medium", "two sweeps at different efforts are not comparable");
+        VariantConfig.Default.Signature().Should().NotContain("@effort");
+    }
+
+    private static async Task<string> ProvisionBodyAsync(VariantConfig variant)
+    {
+        var handler = new ScriptedHostHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:9/") };
+        var runner = new SweepRunner(
+            new EvalHostClient(http),
+            new EvalRunnerConfig
+            {
+                Models = ["good"],
+                Topics = ["a topic"],
+                Seeds = 1,
+                PerRunTimeoutMinutes = 1,
+            },
+            "ws-1",
+            "mode-1",
+            variant,
+            [
+                new EvalTaskAsset
+                {
+                    Id = null,
+                    Dir = Path.GetTempPath(),
+                    Template = "Do {TOPIC}",
+                    ExpectedBoard = null,
+                },
+            ],
+            TextWriter.Null
+        );
+        var manifestPath = Path.Combine(Path.GetTempPath(), $"todo-eval-manifest-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var entries = await runner.RunSweepAsync(manifestPath, CancellationToken.None);
+            entries.Single().Status.Should().Be(RunOutcomes.Completed);
+            return handler.ProvisionBodies.Single();
+        }
+        finally
+        {
+            File.Delete(manifestPath);
+        }
+    }
+
+    /// <summary>
     /// A run the HOST reports as Errored is a real outcome, not a harness fault — but its manifest
     /// row used to carry no error text at all, so a failed live sweep could not be diagnosed from
     /// the results directory. When the status payload names the error, the row and the console
@@ -167,6 +232,8 @@ public class SweepRunnerTests
     /// </summary>
     private sealed class ScriptedHostHandler : HttpMessageHandler
     {
+        public List<string> ProvisionBodies { get; } = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
@@ -176,6 +243,7 @@ public class SweepRunnerTests
             if (request.Method == HttpMethod.Post && path == "/api/conversations")
             {
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                ProvisionBodies.Add(body);
                 return body.Contains("\"providerId\":\"bad\"", StringComparison.Ordinal)
                     ? Json("this is not json {{{")
                     : Json("""{"threadId":"t-good"}""");

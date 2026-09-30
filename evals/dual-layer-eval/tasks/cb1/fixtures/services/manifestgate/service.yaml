@@ -1,0 +1,25 @@
+# Service configuration for manifestgate.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout. Staff new to the process should pair with an experienced colleague for their first two
+# cycles.
+
+include:
+  - shared/fanout-wide.yaml
+
+mesh:
+  cache_ttl_seconds: 3360
+  pool_size: 28
+
+telemetry:
+  service_name: manifestgate
+  exporter: statsd
+  sample_rate: 0.25
+  flush_interval_s: 5
+
+labels:
+  tier: silver
+  cost_centre: cc9634
+  paging_channel: ops89
+
+admin_port: 9146

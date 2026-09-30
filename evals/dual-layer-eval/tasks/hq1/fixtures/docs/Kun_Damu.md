@@ -1,0 +1,3 @@
+# Kun-Damu
+
+Kun-Damu (also Qum-Damu) was a king (Malikum) of the first Eblaite kingdom ruling c. 2400 BC. The king's name is translated as "Arise, O Damu". Kun-Damu is attested in the archives of Ebla dated two generations after his reign. According to Alfonso Archi, he was a contemporary of Saʿumu of Mari. The archives of Ebla records the defeat of Mari in the 25th century BC, and based on the estimations for his reign, Kun-Damu might be the Eblaite king who inflicted this defeat upon Mari. Following his death, he was deified and his cult was attested in Ebla for at least 30 years after his reign.

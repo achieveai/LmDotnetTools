@@ -1,0 +1,160 @@
+{
+  "task": "cb1",
+  "source": "synthetic",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "int",
+      "question": "What is the effective mesh setting `pool_size` of service `ledgerbridge` in environment `prod`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "96"
+      ],
+      "evidence": [
+        "config/shared/latency-steady.yaml",
+        "env/prod/global.yaml",
+        "services/ledgerbridge/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "ignore_env",
+        "include_order_reversed",
+        "skip_nested_include"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "int",
+      "question": "What is the effective mesh setting `request_timeout_ms` of service `manifestbridge` in environment `staging`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "5100"
+      ],
+      "evidence": [
+        "services/manifestbridge/service.yaml",
+        "flags/staging.jsonc",
+        "services/manifestbridge/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "flag_catalog_default",
+        "isprod_literal",
+        "wrong_section"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "norm",
+      "question": "What is the effective mesh setting `lb_policy` of service `berthbridge` in environment `prod`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "maglev"
+      ],
+      "evidence": [
+        "flags/prod.jsonc",
+        "env/prod/global.yaml",
+        "services/berthbridge/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "ignore_env",
+        "flag_catalog_default"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "int",
+      "question": "What is the effective mesh setting `queue_depth` of service `skiffworks` in environment `qa`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "620"
+      ],
+      "evidence": [
+        "flags/qa.jsonc",
+        "config/shared/retry-relaxed.yaml",
+        "services/skiffworks/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "include_order_reversed",
+        "flag_catalog_default"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "int",
+      "question": "What is the effective mesh setting `max_connections` of service `bollardbridge` in environment `prod`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "80"
+      ],
+      "evidence": [
+        "env/prod/services/bollardbridge.yaml",
+        "flags/prod.jsonc",
+        "services/bollardbridge/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "ignore_env",
+        "flag_catalog_default"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "int",
+      "question": "What is the effective mesh setting `cache_ttl_seconds` of service `berthyard` in environment `staging`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "3480"
+      ],
+      "evidence": [
+        "services/berthyard/service.yaml",
+        "flags/staging.jsonc",
+        "services/berthyard/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "flag_catalog_default",
+        "isprod_literal"
+      ]
+    },
+    {
+      "id": "q7",
+      "kind": "norm",
+      "question": "What is the effective mesh setting `compression` of service `parcelscope` in environment `staging`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "zstd"
+      ],
+      "evidence": [
+        "env/staging/services/parcelscope.yaml",
+        "flags/staging.jsonc",
+        "services/parcelscope/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "ignore_env",
+        "flag_catalog_default"
+      ]
+    },
+    {
+      "id": "q8",
+      "kind": "int",
+      "question": "What is the effective mesh setting `circuit_threshold` of service `ferryrelay` in environment `prod`, once every configuration layer and the service's start-up code have been applied?",
+      "answers": [
+        "196"
+      ],
+      "evidence": [
+        "config/shared/fanout-narrow.yaml",
+        "flags/prod.jsonc",
+        "services/ferryrelay/src/Startup.cs"
+      ],
+      "trap_flips": [
+        "honor_commented",
+        "ignore_code",
+        "flag_catalog_default",
+        "skip_nested_include"
+      ]
+    }
+  ]
+}

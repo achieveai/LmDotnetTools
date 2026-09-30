@@ -1,0 +1,166 @@
+{
+  "task": "hq1",
+  "source": "hotpotqa",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "Which composer was also a teacher, Philip Glass or Franz Schreker?",
+      "kind": "text",
+      "answers": [
+        "Franz Schreker"
+      ],
+      "evidence": [
+        "Franz_Schreker.md",
+        "Philip_Glass.md"
+      ],
+      "source_id": "5a7933b255429907847277eb",
+      "type": "comparison",
+      "level": "hard",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q2",
+      "question": "What British rock band released the album Brothers in Arms in 1985 which also featured a song with the same title?",
+      "kind": "text",
+      "answers": [
+        "Dire Straits"
+      ],
+      "evidence": [
+        "Brothers_in_Arms_album.md",
+        "Brothers_in_Arms_song.md"
+      ],
+      "source_id": "5a737ef85542992d56e7e336",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q3",
+      "question": "What resort in Biloxi, Mississippi does the Chief Operating Officer of the largest single hotel in the United States oversee?",
+      "kind": "text",
+      "answers": [
+        "Beau Rivage"
+      ],
+      "evidence": [
+        "Corey_I_Sanders.md",
+        "MGM_Grand_Las_Vegas.md"
+      ],
+      "source_id": "5add56ad5542992200553abf",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q4",
+      "question": "Which of the following has released ten solo albums: Kristin Hersh or Mike Patton?",
+      "kind": "text",
+      "answers": [
+        "Kristin Hersh"
+      ],
+      "evidence": [
+        "Kristin_Hersh.md",
+        "Mike_Patton.md"
+      ],
+      "source_id": "5a89a82c5542993b751ca973",
+      "type": "comparison",
+      "level": "hard",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q5",
+      "question": "What North Carolina native did Danja produce songs for?",
+      "kind": "text",
+      "answers": [
+        "J. Cole"
+      ],
+      "evidence": [
+        "Danja_record_producer.md",
+        "J_Cole.md"
+      ],
+      "source_id": "5a71278c5542994082a3e5e2",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q6",
+      "question": "Multiple award-winning actor Gary Sinise appeared in The Stand in 1994 - a miniseries based on a novel and screenplay by which noted author?",
+      "kind": "text",
+      "answers": [
+        "Stephen King"
+      ],
+      "evidence": [
+        "Gary_Sinise.md",
+        "The_Stand_miniseries.md"
+      ],
+      "source_id": "5a80cddd554299260e20a169",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q7",
+      "question": "KSCW-DT is part of a duopoly with which virtual channel 12 in Wichita?",
+      "kind": "text",
+      "answers": [
+        "KWCH-DT"
+      ],
+      "evidence": [
+        "KSCW_DT.md",
+        "KWCH_DT.md"
+      ],
+      "source_id": "5adf33965542993344016c20",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q8",
+      "question": "LJM was one of what type of company Andrew Fastow used in the Enron scandal?",
+      "kind": "text",
+      "answers": [
+        "independent ghost-entities"
+      ],
+      "evidence": [
+        "Andrew_Fastow.md",
+        "LJM_Lea_Jeffrey_Matthew.md"
+      ],
+      "source_id": "5ac3a8525542993915413895",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q9",
+      "question": "What abbey, founded in 598, was Clarembald a monk at?",
+      "kind": "text",
+      "answers": [
+        "St Augustine's Abbey"
+      ],
+      "evidence": [
+        "Clarembald.md",
+        "St_Augustine_s_Abbey.md"
+      ],
+      "source_id": "5ab5ec795542997d4ad1f252",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q10",
+      "question": "Which airline partners with Gogo Inflight Internet and opened in 1984?",
+      "kind": "text",
+      "answers": [
+        "Virgin Atlantic"
+      ],
+      "evidence": [
+        "Gogo_Inflight_Internet.md",
+        "Virgin_Atlantic.md"
+      ],
+      "source_id": "5a716c415542994082a3e827",
+      "type": "bridge",
+      "level": "hard",
+      "answer_is_a_filename": true
+    }
+  ]
+}

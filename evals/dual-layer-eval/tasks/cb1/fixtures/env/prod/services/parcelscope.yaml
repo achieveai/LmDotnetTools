@@ -1,0 +1,6 @@
+# prod overlay for parcelscope. Applied after env/prod/global.yaml.
+# Where this document conflicts with a local procedure, the local procedure should be updated to
+# match.
+
+mesh:
+  cache_ttl_seconds: 150

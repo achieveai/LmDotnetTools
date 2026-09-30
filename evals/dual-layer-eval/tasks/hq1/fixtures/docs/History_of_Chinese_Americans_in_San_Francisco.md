@@ -1,0 +1,3 @@
+# History of Chinese Americans in San Francisco
+
+As of 2012, 21.4% of the population in San Francisco was of Chinese descent, and at least 150,000 Chinese American residents. The Chinese are the largest Asian American subgroup in San Francisco. San Francisco has the highest percentage of residents of Chinese descent of any major U.S. city, and the second largest Chinese American population, after New York City. The San Francisco Bay Area is 7.9% Chinese American, with many residents in Oakland and Santa Clara County. San Francisco's Chinese community has ancestry mainly from Guangdong province, China and Hong Kong, although there is a sizable population of ethnic Chinese with ancestry from other parts of mainland China and Taiwan as well.

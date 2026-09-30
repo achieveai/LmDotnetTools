@@ -1,0 +1,3 @@
+# Queen Victoria
+
+Victoria was pleased when Gladstone resigned in 1885 after his budget was defeated. She thought his government was "the worst I have ever had", and blamed him for the death of General Gordon at Khartoum. Gladstone was replaced by Lord Salisbury. Salisbury's government only lasted a few months, however, and Victoria was forced to recall Gladstone, whom she referred to as a "half crazy & really in many ways ridiculous old man". Gladstone attempted to pass a bill granting Ireland home rule, but to Victoria's glee it was defeated. In the ensuing election, Gladstone's party lost to Salisbury's and the government switched hands again.

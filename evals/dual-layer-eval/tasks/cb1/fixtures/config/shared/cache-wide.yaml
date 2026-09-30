@@ -1,0 +1,6 @@
+# Shared fragment cache-wide. Services pull it in through the `include:` list of their service.yaml.
+# Teams should budget time for the periodic review described here in their planning cycle.
+# Exceptions must be requested in writing and are granted for a fixed period only.
+
+mesh:
+  cache_ttl_seconds: 2010

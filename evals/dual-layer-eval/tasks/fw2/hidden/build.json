@@ -1,0 +1,40 @@
+{
+  "source": "synthetic",
+  "seed": 20261001,
+  "yards": 30,
+  "areas": 5,
+  "people": 150,
+  "background_people": 60,
+  "rumour_appt_rate": 0.5,
+  "transfers": 10,
+  "draft_transfers": 4,
+  "rumour_transfers": 4,
+  "transfer_cancel_rate": 0.3,
+  "merger_years": [
+    2027,
+    2028,
+    2029,
+    2030,
+    2031,
+    2032
+  ],
+  "closures": 8,
+  "draft_closures": 4,
+  "rumour_closures": 5,
+  "reopen_rate": 0.4,
+  "correction_rate": 0.5,
+  "draft_takeover_rate": 0.6,
+  "rumour_takeover_rate": 0.6,
+  "near_misses_per_year": 2,
+  "filler_docs": 180,
+  "family_counts": {
+    "F1": 2,
+    "F2": 1,
+    "F3": 2,
+    "F4": 1,
+    "F5": 2,
+    "F6": 2
+  },
+  "fact_doc_scale": 4,
+  "filler_scale": 12
+}

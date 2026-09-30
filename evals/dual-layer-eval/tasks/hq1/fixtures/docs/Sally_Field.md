@@ -1,0 +1,3 @@
+# Sally Field
+
+Sally Margaret Field (born November 6, 1946) is an American actress and director. Field began her career on television, starring on the sitcoms "Gidget" (1965–66), "The Flying Nun" (1967–70), and "The Girl with Something Extra" (1973–74). She ventured into film with "Smokey and the Bandit" (1977) and later "Norma Rae" (1979), for which she received the Academy Award for Best Actress. She later received Golden Globe Award nominations for her performances in "Absence of Malice" (1981) and "Kiss Me Goodbye" (1982), before receiving her second Academy Award for Best Actress for "Places in the Heart" (1984). Field received further nominations for the Golden Globe Award for Best Actress for "Murphy's Romance" (1985) and "Steel Magnolias" (1989).

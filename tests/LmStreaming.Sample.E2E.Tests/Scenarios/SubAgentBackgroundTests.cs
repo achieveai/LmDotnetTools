@@ -72,7 +72,7 @@ public sealed class SubAgentBackgroundTests
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
-        var threadId = $"subagent-bg-{providerMode}-{Guid.NewGuid():N}";
+        var threadId = $"root-subagent-bg-{providerMode}-{Guid.NewGuid():N}";
         var socket = await factory.ConnectWebSocketAsync(threadId);
         await using var client = new WebSocketTestClient(socket);
 

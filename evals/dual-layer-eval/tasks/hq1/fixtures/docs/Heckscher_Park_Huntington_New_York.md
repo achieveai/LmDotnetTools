@@ -1,0 +1,3 @@
+# Heckscher Park (Huntington, New York)
+
+Heckscher Park is a local park and national historic district in Huntington, Suffolk County, New York. It is bounded by Madison Street, Sabbath Day Path, Main Street, and Prime Avenue. The park is roughly triangular-shaped with a large pond on northwest corner, and contains the Heckscher Museum of Art established by industrialist August Heckscher, as well as the Chapin Rainbow Theater. It hosts annual art festivals, tulip festivals, concerts, renaissance fairs, and the Huntington Summer Arts Festival. Heckscher Park was listed on the National Register of Historic Places in 1985.

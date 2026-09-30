@@ -1,0 +1,164 @@
+{
+ "task": "tr1",
+ "questions": [
+  {
+   "id": "q1",
+   "kind": "int",
+   "question": "How many Qualifying Incidents do these tickets record?",
+   "answers": [
+    "48"
+   ],
+   "evidence": [
+    "service-credit-policy.md"
+   ],
+   "trap_flips": [
+    "no_appendix",
+    "appendix_overreach",
+    "miss_unless",
+    "verbal_advice",
+    "customer_estimate",
+    "ignore_maintenance",
+    "no_effective_date",
+    "count_duplicates",
+    "include_nonprod",
+    "ignore_deadline"
+   ]
+  },
+  {
+   "id": "q2",
+   "kind": "idset",
+   "question": "List the ticket ids of the Qualifying Incidents of Enterprise-plan accounts whose Qualifying Minutes were fewer than 30 (one id per incident: the ticket the policy counts).",
+   "answers": [
+    "T-4382, T-4417, T-4422, T-4538, T-4558"
+   ],
+   "evidence": [
+    "service-credit-policy.md",
+    "T-4382.md",
+    "T-4417.md",
+    "T-4422.md",
+    "T-4538.md",
+    "T-4558.md"
+   ],
+   "trap_flips": [
+    "customer_estimate",
+    "no_effective_date"
+   ]
+  },
+  {
+   "id": "q3",
+   "kind": "norm",
+   "question": "Which customer account has the most Qualifying Incidents?",
+   "answers": [
+    "Yarrford Bakery Co."
+   ],
+   "evidence": [
+    "service-credit-policy.md",
+    "T-4116.md",
+    "T-4238.md",
+    "T-4262.md",
+    "T-4377.md",
+    "T-4430.md",
+    "T-4491.md"
+   ],
+   "trap_flips": [
+    "no_appendix",
+    "customer_estimate"
+   ]
+  },
+  {
+   "id": "q4",
+   "kind": "int",
+   "question": "How many Qualifying Incidents were caused by a failure at an outside service provider (not in Tamberlow's own systems and not a change the customer made)?",
+   "answers": [
+    "7"
+   ],
+   "evidence": [
+    "service-credit-policy.md"
+   ],
+   "trap_flips": [
+    "no_appendix",
+    "appendix_overreach",
+    "count_duplicates"
+   ]
+  },
+  {
+   "id": "q5",
+   "kind": "int",
+   "question": "What is the total number of Qualifying Minutes across all Qualifying Incidents of Pellshaw Joinery?",
+   "answers": [
+    "510"
+   ],
+   "evidence": [
+    "service-credit-policy.md",
+    "maintenance-calendar-q1-2026.md"
+   ],
+   "trap_flips": [
+    "appendix_overreach",
+    "customer_estimate",
+    "late_notice_window",
+    "count_duplicates"
+   ]
+  },
+  {
+   "id": "q6",
+   "kind": "int",
+   "question": "How many Qualifying Incidents began in February 2026?",
+   "answers": [
+    "21"
+   ],
+   "evidence": [
+    "service-credit-policy.md",
+    "maintenance-calendar-q1-2026.md"
+   ],
+   "trap_flips": [
+    "no_appendix",
+    "appendix_overreach",
+    "miss_unless",
+    "verbal_advice",
+    "customer_estimate",
+    "ignore_maintenance",
+    "count_duplicates",
+    "include_nonprod",
+    "ignore_deadline"
+   ]
+  },
+  {
+   "id": "q7",
+   "kind": "idset",
+   "question": "List the ticket ids of the Qualifying Incidents that were triggered by a change the customer made on its own side (one id per incident: the ticket the policy counts).",
+   "answers": [
+    "T-4133, T-4392, T-4437, T-4523"
+   ],
+   "evidence": [
+    "service-credit-policy.md",
+    "T-4133.md",
+    "T-4392.md",
+    "T-4437.md",
+    "T-4523.md"
+   ],
+   "trap_flips": [
+    "miss_unless",
+    "verbal_advice"
+   ]
+  },
+  {
+   "id": "q8",
+   "kind": "int",
+   "question": "How many different customer accounts had at least one Qualifying Incident?",
+   "answers": [
+    "19"
+   ],
+   "evidence": [
+    "service-credit-policy.md"
+   ],
+   "trap_flips": [
+    "no_appendix",
+    "miss_unless",
+    "verbal_advice",
+    "customer_estimate",
+    "include_nonprod",
+    "ignore_deadline"
+   ]
+  }
+ ]
+}

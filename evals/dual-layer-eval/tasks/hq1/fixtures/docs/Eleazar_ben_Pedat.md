@@ -1,0 +1,3 @@
+# Eleazar ben Pedat
+
+Eleazar ben Pedat (Hebrew: רבי אלעזר בן פדת‎ ‎ ) was a Jewish Talmudist, known as an amora, in the Land of Israel, of the 4th generation (first half of the 4th century). He was his father's pupil (Ber. 77b; M. Ḳ. 20a) and the assistant lecturer ("amora") of R. Assi. If the latter asked him to repeat any of his father's sentences, if he himself had heard them from the lips of his father, he introduced them with the words: "So says my teacher in the name of my father", but in other cases he said: "So says my teacher in the name of R. Eleazar." He transmitted also sentences in the name of his father (Yer. Yoma 39d) and of R. Hoshaiah (Oshaya) (Yer. Suk. 54d).

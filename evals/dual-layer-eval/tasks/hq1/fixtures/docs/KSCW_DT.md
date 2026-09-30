@@ -1,0 +1,3 @@
+# KSCW-DT
+
+KSCW-DT, virtual channel 33 (VHF digital channel 12), is a CW-affiliated television station licensed to Wichita, Kansas, United States. The station is owned by Gray Television, as part of a duopoly with CBS affiliate KWCH-DT (channel 12); Gray also operates Univision affiliate KDCU-DT (channel 31) under a joint sales agreement with owner Entravision Communications Corporation. KSCW and KWCH share studio facilities and KDCU's master control operations are located on East 37th Street North in northeastern Wichita; KSCW maintains transmitter facilities located in rural northeastern Reno County (due south of Buhler).

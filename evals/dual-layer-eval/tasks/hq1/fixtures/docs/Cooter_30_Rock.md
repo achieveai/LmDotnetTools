@@ -1,0 +1,3 @@
+# Cooter (30 Rock)
+
+"Cooter" is the fifteenth episode of the second season of "30 Rock" and the thirty-sixth episode of the series. It was written by series' creator Tina Fey and was directed by one of the season's producers, Don Scardino. The episode first aired on May 8, 2008, on the NBC network in the United States. "Cooter" follows Jack Donaghy's (Alec Baldwin) attempt to get fired from his new job in politics; Liz Lemon's (Fey) pregnancy scare and decision to adopt a baby; Tracy Jordan's (Tracy Morgan) creation of a pornographic video game; and Kenneth Parcell's (Jack McBrayer) aspiration to be an NBC page at the Beijing Olympics. The episode is an unofficial season finale, due to the season being shortened by the 2007–2008 Writers Guild of America strike.

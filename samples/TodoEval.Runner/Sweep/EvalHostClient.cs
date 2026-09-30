@@ -173,26 +173,32 @@ internal sealed class EvalHostClient
     /// <summary>
     /// Provisions a conversation. <paramref name="providerId"/> carries the PER-RUN model: on this
     /// host a discovered model id is a provider id, so provisioning with it is the per-call model
-    /// selection channel (#565).
+    /// selection channel (#565). A null <paramref name="reasoningEffort"/> is left out of the request, so
+    /// the host keeps its default.
     /// </summary>
     public async Task<string> ProvisionConversationAsync(
         string workspaceId,
         string providerId,
         string modeId,
-        CancellationToken ct
+        CancellationToken ct,
+        string? reasoningEffort = null
     )
     {
-        var body = await SendReadAsync(
-            HttpMethod.Post,
-            "api/conversations",
-            new
+        object request = reasoningEffort is null
+            ? new
             {
                 WorkspaceId = workspaceId,
                 ProviderId = providerId,
                 ModeId = modeId,
-            },
-            ct
-        );
+            }
+            : new
+            {
+                WorkspaceId = workspaceId,
+                ProviderId = providerId,
+                ModeId = modeId,
+                ReasoningEffort = reasoningEffort,
+            };
+        var body = await SendReadAsync(HttpMethod.Post, "api/conversations", request, ct);
         return ReadStringProperty(body, "threadId");
     }
 

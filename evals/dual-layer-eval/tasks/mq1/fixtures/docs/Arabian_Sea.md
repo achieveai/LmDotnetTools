@@ -1,0 +1,3 @@
+# Arabian Sea
+
+The Arabian Sea is a region of the northern Indian Ocean bounded on the northeast and east by the Indian Peninsula on the west by Somalia and the Arabian Peninsula, on the north by Pakistan and Iran and on the South by the Maldives. Historically the sea has been known by other names including the Erythraean Sea and the Persian Sea. Its total area is 3,862,000 km (1,491,000 sq mi) and its maximum depth is 4,652 metres (15,262 ft). The Gulf of Aden is in the southwest, connecting the Arabian Sea to the Red Sea through the strait of Bab - el - Mandeb, and the Gulf of Oman is in the northwest, connecting it to the Persian Gulf.

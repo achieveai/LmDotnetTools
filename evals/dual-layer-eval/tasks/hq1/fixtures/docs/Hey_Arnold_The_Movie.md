@@ -1,0 +1,3 @@
+# Hey Arnold!: The Movie
+
+Hey Arnold!: The Movie is a 2002 American animated adventure comedy film based on the Nickelodeon animated television series of the same name. It was directed by Tuck Tucker and written by series creator Craig Bartlett and Steve Viksten, with music by Jim Lang. The film stars Spencer Klein, Francesca Smith, Jamil Walker Smith, Dan Castellaneta, Tress MacNeille, Paul Sorvino, Jennifer Jason Leigh, and Christopher Lloyd. The film follows Arnold, Gerald, and Helga on a quest to save their neighborhood from a greedy developer who plans on converting it into a huge shopping mall.

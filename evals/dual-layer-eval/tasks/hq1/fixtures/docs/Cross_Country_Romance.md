@@ -1,0 +1,3 @@
+# Cross-Country Romance
+
+Cross-Country Romance is a 1940 American romantic comedy film starring Gene Raymond and Wendy Barrie. With the huge success of "It Happened One Night", the 1934 American romantic comedy film directed by Frank Capra and starring Claudette Colbert and Clark Gable, every studio in Hollywood attempted to cash in with a similar storyline. In addition to this film, there was also "Love on the Run" (1936) from MGM, "The Bride Came C.O.D." (1941) by Warner Bros.; even Columbia Pictures, which had made "It Happened One Night", produced the musical remake "Eve Knew Her Apples" (1945).

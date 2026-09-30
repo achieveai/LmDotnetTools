@@ -1,0 +1,3 @@
+# Ann Arbor, Michigan
+
+Ann Arbor is a major scene of college sports, most notably at the University of Michigan, a member of the Big Ten Conference. Several well-known college sports facilities exist in the city, including Michigan Stadium, the largest American football stadium in the world. The stadium was completed in 1927 and cost more than $950,000 to build. It has a 109,901 seating capacity after multiple renovations were made. The stadium is colloquially known as "The Big House". Crisler Center and Yost Ice Arena play host to the school's basketball (both men's and women's) and ice hockey teams, respectively. Concordia University, a member of the NAIA, also fields sports teams.

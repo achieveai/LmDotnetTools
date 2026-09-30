@@ -1,0 +1,10 @@
+# Shared fragment edge-strict. Services pull it in through the `include:` list of their service.yaml.
+# Templates referenced in this section live in the shared drive under the standard folder
+# layout. Feedback on the clarity of this document is welcome at any time through the usual
+# channel.
+
+mesh:
+  retry_budget: 3
+  queue_depth: 1625
+  pool_size: 124
+  cache_ttl_seconds: 1500

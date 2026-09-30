@@ -1,0 +1,3 @@
+# Poggenpohl
+
+In 1892, the brand Poggenpohl was established as a white lacquer furniture company founded by Freidemir Poggenpohl. Poggenpohl was successful with introducing ergonomic work-top heights, and storage innovations aimed at improving the kitchen. In 1923, Poggenpohl introduced a free-standing commodious cupboard called "The Ideal" which was also adopted by American cabinet manufacturer Kitchen Maid. The Poggenpohl cupboard was the forerunner of "The Fitted Kitchen" in the "Era of the Commodious Cupboard". The company continued to create new products and techniques; in 1928, it introduced the reform kitchen, a significant innovation in the industry, and in 1930, it created the 'ten-layer polished lacquer technique'.

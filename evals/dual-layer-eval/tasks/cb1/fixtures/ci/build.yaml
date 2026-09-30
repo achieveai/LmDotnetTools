@@ -1,0 +1,13 @@
+# build pipeline
+# The checklist in the appendix is a convenience and is not exhaustive. This section is
+# informative and does not introduce new obligations.
+
+stages:
+  - name: package
+    timeout_minutes: 30
+  - name: restore
+    timeout_minutes: 10
+  - name: notify
+    timeout_minutes: 20
+  - name: publish
+    timeout_minutes: 20

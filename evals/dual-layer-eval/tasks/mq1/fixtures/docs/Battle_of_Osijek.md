@@ -1,0 +1,3 @@
+# Battle of Osijek
+
+The Battle of Osijek () was the artillery bombardment of the Croatian city of Osijek by the Yugoslav People's Army (JNA) which took place from August 1991 to June 1992 during the Croatian War of Independence. Shelling peaked in late November and December 1991, then diminished in 1992 after the Vance plan was accepted by the combatants. Airstrikes and attacks by JNA infantry and armored units against targets in the city accompanied the bombardment, which caused approximately 800 deaths and resulted in a large portion of the city's population leaving. Croatian sources estimated that 6,000 artillery shells were fired against Osijek over the period.

@@ -1,0 +1,3 @@
+# 1991–92 Boston Celtics season
+
+The 1991–92 NBA season was the 46th season for the Boston Celtics in the National Basketball Association. This marked the final NBA season for All-Star forward Larry Bird, who missed nearly half of the season games due to a nagging back injury. However, one of the season highlights was a 49-point performance from Bird in a nationally televised double-overtime win over eventual Western Conference champion Portland Trail Blazers. It was the most points for Bird since February 15, 1988, when he scored 49 at Phoenix Suns. Bird was also selected for the 1992 NBA All-Star Game along with Reggie Lewis, but did not play due to injury.

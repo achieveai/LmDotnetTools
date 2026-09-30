@@ -1,0 +1,3 @@
+# Black Utopia
+
+Black Utopia is the third solo album by keyboard player Derek Sherinian. In addition to the returning members Zakk Wylde, Simon Phillips and Steve Lukather, three new musicians joined Sherinian: bass guitarist Billy Sheehan and guitarists Yngwie Malmsteen – with whom Sherinian had toured in 2001 – and Al Di Meola. "One of the highlights of my career was flying to Miami to produce Yngwie, and the next day Al Di Meola - all for my record!" The song "Axis Of Evil", (co-written with KISS drummer Eric Singer), has Zakk Wylde and Yngwie Malmsteen in a guitar duel. "Black Utopia" was the beginning of an ongoing collaboration with drummer Brian Tichy, and album cover artist Mattias Noren. "Black Utopia" is Sherinian's best selling solo record to date.

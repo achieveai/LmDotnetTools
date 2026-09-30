@@ -1,0 +1,3 @@
+# Kirby's Return to Dream Land
+
+Kirby's Return to Dream Land, released in Europe and Australia as Kirby's Adventure Wii, is a "Kirby" video game and the twelfth platform installment of the series, developed by HAL Laboratory, and published by Nintendo. While "Kirby's Epic Yarn" was released in 2010, "Kirby's Return to Dream Land" is the first traditional "Kirby" platforming home console game since "", which was released in 2000 for the Nintendo 64. The title was released in North America on October 24, 2011, in Japan on October 27, 2011, in Europe on November 25, 2011, and in Australia on December 1, 2011.

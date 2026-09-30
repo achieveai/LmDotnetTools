@@ -1,0 +1,58 @@
+// TodoEval.Runner config for the dual-layer eval: does an expensive planner + cheap executor pair
+// (a dual-layer preset) match the expensive model alone at a fraction of the cost?
+//
+//   dotnet run -c Release --project samples/TodoEval.Runner -- \
+//     --config evals/dual-layer-eval/runner.example.jsonc --env-file <path to .env> \
+//     [--tasks mq1,ag1] [--seeds 1]
+//
+// Copy this file before editing: the paths below are placeholders and the env file carries provider
+// credentials, so neither belongs in a committed config.
+//
+// The arms are MODELS, not variants: every arm runs on the same host, so there is one variant with no
+// extra arguments. "opuna" is a dual-layer preset (appsettings DualLayerModels: claude-opus-5.5 plans,
+// gpt-6-luna executes every tool call); to the runner it is just another provider id.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval", // must equal the "name" in the mode file below
+  "modeFile": "mode.json", // posted verbatim to /api/chat-modes once per host
+  "workspaceName": "dual-layer-eval",
+
+  // Every task ships a fixtures/ tree, so every run gets its OWN directory here. Keep it equal to the
+  // directory the host resolves a workspace leaf under (see --SandboxGateway:WorkspaceBasePath below and
+  // the per-app folder note in runner.jsonc), or the agent works in one tree while the checker judges another.
+  "workspacesRoot": "<WORKSPACE_BASE_PATH>",
+
+  // The expensive model alone, the cheap model alone, and the pair. The question the suite answers is
+  // whether opuna's score matches claude-opus-5.5's while its cost sits nearer gpt-6-luna's.
+  "models": ["claude-opus-5.5", "gpt-6-luna", "opuna"],
+
+  "variants": [{ "name": "base", "extraArgs": [] }],
+
+  // tasks/README.md describes each one. All three are synthetic and memory-proof; mq1/hq1/lb1/ag1 are
+  // retired (split "retired" in their meta.json) and stay runnable only by naming them with --tasks.
+  "tasks": ["fw1", "ag2", "cb1"],
+
+  "seeds": 3, // repeats per (task, model); repeat i uses meta.seeds[i % seeds.length]
+  "maxParallelRuns": 2, // concurrent conversations against the one host
+  "perRunTimeoutMinutes": 40, // a task's own meta.timeoutMinutes wins where it sets one
+
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=<WORKSPACE_BASE_PATH>",
+      // REPLACE both with the paths to your built gateway binaries (or adopt a running gateway with
+      // --SandboxGateway:BaseUrl=http://127.0.0.1:3000, as runner.jsonc does).
+      "--SandboxGateway:GatewayExePath=<PATH_TO>/mcp-gateway.exe",
+      "--SandboxGateway:AgentCliPath=<PATH_TO>/agent-cli.exe",
+      // Keep the first prompt small and the run unattended (compaction-eval smoke0 findings).
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+      // Cost: gpt-6-luna is priced in appsettings.json; claude-opus-5.5 is not. Add its rate card here
+      // before reading any cost column, e.g. "--Pricing:Models:claude-opus-5.5:PromptPerMillion=<n>".
+    ],
+    // "publishDir": "<PATH_TO>/published/LmStreaming.Sample",
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

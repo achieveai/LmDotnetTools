@@ -1,0 +1,2384 @@
+{
+ "task": "tr1",
+ "fixture_files": 159,
+ "fixture_bytes": 562430,
+ "approx_tokens": 140607,
+ "ticket_tokens_min_max": [
+  517,
+  1187
+ ],
+ "params": {
+  "q5_customer": "Pellshaw Joinery",
+  "q6_month": 2
+ },
+ "gold": {
+  "q1": 48,
+  "q2": [
+   "T-4382",
+   "T-4417",
+   "T-4422",
+   "T-4538",
+   "T-4558"
+  ],
+  "q3": "Yarrford Bakery Co.",
+  "q4": 7,
+  "q5": 510,
+  "q6": 21,
+  "q7": [
+   "T-4133",
+   "T-4392",
+   "T-4437",
+   "T-4523"
+  ],
+  "q8": 19
+ },
+ "trap_answers": {
+  "no_appendix": {
+   "q1": "41",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Mabden Audio Hire",
+   "q4": "0",
+   "q5": "510",
+   "q6": "17",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "18"
+  },
+  "appendix_overreach": {
+   "q1": "54",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "13",
+   "q5": "577",
+   "q6": "22",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "19"
+  },
+  "miss_unless": {
+   "q1": "44",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "20",
+   "q7": [],
+   "q8": "17"
+  },
+  "verbal_advice": {
+   "q1": "52",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "25",
+   "q7": [
+    "T-4133",
+    "T-4294",
+    "T-4365",
+    "T-4392",
+    "T-4396",
+    "T-4411",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "20"
+  },
+  "customer_estimate": {
+   "q1": "55",
+   "q2": [
+    "T-4417",
+    "T-4422"
+   ],
+   "q3": "Yarrley Physio Clinics",
+   "q4": "7",
+   "q5": "595",
+   "q6": "26",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "20"
+  },
+  "ignore_maintenance": {
+   "q1": "51",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "24",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "19"
+  },
+  "late_notice_window": {
+   "q1": "48",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "437",
+   "q6": "21",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "19"
+  },
+  "no_effective_date": {
+   "q1": "52",
+   "q2": [
+    "T-4151",
+    "T-4199",
+    "T-4224",
+    "T-4257",
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "21",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "19"
+  },
+  "count_duplicates": {
+   "q1": "54",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "10",
+   "q5": "648",
+   "q6": "24",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "19"
+  },
+  "include_nonprod": {
+   "q1": "54",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "22",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "20"
+  },
+  "ignore_deadline": {
+   "q1": "53",
+   "q2": [
+    "T-4382",
+    "T-4417",
+    "T-4422",
+    "T-4538",
+    "T-4558"
+   ],
+   "q3": "Yarrford Bakery Co.",
+   "q4": "7",
+   "q5": "510",
+   "q6": "23",
+   "q7": [
+    "T-4133",
+    "T-4392",
+    "T-4437",
+    "T-4523"
+   ],
+   "q8": "20"
+  }
+ },
+ "trap_flips": {
+  "no_appendix": [
+   "q1",
+   "q3",
+   "q4",
+   "q6",
+   "q8"
+  ],
+  "appendix_overreach": [
+   "q1",
+   "q4",
+   "q5",
+   "q6"
+  ],
+  "miss_unless": [
+   "q1",
+   "q6",
+   "q7",
+   "q8"
+  ],
+  "verbal_advice": [
+   "q1",
+   "q6",
+   "q7",
+   "q8"
+  ],
+  "customer_estimate": [
+   "q1",
+   "q2",
+   "q3",
+   "q5",
+   "q6",
+   "q8"
+  ],
+  "ignore_maintenance": [
+   "q1",
+   "q6"
+  ],
+  "late_notice_window": [
+   "q5"
+  ],
+  "no_effective_date": [
+   "q1",
+   "q2"
+  ],
+  "count_duplicates": [
+   "q1",
+   "q4",
+   "q5",
+   "q6"
+  ],
+  "include_nonprod": [
+   "q1",
+   "q6",
+   "q8"
+  ],
+  "ignore_deadline": [
+   "q1",
+   "q6",
+   "q8"
+  ]
+ },
+ "predicted_trap_scores": {
+  "no_appendix": 0.375,
+  "appendix_overreach": 0.5,
+  "miss_unless": 0.5,
+  "verbal_advice": 0.5,
+  "customer_estimate": 0.25,
+  "ignore_maintenance": 0.75,
+  "late_notice_window": 0.875,
+  "no_effective_date": 0.75,
+  "count_duplicates": 0.5,
+  "include_nonprod": 0.625,
+  "ignore_deadline": 0.625
+ },
+ "qualifying_incidents": [
+  {
+   "ticket": "T-4115",
+   "customer": "Varnby Florists",
+   "kind": "platform_ok",
+   "minutes": 59
+  },
+  {
+   "ticket": "T-4116",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "platform_ok",
+   "minutes": 176
+  },
+  {
+   "ticket": "T-4123",
+   "customer": "Varnby Florists",
+   "kind": "partner",
+   "minutes": 127
+  },
+  {
+   "ticket": "T-4133",
+   "customer": "Ravham Van Hire",
+   "kind": "config_written",
+   "minutes": 135
+  },
+  {
+   "ticket": "T-4138",
+   "customer": "Mabden Audio Hire",
+   "kind": "maint_late_notice",
+   "minutes": 83
+  },
+  {
+   "ticket": "T-4174",
+   "customer": "Ravthorpe Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 46
+  },
+  {
+   "ticket": "T-4201",
+   "customer": "Tullden Garden Centre",
+   "kind": "platform_ok",
+   "minutes": 67
+  },
+  {
+   "ticket": "T-4229",
+   "customer": "Varncombe Tea Rooms",
+   "kind": "maint_announced_still_ok",
+   "minutes": 55
+  },
+  {
+   "ticket": "T-4238",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "estimate_modest",
+   "minutes": 33
+  },
+  {
+   "ticket": "T-4250",
+   "customer": "Pellshaw Joinery",
+   "kind": "platform_ok",
+   "minutes": 146
+  },
+  {
+   "ticket": "T-4262",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "platform_ok",
+   "minutes": 109
+  },
+  {
+   "ticket": "T-4263",
+   "customer": "Mabden Audio Hire",
+   "kind": "platform_ok",
+   "minutes": 136
+  },
+  {
+   "ticket": "T-4267",
+   "customer": "Ordcombe Climbing Centre",
+   "kind": "partner",
+   "minutes": 122
+  },
+  {
+   "ticket": "T-4277",
+   "customer": "Fellshaw Architects",
+   "kind": "partner",
+   "minutes": 123
+  },
+  {
+   "ticket": "T-4284",
+   "customer": "Yarrley Physio Clinics",
+   "kind": "partner",
+   "minutes": 132
+  },
+  {
+   "ticket": "T-4289",
+   "customer": "Mabden Audio Hire",
+   "kind": "platform_ok",
+   "minutes": 109
+  },
+  {
+   "ticket": "T-4296",
+   "customer": "Yarrley Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 156
+  },
+  {
+   "ticket": "T-4301",
+   "customer": "Wendley Dental Practice",
+   "kind": "platform_ok",
+   "minutes": 185
+  },
+  {
+   "ticket": "T-4316",
+   "customer": "Mabden Audio Hire",
+   "kind": "platform_ok",
+   "minutes": 79
+  },
+  {
+   "ticket": "T-4322",
+   "customer": "Bexley Travel",
+   "kind": "platform_ok",
+   "minutes": 124
+  },
+  {
+   "ticket": "T-4337",
+   "customer": "Yarrley Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 90
+  },
+  {
+   "ticket": "T-4346",
+   "customer": "Varnridge Joinery",
+   "kind": "platform_ok",
+   "minutes": 73
+  },
+  {
+   "ticket": "T-4354",
+   "customer": "Ordcombe Climbing Centre",
+   "kind": "platform_ok",
+   "minutes": 160
+  },
+  {
+   "ticket": "T-4374",
+   "customer": "Pellshaw Joinery",
+   "kind": "platform_ok",
+   "minutes": 117
+  },
+  {
+   "ticket": "T-4377",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "estimate_modest",
+   "minutes": 32
+  },
+  {
+   "ticket": "T-4382",
+   "customer": "Morrshaw Physio Clinics",
+   "kind": "ent_post_feb_short",
+   "minutes": 27
+  },
+  {
+   "ticket": "T-4392",
+   "customer": "Bexcombe Physio Clinics",
+   "kind": "config_written",
+   "minutes": 88
+  },
+  {
+   "ticket": "T-4399",
+   "customer": "Fellshaw Architects",
+   "kind": "partner",
+   "minutes": 116
+  },
+  {
+   "ticket": "T-4406",
+   "customer": "Yarrley Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 98
+  },
+  {
+   "ticket": "T-4415",
+   "customer": "Varnby Florists",
+   "kind": "platform_ok",
+   "minutes": 125
+  },
+  {
+   "ticket": "T-4417",
+   "customer": "Yarrcombe Pet Supplies",
+   "kind": "ent_post_feb_short",
+   "minutes": 20
+  },
+  {
+   "ticket": "T-4422",
+   "customer": "Ravthorpe Physio Clinics",
+   "kind": "ent_post_feb_short",
+   "minutes": 16
+  },
+  {
+   "ticket": "T-4430",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "partner",
+   "minutes": 37
+  },
+  {
+   "ticket": "T-4437",
+   "customer": "Tullford Architects",
+   "kind": "config_written",
+   "minutes": 47
+  },
+  {
+   "ticket": "T-4444",
+   "customer": "Yarrcombe Pet Supplies",
+   "kind": "partner",
+   "minutes": 50
+  },
+  {
+   "ticket": "T-4448",
+   "customer": "Varnby Florists",
+   "kind": "maint_announced_still_ok",
+   "minutes": 44
+  },
+  {
+   "ticket": "T-4465",
+   "customer": "Pellshaw Joinery",
+   "kind": "platform_ok",
+   "minutes": 138
+  },
+  {
+   "ticket": "T-4491",
+   "customer": "Yarrford Bakery Co.",
+   "kind": "platform_ok",
+   "minutes": 134
+  },
+  {
+   "ticket": "T-4519",
+   "customer": "Quenham Travel",
+   "kind": "platform_ok",
+   "minutes": 59
+  },
+  {
+   "ticket": "T-4523",
+   "customer": "Varnridge Joinery",
+   "kind": "config_written",
+   "minutes": 116
+  },
+  {
+   "ticket": "T-4524",
+   "customer": "Pellshaw Joinery",
+   "kind": "maint_late_notice",
+   "minutes": 109
+  },
+  {
+   "ticket": "T-4528",
+   "customer": "Varncombe Tea Rooms",
+   "kind": "maint_late_notice",
+   "minutes": 59
+  },
+  {
+   "ticket": "T-4538",
+   "customer": "Bexley Travel",
+   "kind": "ent_post_feb_short",
+   "minutes": 20
+  },
+  {
+   "ticket": "T-4546",
+   "customer": "Tullford Architects",
+   "kind": "maint_announced_still_ok",
+   "minutes": 73
+  },
+  {
+   "ticket": "T-4553",
+   "customer": "Yarrley Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 91
+  },
+  {
+   "ticket": "T-4556",
+   "customer": "Ravthorpe Physio Clinics",
+   "kind": "platform_ok",
+   "minutes": 82
+  },
+  {
+   "ticket": "T-4558",
+   "customer": "Ravthorpe Physio Clinics",
+   "kind": "ent_post_feb_short",
+   "minutes": 24
+  },
+  {
+   "ticket": "T-4569",
+   "customer": "Mabden Audio Hire",
+   "kind": "platform_ok",
+   "minutes": 47
+  }
+ ],
+ "tickets_by_kind": {
+  "advice_source": 4,
+  "own_provider": 6,
+  "config_plain": 8,
+  "isp": 5,
+  "platform_ok": 24,
+  "partner": 7,
+  "no_outage": 52,
+  "config_written": 4,
+  "maint_late_notice": 3,
+  "nonprod": 6,
+  "ent_pre_feb_short": 4,
+  "late_report": 5,
+  "platform_ok+dup": 3,
+  "maint_announced_still_ok": 3,
+  "estimate_modest": 2,
+  "maint_announced": 4,
+  "partner+dup": 3,
+  "config_verbal": 4,
+  "estimate_inflated": 5,
+  "ent_post_feb_short": 5
+ },
+ "ticket_truth": {
+  "T-4103": {
+   "kind": "advice_source",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": null,
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4105": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-03T20:17:00",
+   "mon": 67,
+   "claimed": 79,
+   "window": null
+  },
+  "T-4108": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-03T20:32:00",
+   "mon": 63,
+   "claimed": 75,
+   "window": null
+  },
+  "T-4110": {
+   "kind": "isp",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-04T10:16:00",
+   "mon": 64,
+   "claimed": 95,
+   "window": null
+  },
+  "T-4115": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-05T17:54:00",
+   "mon": 59,
+   "claimed": 80,
+   "window": null
+  },
+  "T-4116": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-06T21:17:00",
+   "mon": 176,
+   "claimed": 276,
+   "window": null
+  },
+  "T-4119": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-07T12:09:00",
+   "mon": 172,
+   "claimed": 195,
+   "window": null
+  },
+  "T-4123": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-07T06:29:00",
+   "mon": 127,
+   "claimed": 194,
+   "window": null
+  },
+  "T-4125": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-08T17:14:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4128": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-09T11:30:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4133": {
+   "kind": "config_written",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-08T17:48:00",
+   "mon": 135,
+   "claimed": 203,
+   "window": null
+  },
+  "T-4134": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-12T10:59:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4138": {
+   "kind": "maint_late_notice",
+   "dup": false,
+   "customer": "Mabden Audio Hire",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-12T00:22:00",
+   "mon": 83,
+   "claimed": 124,
+   "window": "MW-01"
+  },
+  "T-4141": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Corrley Pet Supplies",
+   "plan": "Business",
+   "env": "nonprod",
+   "start": "2026-01-12T17:22:00",
+   "mon": 175,
+   "claimed": 226,
+   "window": null
+  },
+  "T-4144": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-13T09:13:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4147": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Bexcombe Physio Clinics",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-13T07:41:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4151": {
+   "kind": "ent_pre_feb_short",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-13T15:57:00",
+   "mon": 18,
+   "claimed": 28,
+   "window": null
+  },
+  "T-4152": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-14T11:43:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4156": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-14T16:35:00",
+   "mon": 133,
+   "claimed": 202,
+   "window": null
+  },
+  "T-4160": {
+   "kind": "late_report",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-05T08:36:00",
+   "mon": 134,
+   "claimed": 166,
+   "window": null
+  },
+  "T-4163": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-15T14:53:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4164": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-16T21:53:00",
+   "mon": 126,
+   "claimed": 147,
+   "window": null
+  },
+  "T-4167": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-17T10:21:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4172": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-18T09:59:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4174": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-18T17:32:00",
+   "mon": 46,
+   "claimed": 70,
+   "window": null
+  },
+  "T-4176": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-18T10:21:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4180": {
+   "kind": "platform_ok",
+   "dup": true,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-18T17:32:00",
+   "mon": 46,
+   "claimed": 70,
+   "window": null
+  },
+  "T-4182": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-19T17:31:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4185": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-20T14:33:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4188": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "nonprod",
+   "start": "2026-01-20T18:17:00",
+   "mon": 61,
+   "claimed": 64,
+   "window": null
+  },
+  "T-4191": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrcombe Pet Supplies",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-20T10:03:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4196": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-20T20:58:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4199": {
+   "kind": "ent_pre_feb_short",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-21T17:25:00",
+   "mon": 19,
+   "claimed": 23,
+   "window": null
+  },
+  "T-4201": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-21T20:29:00",
+   "mon": 67,
+   "claimed": 69,
+   "window": null
+  },
+  "T-4204": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-22T15:18:00",
+   "mon": 191,
+   "claimed": 254,
+   "window": null
+  },
+  "T-4207": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-22T16:25:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4211": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-22T19:49:00",
+   "mon": 82,
+   "claimed": 84,
+   "window": null
+  },
+  "T-4212": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Ordcombe Climbing Centre",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-23T06:31:00",
+   "mon": 58,
+   "claimed": 83,
+   "window": null
+  },
+  "T-4216": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-23T21:07:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4218": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-24T16:02:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4222": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-24T19:54:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4224": {
+   "kind": "ent_pre_feb_short",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-24T09:46:00",
+   "mon": 22,
+   "claimed": 31,
+   "window": null
+  },
+  "T-4229": {
+   "kind": "maint_announced_still_ok",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-26T02:31:00",
+   "mon": 144,
+   "claimed": 171,
+   "window": "MW-02"
+  },
+  "T-4232": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrcombe Pet Supplies",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-25T06:54:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4234": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Morrshaw Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-25T14:57:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4238": {
+   "kind": "estimate_modest",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-26T10:56:00",
+   "mon": 33,
+   "claimed": 15,
+   "window": null
+  },
+  "T-4239": {
+   "kind": "maint_announced",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-26T03:49:00",
+   "mon": 28,
+   "claimed": 44,
+   "window": "MW-02"
+  },
+  "T-4244": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnridge Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-27T14:39:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4245": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "nonprod",
+   "start": "2026-01-26T17:08:00",
+   "mon": 96,
+   "claimed": 126,
+   "window": null
+  },
+  "T-4250": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-27T20:42:00",
+   "mon": 146,
+   "claimed": 153,
+   "window": null
+  },
+  "T-4252": {
+   "kind": "isp",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-28T10:13:00",
+   "mon": 38,
+   "claimed": 51,
+   "window": null
+  },
+  "T-4254": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-28T16:20:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4257": {
+   "kind": "ent_pre_feb_short",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-01-30T14:32:00",
+   "mon": 18,
+   "claimed": 27,
+   "window": null
+  },
+  "T-4262": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-01T10:59:00",
+   "mon": 109,
+   "claimed": 119,
+   "window": null
+  },
+  "T-4263": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Mabden Audio Hire",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-31T17:38:00",
+   "mon": 136,
+   "claimed": 194,
+   "window": null
+  },
+  "T-4267": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Ordcombe Climbing Centre",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-01T18:53:00",
+   "mon": 122,
+   "claimed": 140,
+   "window": null
+  },
+  "T-4270": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Corrley Pet Supplies",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-01T15:23:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4272": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-01T21:24:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4277": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-01T19:13:00",
+   "mon": 123,
+   "claimed": 194,
+   "window": null
+  },
+  "T-4279": {
+   "kind": "partner",
+   "dup": true,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-01T19:13:00",
+   "mon": 123,
+   "claimed": 194,
+   "window": null
+  },
+  "T-4282": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-01T19:28:00",
+   "mon": 197,
+   "claimed": 282,
+   "window": null
+  },
+  "T-4284": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-02T11:19:00",
+   "mon": 132,
+   "claimed": 211,
+   "window": null
+  },
+  "T-4289": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Mabden Audio Hire",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-03T12:53:00",
+   "mon": 109,
+   "claimed": 135,
+   "window": null
+  },
+  "T-4292": {
+   "kind": "partner",
+   "dup": true,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-02T11:19:00",
+   "mon": 132,
+   "claimed": 211,
+   "window": null
+  },
+  "T-4294": {
+   "kind": "config_verbal",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-03T08:10:00",
+   "mon": 102,
+   "claimed": 110,
+   "window": null
+  },
+  "T-4296": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-05T07:55:00",
+   "mon": 156,
+   "claimed": 186,
+   "window": null
+  },
+  "T-4301": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Wendley Dental Practice",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-06T10:47:00",
+   "mon": 185,
+   "claimed": 237,
+   "window": null
+  },
+  "T-4304": {
+   "kind": "platform_ok",
+   "dup": true,
+   "customer": "Wendley Dental Practice",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-06T10:47:00",
+   "mon": 185,
+   "claimed": 237,
+   "window": null
+  },
+  "T-4307": {
+   "kind": "late_report",
+   "dup": false,
+   "customer": "Bexcombe Physio Clinics",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-01-18T12:25:00",
+   "mon": 57,
+   "claimed": 59,
+   "window": null
+  },
+  "T-4310": {
+   "kind": "isp",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-06T15:07:00",
+   "mon": 138,
+   "claimed": 218,
+   "window": null
+  },
+  "T-4311": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-07T06:32:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4316": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Mabden Audio Hire",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-08T15:12:00",
+   "mon": 79,
+   "claimed": 113,
+   "window": null
+  },
+  "T-4317": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-08T06:27:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4322": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-08T19:16:00",
+   "mon": 124,
+   "claimed": 126,
+   "window": null
+  },
+  "T-4324": {
+   "kind": "late_report",
+   "dup": false,
+   "customer": "Corrley Pet Supplies",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-01-26T07:21:00",
+   "mon": 139,
+   "claimed": 158,
+   "window": null
+  },
+  "T-4327": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-08T21:37:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4331": {
+   "kind": "maint_announced",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-10T01:43:00",
+   "mon": 123,
+   "claimed": 141,
+   "window": "MW-03"
+  },
+  "T-4332": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-10T07:28:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4337": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-10T09:49:00",
+   "mon": 90,
+   "claimed": 141,
+   "window": null
+  },
+  "T-4340": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-11T21:55:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4343": {
+   "kind": "estimate_inflated",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-11T18:19:00",
+   "mon": 25,
+   "claimed": 90,
+   "window": null
+  },
+  "T-4346": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Varnridge Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-13T21:14:00",
+   "mon": 73,
+   "claimed": 85,
+   "window": null
+  },
+  "T-4349": {
+   "kind": "estimate_inflated",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-14T21:46:00",
+   "mon": 25,
+   "claimed": 74,
+   "window": null
+  },
+  "T-4352": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-16T12:59:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4354": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Ordcombe Climbing Centre",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-15T19:49:00",
+   "mon": 160,
+   "claimed": 240,
+   "window": null
+  },
+  "T-4357": {
+   "kind": "estimate_inflated",
+   "dup": false,
+   "customer": "Ordmere Cycle Works",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-17T20:57:00",
+   "mon": 25,
+   "claimed": 42,
+   "window": null
+  },
+  "T-4359": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-17T14:56:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4363": {
+   "kind": "advice_source",
+   "dup": false,
+   "customer": "Bexcombe Physio Clinics",
+   "plan": "Standard",
+   "env": "prod",
+   "start": null,
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4365": {
+   "kind": "config_verbal",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-18T18:58:00",
+   "mon": 138,
+   "claimed": 214,
+   "window": null
+  },
+  "T-4369": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "nonprod",
+   "start": "2026-02-18T11:43:00",
+   "mon": 99,
+   "claimed": 121,
+   "window": null
+  },
+  "T-4373": {
+   "kind": "maint_announced",
+   "dup": false,
+   "customer": "Wendley Dental Practice",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-19T23:49:00",
+   "mon": 84,
+   "claimed": 97,
+   "window": "MW-04"
+  },
+  "T-4374": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-19T11:45:00",
+   "mon": 117,
+   "claimed": 157,
+   "window": null
+  },
+  "T-4377": {
+   "kind": "estimate_modest",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-19T11:43:00",
+   "mon": 32,
+   "claimed": 23,
+   "window": null
+  },
+  "T-4382": {
+   "kind": "ent_post_feb_short",
+   "dup": false,
+   "customer": "Morrshaw Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-20T17:16:00",
+   "mon": 27,
+   "claimed": 41,
+   "window": null
+  },
+  "T-4383": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Tullden Garden Centre",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-22T06:47:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4387": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-22T12:18:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4391": {
+   "kind": "advice_source",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": null,
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4392": {
+   "kind": "config_written",
+   "dup": false,
+   "customer": "Bexcombe Physio Clinics",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-22T06:30:00",
+   "mon": 88,
+   "claimed": 110,
+   "window": null
+  },
+  "T-4396": {
+   "kind": "config_verbal",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-22T11:33:00",
+   "mon": 54,
+   "claimed": 76,
+   "window": null
+  },
+  "T-4399": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-23T07:01:00",
+   "mon": 116,
+   "claimed": 146,
+   "window": null
+  },
+  "T-4403": {
+   "kind": "isp",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-22T15:24:00",
+   "mon": 82,
+   "claimed": 124,
+   "window": null
+  },
+  "T-4406": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-24T20:41:00",
+   "mon": 98,
+   "claimed": 108,
+   "window": null
+  },
+  "T-4408": {
+   "kind": "isp",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-25T06:44:00",
+   "mon": 158,
+   "claimed": 163,
+   "window": null
+  },
+  "T-4411": {
+   "kind": "config_verbal",
+   "dup": false,
+   "customer": "Corrley Pet Supplies",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-26T15:23:00",
+   "mon": 49,
+   "claimed": 51,
+   "window": null
+  },
+  "T-4415": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-27T13:43:00",
+   "mon": 125,
+   "claimed": 191,
+   "window": null
+  },
+  "T-4417": {
+   "kind": "ent_post_feb_short",
+   "dup": false,
+   "customer": "Yarrcombe Pet Supplies",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-27T20:38:00",
+   "mon": 20,
+   "claimed": 26,
+   "window": null
+  },
+  "T-4421": {
+   "kind": "maint_announced",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-27T23:30:00",
+   "mon": 76,
+   "claimed": 115,
+   "window": "MW-05"
+  },
+  "T-4422": {
+   "kind": "ent_post_feb_short",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-02-28T13:37:00",
+   "mon": 16,
+   "claimed": 19,
+   "window": null
+  },
+  "T-4427": {
+   "kind": "estimate_inflated",
+   "dup": false,
+   "customer": "Ordcombe Climbing Centre",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-28T07:31:00",
+   "mon": 13,
+   "claimed": 101,
+   "window": null
+  },
+  "T-4430": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-01T06:22:00",
+   "mon": 37,
+   "claimed": 52,
+   "window": null
+  },
+  "T-4433": {
+   "kind": "partner",
+   "dup": true,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-01T06:22:00",
+   "mon": 37,
+   "claimed": 52,
+   "window": null
+  },
+  "T-4435": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-01T20:33:00",
+   "mon": 134,
+   "claimed": 151,
+   "window": null
+  },
+  "T-4437": {
+   "kind": "config_written",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-03T06:57:00",
+   "mon": 47,
+   "claimed": 49,
+   "window": null
+  },
+  "T-4440": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Morrshaw Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-03T07:49:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4444": {
+   "kind": "partner",
+   "dup": false,
+   "customer": "Yarrcombe Pet Supplies",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-04T10:27:00",
+   "mon": 50,
+   "claimed": 68,
+   "window": null
+  },
+  "T-4448": {
+   "kind": "maint_announced_still_ok",
+   "dup": false,
+   "customer": "Varnby Florists",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-04T23:28:00",
+   "mon": 76,
+   "claimed": 80,
+   "window": "MW-06"
+  },
+  "T-4450": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-04T12:00:00",
+   "mon": 156,
+   "claimed": 179,
+   "window": null
+  },
+  "T-4453": {
+   "kind": "late_report",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-02-15T18:35:00",
+   "mon": 137,
+   "claimed": 153,
+   "window": null
+  },
+  "T-4455": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Wendley Dental Practice",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-04T14:25:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4458": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-05T06:05:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4463": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-06T11:06:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4465": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-05T19:13:00",
+   "mon": 138,
+   "claimed": 142,
+   "window": null
+  },
+  "T-4468": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Morrshaw Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-07T06:08:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4470": {
+   "kind": "platform_ok",
+   "dup": true,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-05T19:13:00",
+   "mon": 138,
+   "claimed": 142,
+   "window": null
+  },
+  "T-4474": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-06T20:10:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4477": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Yarrcombe Pet Supplies",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-07T18:58:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4481": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-07T08:02:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4482": {
+   "kind": "own_provider",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-07T08:32:00",
+   "mon": 144,
+   "claimed": 173,
+   "window": null
+  },
+  "T-4487": {
+   "kind": "late_report",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-02-16T19:24:00",
+   "mon": 103,
+   "claimed": 147,
+   "window": null
+  },
+  "T-4488": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-09T19:46:00",
+   "mon": 173,
+   "claimed": 176,
+   "window": null
+  },
+  "T-4491": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-08T18:13:00",
+   "mon": 134,
+   "claimed": 198,
+   "window": null
+  },
+  "T-4495": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-09T12:08:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4499": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-10T15:01:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4501": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-10T18:33:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4505": {
+   "kind": "advice_source",
+   "dup": false,
+   "customer": "Varnridge Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": null,
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4508": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Varnridge Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-11T12:57:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4510": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Ravwell Tea Rooms",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-15T15:59:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4514": {
+   "kind": "config_plain",
+   "dup": false,
+   "customer": "Ravham Van Hire",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-15T17:34:00",
+   "mon": 192,
+   "claimed": 228,
+   "window": null
+  },
+  "T-4515": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Corrley Pet Supplies",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-15T12:24:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4519": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-15T06:02:00",
+   "mon": 59,
+   "claimed": 59,
+   "window": null
+  },
+  "T-4523": {
+   "kind": "config_written",
+   "dup": false,
+   "customer": "Varnridge Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-15T15:02:00",
+   "mon": 116,
+   "claimed": 135,
+   "window": null
+  },
+  "T-4524": {
+   "kind": "maint_late_notice",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-15T23:17:00",
+   "mon": 109,
+   "claimed": 143,
+   "window": "MW-07"
+  },
+  "T-4528": {
+   "kind": "maint_late_notice",
+   "dup": false,
+   "customer": "Varncombe Tea Rooms",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-17T00:08:00",
+   "mon": 59,
+   "claimed": 87,
+   "window": "MW-08"
+  },
+  "T-4530": {
+   "kind": "estimate_inflated",
+   "dup": false,
+   "customer": "Ordcombe Climbing Centre",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-17T14:47:00",
+   "mon": 15,
+   "claimed": 140,
+   "window": null
+  },
+  "T-4534": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-18T16:36:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4538": {
+   "kind": "ent_post_feb_short",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-20T15:16:00",
+   "mon": 20,
+   "claimed": 30,
+   "window": null
+  },
+  "T-4541": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-20T14:48:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4543": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Quenham Travel",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-20T21:10:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4546": {
+   "kind": "maint_announced_still_ok",
+   "dup": false,
+   "customer": "Tullford Architects",
+   "plan": "Business",
+   "env": "prod",
+   "start": "2026-03-21T01:23:00",
+   "mon": 110,
+   "claimed": 111,
+   "window": "MW-09"
+  },
+  "T-4549": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Yarrford Bakery Co.",
+   "plan": "Standard",
+   "env": "nonprod",
+   "start": "2026-03-21T17:20:00",
+   "mon": 238,
+   "claimed": 316,
+   "window": null
+  },
+  "T-4553": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Yarrley Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-21T18:12:00",
+   "mon": 91,
+   "claimed": 121,
+   "window": null
+  },
+  "T-4556": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-23T14:41:00",
+   "mon": 82,
+   "claimed": 89,
+   "window": null
+  },
+  "T-4558": {
+   "kind": "ent_post_feb_short",
+   "dup": false,
+   "customer": "Ravthorpe Physio Clinics",
+   "plan": "Enterprise",
+   "env": "prod",
+   "start": "2026-03-24T21:03:00",
+   "mon": 24,
+   "claimed": 34,
+   "window": null
+  },
+  "T-4562": {
+   "kind": "nonprod",
+   "dup": false,
+   "customer": "Bexley Travel",
+   "plan": "Enterprise",
+   "env": "nonprod",
+   "start": "2026-03-25T15:49:00",
+   "mon": 236,
+   "claimed": 356,
+   "window": null
+  },
+  "T-4563": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Pellshaw Joinery",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-24T16:22:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4568": {
+   "kind": "no_outage",
+   "dup": false,
+   "customer": "Fellshaw Architects",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-25T20:09:00",
+   "mon": null,
+   "claimed": null,
+   "window": null
+  },
+  "T-4569": {
+   "kind": "platform_ok",
+   "dup": false,
+   "customer": "Mabden Audio Hire",
+   "plan": "Standard",
+   "env": "prod",
+   "start": "2026-03-26T15:34:00",
+   "mon": 47,
+   "claimed": 73,
+   "window": null
+  }
+ }
+}

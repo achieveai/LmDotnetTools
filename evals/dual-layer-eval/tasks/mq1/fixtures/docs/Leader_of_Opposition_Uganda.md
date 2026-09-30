@@ -1,0 +1,3 @@
+# Leader of Opposition (Uganda)
+
+The Leader of Opposition (LOP) in Uganda is the title bestowed upon the elected leader of the largest political party not within the ruling government. The Leader of Opposition appoints and heads an alternative Shadow Cabinet whose duty is to challenge and influence government legislation on the floor of Parliament The current Leader of Opposition and first Ugandan female to hold the position is Hon. Winnie Kiiza of the Forum for Democratic Change. The Opposition in Uganda is made up of members from Forum for Democratic Change, Democratic Party, Uganda People's Congress, Congress Party and JEEMA.

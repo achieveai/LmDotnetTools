@@ -1,0 +1,3 @@
+# PGA Tour on ABC
+
+PGA Tour on ABC is the "de facto" branding used for telecasts of the main professional golf tournaments of the PGA Tour on the American Broadcasting Company (ABC) television network in the United States. ABC broadcast the PGA Tour from 1966 to 2006. From 1962 to 2009, ABC served as the broadcast home of The Open Championship. The British Open on ABC was the longest-running entertainment program in ABC's history and the last-surviving ABC program to debut in the "circle a" era. ABC also held the broadcast rights of the US Open from 1966 through 1994. and the PGA Championship from 1965 until 1990.

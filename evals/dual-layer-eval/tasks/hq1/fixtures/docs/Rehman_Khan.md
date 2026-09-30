@@ -1,0 +1,3 @@
+# Rehman Khan
+
+Rehman Khan (born August 21, 1979) is an Indian stand up comedian and a film actor. He participated in "Comedy Circus 2" (2008), Comedy Circus Chincpokli to China, Comedy Circus 20 20 with Rakshanda Khan, Comedy ka Mahasangram with Karishma Tanna, Jubilee Comedy Circus with Saloni Daini, Comedy Ke Superstar with Usha Nadkarni, Comedy Circus Ki Kahani with Ragini Khanna, "Comedy Circus 3 Ka Tadka" (2009) with Anoop Soni, and Shweta Tiwari on Sony Television. Rehman was also part of Star One show, The Great Indian Laughter Challenge season 3, Comedy Champions on Sahara TV Chote Miya Bade Miya on Colors TV, Comedy Ka Maha Muqabala on Star Plus, Nautanki-The Comedy Theatre on Colors TV 2013, Mad in India with Sunil Grover on Star Plus 2014.

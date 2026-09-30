@@ -66,6 +66,17 @@ internal sealed class TurnAttemptState(string generationId)
     public bool HasToolCalls { get; private set; }
 
     /// <summary>
+    ///     <see langword="true" /> when the attempt completed nothing but reasoning and accounting: no
+    ///     text, no tool call of any kind. The model ended its turn without replying.
+    /// </summary>
+    public bool EndedWithoutReply =>
+        !HasToolCalls
+        && _completedMessages.All(m =>
+            m is UsageMessage or ReasoningMessage
+            || (m is TextMessage text && (text.IsThinking || string.IsNullOrWhiteSpace(text.Text)))
+        );
+
+    /// <summary>
     ///     Folds one streamed message into the attempt and reports whether it belongs in conversation
     ///     history.
     /// </summary>

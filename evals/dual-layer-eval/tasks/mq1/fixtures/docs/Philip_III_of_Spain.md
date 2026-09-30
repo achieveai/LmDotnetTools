@@ -1,0 +1,3 @@
+# Philip III of Spain
+
+Philip III Portrait by Andrés López Polanco King of Spain, Portugal, Naples, Sicily, and Sardinia; Duke of Milan (more...) Reign 13 September 1598 -- 31 March 1621 Predecessor Philip II and I Successor Philip IV and III 14 April 1578 Madrid, Spain 31 March 1621 (1621 - 03 - 31) (aged 42) Madrid, Spain Burial El Escorial Spouse Margaret of Austria (m. 1599; d. 1611) Issue Anne, Queen of France Philip IV of Spain Maria Anna, Holy Roman Empress Infante Charles of Spain Cardinal - Infante Ferdinand House Habsburg Father Philip II of Spain Mother Anna of Austria Religion Roman Catholicism Signature

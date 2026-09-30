@@ -1,0 +1,3 @@
+# New River (Broward County, Florida)
+
+The New River is a tidal estuary in South Florida, United States. The river is connected to the Everglades through a series of man made canals. After passing through Fort Lauderdale, the river connects to the Atlantic Ocean at Port Everglades cut. The river is entirely within Broward County and is composed from the junction of three main canals which originate in the Everglades, splitting off from the Miami Canal. They are the North New River Canal, which flows on the north side of State Road 84 / Interstate 595; the South New River Canal, which flows on the north side of Griffin Road and the south side of Orange Drive; and a canal which flows south of Sunrise Boulevard.

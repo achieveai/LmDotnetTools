@@ -1,0 +1,3 @@
+# Paul Franklin (visual effects supervisor)
+
+Paul J. Franklin is an English visual effects supervisor who has worked with visual effects since the 1990s. He is known for his long-running working relationship with director Christopher Nolan which dates back to "Batman Begins" (2005). Franklin won the Academy Award for Best Visual Effects and the BAFTA Award for Best Special Visual Effects for "Inception" (2010), and won a second Academy Award for Best Visual Effects for "Interstellar" (2014). He shared the wins with Andrew Lockley, Peter Bebb, and Chris Corbould. Franklin has also been nominated for an Academy Award for "The Dark Knight" (2008). He was nominated for BAFTA Awards for "Batman Begins", "The Dark Knight" (2008), and "The Dark Knight Rises" (2012).

@@ -1,0 +1,3 @@
+# Association football
+
+There are 17 laws in the official Laws of the Game, each containing a collection of stipulation and guidelines. The same laws are designed to apply to all levels of football, although certain modifications for groups such as juniors, seniors, women and people with physical disabilities are permitted. The laws are often framed in broad terms, which allow flexibility in their application depending on the nature of the game. The Laws of the Game are published by FIFA, but are maintained by the International Football Association Board (IFAB). In addition to the seventeen laws, numerous IFAB decisions and other directives contribute to the regulation of football.

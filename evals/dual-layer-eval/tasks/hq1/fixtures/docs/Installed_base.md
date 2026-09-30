@@ -1,0 +1,3 @@
+# Installed base
+
+Installed base (also install base, install[ed] user base or just user base) is a measure of the number of units of a product or service that are actually in use, especially software or an Internet or computing platform, as opposed to market share, which only reflects sales over a particular period. Although the install base number is often created using the number of units that have been sold within a particular period, it is not necessarily restricted to just systems, as it can also be products in general. Because installed base includes machines that may have been in use for many years, it is usually a higher figure than market share . Many people see it as a more reliable indicator of a platform's popularity.

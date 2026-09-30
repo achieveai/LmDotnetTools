@@ -1,0 +1,3 @@
+# Mason Turner
+
+Mason Turner is a fictional character from the Australian soap opera "Neighbours", played by Taylor Glockner. The actor previously auditioned for guest roles on the show, but the producers decided to develop a long-term character specifically for him instead. Glockner's character, Mason, was created and introduced along with the Turner family, as part of a major overhaul of the show's cast. Glockner was given a two-year contract with "Neighbours" and he began filming his first scenes as Mason in November 2012. Glockner made his first screen appearance as Mason during the episode broadcast on 22 February 2013. In December 2013, it was announced that Glockner was to leave "Neighbours" and Mason departed on 28 February 2014.

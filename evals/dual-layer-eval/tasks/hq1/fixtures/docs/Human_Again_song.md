@@ -1,0 +1,3 @@
+# Human Again (song)
+
+"Human Again" is a song originally written for, deleted from, and later restored to the 1991 Disney animated musical "Beauty and the Beast". With music by Alan Menken and lyrics by Howard Ashman, "Human Again" was replaced during production of the original 1991 version of the film by "Something There", but retained and revised by Menken and new lyricist Tim Rice for the 1994 stage musical adaptation of "Beauty and the Beast". A newly produced sequence featuring "Human Again" was added to the "Beauty and the Beast" animated film for its 2002 IMAX Special Edition and subsequent DVD, VHS, and Blu-Ray home releases.

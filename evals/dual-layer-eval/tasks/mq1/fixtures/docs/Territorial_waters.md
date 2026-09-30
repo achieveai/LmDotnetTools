@@ -1,0 +1,3 @@
+# Territorial waters
+
+Territorial waters or a territorial sea, as defined by the 1982 United Nations Convention on the Law of the Sea, is a belt of coastal waters extending at most 12 nautical miles (22.2 km; 13.8 mi) from the baseline (usually the mean low - water mark) of a coastal state. The territorial sea is regarded as the sovereign territory of the state, although foreign ships (civilian) are allowed innocent passage through it, or transit passage for straits; this sovereignty also extends to the airspace over and seabed below. Adjustment of these boundaries is called, in international law, maritime delimitation.

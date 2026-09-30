@@ -1,0 +1,27 @@
+# Service configuration for bollardbridge.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Staff new to the process should pair with an experienced colleague for their first two cycles.
+# Teams should budget time for the periodic review described here in their planning cycle.
+
+include:
+  - shared/timeouts-regional.yaml
+  - shared/fanout-narrow.yaml
+  - shared/burst-narrow.yaml
+
+mesh:
+  compression: none
+  # max_connections: 248
+  # retry_budget: 5
+
+telemetry:
+  service_name: bollardbridge
+  exporter: stdout
+  sample_rate: 0.25
+  flush_interval_s: 5
+
+labels:
+  tier: gold
+  cost_centre: cc3255
+  paging_channel: ops34
+
+admin_port: 9166

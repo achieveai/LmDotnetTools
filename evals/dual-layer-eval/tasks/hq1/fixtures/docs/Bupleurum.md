@@ -1,0 +1,3 @@
+# Bupleurum
+
+Bupleurum is a large genus of annual or perennial herbs or woody shrubs, with about one hundred and ninety species, belonging to the Apiaceae family. The full size of its species may vary between a few cm to up to 3 m high. Their compound umbels of small flowers are adorned with bracteoles that are sometimes large and may play a role in attracting pollinators. Rare among Apiaceae are the simple leaves, bracts (if present) and bracteoles. The genus is almost exclusively native in the Old World Northern Hemisphere, with one species native to North America and one species native to southern Africa.

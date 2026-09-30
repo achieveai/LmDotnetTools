@@ -322,6 +322,12 @@ internal sealed record VariantConfig
     /// </summary>
     public bool Compacts { get; init; }
 
+    /// <summary>
+    /// The root reasoning effort each run's conversation is provisioned with (for example <c>medium</c>).
+    /// Null leaves the host's default: no effort is sent, and the provider's own default applies.
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
+
     /// <summary>True for the untouched default variant — the shape a pre-variant sweep had.</summary>
     public bool IsDefault =>
         string.Equals(Name, DefaultName, StringComparison.Ordinal) && ExtraArgs.Count == 0 && ExtraEnv.Count == 0;
@@ -335,7 +341,8 @@ internal sealed record VariantConfig
     public string Signature() =>
         $"{Name}[{string.Join(" ", ExtraArgs)}]"
         + $"{{{string.Join(" ", ExtraEnv.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase).Select(kvp => $"{kvp.Key}={kvp.Value}"))}}}"
-        + (Compacts ? "+compacts" : "");
+        + (Compacts ? "+compacts" : "")
+        + (ReasoningEffort is null ? "" : $"@effort={ReasoningEffort}");
 }
 
 /// <summary>How the isolated LmStreaming.Sample host instance is obtained and launched.</summary>

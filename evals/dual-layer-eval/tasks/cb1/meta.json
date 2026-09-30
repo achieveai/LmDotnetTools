@@ -1,0 +1,42 @@
+{
+  "family": "config-tracing",
+  "split": "dev",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 45,
+  "requiredFixtures": [
+    {
+      "glob": "services/*/service.yaml",
+      "count": 24
+    },
+    {
+      "glob": "services/*/src/Startup.cs",
+      "count": 24
+    },
+    {
+      "glob": "config/shared/*.yaml",
+      "count": 26
+    },
+    {
+      "glob": "env/*/global.yaml",
+      "count": 4
+    },
+    {
+      "glob": "flags/*.jsonc",
+      "count": 4
+    },
+    {
+      "glob": "docs/*.md",
+      "count": 5
+    },
+    {
+      "glob": "platform/*.cs",
+      "count": 6
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Weekly Shonen Jump (American magazine)
+
+Weekly Shonen Jump is a digital "shōnen" manga anthology published in North America by Viz Media, and the successor to their monthly print anthology "Shonen Jump". It began serialization on January 30, 2012 as Weekly Shonen Jump Alpha (officially stylized as "Weekly SHONEN JUMP αlpha" or "Weekly SHONEN JUMP Alpha"), with two free preview issues released in the buildup to its launch. Based on Shueisha's popular Japanese magazine "Weekly Shōnen Jump", "Weekly Shonen Jump" is an attempt to provide English readers with easily accessible, affordable, and officially licensed editions of the latest installments of popular "Shōnen Jump" manga soon after their release in Japan, as an alternative to popular bootleg scanlation services.

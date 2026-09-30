@@ -1,0 +1,3 @@
+# Capital of the Netherlands
+
+Although the proper legal status of Amsterdam as capital of the Netherlands is of recent date, the city has been uniformly recognised as capital ever since 1814. This is partly because it is a Royal City, used not only for the inauguration of kings, but also for royal weddings (note though that royal burials take place in Delft), and also because of its dominant position in Dutch history. From the end of the 16th century the city grew rapidly to become the largest and most powerful city in the Netherlands and the main centre of trade, commerce, finance and culture.

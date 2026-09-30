@@ -1,0 +1,3 @@
+# Fantastic Contraption (2008 video game)
+
+Fantastic Contraption is a Flash-based physics game created by Colin Northway, released September 16, 2008. Northway sold the rights to the game to inXile Entertainment who released the game for iOS on January 26, 2009. A sequel, Fantastic Contraptions 2, was released July 27, 2010. It was released for iOS on Nov 5, 2010. In February 2015 inXile entertainment discontinued their Sparkworkz web-games division, ending all server support for the games. Colin Northway has expressed interest in reviving the games, and potentially releasing an upgraded version.

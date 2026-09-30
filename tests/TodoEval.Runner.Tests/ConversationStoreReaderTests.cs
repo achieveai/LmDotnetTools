@@ -179,6 +179,38 @@ public class ConversationStoreReaderTests
     }
 
     [Fact]
+    public void GroupByRootThread_PutsADualLayerExecutor_InItsPlannersRun()
+    {
+        // The executor has no subAgentOf link; its name is the link. Found in the dual-layer pilot:
+        // every executor's tool calls fell outside its run and into "Unattributed threads".
+        var dir = Directory.CreateTempSubdirectory("executor-grouping-").FullName;
+        try
+        {
+            foreach (var id in new[] { "thread-p", "executor-thread-p", "executor-" })
+            {
+                _ = Directory.CreateDirectory(Path.Combine(dir, id));
+                File.Copy(
+                    Path.Combine(ConversationsDir, "thread-errors", "messages.json"),
+                    Path.Combine(dir, id, "messages.json")
+                );
+            }
+
+            var groups = ConversationStoreReader.GroupByRootThread(ConversationStoreReader.LoadAllThreads(dir));
+
+            groups["thread-p"].Select(t => t.ThreadId).Should().BeEquivalentTo("thread-p", "executor-thread-p");
+            groups["thread-p"].Sum(t => t.TotalToolCalls).Should().Be(16);
+            groups["executor-"]
+                .Select(t => t.ThreadId)
+                .Should()
+                .BeEquivalentTo(["executor-"], "a bare prefix names no planner");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void IsErrorText_RequiresTheOrdinalCaseSensitivePrefix()
     {
         ConversationStoreReader.IsErrorText("Error: nope").Should().BeTrue();

@@ -1,0 +1,3 @@
+# Wes Schulmerich
+
+Edward Wesley Schulmerich (August 21, 1901 – June 26, 1985) was an American Major League Baseball player from the state of Oregon. A native of the state, he played baseball and football at what is now Oregon State University where he participated in three sports. On the football team, he played three positions and earned the nickname of Ironhorse and all-conference honors. In baseball, he was a right-handed outfielder and after leaving school started his professional career in the minor leagues. Schulmerich then became the first player from the school to make it to the Major Leagues, playing for three teams in the early 1930s. He is a member of the Oregon State University Sports Hall of Fame and the Oregon Sports Hall of Fame.

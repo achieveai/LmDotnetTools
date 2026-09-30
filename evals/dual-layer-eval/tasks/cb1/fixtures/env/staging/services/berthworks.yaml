@@ -1,0 +1,5 @@
+# staging overlay for berthworks. Applied after env/staging/global.yaml.
+# Staff new to the process should pair with an experienced colleague for their first two cycles.
+
+mesh:
+  lb_policy: maglev

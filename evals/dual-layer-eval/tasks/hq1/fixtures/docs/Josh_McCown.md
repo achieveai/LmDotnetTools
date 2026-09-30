@@ -1,0 +1,3 @@
+# Josh McCown
+
+Joshua Treadwell McCown (born July 4, 1979) is an American football quarterback for the New York Jets of the National Football League (NFL). He was drafted by the Arizona Cardinals in the third round of the 2002 NFL Draft. He played college football at SMU and Sam Houston State. McCown has also played for the Detroit Lions, Oakland Raiders, Miami Dolphins, Carolina Panthers, Hartford Colonials, San Francisco 49ers, Chicago Bears, Tampa Bay Buccaneers, and Cleveland Browns. He is the older brother of fellow NFL quarterback Luke McCown and younger brother of former Texas A&M quarterback Randy McCown.

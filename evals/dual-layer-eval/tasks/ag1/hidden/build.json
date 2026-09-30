@@ -1,0 +1,12 @@
+{
+  "source": "synthetic",
+  "seed": 20260927,
+  "sites": ["ams", "bcn", "cph", "dub", "fra", "lis", "mil", "osl"],
+  "weeks": [10, 11, 12, 13, 14, 15],
+  "skus": 40,
+  "rows_min": 900,
+  "rows_max": 1300,
+  "case_files": 11,
+  "decoy_files": 8,
+  "duplicate_rate": 0.02
+}

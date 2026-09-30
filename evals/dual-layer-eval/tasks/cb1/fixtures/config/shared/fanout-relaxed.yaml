@@ -1,0 +1,8 @@
+# Shared fragment fanout-relaxed. Services pull it in through the `include:` list of their service.yaml.
+# Any personal data handled under this process is subject to the data-protection handbook.
+# Exceptions must be requested in writing and are granted for a fixed period only.
+
+mesh:
+  max_connections: 480
+  retry_budget: 8
+  lb_policy: leastload

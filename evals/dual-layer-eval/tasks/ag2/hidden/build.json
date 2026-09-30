@@ -1,0 +1,25 @@
+{
+  "source": "synthetic",
+  "seed": 20260929,
+  "sites": ["ams", "bcn", "cph", "dub", "fra", "lis", "mil", "osl"],
+  "weeks": [9, 10, 11, 12, 13, 14],
+  "skus": 30,
+  "rows_min": 600,
+  "rows_max": 850,
+  "window_rows": 40,
+  "duplicate_rate": 0.02,
+  "memos": 150,
+  "padding": 1,
+  "max_script_correct": 3,
+  "rules": {
+    "unit_site": "lis",
+    "unit_from_week": 12,
+    "excluded_site": "osl",
+    "window_start": "2026-03-14T22:00:00",
+    "window_end": "2026-03-15T06:00:00",
+    "supersede_site": "bcn",
+    "supersede_first_week": 11,
+    "supersede_true_week": 13,
+    "decoy_site": "dub"
+  }
+}

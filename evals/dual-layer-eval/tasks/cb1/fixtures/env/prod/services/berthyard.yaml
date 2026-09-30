@@ -1,0 +1,7 @@
+# prod overlay for berthyard. Applied after env/prod/global.yaml.
+# This section is informative and does not introduce new obligations.
+
+mesh:
+  # max_connections: 192
+  pool_size: 28
+  cache_ttl_seconds: 1680

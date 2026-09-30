@@ -1,0 +1,3 @@
+# Hervé Fischer
+
+Hervé Fischer (born 1941 in France), artist-philosopher and sociologist. He graduated from the École Normale Supérieure (Rue d'Ulm, Paris, 1964) and defended his Master's thesis on Spinoza's political philosophy with Raymond Aron and devoted his main research to the sociology of colour. For many years he taught the sociology of communication and culture at the Sorbonne, where he was promoted to master lecturer in 1981. At the same time, he developed a career as a multi-media artist and creator of "sociological art" (1971) and initiated many public participation projects with radio, television, and print media in many European and Latin American countries before coming to Quebec. He speaks fluently French, English, German and Spanish.

@@ -1,0 +1,3 @@
+# Richmond, Virginia
+
+Richmond city government consists of a city council with representatives from nine districts serving in a legislative and oversight capacity, as well as a popularly elected, at-large mayor serving as head of the executive branch. Citizens in each of the nine districts elect one council representative each to serve a four-year term. Beginning with the November 2008 election Council terms was lengthened to 4 years. The city council elects from among its members one member to serve as Council President and one to serve as Council Vice President. The city council meets at City Hall, located at 900 E. Broad St., 2nd Floor, on the second and fourth Mondays of every month, except August.

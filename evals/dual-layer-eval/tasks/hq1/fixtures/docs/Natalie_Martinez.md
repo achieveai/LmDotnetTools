@@ -1,0 +1,3 @@
+# Natalie Martinez
+
+Natalie Martinez (born July 12, 1984) is an American actress and model. She is known as the spokes-model for JLO by Jennifer Lopez, and for her role in the 2008 feature film "Death Race". She also starred in a music video titled "Rain Over Me" by Pitbull, also featuring Marc Anthony. She has appeared in several music videos and telenovelas. From 2010 to 2011, Martinez starred in the crime drama series "Detroit 1-8-7" as Detective Ariana Sanchez. From 2012 to 2014, she starred in the crime drama "" as Detective Jamie Lovato and Deputy Linda Esquivel in the sci-fi drama series "Under the Dome". She recently starred as Detective Theresa Murphy in the Fox police drama "APB", which was cancelled on May 11, 2017 after one season.

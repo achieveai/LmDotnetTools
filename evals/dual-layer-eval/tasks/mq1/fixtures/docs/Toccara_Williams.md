@@ -1,0 +1,3 @@
+# Toccara Williams
+
+Toccara Williams is a former basketball point guard who played for the WNBA's San Antonio Silver Stars in the 2004 season. Prior to playing in the WNBA, she played college basketball at Texas A&M from 2000–04. In her senior year, she led the nation for steals per game among Division I teams with an average of 4.1 steals per game. She was then selected in the third round of the 2004 WNBA Draft. Toccara also played professionally overseas in Turkey, Korea, China, and Israel. Williams now has a non profit organization called Sweet Rebound that is geared towards the youth by utilizing sports as a platform for education.

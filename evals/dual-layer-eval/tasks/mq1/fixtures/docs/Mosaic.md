@@ -1,0 +1,3 @@
+# Mosaic
+
+Later fresco replaced the more labor-intensive technique of mosaic in Western-Europe, although mosaics were sometimes used as decoration on medieval cathedrals. The Royal Basilica of the Hungarian kings in Székesfehérvár (Alba Regia) had a mosaic decoration in the apse. It was probably a work of Venetian or Ravennese craftsmen, executed in the first decades of the 11th century. The mosaic was almost totally destroyed together with the basilica in the 17th century. The Golden Gate of the St. Vitus Cathedral in Prague got its name from the golden 14th-century mosaic of the Last Judgement above the portal. It was executed by Venetian craftsmen.

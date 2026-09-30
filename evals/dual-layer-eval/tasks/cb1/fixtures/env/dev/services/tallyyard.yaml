@@ -1,0 +1,6 @@
+# dev overlay for tallyyard. Applied after env/dev/global.yaml.
+# Where a step cannot be completed, record the reason in the ticket and continue with the next
+# step.
+
+mesh:
+  pool_size: 76

@@ -1,0 +1,3 @@
+# Viscount Mackintosh of Halifax
+
+Viscount Mackintosh of Halifax, of Hethersett in the County of Norfolk, is a title in the Peerage of the United Kingdom. It was created in 1957 for the businessman and public servant Harold Mackintosh, 1st Baron Mackintosh of Halifax. He was the owner of the confectionery business of John Mackintosh & Sons Ltd and for many years Chairman of the National Savings Committee. Mackintosh had already been created a baronet, of Halifax in the County of York, in the Baronetage of the United Kingdom on 28 January 1935, and Baron Mackintosh of Halifax, of Hethersett in the County of Norfolk, in 1948, also in the Peerage of the United Kingdom. s of 2017 the titles are held by his grandson, the third Viscount, who succeeded his father in 1980.

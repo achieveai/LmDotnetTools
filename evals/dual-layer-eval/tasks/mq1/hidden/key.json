@@ -1,0 +1,140 @@
+{
+  "task": "mq1",
+  "source": "musique",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "What is the name of the castle in city where the performer of Darlings was formed?",
+      "kind": "text",
+      "answers": [
+        "Casa Loma"
+      ],
+      "evidence": [
+        "Casa_Loma.md",
+        "Darlings_Kevin_Drew_album.md",
+        "Kevin_Drew.md"
+      ],
+      "source_id": "3hop1__671542_665330_51423",
+      "hops": "3hop",
+      "answer_is_a_filename": true
+    },
+    {
+      "id": "q2",
+      "question": "When did the city where Souvenir's performer was born become the capitol of the state Knowles was from?",
+      "kind": "text",
+      "answers": [
+        "1839"
+      ],
+      "evidence": [
+        "History_of_Austin_Texas.md",
+        "Live_from_Austin_TX_Eric_Johnson_album.md",
+        "Souvenir_Eric_Johnson_album.md",
+        "Suga_Mama.md"
+      ],
+      "source_id": "4hop3__531933_836463_161616_77103",
+      "hops": "4hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q3",
+      "question": "When did the majority party in the body which approves members of the American Cabinet gain control of the House?",
+      "kind": "text",
+      "answers": [
+        "the 2010 election",
+        "2010",
+        "2010 elections",
+        "2010 midterm elections"
+      ],
+      "evidence": [
+        "2010_United_States_House_of_Representatives_elections.md",
+        "Cabinet_of_the_United_States.md",
+        "Party_leaders_of_the_United_States_Senate.md"
+      ],
+      "source_id": "3hop1__90327_78276_68042",
+      "hops": "3hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q4",
+      "question": "What label was bought in the UK by the other major New York broadcast that is in addition to ABC, and the one who released Stand Against Fear?",
+      "kind": "text",
+      "answers": [
+        "Oriole Records.",
+        "Oriole Records"
+      ],
+      "evidence": [
+        "New_York_City.md",
+        "Sony_Music.md",
+        "Stand_Against_Fear.md"
+      ],
+      "source_id": "3hop1__120881_2053_5289",
+      "hops": "3hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q5",
+      "question": "What was the 2017 population of the country where Bedari was made?",
+      "kind": "text",
+      "answers": [
+        "207.77 million people"
+      ],
+      "evidence": [
+        "Bedari.md",
+        "Demographics_of_Pakistan.md"
+      ],
+      "source_id": "2hop__106864_80460",
+      "hops": "2hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q6",
+      "question": "Who said one of the greatest thinkers was the person who proposed explanations for the origins of earthquakes and the formation of mountains?",
+      "kind": "text",
+      "answers": [
+        "George Sarton"
+      ],
+      "evidence": [
+        "Avicenna.md",
+        "Geology.md"
+      ],
+      "source_id": "2hop__41158_22946",
+      "hops": "2hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q7",
+      "question": "When was the region immediately north of the region where Urim's country is located and the Persian Gulf created?",
+      "kind": "text",
+      "answers": [
+        "1930"
+      ],
+      "evidence": [
+        "Geography_of_Saudi_Arabia.md",
+        "History_of_Saudi_Arabia.md",
+        "Israel.md",
+        "Joe_Flexer.md"
+      ],
+      "source_id": "4hop1__343844_17130_70784_79935",
+      "hops": "4hop",
+      "answer_is_a_filename": false
+    },
+    {
+      "id": "q8",
+      "question": "Between the state university in the state without North Point Mall and where Edwards won the primary and the university in Fort Hill's town which has the more national championships?",
+      "kind": "text",
+      "answers": [
+        "University of South Carolina",
+        "SC"
+      ],
+      "evidence": [
+        "2004_United_States_presidential_election.md",
+        "ClemsonSouth_Carolina_rivalry.md",
+        "Fort_Hill_Clemson_South_Carolina.md",
+        "North_Point_Mall.md"
+      ],
+      "source_id": "4hop3__129456_29339_508306_70744",
+      "hops": "4hop",
+      "answer_is_a_filename": false
+    }
+  ]
+}

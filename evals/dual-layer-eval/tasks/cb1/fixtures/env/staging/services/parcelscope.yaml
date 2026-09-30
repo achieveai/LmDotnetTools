@@ -1,0 +1,5 @@
+# staging overlay for parcelscope. Applied after env/staging/global.yaml.
+# Feedback on the clarity of this document is welcome at any time through the usual channel.
+
+mesh:
+  compression: gzip

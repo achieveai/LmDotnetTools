@@ -1,0 +1,185 @@
+{
+  "task": "fw1",
+  "source": "synthetic",
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "norm",
+      "question": "INC-4729 was opened on 2026-03-03. Who was the primary on-call lead, that ISO week, of the team that owned the service the incident's root cause was traced to, as of that day?",
+      "answers": [
+        "Jonathan Zelenko"
+      ],
+      "evidence": [
+        "incidents/INC-4729.md",
+        "runbooks/dockline.md"
+      ],
+      "type": "A",
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_swaps",
+        "near_duplicate"
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "norm",
+      "question": "INC-4284 was opened on 2026-04-28. Who was the primary on-call lead, that ISO week, of the team that owned the service the incident's root cause was traced to, as of that day?",
+      "answers": [
+        "Ignatius Halander"
+      ],
+      "evidence": [
+        "incidents/INC-4284.md",
+        "runbooks/keelline.md"
+      ],
+      "type": "A",
+      "trap_flips": [
+        "first_announcement",
+        "ignore_swaps",
+        "nickname_literal"
+      ]
+    },
+    {
+      "id": "q3",
+      "kind": "norm",
+      "question": "INC-4133 was opened on 2026-02-18. Who was the primary on-call lead, that ISO week, of the team that owned the service the incident's root cause was traced to, as of that day?",
+      "answers": [
+        "Tomasz Stenlay"
+      ],
+      "evidence": [
+        "incidents/INC-4133.md",
+        "runbooks/buoywatch.md"
+      ],
+      "type": "A",
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_swaps",
+        "near_duplicate"
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "norm",
+      "question": "INC-4482 was opened on 2026-03-20. Who was the primary on-call lead, that ISO week, of the team that owned the service the incident's root cause was traced to, as of that day?",
+      "answers": [
+        "Evangelos Lunvall"
+      ],
+      "evidence": [
+        "incidents/INC-4482.md",
+        "runbooks/berthpost.md"
+      ],
+      "type": "A",
+      "trap_flips": [
+        "ignore_memos",
+        "ignore_swaps",
+        "nickname_literal"
+      ]
+    },
+    {
+      "id": "q5",
+      "kind": "norm",
+      "question": "INC-4446 was opened on 2026-04-27. Who was the primary on-call lead, that ISO week, of the team that owned the service the incident's root cause was traced to, as of that day?",
+      "answers": [
+        "Keziah Keltova"
+      ],
+      "evidence": [
+        "incidents/INC-4446.md",
+        "runbooks/tallysight.md"
+      ],
+      "type": "A",
+      "trap_flips": [
+        "first_announcement",
+        "ignore_swaps",
+        "near_duplicate"
+      ]
+    },
+    {
+      "id": "q6",
+      "kind": "norm",
+      "question": "INC-4112 was opened on 2026-05-20. Who was the line manager of that incident's incident commander on that day?",
+      "answers": [
+        "Ines Davrick"
+      ],
+      "evidence": [
+        "incidents/INC-4112.md",
+        "runbooks/tidewatch.md",
+        "people/p-1079.md"
+      ],
+      "type": "B",
+      "trap_flips": [
+        "ignore_memos",
+        "nickname_literal"
+      ]
+    },
+    {
+      "id": "q7",
+      "kind": "norm",
+      "question": "INC-4537 was opened on 2026-04-16. Who was the line manager of that incident's incident commander on that day?",
+      "answers": [
+        "Evangelos Nevuzzi"
+      ],
+      "evidence": [
+        "incidents/INC-4537.md",
+        "runbooks/keelmark.md",
+        "people/p-1103.md"
+      ],
+      "type": "B",
+      "trap_flips": [
+        "ignore_memos",
+        "near_duplicate"
+      ]
+    },
+    {
+      "id": "q8",
+      "kind": "norm",
+      "question": "INC-4683 was opened on 2026-05-11. Who was the line manager of that incident's incident commander on that day?",
+      "answers": [
+        "Hedda Morgard"
+      ],
+      "evidence": [
+        "incidents/INC-4683.md",
+        "runbooks/ledgersmith.md",
+        "people/p-1111.md"
+      ],
+      "type": "B",
+      "trap_flips": [
+        "ignore_memos",
+        "nickname_literal"
+      ]
+    },
+    {
+      "id": "q9",
+      "kind": "norm",
+      "question": "Which team owned the service that INC-4806's root cause was traced to, as of 2026-04-07? (Not on the day of the incident.)",
+      "answers": [
+        "Sorrel",
+        "Team Sorrel"
+      ],
+      "evidence": [
+        "incidents/INC-4806.md",
+        "runbooks/cargoflow.md"
+      ],
+      "type": "C",
+      "trap_flips": [
+        "first_announcement"
+      ]
+    },
+    {
+      "id": "q10",
+      "kind": "norm",
+      "question": "Which team owned the service that INC-4102's root cause was traced to, as of 2026-04-07? (Not on the day of the incident.)",
+      "answers": [
+        "Wickline",
+        "Team Wickline"
+      ],
+      "evidence": [
+        "incidents/INC-4102.md",
+        "runbooks/tidekeeper.md"
+      ],
+      "type": "C",
+      "trap_flips": [
+        "ignore_memos",
+        "wrong_date"
+      ]
+    }
+  ]
+}

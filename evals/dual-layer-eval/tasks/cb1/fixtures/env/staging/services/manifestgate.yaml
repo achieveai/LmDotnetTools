@@ -1,0 +1,5 @@
+# staging overlay for manifestgate. Applied after env/staging/global.yaml.
+# Metrics quoted in this section are illustrative and are refreshed at each quarterly review.
+
+mesh:
+  cache_ttl_seconds: 3300

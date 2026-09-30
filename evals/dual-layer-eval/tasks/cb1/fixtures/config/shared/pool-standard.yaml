@@ -1,0 +1,8 @@
+# Shared fragment pool-standard. Services pull it in through the `include:` list of their service.yaml.
+# Approval workflows described here run in the ticketing system and leave an audit trail by
+# default. Feedback on the clarity of this document is welcome at any time through the usual
+# channel.
+
+mesh:
+  compression: brotli
+  queue_depth: 275

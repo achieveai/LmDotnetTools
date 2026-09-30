@@ -1,0 +1,3 @@
+# Tiffany (comics)
+
+Tiffany is a fictional character in Todd McFarlane's "Spawn" comic book series. She was first introduced to the series in issues #44 and #45. Tiffany, like fellow angel Angela, is a Hellspawn hunter. Therefore, the most current Hellspawn, Al Simmons, is her primary target. She has a long-standing rivalry with Angela, but since Angela has gone rogue, Tiffany's aim is to fill her place as the top Hellspawn slayer in Heaven's army. In her first attempt to slay Spawn, she was over-zealous and was defeated in a grisly manner. Although she lost the fight, she escaped with her life, since the still inexperienced Spawn did not realize that merely destroying an angel's physical body is not enough to truly kill it. She has not appeared in the comic since.

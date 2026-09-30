@@ -1,0 +1,3 @@
+# Pedrolino
+
+Pedrolino is a "primo zanni", or comic servant, of the "Commedia dell'Arte"; the name is a hypocorism of "Pedro" (Peter), via the suffix "-lino". The character made its first appearance in the last quarter of the 16th century, apparently as the invention of the actor with whom the role was to be long identified, Giovanni Pellesini. Contemporary illustrations suggest that his white blouse and trousers constituted "a variant of the typical "zanni" suit", and his Bergamasque dialect marked him as a member of the "low" rustic class. But if his costume and social station were without distinction, his dramatic role was certainly not: as a multifaceted "first" "zanni", his character was—and still is—rich in comic incongruities.

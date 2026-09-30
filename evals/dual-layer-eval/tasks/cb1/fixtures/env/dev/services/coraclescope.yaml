@@ -1,0 +1,5 @@
+# dev overlay for coraclescope. Applied after env/dev/global.yaml.
+# Previous versions remain available in the document history for audit purposes.
+
+mesh:
+  max_connections: 168

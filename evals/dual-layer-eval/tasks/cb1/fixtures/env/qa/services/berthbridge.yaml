@@ -1,0 +1,7 @@
+# qa overlay for berthbridge. Applied after env/qa/global.yaml.
+# Nothing in this document overrides applicable law or the terms of an individual contract.
+
+mesh:
+  request_timeout_ms: 250
+  circuit_threshold: 14
+  lb_policy: roundrobin

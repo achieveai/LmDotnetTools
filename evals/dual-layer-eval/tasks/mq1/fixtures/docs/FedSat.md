@@ -1,0 +1,3 @@
+# FedSat
+
+FedSat (Australia's 'Federation Satellite') is an Australian scientific research satellite launched from Tanegashima Space Center, Japan by a NASDA H-IIA launch vehicle in December 2002 (NASDA is now merged with JAXA). The satellite was developed by the Cooperative Research Centre for Satellite Systems, a cooperative made up of several universities, commercial organisations and government bodies. The ground station is at the Institute for Telecommunications Research, part of the University of South Australia, near Adelaide. Since 2005 it was operated by the Australian Department of Defence.

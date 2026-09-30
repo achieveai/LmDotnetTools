@@ -1,0 +1,3 @@
+# Rosario + Vampire
+
+Rosario + Vampire (ロザリオとバンパイア , Rozario to Banpaia , literally « rosary and vampire ») is a Japanese manga series written and illustrated by Akihisa Ikeda. The story revolves around Tsukune Aono, a boy who inadvertently enrolls in a boarding school for monsters. He quickly befriends Moka Akashiya, a vampire who soon develops an obsession with his blood, and later meets other monster girls who soon take a romantic liking to him. The manga was serialized in "Monthly Shonen Jump" starting with the August 2004 issue, and ending with the June 2007 issue. A bonus chapter was published in "Weekly Shonen Jump" in September 2007. Ten tankōbon volumes were compiled and released from October 2004 to October 2007.

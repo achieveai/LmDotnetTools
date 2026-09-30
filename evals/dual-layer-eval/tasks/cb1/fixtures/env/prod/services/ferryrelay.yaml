@@ -1,0 +1,5 @@
+# prod overlay for ferryrelay. Applied after env/prod/global.yaml.
+# Records created under this document are retained according to the records schedule.
+
+mesh:
+  # circuit_threshold: 50

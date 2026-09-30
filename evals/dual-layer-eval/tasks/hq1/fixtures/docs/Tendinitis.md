@@ -1,0 +1,3 @@
+# Tendinitis
+
+Tendinitis (also tendonitis), meaning inflammation of a tendon, is a type of tendinopathy often confused with the more common tendinosis, which has similar symptoms but requires different treatment. (The suffix "-itis" denotes diseases characterized by inflammation.) The term tendinitis is generally reserved for tendon injuries that involve larger-scale acute injuries accompanied by inflammation. Tendinitis is typically referred to in combination with the body part involved, such as Achilles tendinitis (affecting the Achilles tendon), or patellar tendinitis (jumper's knee, affecting the patellar tendon).

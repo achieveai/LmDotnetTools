@@ -1,0 +1,3 @@
+# Conservation of energy
+
+The mechanical equivalence principle was first stated in its modern form by the German surgeon Julius Robert von Mayer in 1842. Mayer reached his conclusion on a voyage to the Dutch East Indies, where he found that his patients' blood was a deeper red because they were consuming less oxygen, and therefore less energy, to maintain their body temperature in the hotter climate. He discovered that heat and mechanical work were both forms of energy and in 1845, after improving his knowledge of physics, he published a monograph that stated a quantitative relationship between them.

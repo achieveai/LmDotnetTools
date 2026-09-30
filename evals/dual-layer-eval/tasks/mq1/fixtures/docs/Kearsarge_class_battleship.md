@@ -1,0 +1,3 @@
+# Kearsarge-class battleship
+
+The "Kearsarge"-class battleships were two pre-dreadnought battleships built for the United States Navy at the beginning of the 20th century. They were designed to be used for coastal defense. Both of the ships, and , were authorized in 1895 and commissioned in 1900. Neither ship participated in a major battle, although they participated in the Great White Fleet, the oldest ships on the cruise. "Kentucky" was decommissioned in 1920 and sold for scrap in 1923. "Kearsarge" was also decommissioned in 1920, although it was then converted into a crane ship, and served in that capacity until scrapping in 1955.

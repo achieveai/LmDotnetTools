@@ -1,0 +1,3 @@
+# 1980 Italian Grand Prix
+
+The 1980 Italian Grand Prix was a Formula One motor race held on 14 September 1980 at the Imola Circuit in Italy. It was the twelfth race of the 1980 Formula One season. The race was the 50th Italian Grand Prix and the first Grand Prix to be held at Imola. It was the first time since the 1948 Italian Grand Prix was held at Parco del Valentino that the Autodromo Nazionale Monza did not host the Italian Grand Prix. Monza was under refurbishment at the time. The race was such a success that a new race, the San Marino Grand Prix was established for Imola. The race was held over 60 laps of the 5.000-kilometre circuit for a total race distance of 300 kilometres.

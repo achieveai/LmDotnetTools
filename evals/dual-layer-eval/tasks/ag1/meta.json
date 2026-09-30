@@ -1,0 +1,19 @@
+{
+  "family": "aggregation",
+  "split": "retired",
+  "seeds": [
+    "aurora",
+    "basalt",
+    "cascade",
+    "delta",
+    "ember"
+  ],
+  "timeoutMinutes": 40,
+  "requiredFixtures": [
+    {
+      "glob": "ledgers/*.csv",
+      "count": 48
+    }
+  ],
+  "retiredReason": "pilot 20260924-090015-641225f7 (1 seed): every arm scored 1.0, gpt-6-luna for $0.003; a script solves it, so it cannot separate arms."
+}

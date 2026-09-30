@@ -1,0 +1,3 @@
+# Michael J. Lotz
+
+Michael J. Lotz is President and Chief Operating Officer of Mesa Air Group, joining the Company in July 1998. In January 1999, Mr. Lotz became Chief Operating Officer. In August 1999, Mr. Lotz became the Company’s Chief Financial Officer and in January 2000 returned to the position of Chief Operating Officer. On June 22, 2000, Mr. Lotz was appointed President of the Company. Prior to joining the Company, Mr. Lotz served as Chief Operating Officer of Virgin Express, a position he held from October 1996 to June 1998. Previously, Mr. Lotz was employed by Continental Airlines, most recently as Vice President of Airport Operations, Properties and Facilities at Continental Express..

@@ -1,0 +1,3 @@
+# Albert Schweitzer Fellowship
+
+The Albert Schweitzer Fellowship is a non-profit organization in the United States, that was established in 1940 as one of the many fellowships created in developed countries to support the work of Albert Schweitzer at the Hôpital Albert Schweitzer in present-day Gabon; these fellowships were coordinated by the Association Internationale de l'oeuvre du docteur Albert Schweitzer de Lambaréné (AISL), which also oversaw the hospital. It subsequently expanded its focus to supporting Schweitzer Fellows, primarily graduate students, as they partner with community-based organizations to develop and implement year-long, mentored service projects that meet the health needs of underserved populations.

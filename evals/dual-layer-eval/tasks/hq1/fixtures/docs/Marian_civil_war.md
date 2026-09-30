@@ -1,0 +1,3 @@
+# Marian civil war
+
+The Marian civil war in Scotland (1568–1573) was a period of conflict which followed the abdication of Mary, Queen of Scots, and her escape from Loch Leven Castle in May 1568. Those who ruled in the name of her infant son James VI fought against the supporters of the Queen, who was exiled in England. Edinburgh Castle, which was garrisoned in her name, became the focus of the conflict and surrendered only after an English intervention in May 1573. The conflict in 1570 was called an "intestine war in the bowels of this commonwealth", and the period was called soon after an "intestine war driven by questions against authority."

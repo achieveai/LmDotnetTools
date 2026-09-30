@@ -1,0 +1,3 @@
+# The Lodge School
+
+In 2010 The Lodge School celebrated its 265th anniversary as an institution of learning in Barbados. This extended period has not been continuous, as the school has closed and reopened four times during these two and a half centuries. The school has been known as Codrington College, The College, The Mansion School, the Codrington Grammar School, The Codrington Foundation School, Codrington Collegiate School, Codrington Endowed School, Codrington Lodge Grammar School and The Lodge Collegiate School. By 1882 the school's name had finally settled on The Lodge School, after the Chaplain's Lodge where some of the early classes were undertaken.

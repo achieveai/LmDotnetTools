@@ -1,0 +1,12 @@
+# Shared fragment timeouts-regional. Services pull it in through the `include:` list of their service.yaml.
+# All staff are expected to have read this document and to apply it in their day-to-day work.
+# This section is informative and does not introduce new obligations.
+
+include:
+  - shared/latency-steady.yaml
+
+mesh:
+  queue_depth: 1050
+  circuit_threshold: 18
+  compression: brotli
+  max_connections: 168

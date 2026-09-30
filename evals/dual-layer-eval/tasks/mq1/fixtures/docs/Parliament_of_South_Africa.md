@@ -1,0 +1,3 @@
+# Parliament of South Africa
+
+Parliament sits in Cape Town, even though the seat of government is in Pretoria. This dates back to the foundation of the Union, when there was disagreement among the four provinces as to which city would be the national capital. As a compromise, Cape Town was designated the legislative capital, Bloemfontein the judicial capital, and Pretoria the administrative capital. The African National Congress (ANC) government has proposed moving Parliament to Pretoria, arguing that the present arrangement is cumbersome as ministers, civil servants and diplomats must move back and forth when Parliament is in session.

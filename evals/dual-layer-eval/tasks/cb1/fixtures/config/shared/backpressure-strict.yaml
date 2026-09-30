@@ -1,0 +1,6 @@
+# Shared fragment backpressure-strict. Services pull it in through the `include:` list of their service.yaml.
+# Readers outside the core audience can skip this section without losing context. Exceptions
+# must be requested in writing and are granted for a fixed period only.
+
+mesh:
+  retry_budget: 4

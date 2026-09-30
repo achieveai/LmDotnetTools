@@ -1,0 +1,3 @@
+# O (Cirque du Soleil)
+
+O is a water-themed stage production by Cirque du Soleil, a Canadian circus and entertainment company. The show has been in permanent residence at the Bellagio in Las Vegas, Nevada, United States, since October 1998. "O", whose name is pronounced the same way as "eau", the French word for "water", takes place in, around and above a 1.5 e6USgal pool of water, featuring water acts such as synchronized swimming as well as aerial and ground acts. The "O" theatre, which is designed to resemble a 14th-century European opera house, has 1,800 seats, thus allowing the performance to be watched by 3,600 people a night since the performance usually plays twice in a given day, also designed to meet the special demands of the show.

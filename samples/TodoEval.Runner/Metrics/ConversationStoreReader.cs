@@ -40,6 +40,9 @@ internal static class ConversationStoreReader
     public const string StartupWorkKey = "subagents.startupWork";
     public const string SubAgentDirPrefix = "subagent-";
 
+    /// <summary>Mirrors <c>SubAgentThreadIds.PairedExecutorPrefix</c>; the runner references no library.</summary>
+    public const string PairedExecutorPrefix = "executor-";
+
     /// <summary>
     /// The envelope <c>messageType</c> of an applied compaction checkpoint. The persistence converter
     /// stamps <c>message.GetType().Name</c>, and redaction rewrites a checkpoint's prose but keeps the
@@ -194,6 +197,17 @@ internal static class ConversationStoreReader
 
         return groups.ToDictionary(kvp => kvp.Key, kvp => (IReadOnlyList<ThreadData>)kvp.Value, StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// A dual-layer executor thread carries no <c>sample.subAgentOf</c> link: it is named after its
+    /// planner. Without this its tool calls fell outside the run. Its usage records are also in the
+    /// planner's ledger under the same attempt ids, so the usage rollup's dedupe keeps cost unchanged.
+    /// </summary>
+    internal static string? PairedExecutorParent(string threadId) =>
+        threadId.Length > PairedExecutorPrefix.Length
+        && threadId.StartsWith(PairedExecutorPrefix, StringComparison.Ordinal)
+            ? threadId[PairedExecutorPrefix.Length..]
+            : null;
 
     internal static ThreadData LoadThread(string threadDir)
     {
@@ -431,7 +445,7 @@ internal static class ConversationStoreReader
         return new ThreadData
         {
             ThreadId = threadId,
-            ParentThreadId = metadata.ParentThreadId,
+            ParentThreadId = metadata.ParentThreadId ?? PairedExecutorParent(threadId),
             TodoBoardJson = metadata.TodoBoardJson,
             TurnCount = generationIds.Count,
             CompactionCheckpoints = compactionCheckpoints,

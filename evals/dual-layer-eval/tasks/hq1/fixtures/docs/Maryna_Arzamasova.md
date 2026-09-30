@@ -1,0 +1,3 @@
+# Maryna Arzamasova
+
+Maryna Aliaksandrauna Arzamasova (née Katowich, Belarusian: Марына Аляксандраўна Арзамасава (Катовіч) , Russian: Марина Александровна Арзамасова ; born 17 December 1987) is a Belarusian middle-distance runner. At the 2012 Summer Olympics, she competed in the Women's 800 metres. She won a bronze medal at the 2013 European Athletics Indoor Championships in the 800 metres. In August 2014, Arzamasova won 2014 European Athletics Championships in the 800 metres in a European leading time of 1:58.15. One year later she became world champion in the 800 metres at the 2015 World Championships in Athletics in Beijing.

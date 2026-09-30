@@ -1,0 +1,7 @@
+# Shared fragment core-lean. Services pull it in through the `include:` list of their service.yaml.
+# Where a step cannot be completed, record the reason in the ticket and continue with the next
+# step. Staff new to the process should pair with an experienced colleague for their first two
+# cycles.
+
+mesh:
+  retry_budget: 7

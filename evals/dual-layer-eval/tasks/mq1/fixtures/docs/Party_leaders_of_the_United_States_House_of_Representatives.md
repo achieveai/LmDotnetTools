@@ -1,0 +1,3 @@
+# Party leaders of the United States House of Representatives
+
+The current Minority Leader Nancy Pelosi, of the United States House of Representatives serves as floor leader of the opposition party, and is the counterpart to the Majority Leader. Unlike the Majority Leader, the Minority Leader is on the ballot for Speaker of the House during the convening of the Congress. If the Minority Leader's party takes control of the House, and the party officers are all re-elected to their seats, the Minority Leader is usually the party's top choice for Speaker for the next Congress, while the Minority Whip is typically in line to become Majority Leader. The Minority Leader usually meets with the Majority Leader and the Speaker to discuss agreements on controversial issues.

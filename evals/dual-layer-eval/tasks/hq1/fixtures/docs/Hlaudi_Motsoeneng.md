@@ -1,0 +1,3 @@
+# Hlaudi Motsoeneng
+
+Hlaudi Motsoeneng served as the acting Chief operating officer of the South African Broadcasting Corporation (SABC) from 2011 to 2013. Motsoeneng was removed from his position as Chief operating officer after it had been found that he lied about his qualifications. After being removed as acting Chief operating officer it was announced that Motsoeneng would move back to his previous position as Group Executive Editor of Provinces and Corporate Affairs of the SABC. In December 2016, the Western Cape High Court ruled that Motsoeneng’s appointment as Group Executive was illegal and that he was “not entitled to occupy any position at the SABC”.

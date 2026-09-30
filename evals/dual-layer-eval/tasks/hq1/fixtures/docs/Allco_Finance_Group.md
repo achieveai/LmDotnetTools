@@ -1,0 +1,3 @@
+# Allco Finance Group
+
+Allco Financial Group was a fully integrated global financial services business, listed on the Australian Stock Exchange and headquartered in Sydney, Australia. Major services provided were structured asset finance, funds management and debt and equity funding. At one stage before liquidation, Allco had over A$4.3 billion in assets, and had financed over A$60 billion of transactions. In its most visible public transaction Allco was a part of Airline Partners Australia, the consortium that unsuccessfully attempted to buy Qantas. The company is now in liquidation, after previously being in administrative receivership, following difficulties in refinancing debt and a share price fall of 99% since the beginning of the subprime mortgage crisis.

@@ -1,0 +1,4 @@
+# Raw sweep output carries model transcripts; it stays off-repo (new sweeps write to .logs/dual-eval-raw).
+results/
+# Retired lb1 copies LongBench v2 papers; licence unresolved. Rebuild locally with tools/build_qa.py.
+tasks/lb1/

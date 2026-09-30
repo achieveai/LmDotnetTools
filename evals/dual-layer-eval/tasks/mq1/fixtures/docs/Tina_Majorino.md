@@ -1,0 +1,3 @@
+# Tina Majorino
+
+In 2012, she reprised her role as Deb in the animated TV version of Napoleon Dynamite. She was also seen playing the role of the vampire Molly in Season 5 of the HBO television series True Blood, an uncredited role as a pregnant woman in the Fox show, Raising Hope, in an episode titled ``Tarot Cards, ''and the role of intern Dr. Heather Brooks in Season 9 of the ABC series Grey's Anatomy, with her character being killed off in the two - part premiere of Season 10. In 2014 she appeared in the Veronica Mars film as her character Mac, a project financed by fans through Kickstarter.

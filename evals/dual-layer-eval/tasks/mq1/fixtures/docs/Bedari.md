@@ -1,0 +1,3 @@
+# Bedari
+
+Bedari, a Pakistani Urdu black and white film, was a classic melodious film of 1956.This film had an identical plot and the songs like Indian film Jagriti (1954), with replacement of some words, and music were taken directly from Jagriti as well. Rattan Kumar (Syed Nazir Ali), who had moved to Pakistan with his family, acted in Bedari also. When 'Bedari' was released in Pakistan in 1956, it too made fabulous business in the first few weeks of exhibition. However, it dawned upon the Pakistani cinemagoers that they were watching a plagiarized film. There was a mass uproar that caused public demonstrations against exhibition of the plagiarized film. The Censor Board of Pakistan immediately put a ban on this film.

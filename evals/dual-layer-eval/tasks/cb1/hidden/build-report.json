@@ -1,0 +1,227 @@
+{
+  "task": "cb1",
+  "fixture_files": 251,
+  "fixture_bytes": 423714,
+  "approx_tokens": 105928,
+  "gold": {
+    "q1": 96,
+    "q2": 5100,
+    "q3": "maglev",
+    "q4": 620,
+    "q5": 80,
+    "q6": 3480,
+    "q7": "zstd",
+    "q8": 196
+  },
+  "trap_answers": {
+    "honor_commented": {
+      "q1": "28",
+      "q2": "5250",
+      "q3": "random",
+      "q4": "905",
+      "q5": "160",
+      "q6": "2400",
+      "q7": "none",
+      "q8": "200"
+    },
+    "ignore_code": {
+      "q1": "88",
+      "q2": "1700",
+      "q3": "leastload",
+      "q4": "850",
+      "q5": "40",
+      "q6": "3450",
+      "q7": "gzip",
+      "q8": "49"
+    },
+    "ignore_env": {
+      "q1": "64",
+      "q2": "5100",
+      "q3": "random",
+      "q4": "620",
+      "q5": "64",
+      "q6": "3480",
+      "q7": "brotli",
+      "q8": "196"
+    },
+    "include_order_reversed": {
+      "q1": "16",
+      "q2": "5100",
+      "q3": "maglev",
+      "q4": "1190",
+      "q5": "80",
+      "q6": "3480",
+      "q7": "zstd",
+      "q8": "196"
+    },
+    "flag_catalog_default": {
+      "q1": "96",
+      "q2": "1700",
+      "q3": "random",
+      "q4": "850",
+      "q5": "40",
+      "q6": "3450",
+      "q7": "none",
+      "q8": "98"
+    },
+    "isprod_literal": {
+      "q1": "96",
+      "q2": "15300",
+      "q3": "maglev",
+      "q4": "620",
+      "q5": "80",
+      "q6": "3660",
+      "q7": "zstd",
+      "q8": "196"
+    },
+    "wrong_section": {
+      "q1": "96",
+      "q2": "1911",
+      "q3": "maglev",
+      "q4": "620",
+      "q5": "80",
+      "q6": "3480",
+      "q7": "zstd",
+      "q8": "196"
+    },
+    "skip_nested_include": {
+      "q1": "16",
+      "q2": "5100",
+      "q3": "maglev",
+      "q4": "620",
+      "q5": "80",
+      "q6": "3480",
+      "q7": "zstd",
+      "q8": "236"
+    }
+  },
+  "trap_flips": {
+    "q1": [
+      "honor_commented",
+      "ignore_code",
+      "ignore_env",
+      "include_order_reversed",
+      "skip_nested_include"
+    ],
+    "q2": [
+      "honor_commented",
+      "ignore_code",
+      "flag_catalog_default",
+      "isprod_literal",
+      "wrong_section"
+    ],
+    "q3": [
+      "honor_commented",
+      "ignore_code",
+      "ignore_env",
+      "flag_catalog_default"
+    ],
+    "q4": [
+      "honor_commented",
+      "ignore_code",
+      "include_order_reversed",
+      "flag_catalog_default"
+    ],
+    "q5": [
+      "honor_commented",
+      "ignore_code",
+      "ignore_env",
+      "flag_catalog_default"
+    ],
+    "q6": [
+      "honor_commented",
+      "ignore_code",
+      "flag_catalog_default",
+      "isprod_literal"
+    ],
+    "q7": [
+      "honor_commented",
+      "ignore_code",
+      "ignore_env",
+      "flag_catalog_default"
+    ],
+    "q8": [
+      "honor_commented",
+      "ignore_code",
+      "flag_catalog_default",
+      "skip_nested_include"
+    ]
+  },
+  "predicted_trap_scores": {
+    "honor_commented": 0.0,
+    "ignore_code": 0.0,
+    "ignore_env": 0.5,
+    "include_order_reversed": 0.75,
+    "flag_catalog_default": 0.125,
+    "isprod_literal": 0.75,
+    "wrong_section": 0.875,
+    "skip_nested_include": 0.75
+  },
+  "targets": {
+    "q1": {
+      "service": "ledgerbridge",
+      "key": "pool_size",
+      "env": "prod",
+      "must_flip": "skip_nested_include",
+      "attempt": 1605
+    },
+    "q2": {
+      "service": "manifestbridge",
+      "key": "request_timeout_ms",
+      "env": "staging",
+      "must_flip": "wrong_section",
+      "attempt": 81
+    },
+    "q3": {
+      "service": "berthbridge",
+      "key": "lb_policy",
+      "env": "prod",
+      "must_flip": "flag_catalog_default",
+      "attempt": 1936
+    },
+    "q4": {
+      "service": "skiffworks",
+      "key": "queue_depth",
+      "env": "qa",
+      "must_flip": "include_order_reversed",
+      "attempt": 63
+    },
+    "q5": {
+      "service": "bollardbridge",
+      "key": "max_connections",
+      "env": "prod",
+      "must_flip": "ignore_env",
+      "attempt": 89
+    },
+    "q6": {
+      "service": "berthyard",
+      "key": "cache_ttl_seconds",
+      "env": "staging",
+      "must_flip": "isprod_literal",
+      "attempt": 252
+    },
+    "q7": {
+      "service": "parcelscope",
+      "key": "compression",
+      "env": "staging",
+      "must_flip": "flag_catalog_default",
+      "attempt": 1703
+    },
+    "q8": {
+      "service": "ferryrelay",
+      "key": "circuit_threshold",
+      "env": "prod",
+      "must_flip": "skip_nested_include",
+      "attempt": 2216
+    }
+  },
+  "counts": {
+    "services/*/service.yaml": 24,
+    "services/*/src/Startup.cs": 24,
+    "config/shared/*.yaml": 26,
+    "env/*/global.yaml": 4,
+    "flags/*.jsonc": 4,
+    "docs/*.md": 5,
+    "platform/*.cs": 6
+  }
+}

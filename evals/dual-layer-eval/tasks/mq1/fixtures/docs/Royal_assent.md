@@ -1,0 +1,3 @@
+# Royal assent
+
+The government, consisting of the monarch and the ministers, will then usually approve the proposal and the sovereign and one of the ministers signs the proposal with the addition of an enacting clause, thereafter notifying the States General that "The King assents to the proposal." It has happened in exceptional circumstances that the government does not approve a law that has been passed in parliament. In such a case, neither the monarch nor a minister will sign the bill, notifying the States General that "The King will keep the proposal under advisement." A law that has received royal assent will be published in the State Magazine, with the original being kept in the archives of the King's Offices.

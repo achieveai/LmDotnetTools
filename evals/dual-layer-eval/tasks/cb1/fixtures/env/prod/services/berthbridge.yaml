@@ -1,0 +1,5 @@
+# prod overlay for berthbridge. Applied after env/prod/global.yaml.
+# Teams should budget time for the periodic review described here in their planning cycle.
+
+mesh:
+  # lb_policy: roundrobin

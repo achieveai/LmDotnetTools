@@ -1,0 +1,3 @@
+# The Third Terrorist
+
+The Third Terrorist: The Middle East Connection to the Oklahoma City Bombing is a book by journalist Jayna Davis about evidence of an alleged conspiracy behind the 1995 Oklahoma City bombing. The Justice Department initially sought, but then abandoned its search for, a Middle East suspect. The book was published in April 2004 by Nelson Current Publishers, and became a New York Times best-seller. In contrast to conspiracy theories that the bombing was a false flag attack perpetrated by elements of the US government, the book presents a theory that links the Oklahoma City bombers to agents of Iraq and Al-Qaeda, operating under Iranian state sponsorship.

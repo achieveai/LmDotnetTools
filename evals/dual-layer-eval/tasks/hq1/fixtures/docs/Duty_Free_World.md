@@ -1,0 +1,3 @@
+# Duty Free World
+
+Duty Free World ("DFW") is a US based duty free and travel retailer headquartered in Miami, Florida, specializing in inflight duty-free sales. The company sells primarily luxury products onboard aircraft. It operates from 12 locations around the world to service traveling passengers who purchase through its airline partners, which include Aeromexico, LATAM Airlines and United Airlines, as well as online. The company was established April 1995 by Mayra del Valle and is currently still owned by her and Leylani Cardoso. Duty Free World is the only female-owned company in the travel-retail industry. The company employs over 200 people around the world and processes over 1,068,545 transactions annually from traveling customers.

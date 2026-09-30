@@ -1,0 +1,3 @@
+# Alexander Lipsky
+
+Alexander Lipsky was an influential teacher as well as composer and arranger born in Warsaw, Poland in 1900. He attended Columbia University and studied composition and theory with Daniel Gregory Mason, Frank Ward and Franz Schreker. He was a student of piano under the tutelage of Leonid Kreutzer. In 1921, he was awarded the Clarence Barker Fellowship at Columbia through which he studied in Berlin from 1922-1924. Up through the 1940s, he composed concertos, songs, sonatas and pieces for piano. He also became a highly regarded teacher of music with notable students such as Carol Klooster-Moore and Matthew Harre. He died in 1985.

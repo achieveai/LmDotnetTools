@@ -584,6 +584,30 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .Be(IdentityMiddleware.WebSocketRefusalCode);
     }
 
+    [Theory]
+    [InlineData("executor-thread-1")]
+    [InlineData("subagent-3f2a9c-agent-1")]
+    [InlineData("workflow-run-1")]
+    public async Task AnAgentOwnedThreadIdOnTheChatSocket_Is403(string agentOwnedThreadId)
+    {
+        LogTestStart();
+
+        // An agent-owned thread already has a writer: the sub-agent, workflow controller or dual-layer
+        // executor that owns it. /ws used to accept the id and let the pool start a second top-level
+        // agent on it. Enforcement is OFF so the conversation gate is a no-op: the 403 can only come
+        // from the route's own refusal, and the plain id proves the host still serves a handshake.
+        using var factory = NewFactory();
+
+        using var served = await factory.ConnectWebSocketAsync($"plain-{Guid.NewGuid():N}");
+        _ = served.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
+
+        Func<Task> handshake = () => factory.ConnectWebSocketAsync(agentOwnedThreadId);
+        var thrown = await handshake.Should().ThrowAsync<InvalidOperationException>();
+        _ = thrown
+            .Which.Message.Should()
+            .Contain("403", "a second writer on an agent's thread is refused, as the REST send route refuses it");
+    }
+
     [Fact]
     public async Task ABlankThreadIdOnTheChatSocket_Is400_WithEnforcementOnOrOff()
     {

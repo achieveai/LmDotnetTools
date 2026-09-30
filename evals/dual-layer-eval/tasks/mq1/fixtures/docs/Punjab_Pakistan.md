@@ -1,0 +1,3 @@
+# Punjab, Pakistan
+
+Maharaja Ranjit Singh's death in the summer of 1839 brought political chaos and the subsequent battles of succession and the bloody infighting between the factions at court weakened the state. Relationships with neighbouring British territories then broke down, starting the First Anglo-Sikh War; this led to a British official being resident in Lahore and the annexation in 1849 of territory south of the Satluj to British India. After the Second Anglo-Sikh War in 1849, the Sikh Empire became the last territory to be merged into British India. In Jhelum 35 British soldiers of HM XXIV regiment were killed by the local resistance during the Indian Rebellion of 1857.[citation needed]

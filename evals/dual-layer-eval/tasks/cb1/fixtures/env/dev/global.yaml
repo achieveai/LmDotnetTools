@@ -1,0 +1,9 @@
+# Overlay for every service in the dev environment.
+# Applied after each service's own service.yaml and before env/dev/services/<service>.yaml.
+# Questions about interpretation should be raised with the document's editor in the first
+# instance. Teams should budget time for the periodic review described here in their planning
+# cycle.
+
+mesh:
+  circuit_threshold: 10
+  pool_size: 128

@@ -1,0 +1,27 @@
+# Service configuration for parcelscope.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Approval workflows described here run in the ticketing system and leave an audit trail by
+# default. Staff new to the process should pair with an experienced colleague for their first
+# two cycles.
+
+include:
+  - shared/backpressure-wide.yaml
+  - shared/timeouts-shared.yaml
+  - shared/fanout-wide.yaml
+
+mesh:
+  cache_ttl_seconds: 930
+  pool_size: 100
+
+telemetry:
+  service_name: parcelscope
+  exporter: statsd
+  sample_rate: 0.05
+  flush_interval_s: 30
+
+labels:
+  tier: gold
+  cost_centre: cc8499
+  paging_channel: ops29
+
+admin_port: 9107

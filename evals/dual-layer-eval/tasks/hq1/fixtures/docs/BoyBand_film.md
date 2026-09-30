@@ -1,0 +1,3 @@
+# BoyBand (film)
+
+BoyBand is a comedic feature film released in 2010 that depicts the fictional saga of the first ever American boy band. The film stars Michael Copon, Robert Hoffman, Ryan Hansen, Ryan Pinkston, Ernest Phillips, Lorenzo Hooker III, Kurt Fuller, Ming-Na, Richard Riehle, and Tom Wright. The film was shot entirely in the county of Worcester, Massachusetts and even features a fictional Worcester High School. "BoyBand" was produced by Worcester-based Artigo/Ajemian films. The film was written and directed by Jon Artigo, and produced by Andrea Ajemian. Kaz Gamble produced and recorded the entire soundtrack. The film is also known as "BoyBand: Breakin' through in '82".

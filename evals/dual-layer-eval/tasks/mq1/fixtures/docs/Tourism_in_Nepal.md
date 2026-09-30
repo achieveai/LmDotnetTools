@@ -1,0 +1,3 @@
+# Tourism in Nepal
+
+Mount Everest, the highest mountain peak in the world, is located in Nepal. Mountaineering and other types of adventure tourism and ecotourism are important attractions for visitors. The world heritage site Lumbini, birthplace of Gautama Buddha, is located in the south of the West region of Nepal (which despite the name is located in the centre of the country) and there are other important religious pilgrimage sites throughout the country. The tourist industry is seen as a way to alleviate poverty and achieve greater social equity in the country. Tourism brings $471 ma year to Nepal.

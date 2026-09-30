@@ -1,0 +1,3 @@
+# Warlocked
+
+Warlocked is a real-time strategy video game developed by Bits Studios and published by Nintendo for the Game Boy Color. Critical reception towards the game was positive, it received a score of 86% on review aggregation website GameRankings. IGN named the game as the Best Game Boy Strategy game of 2000, and would later list the game as one they would like to see on a hypothetical Virtual Console platform for the Nintendo DSi, owing partially due to its real-time strategy interface. A sequel to the game, titled "Wizards", was in development for the Game Boy Advance, but was cancelled due to the lack of a publisher.

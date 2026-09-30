@@ -1,0 +1,3 @@
+# Gymnastics
+
+In the late eighteenth- and early nineteenth-century Germany, three pioneer physical educators – Johann Friedrich GutsMuths (1759–1839) and Friedrich Ludwig Jahn (1778–1852) – created exercises for boys and young men on apparatus they had designed that ultimately led to what is considered modern gymnastics. Don Francisco Amorós y Ondeano, was born on February 19, 1770 in Valence and died on August 8, 1848 in Paris. He was a Spanish colonel, and the first person to introduce educative gymnastic in France. Jahn promoted the use of parallel bars, rings and high bar in international competition.

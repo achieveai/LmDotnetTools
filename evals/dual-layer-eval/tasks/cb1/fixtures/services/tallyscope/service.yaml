@@ -1,0 +1,26 @@
+# Service configuration for tallyscope.
+# Merged by platform/ConfigLoader.cs; see docs/CONFIG.md for the layer order.
+# Readers outside the core audience can skip this section without losing context. Approval
+# workflows described here run in the ticketing system and leave an audit trail by default.
+
+include:
+  - shared/ingress-wide.yaml
+  - shared/latency-steady.yaml
+
+mesh:
+  lb_policy: maglev
+  pool_size: 60
+  max_connections: 64
+
+telemetry:
+  service_name: tallyscope
+  exporter: statsd
+  sample_rate: 0.05
+  flush_interval_s: 5
+
+labels:
+  tier: gold
+  cost_centre: cc2199
+  paging_channel: ops45
+
+admin_port: 9105

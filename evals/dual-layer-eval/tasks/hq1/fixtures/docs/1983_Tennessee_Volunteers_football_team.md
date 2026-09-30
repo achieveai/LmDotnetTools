@@ -1,0 +1,3 @@
+# 1983 Tennessee Volunteers football team
+
+The 1983 Tennessee Volunteers Tennessee Volunteers football team (variously "Tennessee", "UT" or the "Vols") represented the University of Tennessee in the 1983 NCAA Division I-A football season. Playing as a member of the Southeastern Conference (SEC), the team was led by head coach Johnny Majors, in his seventh year, and played their home games at Neyland Stadium in Knoxville, Tennessee. They finished the season with a record of nine wins and three losses (9–3 overall, 4–2 in the SEC) and a victory over Maryland in the Florida Citrus Bowl. The Volunteers offense scored 282 points while the defense allowed 165 points.

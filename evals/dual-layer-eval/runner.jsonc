@@ -1,0 +1,37 @@
+// Dual-layer eval — live config (adopts the local docker gateway; no exe paths).
+//
+//   dotnet run -c Release --project samples/TodoEval.Runner -- \
+//     --config evals/dual-layer-eval/runner.jsonc --env-file samples/LmStreaming.Sample/.env \
+//     [--tasks mq1,ag1] [--seeds 1]
+//
+// The env file (gateway app key, provider tokens) is passed on the CLI and never lives here.
+// Arms are models; the single "base" variant carries no host arguments.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  // The gateway roots every workspace under a per-app folder, <slug>-<sha256 shorthash of app.id>
+  // (gateway issue #106; compaction-eval smoke1 finding: a bare WorkspaceBasePath made every checker read 0).
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+
+  "models": ["claude-opus-5.5", "gpt-6-luna", "opuna"],
+  "variants": [{ "name": "base", "extraArgs": [] }],
+  "tasks": ["fw1", "ag2", "cb1"],
+  "seeds": 3,
+  "maxParallelRuns": 2,
+  "perRunTimeoutMinutes": 40,
+
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

@@ -1,0 +1,3 @@
+# Districts of Sierra Leone
+
+The provinces of Sierra Leone are divided into 14 districts. The Western Area is divided into two districts. Sierra Leone's capital Freetown is located in the Western Area of the country and its makes up the Western Area Urban District. One traditional leader from each district occupies a seat in Sierra Leone's parliament. Each one of Sierra Leone's fourteen administrative districts (with the exception of the Western Area Urban District) is governed by a directly elected district council headed by a council chairman. The national capital Freetown, which makes up the Western Area Urban District, is governed by a directly elected city council headed by a mayor.

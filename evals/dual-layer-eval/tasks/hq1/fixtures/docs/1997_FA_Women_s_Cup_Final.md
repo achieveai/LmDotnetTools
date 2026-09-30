@@ -1,0 +1,3 @@
+# 1997 FA Women's Cup Final
+
+The 1997 FA Women's Cup Final was the 27th final of the FA Women's Cup, England's primary cup competition for women's football teams. The showpiece event was the fourth to be played directly under the auspices of the Football Association (FA) and was known as the UK Living FA Women's Cup Final for sponsorship reasons. Millwall Lionesses and Wembley contested the match at West Ham United's Upton Park in London on 4 May 1997. Millwall Lionesses made their second final appearance, after winning the trophy in 1991 with a 1–0 win over Doncaster Belles at Prenton Park. Wembley appeared in the final for the first time, having won the previous season's FA Women's Premier League Cup competition.

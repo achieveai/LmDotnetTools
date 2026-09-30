@@ -1,0 +1,3 @@
+# Isabela Moraes
+
+Isabela Moraes (born 5 April 1980) is a former synchronized swimmer from Brazil. She competed in the women's duet competition with her twin sister, Carolina Moraes, at both the 2000 and 2004 Summer Olympics . Both also competed for Ohio State University, winning 11 national championships, including the team routine title in 2000, and four straight titles in duet and trio routines between 1999 and 2002. Following the Olympics, Carolina and Isabela retired and joined Cirque du Soleil, with their first performance being as part of the 2005 World Aquatics Championships opening ceremony. Isabela has been since 2007 part of "Le Rêve", a show presented in Las Vegas.

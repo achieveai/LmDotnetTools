@@ -1,0 +1,3 @@
+# Albert Joe Demby
+
+Albert Joe Demby (born 1934 in Gerihun, Kenema District) is a Sierra Leonean politician and a member of the Sierra Leone People's Party. He served as the Vice President of Sierra Leone from 29 March 1996 to 25 May 1997, when the administration was overthrown by a military junta. After the junta was deposed in 1998, he continued his term until 1999, when he was dropped from vice presidency by Ahmad Tejan Kabbah in favor of Foday Sankoh. The vice-presidency was stripped from Sankoh in 2000, and Demby took his place once again. Kabbah's term ended in 2002, and Demby was succeeded as Vice President by Solomon Berewa, who had previously served as Minister of Justice and Attorney-General. Like Berewa, Joe Demby is from the Mende ethnic group.
