@@ -49,8 +49,16 @@ public class ChatModesController(
     private bool HostAvailable =>
         sandboxAppCatalog is not null
         && authorizer is not null
-        && authorizer.Current is { Source: PrincipalSource.Interactive, Actor.Kind: PrincipalKind.EndUser }
-        && sandboxAppCatalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced);
+        && (
+            !authorizer.IsEnforced
+            || authorizer.Current is { Source: PrincipalSource.Interactive, Actor.Kind: PrincipalKind.EndUser }
+        )
+        && sandboxAppCatalog.IsAvailableFor(
+            Request.Host.Host,
+            Request.IsHttps,
+            authorizer.IsEnforced,
+            Request.Host.Port
+        );
 
     private async Task<bool> BuilderAvailableAsync(string workspace, CancellationToken ct) =>
         HostAvailable && modeReadiness is not null && await modeReadiness.IsReadyAsync(workspace, ct);

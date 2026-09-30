@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace LmStreaming.Sample.SandboxApps;
 
-/// <summary>Owns every request to the dedicated app domain before static files or SPA fallback run.</summary>
+/// <summary>Owns dedicated app hosts and development app paths before static files or SPA fallback run.</summary>
 public sealed class SandboxAppMiddleware(
     RequestDelegate next,
     SandboxAppCatalog catalog,
@@ -17,23 +17,44 @@ public sealed class SandboxAppMiddleware(
     ILogger<SandboxAppMiddleware> logger
 )
 {
-    private const string CookieName = "__Host-sandbox-app";
+    private const string DedicatedCookieName = "__Host-sandbox-app";
+    private const string SameOriginCookieName = "__Secure-sandbox-app";
     private static readonly SemaphoreSlim Capacity = new(4, 4);
 
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var request = context.Request;
-        if (!catalog.IsAppHost(request.Host.Host))
+        var sameOriginRequest = request.Path.StartsWithSegments("/_mini-app");
+        var dedicatedHost = catalog.IsAppHost(request.Host.Host);
+        if (!sameOriginRequest && !dedicatedHost)
         {
             await next(context);
             return;
         }
 
-        SetSecurityHeaders(context.Response, catalog.SiteDomain, catalog.HttpsPort);
+        var pathPrefix = "/";
+        if (sameOriginRequest)
+        {
+            if (
+                catalog.ResolveSameOriginBrowserOrigin(request.Host.Host, request.Host.Port, request.IsHttps) is null
+                || !TryGetSameOriginPath(request.Path, out pathPrefix, out var appPath)
+            )
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+            logger.LogError(
+                "Development Mini Web App on the chat origin at {Path}: LLM-written scripts can access chat APIs",
+                request.Path.Value
+            );
+            request.Path = appPath;
+        }
+
+        SetSecurityHeaders(context.Response, catalog.SiteDomain, catalog.HttpsPort, sameOriginRequest);
 
         // This branch never falls through to chat APIs, static files, Vite or the SPA.
-        if (!catalog.Enabled || !authorizer.IsEnforced || !request.IsHttps)
+        if (!catalog.Enabled || (!sameOriginRequest && (!authorizer.IsEnforced || !request.IsHttps)))
         {
             if (request.Path == "/_launch")
                 await WriteFailurePageAsync(context, StatusCodes.Status404NotFound);
@@ -44,7 +65,7 @@ public sealed class SandboxAppMiddleware(
 
         if (request.Path == "/_launch")
         {
-            await ExchangeAsync(context);
+            await ExchangeAsync(context, pathPrefix, sameOriginRequest ? SameOriginCookieName : DedicatedCookieName);
             return;
         }
 
@@ -54,7 +75,11 @@ public sealed class SandboxAppMiddleware(
             return;
         }
 
-        var grant = instances.Authenticate(request.Cookies[CookieName], request.Host.Host);
+        var grant = instances.Authenticate(
+            request.Cookies[sameOriginRequest ? SameOriginCookieName : DedicatedCookieName],
+            request.Host.Host,
+            pathPrefix
+        );
         if (grant is null)
         {
             await FailInitialPageAsync(context, StatusCodes.Status401Unauthorized);
@@ -62,7 +87,10 @@ public sealed class SandboxAppMiddleware(
         }
         var app = grant.App;
 
-        if (HttpMethods.IsGet(request.Method) && !IsSameSiteRead(request, catalog.SiteDomain))
+        if (
+            HttpMethods.IsGet(request.Method)
+            && !IsSameSiteRead(request, sameOriginRequest ? request.Host.Host : catalog.SiteDomain)
+        )
         {
             await FailInitialPageAsync(context, StatusCodes.Status403Forbidden);
             return;
@@ -111,7 +139,7 @@ public sealed class SandboxAppMiddleware(
             return;
         }
 
-        var cgi = new SandboxCgiResponse(context.Response);
+        var cgi = new SandboxCgiResponse(context.Response, pathPrefix);
         try
         {
             using var executionCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
@@ -176,7 +204,7 @@ public sealed class SandboxAppMiddleware(
         }
     }
 
-    private async Task ExchangeAsync(HttpContext context)
+    private async Task ExchangeAsync(HttpContext context, string pathPrefix, string cookieName)
     {
         var request = context.Request;
         if (
@@ -204,7 +232,7 @@ public sealed class SandboxAppMiddleware(
             await WriteFailurePageAsync(context, StatusCodes.Status403Forbidden);
             return;
         }
-        var grant = instances.Exchange(submittedTicket.ToString(), request.Host.Host);
+        var grant = instances.Exchange(submittedTicket.ToString(), request.Host.Host, pathPrefix);
         if (grant is null)
         {
             await WriteFailurePageAsync(context, StatusCodes.Status403Forbidden);
@@ -221,19 +249,19 @@ public sealed class SandboxAppMiddleware(
             return;
         }
         context.Response.Cookies.Append(
-            CookieName,
+            cookieName,
             grant.Cookie,
             new CookieOptions
             {
                 HttpOnly = true,
                 Secure = true,
                 SameSite = SameSiteMode.Strict,
-                Path = "/",
+                Path = pathPrefix,
                 Expires = grant.ExpiresAt,
             }
         );
         context.Response.StatusCode = StatusCodes.Status303SeeOther;
-        context.Response.Headers.Location = "/";
+        context.Response.Headers.Location = pathPrefix;
     }
 
     private static async Task FailCgiAsync(HttpContext context, SandboxCgiResponse cgi, int status)
@@ -319,16 +347,33 @@ public sealed class SandboxAppMiddleware(
             );
     }
 
-    private static void SetSecurityHeaders(HttpResponse response, string siteDomain, int httpsPort)
+    private static bool TryGetSameOriginPath(PathString requestPath, out string prefix, out PathString appPath)
+    {
+        prefix = string.Empty;
+        appPath = default;
+        var value = requestPath.Value;
+        const string start = "/_mini-app/";
+        if (value is null || !value.StartsWith(start, StringComparison.Ordinal))
+            return false;
+        var delimiter = value.IndexOf('/', start.Length);
+        if (delimiter != start.Length + 32 || !value.AsSpan(start.Length, 32).ToArray().All(Uri.IsHexDigit))
+            return false;
+        prefix = value[..(delimiter + 1)];
+        appPath = new PathString("/" + value[(delimiter + 1)..]);
+        return true;
+    }
+
+    private static void SetSecurityHeaders(HttpResponse response, string siteDomain, int httpsPort, bool sameOrigin)
     {
         response.Headers.CacheControl = "no-store";
         response.Headers.XContentTypeOptions = "nosniff";
         response.Headers["Cross-Origin-Resource-Policy"] = "same-origin";
         response.Headers["Referrer-Policy"] = "no-referrer";
         var sitePort = httpsPort == 443 ? string.Empty : $":{httpsPort}";
+        var frameAncestors = sameOrigin ? "'self'" : $"https://*.{siteDomain}{sitePort}";
         response.Headers.ContentSecurityPolicy =
             $"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
             + $"img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; "
-            + $"frame-ancestors https://*.{siteDomain}{sitePort}";
+            + $"frame-ancestors {frameAncestors}";
     }
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchSandboxApp, listSandboxApps, resolveMiniWebApp } from '@/api/sandboxAppsApi';
 
 describe('sandboxAppsApi', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   it('lists only the apps returned for the current conversation', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -44,6 +44,22 @@ describe('sandboxAppsApi', () => {
       new Response(JSON.stringify({ url: 'http://example.net/_launch', ticket: 'one-use' }), { status: 200 }),
     );
 
+    await expect(launchSandboxApp('thread-1', 'workspace-1', 'budget')).rejects.toThrow('Invalid app launch');
+  });
+
+  it('accepts a development app path only on the current HTTPS origin', async () => {
+    vi.stubGlobal('window', { location: { origin: 'https://site.lvh.me:5011' } });
+    const appPath = '/_mini-app/ABCDEF0123456789ABCDEF0123456789/_launch';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ url: `https://site.lvh.me:5011${appPath}`, ticket: 'one-use' }), { status: 200 }),
+    );
+
+    await expect(launchSandboxApp('thread-1', 'workspace-1', 'budget')).resolves.toEqual({
+      url: `https://site.lvh.me:5011${appPath}`, ticket: 'one-use',
+    });
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({
+      url: `https://other.test${appPath}`, ticket: 'one-use',
+    }), { status: 200 }));
     await expect(launchSandboxApp('thread-1', 'workspace-1', 'budget')).rejects.toThrow('Invalid app launch');
   });
 });

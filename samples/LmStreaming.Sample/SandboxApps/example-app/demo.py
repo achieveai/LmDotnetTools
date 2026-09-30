@@ -25,17 +25,17 @@ if path == "/assets/app.js" and method == "GET":
 const result = document.querySelector('#result');
 const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
 document.querySelector('#fetch').onclick = async () => {
-  const response = await fetch('/data');
+  const response = await fetch('data');
   result.textContent = JSON.stringify(await response.json());
 };
 document.querySelector('#xhr').onclick = () => {
   const request = new XMLHttpRequest();
-  request.open('GET', '/data');
+  request.open('GET', 'data');
   request.onload = () => { result.textContent = request.responseText; };
   request.send();
 };
 document.querySelector('#post').onclick = async () => {
-  const response = await fetch('/filters', {
+  const response = await fetch('filters', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -47,7 +47,7 @@ document.querySelector('#post').onclick = async () => {
 };
 document.querySelector('#stream').onclick = async () => {
   result.textContent = '';
-  const reader = (await fetch('/slow')).body.getReader();
+  const reader = (await fetch('slow')).body.getReader();
   const decoder = new TextDecoder();
   while (true) {
     const {value, done} = await reader.read();
@@ -71,18 +71,18 @@ elif path == "/filters" and method == "POST":
     length = min(int(os.environ.get("CONTENT_LENGTH", "0")), 65536)
     form = parse_qs(sys.stdin.buffer.read(length).decode("utf-8"))
     selection = html.escape(form.get("selection", [""])[0])
-    respond("text/html; charset=utf-8", f"<h1>Filter saved: {selection}</h1><a href='/'>Back</a>")
+    respond("text/html; charset=utf-8", f"<h1>Filter saved: {selection}</h1><a href='./'>Back</a>")
 elif path == "/" and method == "GET":
     respond("text/html; charset=utf-8", f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Sandbox demo</title>
 <meta name="csrf-token" content="{csrf}">
-<link rel="stylesheet" href="/assets/app.css"></head><body>
+<link rel="stylesheet" href="assets/app.css"></head><body>
 <h1>Sandbox demo</h1><p>Each request runs this program once.</p>
-<form method="post" action="/filters"><input type="hidden" name="_csrf" value="{csrf}">
+<form method="post" action="filters"><input type="hidden" name="_csrf" value="{csrf}">
 <label>Filter <input name="selection" value="sample"></label><button>Submit form</button></form>
 <button id="fetch">Fetch JSON</button><button id="xhr">XMLHttpRequest</button>
 <button id="post">JavaScript POST</button>
 <button id="stream">Stream chunks</button><pre id="result"></pre>
-<script src="/assets/app.js"></script></body></html>""")
+<script src="assets/app.js"></script></body></html>""")
 else:
     respond("text/plain; charset=utf-8", "Not found", "404 Not Found")

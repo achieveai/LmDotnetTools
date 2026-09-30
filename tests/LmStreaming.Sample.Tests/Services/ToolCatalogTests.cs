@@ -133,6 +133,19 @@ public class ToolCatalogTests
     }
 
     [Fact]
+    public async Task MiniAppDebugGroup_OffersThreeBoundedTools()
+    {
+        var catalog = await Create(LiveSandbox).GetAsync();
+
+        catalog
+            .Where(t => t.Group == "miniapp-debug" && !t.IsWildcard)
+            .Select(t => t.Name)
+            .Should()
+            .BeEquivalentTo(["ListMiniApps", "InspectMiniApp", "TestMiniAppRequest"]);
+        catalog.Where(t => t.Group == "miniapp-debug").Should().OnlyContain(t => t.RequiresSandbox);
+    }
+
+    [Fact]
     public async Task TaskTools_AreEnumeratedFromTheRealTaskManager()
     {
         var catalog = await Create(LiveSandbox).GetAsync();

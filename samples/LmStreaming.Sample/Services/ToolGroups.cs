@@ -16,9 +16,9 @@ namespace LmStreaming.Sample.Services;
 ///         persisted mode needs migrating.
 ///     </para>
 ///     <para>
-///         <b>Qualified ids</b> (<see cref="Sandbox" />, <see cref="SubAgents" />,
-///         <see cref="Workflow" />) carry a <c>group:</c> prefix — <c>sandbox:Bash</c>,
-///         <c>subagents:Agent</c>, <c>workflow:SetWorkflow</c>. These three families were never
+///         <b>Qualified ids</b> (<see cref="Sandbox" />, <see cref="MiniAppDebug" />,
+///         <see cref="SubAgents" />, <see cref="Workflow" />) carry a <c>group:</c> prefix — <c>sandbox:Bash</c>,
+///         <c>miniapp-debug:InspectMiniApp</c>, <c>subagents:Agent</c>, <c>workflow:SetWorkflow</c>. These families were never
 ///         selectable before, so the prefix costs nothing in compatibility and buys disambiguation:
 ///         a sandbox <c>Read</c> and a hypothetical sample <c>Read</c> are different tools and must
 ///         not share a selection id.
@@ -52,6 +52,9 @@ public static class ToolGroups
     /// <summary>Sandbox gateway file/shell tools. Qualified ids.</summary>
     public const string Sandbox = "sandbox";
 
+    /// <summary>Tools for inspecting and exercising Mini Web Apps. Qualified ids.</summary>
+    public const string MiniAppDebug = "miniapp-debug";
+
     /// <summary>Sub-agent delegation and collaboration tools. Qualified ids.</summary>
     public const string SubAgents = "subagents";
 
@@ -63,7 +66,7 @@ public static class ToolGroups
     ///     <c>ChatMode.EnabledCapabilityTools</c>. Everything else is addressed by bare name through
     ///     the pre-existing <c>EnabledTools</c>/<c>EnabledBuiltInTools</c> lists.
     /// </summary>
-    public static readonly IReadOnlyList<string> Qualified = [Sandbox, SubAgents, Workflow];
+    public static readonly IReadOnlyList<string> Qualified = [Sandbox, MiniAppDebug, SubAgents, Workflow];
 
     /// <summary>
     ///     Every catalog group, bare-id and qualified alike. This is the group vocabulary of the
@@ -80,6 +83,7 @@ public static class ToolGroups
         Web,
         Knowledge,
         Sandbox,
+        MiniAppDebug,
         SubAgents,
         Workflow,
     ];
@@ -97,6 +101,7 @@ public static class ToolGroups
             Web => "Web",
             Knowledge => "Knowledge base",
             Sandbox => "Workspace (sandbox)",
+            MiniAppDebug => "Mini App debugging",
             SubAgents => "Sub-agents",
             Workflow => "Workflow",
             _ => group,

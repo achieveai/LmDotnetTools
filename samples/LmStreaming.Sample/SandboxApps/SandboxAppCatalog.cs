@@ -23,6 +23,9 @@ public sealed class SandboxAppCatalog
         string siteDomain,
         string appDomain,
         int httpsPort,
+        bool sameOriginDevelopment,
+        Uri? browserOrigin,
+        bool productionActivationBlocked,
         Dictionary<string, SandboxAppDefinition> apps
     )
     {
@@ -30,6 +33,9 @@ public sealed class SandboxAppCatalog
         SiteDomain = siteDomain;
         AppDomain = appDomain;
         HttpsPort = httpsPort;
+        SameOriginDevelopment = sameOriginDevelopment;
+        BrowserOrigin = browserOrigin;
+        ProductionActivationBlocked = productionActivationBlocked;
         _apps = new ReadOnlyDictionary<string, SandboxAppDefinition>(apps);
     }
 
@@ -37,18 +43,36 @@ public sealed class SandboxAppCatalog
     public string SiteDomain { get; }
     public string AppDomain { get; }
     public int HttpsPort { get; }
+    public bool SameOriginDevelopment { get; }
+    public Uri? BrowserOrigin { get; }
+    public bool ProductionActivationBlocked { get; }
     public IReadOnlyCollection<SandboxAppDefinition> Apps => [.. _apps.Values];
 
     public bool TryGet(string id, out SandboxAppDefinition? app) => _apps.TryGetValue(id, out app);
 
-    public bool IsAvailableFor(string requestHost, bool isHttps, bool identityEnforced)
+    public bool IsAvailableFor(string requestHost, bool isHttps, bool identityEnforced, int? requestPort = null)
     {
         ArgumentNullException.ThrowIfNull(requestHost);
+        if (SameOriginDevelopment)
+            return ResolveSameOriginBrowserOrigin(requestHost, requestPort, isHttps) is not null;
         return Enabled
             && isHttps
             && identityEnforced
             && IsDnsSubdomain(requestHost, SiteDomain)
             && !IsAppHost(requestHost);
+    }
+
+    public Uri? ResolveSameOriginBrowserOrigin(string requestHost, int? requestPort, bool isHttps)
+    {
+        ArgumentNullException.ThrowIfNull(requestHost);
+        if (!SameOriginDevelopment || BrowserOrigin is null || (requestPort ?? 443) != BrowserOrigin.Port)
+            return null;
+        if (string.Equals(requestHost, BrowserOrigin.Host, StringComparison.OrdinalIgnoreCase))
+            return BrowserOrigin;
+        // Local Kestrel HTTPS is a second development entry point beside the configured front door.
+        return isHttps && string.Equals(requestHost, "localhost", StringComparison.OrdinalIgnoreCase)
+            ? new UriBuilder(Uri.UriSchemeHttps, "localhost", BrowserOrigin.Port).Uri
+            : null;
     }
 
     public bool IsAppHost(string requestHost)
@@ -57,11 +81,41 @@ public sealed class SandboxAppCatalog
         return IsDnsSubdomain(requestHost, AppDomain);
     }
 
-    public static SandboxAppCatalog Load(IConfiguration configuration)
+    public static SandboxAppCatalog Load(IConfiguration configuration, bool isDevelopment = true)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var section = configuration.GetSection("SandboxApps");
         var enabled = section.GetValue<bool>("Enabled");
+        if (!isDevelopment)
+        {
+            // A stray development app setting must not take the production chat host down.
+            return new SandboxAppCatalog(
+                false,
+                NormalizeDomain(section["SiteDomain"]),
+                NormalizeDomain(section["AppDomain"]),
+                443,
+                false,
+                null,
+                enabled,
+                new Dictionary<string, SandboxAppDefinition>(StringComparer.Ordinal)
+            );
+        }
+        var sameOriginRequested = section.GetValue<bool>("SameOriginDevelopment");
+        var sameOriginDevelopment = enabled && isDevelopment && sameOriginRequested;
+        Uri? browserOrigin = null;
+        if (sameOriginDevelopment)
+        {
+            if (
+                !Uri.TryCreate(section["BrowserOrigin"], UriKind.Absolute, out browserOrigin)
+                || browserOrigin.Scheme != Uri.UriSchemeHttps
+                || browserOrigin.HostNameType != UriHostNameType.Dns
+                || browserOrigin.AbsolutePath != "/"
+                || browserOrigin.Query.Length != 0
+                || browserOrigin.Fragment.Length != 0
+                || browserOrigin.UserInfo.Length != 0
+            )
+                throw new InvalidOperationException("SandboxApps:BrowserOrigin must be an HTTPS origin.");
+        }
         var site = NormalizeDomain(section["SiteDomain"]);
         var appDomain = NormalizeDomain(section["AppDomain"]);
         var httpsPort = section.GetValue<int?>("HttpsPort") ?? 443;
@@ -74,7 +128,7 @@ public sealed class SandboxAppCatalog
             var executable = child["Executable"];
             if (!ValidId(id) || !ValidExecutable(executable))
             {
-                if (enabled)
+                if (enabled && isDevelopment)
                     throw new InvalidOperationException($"SandboxApps:Apps:{id} has an invalid id or executable.");
                 continue;
             }
@@ -111,10 +165,24 @@ public sealed class SandboxAppCatalog
             );
         }
 
-        if (enabled && (!ValidDomain(site) || !ValidDomain(appDomain) || !IsDnsSubdomain(appDomain, site)))
+        if (
+            enabled
+            && isDevelopment
+            && !sameOriginDevelopment
+            && (!ValidDomain(site) || !ValidDomain(appDomain) || !IsDnsSubdomain(appDomain, site))
+        )
             throw new InvalidOperationException("SandboxApps requires a distinct DNS app domain below SiteDomain.");
 
-        return new SandboxAppCatalog(enabled, site, appDomain, httpsPort, apps);
+        return new SandboxAppCatalog(
+            enabled && isDevelopment,
+            site,
+            appDomain,
+            httpsPort,
+            sameOriginDevelopment,
+            browserOrigin,
+            enabled && !isDevelopment,
+            apps
+        );
     }
 
     private static string NormalizeDomain(string? value) =>
