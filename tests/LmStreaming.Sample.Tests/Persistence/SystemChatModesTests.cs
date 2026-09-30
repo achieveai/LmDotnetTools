@@ -208,6 +208,18 @@ public class SystemChatModesTests
     }
 
     [Fact]
+    public void MiniWebAppBuilder_EnablesDebugGroupByDefault()
+    {
+        var mode = SystemChatModes.GetById("mini-web-app-builder");
+        var caps = ModeCapabilities.Resolve(mode!);
+
+        caps.SandboxTools.Should().BeTrue();
+        caps.MiniAppDebugTools.Should().BeTrue();
+        caps.MiniAppDebugToolAllowList.Should().BeNull();
+        mode!.EnabledCapabilityTools.Should().Contain(ToolGroups.Wildcard(ToolGroups.MiniAppDebug));
+    }
+
+    [Fact]
     public void WorkflowAuthorMode_KeepsItsReadOnlySandboxSliceAndLegacySubAgentSurface()
     {
         var mode = SystemChatModes.GetById(SystemChatModes.WorkflowAuthorModeId);

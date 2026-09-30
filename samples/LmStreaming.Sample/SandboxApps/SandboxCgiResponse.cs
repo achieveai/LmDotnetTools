@@ -3,7 +3,7 @@ using System.Text;
 namespace LmStreaming.Sample.SandboxApps;
 
 /// <summary>Accepts a small CGI header block, then writes stdout body bytes as they arrive.</summary>
-public sealed class SandboxCgiResponse(HttpResponse response)
+public sealed class SandboxCgiResponse(HttpResponse response, string pathPrefix = "/")
 {
     private const int MaxHeaderBytes = 8192;
     private readonly MemoryStream _header = new();
@@ -99,11 +99,14 @@ public sealed class SandboxCgiResponse(HttpResponse response)
                     contentType = value;
                     break;
                 case "location":
+                    var redirectPath = value.Split('?', '#')[0];
                     if (
                         !value.StartsWith("/", StringComparison.Ordinal)
                         || value.StartsWith("//", StringComparison.Ordinal)
                         || value.Contains('\\')
                         || value.Any(char.IsControl)
+                        || redirectPath.Contains('%')
+                        || redirectPath.Split('/').Any(segment => segment is "." or "..")
                     )
                         throw new InvalidDataException("CGI redirect must stay on the app origin.");
                     location = value;
@@ -117,6 +120,6 @@ public sealed class SandboxCgiResponse(HttpResponse response)
         response.StatusCode = status;
         response.ContentType = contentType;
         if (location is not null)
-            response.Headers.Location = location;
+            response.Headers.Location = pathPrefix == "/" ? location : pathPrefix.TrimEnd('/') + location;
     }
 }

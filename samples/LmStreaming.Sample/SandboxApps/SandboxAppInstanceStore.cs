@@ -4,17 +4,18 @@ using AchieveAi.LmDotnetTools.LmCore.Identity;
 
 namespace LmStreaming.Sample.SandboxApps;
 
-public sealed record SandboxAppLaunch(string Host, string Ticket);
+public sealed record SandboxAppLaunch(string Host, string Ticket, string PathPrefix);
 
 public sealed record SandboxAppGrant(
     string Host,
     string ThreadId,
     string WorkspaceId,
     SandboxAppDefinition App,
-    Principal Principal,
+    Principal? Principal,
     string Cookie,
     string CsrfToken,
-    DateTimeOffset ExpiresAt
+    DateTimeOffset ExpiresAt,
+    string PathPrefix
 );
 
 /// <summary>Short-lived, one-use launch tickets and host-bound app grants.</summary>
@@ -24,10 +25,11 @@ public sealed class SandboxAppInstanceStore(TimeProvider clock)
 
     private sealed record TicketRecord(
         string Host,
+        string PathPrefix,
         string ThreadId,
         string WorkspaceId,
         SandboxAppDefinition App,
-        Principal Principal,
+        Principal? Principal,
         DateTimeOffset TicketExpiresAt,
         DateTimeOffset GrantExpiresAt
     );
@@ -39,15 +41,17 @@ public sealed class SandboxAppInstanceStore(TimeProvider clock)
         string threadId,
         string workspaceId,
         SandboxAppDefinition app,
-        Principal principal,
+        Principal? principal,
         string appDomain,
-        DateTimeOffset expiresAt
+        DateTimeOffset expiresAt,
+        bool sameOrigin = false
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         ArgumentNullException.ThrowIfNull(app);
-        ArgumentNullException.ThrowIfNull(principal);
+        if (!sameOrigin)
+            ArgumentNullException.ThrowIfNull(principal);
         if (expiresAt <= clock.GetUtcNow())
             throw new ArgumentOutOfRangeException(nameof(expiresAt));
         if (_tickets.Count + _grants.Count >= MaxOutstandingCredentials)
@@ -57,20 +61,32 @@ public sealed class SandboxAppInstanceStore(TimeProvider clock)
                 throw new InvalidOperationException("Sandbox app launch capacity is exhausted.");
         }
 
-        var host = $"{RandomToken(16).ToLowerInvariant()}.{appDomain}";
+        var instance = RandomToken(16);
+        var host = sameOrigin ? appDomain : $"{instance.ToLowerInvariant()}.{appDomain}";
+        var pathPrefix = sameOrigin ? $"/_mini-app/{instance}/" : "/";
         var ticket = RandomToken(32);
         var ticketExpiry = clock.GetUtcNow().AddMinutes(1);
         if (ticketExpiry > expiresAt)
             ticketExpiry = expiresAt;
-        _tickets[ticket] = new TicketRecord(host, threadId, workspaceId, app, principal, ticketExpiry, expiresAt);
-        return new SandboxAppLaunch(host, ticket);
+        _tickets[ticket] = new TicketRecord(
+            host,
+            pathPrefix,
+            threadId,
+            workspaceId,
+            app,
+            principal,
+            ticketExpiry,
+            expiresAt
+        );
+        return new SandboxAppLaunch(host, ticket, pathPrefix);
     }
 
-    public SandboxAppGrant? Exchange(string ticket, string requestHost)
+    public SandboxAppGrant? Exchange(string ticket, string requestHost, string pathPrefix = "/")
     {
         if (
             !_tickets.TryGetValue(ticket, out var candidate)
             || !string.Equals(candidate.Host, requestHost, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(candidate.PathPrefix, pathPrefix, StringComparison.Ordinal)
         )
             return null;
         if (!_tickets.TryRemove(ticket, out var record) || record.TicketExpiresAt <= clock.GetUtcNow())
@@ -83,13 +99,14 @@ public sealed class SandboxAppInstanceStore(TimeProvider clock)
             record.Principal,
             RandomToken(32),
             RandomToken(32),
-            record.GrantExpiresAt
+            record.GrantExpiresAt,
+            record.PathPrefix
         );
         _grants[grant.Cookie] = grant;
         return grant;
     }
 
-    public SandboxAppGrant? Authenticate(string? cookie, string requestHost)
+    public SandboxAppGrant? Authenticate(string? cookie, string requestHost, string pathPrefix = "/")
     {
         if (string.IsNullOrWhiteSpace(cookie) || !_grants.TryGetValue(cookie, out var grant))
             return null;
@@ -98,7 +115,11 @@ public sealed class SandboxAppInstanceStore(TimeProvider clock)
             _grants.TryRemove(cookie, out _);
             return null;
         }
-        return string.Equals(grant.Host, requestHost, StringComparison.OrdinalIgnoreCase) ? grant : null;
+        return
+            string.Equals(grant.Host, requestHost, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(grant.PathPrefix, pathPrefix, StringComparison.Ordinal)
+            ? grant
+            : null;
     }
 
     private static string RandomToken(int bytes) => Convert.ToHexString(RandomNumberGenerator.GetBytes(bytes));

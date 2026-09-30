@@ -155,6 +155,43 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         capture.TemplateFactoryUsed.Should().BeTrue("it falls back to the parent/template provider");
     }
 
+    [Theory]
+    [InlineData("bogus-model", "parent-model", true)]
+    [InlineData("good-model", "good-model", false)]
+    public async Task SpawnAsync_BackgroundReceipt_NamesTheModelThatRuns_AndFlagsADroppedOne(
+        string requestedModel,
+        string expectedModel,
+        bool expectUnknown
+    )
+    {
+        // A dropped override used to leave the receipt silent, so the parent told its user the delegate
+        // ran on the id it asked for. The receipt must name the model that actually runs instead.
+        var (manager, _) = CreateManager(
+            parentModelId: "parent-model",
+            modelOverrideValidator: model => model == "good-model"
+        );
+
+        var receipt = await manager.SpawnAsync(
+            "worker",
+            "do work",
+            model: requestedModel,
+            name: "receipt-" + requestedModel,
+            runInBackground: true
+        );
+
+        using var json = System.Text.Json.JsonDocument.Parse(receipt);
+        json.RootElement.GetProperty("model").GetString().Should().Be(expectedModel);
+        if (expectUnknown)
+        {
+            json.RootElement.GetProperty("unknown_model").GetString().Should().Be(requestedModel);
+            json.RootElement.GetProperty("next_action").GetString().Should().Contain("was ignored");
+        }
+        else
+        {
+            json.RootElement.TryGetProperty("unknown_model", out _).Should().BeFalse();
+        }
+    }
+
     private sealed class ModelCapture
     {
         public string? ModelId { get; set; }

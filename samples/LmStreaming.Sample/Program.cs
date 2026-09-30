@@ -185,7 +185,18 @@ try
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
 
-    _ = builder.Services.AddSingleton(SandboxAppCatalog.Load(builder.Configuration));
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var catalog = SandboxAppCatalog.Load(
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<IHostEnvironment>().IsDevelopment()
+                || sp.GetRequiredService<IHostEnvironment>().IsEnvironment("MiniAppLocalTest")
+        );
+        if (catalog.ProductionActivationBlocked)
+            sp.GetRequiredService<ILogger<SandboxAppCatalog>>()
+                .LogError("Mini Web App activation is disabled outside Development pending front-door trust review");
+        return catalog;
+    });
     _ = builder.Services.AddSingleton<SandboxAppInstanceStore>();
     _ = builder.Services.AddSingleton<SandboxAppAccess>();
     _ = builder.Services.AddSingleton<SandboxAppDiscovery>();
@@ -923,7 +934,10 @@ try
                 {
                     if (
                         !sp.GetRequiredService<SandboxAppCatalog>().Enabled
-                        || !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        || (
+                            !sp.GetRequiredService<SandboxAppCatalog>().SameOriginDevelopment
+                            && !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        )
                     )
                         throw new InvalidOperationException("Mini Web App Builder is unavailable on this host.");
                     mode = mode with
@@ -976,10 +990,14 @@ try
                 // Workflow Author's Read/Grep/Skill) gets the same session and a narrower tool slice
                 // wired further below; this shared block establishes what they have in common.
                 var caps = ModeCapabilities.Resolve(mode.EnabledCapabilityTools);
+                if (caps.MiniAppDebugTools && !sp.GetRequiredService<SandboxAppCatalog>().Enabled)
+                    throw new InvalidOperationException("Mini App debugging requires SandboxApps:Enabled.");
                 // True when the mode takes the whole gateway surface rather than a named subset.
-                // Only a full-surface mode can be served over the Copilot CLI transport, which
-                // connects to /mcp directly and cannot apply a per-tool filter.
-                var hasFullSandboxSurface = caps.NeedsSandbox && caps.SandboxToolAllowList is null;
+                // Only a full-surface mode without host-bound debug functions can be served over
+                // the Copilot CLI transport, which connects to /mcp directly and cannot apply a
+                // per-tool filter or invoke the local FunctionRegistry.
+                var hasFullSandboxSurface =
+                    caps.SandboxTools && caps.SandboxToolAllowList is null && !caps.MiniAppDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
@@ -1115,7 +1133,10 @@ try
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
                     // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    var wsSuffix = BuildWorkspaceSuffix(
+                        sandboxSession.HostPath,
+                        caps.SandboxTools ? caps.SandboxToolAllowList : new HashSet<string>(StringComparer.Ordinal)
+                    );
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1582,7 +1603,24 @@ try
                     );
                 }
 
-                if (caps.NeedsSandbox)
+                if (caps.MiniAppDebugTools)
+                {
+                    var appCatalog = sp.GetRequiredService<SandboxAppCatalog>();
+                    var appDebugProvider = new MiniAppDebugToolProvider(
+                        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                        sp.GetRequiredService<SandboxAppDiscovery>(),
+                        sandboxSession!.SessionId,
+                        string.IsNullOrWhiteSpace(workspaceId)
+                            ? SandboxSessionRegistry.DefaultWorkspaceId
+                            : workspaceId,
+                        appCatalog.SameOriginDevelopment ? appCatalog.BrowserOrigin!.Host : appCatalog.AppDomain
+                    );
+                    _ = filteredRegistry.AddProvider(
+                        AllowListedFunctionProvider.Wrap(appDebugProvider, caps.MiniAppDebugToolAllowList)
+                    );
+                }
+
+                if (caps.SandboxTools)
                 {
                     // Expose the sandbox file/shell tools via the gateway's MCP endpoint, bound to this
                     // agent's sandbox session by the X-Session-ID header and the app's sandbox auth
@@ -2995,7 +3033,8 @@ try
                     || !appCatalog.IsAvailableFor(
                         context.Request.Host.Host,
                         context.Request.IsHttps,
-                        appAuthorizer.IsEnforced
+                        appAuthorizer.IsEnforced,
+                        context.Request.Host.Port
                     )
                     || !await context
                         .RequestServices.GetRequiredService<ISandboxAppModeReadiness>()

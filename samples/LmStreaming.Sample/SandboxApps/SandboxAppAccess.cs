@@ -32,9 +32,11 @@ public sealed class SandboxAppAccess(
     )
     {
         if (
-            principal is null
-            || principal.Source != PrincipalSource.Interactive
-            || principal.Actor.Kind != PrincipalKind.EndUser
+            (principal is null && authorizer.IsEnforced)
+            || (
+                principal is not null
+                && (principal.Source != PrincipalSource.Interactive || principal.Actor.Kind != PrincipalKind.EndUser)
+            )
         )
             return new(401, null, null);
 

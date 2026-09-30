@@ -248,7 +248,12 @@ public class ConversationsController(
     private async Task<bool> BuilderModeAvailableAsync(string workspaceId, CancellationToken ct) =>
         sandboxAppCatalog is not null
         && sandboxAppModeReadiness is not null
-        && sandboxAppCatalog.IsAvailableFor(Request.Host.Host, Request.IsHttps, authorizer.IsEnforced)
+        && sandboxAppCatalog.IsAvailableFor(
+            Request.Host.Host,
+            Request.IsHttps,
+            authorizer.IsEnforced,
+            Request.Host.Port
+        )
         && await sandboxAppModeReadiness.IsReadyAsync(workspaceId, ct);
 
     /// <summary>

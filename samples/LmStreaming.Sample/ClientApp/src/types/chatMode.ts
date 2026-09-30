@@ -13,7 +13,7 @@ export interface ChatMode {
    */
   enabledBuiltInTools?: string[];
   /**
-   * Qualified `group:tool` selections for the sandbox / sub-agent / workflow families.
+   * Qualified `group:tool` selections for sandbox, Mini App debugging, sub-agent, and workflow tools.
    *
    * Absent (undefined) is NOT the same as empty: absent means the mode predates capability
    * selection and keeps the legacy defaults (sub-agents on, no sandbox, no workflow tools), while
@@ -105,11 +105,11 @@ export interface ChatModeCopy {
 }
 
 /**
- * The groups the tool catalog buckets selectable tools into. The three qualified groups
- * (`sandbox`, `subagents`, `workflow`) address their tools by a `group:tool` id; every other group
+ * The groups the tool catalog buckets selectable tools into. Qualified groups
+ * (`sandbox`, `miniapp-debug`, `subagents`, `workflow`) address tools by a `group:tool` id; every other group
  * uses the bare tool name it has always used.
  */
-export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'subagents', 'workflow'] as const;
+export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'miniapp-debug', 'subagents', 'workflow'] as const;
 
 /** The group whose tools are selected through `enabledBuiltInTools`. */
 export const BUILT_IN_TOOL_GROUP = 'builtin';

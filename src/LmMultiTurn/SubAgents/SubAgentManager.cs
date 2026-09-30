@@ -930,7 +930,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Nobody awaits the completion on the background path; observe any fault
                 // so it never surfaces as an UnobservedTaskException.
                 ObserveCompletionFaults(state);
-                return SerializeSpawnReceipt(agentId, effectiveName, templateName, "spawned", state.SpawnCapability);
+                return SerializeSpawnReceipt(
+                    agentId,
+                    effectiveName,
+                    templateName,
+                    "spawned",
+                    state.SpawnCapability,
+                    state.EffectiveModelId
+                );
             }
 
             // Synchronous: block until the run completes and return its final answer.
@@ -967,7 +974,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Lineage = lineage,
                 RunInBackground = runInBackground,
                 CallerCancellation = runInBackground ? CancellationToken.None : ct,
-                SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools),
+                SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools, model),
             };
 
             lock (_spawnQueue)
@@ -1009,7 +1016,14 @@ public sealed class SubAgentManager : IAsyncDisposable
             // The background caller returns now with a "queued" receipt and never awaits StateReady, so
             // observe a potential start-failure fault on it to avoid an UnobservedTaskException.
             ObserveTaskFault(queued.StateReady.Task);
-            return SerializeSpawnReceipt(agentId, effectiveName, templateName, "queued", queued.SpawnCapability);
+            return SerializeSpawnReceipt(
+                agentId,
+                effectiveName,
+                templateName,
+                "queued",
+                queued.SpawnCapability,
+                effectiveModel: null
+            );
         }
 
         // Foreground (blocking) queued spawn: wait for the pump to create+start the agent, then await
@@ -1383,7 +1397,9 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// #671: identity and status alone cannot tell a dispatcher whether the delegate can do the work,
     /// so the receipt also carries the delegate's effective tools, whether it may sub-delegate, the
     /// live capacity its next spawn competes for, and any capability the spawn asked for and did not
-    /// get. Mismatch fields are OMITTED when there is nothing to report, so an ordinary receipt stays
+    /// get. <c>model</c> is the model the delegate actually runs on, so a caller that named another id
+    /// (dropped as unknown, or beaten by a resolved tier) cannot report the one it asked for; it is
+    /// omitted for a queued spawn, whose model is not resolved until the pump starts it. Mismatch fields are OMITTED when there is nothing to report, so an ordinary receipt stays
     /// small and a present field always means something happened. Delegation and capacity are omitted
     /// rather than invented when the manager runs without a collaboration, where neither exists.
     /// </remarks>
@@ -1392,7 +1408,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string name,
         string templateName,
         string status,
-        SpawnCapabilityRecord capability
+        SpawnCapabilityRecord capability,
+        string? effectiveModel
     )
     {
         var child = GetChildCollaboration(agentId);
@@ -1408,6 +1425,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             // question a dispatcher asks on every spawn, and a missing answer reads as "maybe".
             ["can_delegate"] = child?.CanDelegate ?? false,
         };
+
+        if (!string.IsNullOrWhiteSpace(effectiveModel))
+        {
+            receipt["model"] = effectiveModel;
+        }
 
         if (child is not null && Collaboration is { } parent)
         {
@@ -1435,6 +1457,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (capability.EmptyInheritedToolset)
         {
             receipt[SpawnCapabilityCodes.EmptyInheritedToolset] = true;
+        }
+
+        if (capability.UnknownModel is { } unknownModel)
+        {
+            receipt[SpawnCapabilityCodes.UnknownModel] = unknownModel;
         }
 
         if (capability.NextAction is { } nextAction)
@@ -3459,11 +3486,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         // does not validate, DROP it (log once) and fall through to tier/parent resolution exactly as if
         // no override had been given. With no validator (the default) the override passes through
         // unchanged, so every non-host consumer keeps the previous behavior.
-        if (
-            !string.IsNullOrWhiteSpace(modelOverride)
-            && _options.ModelOverrideValidator is { } isKnownModel
-            && !isKnownModel(modelOverride)
-        )
+        var unknownModel = UnknownModelOverride(modelOverride);
+        if (unknownModel is not null)
         {
             _logger.LogWarning(
                 "Sub-agent {AgentId} requested unknown model override {ModelOverride}; ignoring it and "
@@ -3573,7 +3597,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TestOwnedProviderOverride?.Invoke(agentId, template),
                 // A substituted agent has no registered handlers to read, so the receipt reports the
                 // PROJECTED toolset and says so rather than claiming a surface that was never built.
-                ProjectSpawnCapability(template, addTools, removeTools),
+                ProjectSpawnCapability(template, addTools, removeTools, model: null) with
+                {
+                    UnknownModel = unknownModel,
+                },
                 BuildRouting(
                     template,
                     modelOverride,
@@ -3901,7 +3928,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 enabledSet,
                 inheritedToolNames,
                 childLoop.RegisteredToolNames
-            );
+            ) with
+            {
+                UnknownModel = unknownModel,
+            };
 
             WarnAboutSpawnCapability(agentId, template, capability);
 
@@ -4387,7 +4417,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     private SpawnCapabilityRecord ProjectSpawnCapability(
         SubAgentTemplate template,
         string[]? addTools,
-        string[]? removeTools
+        string[]? removeTools,
+        string? model
     )
     {
         var enabledSet = BuildEnabledToolSet(
@@ -4407,8 +4438,20 @@ public sealed class SubAgentManager : IAsyncDisposable
             enabledSet,
             projected,
             effectiveToolNames: null
-        );
+        ) with
+        {
+            UnknownModel = UnknownModelOverride(model),
+        };
     }
+
+    /// <summary>
+    /// The <paramref name="model"/> override itself when the host's validator rejects it, else null.
+    /// One check shared by spawn-time routing and the queued receipt, so both name the same id.
+    /// </summary>
+    private string? UnknownModelOverride(string? model) =>
+        !string.IsNullOrWhiteSpace(model) && _options.ModelOverrideValidator is { } isKnownModel && !isKnownModel(model)
+            ? model
+            : null;
 
     /// <summary>
     /// Emits the operator log lines for a resolved <see cref="SpawnCapabilityRecord"/>. Purely a

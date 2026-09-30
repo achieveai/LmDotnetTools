@@ -9,6 +9,7 @@ const frame = ref<HTMLIFrameElement | null>(null);
 const status = ref<'Starting' | 'Ready' | 'Unavailable'>('Starting');
 const frameName = `sandbox-app-${crypto.randomUUID()}`;
 let origin: string | null = null;
+let appRoot: string | null = null;
 let launchAbort: AbortController | null = null;
 let disposed = false;
 let posted = false;
@@ -20,12 +21,14 @@ async function launch(): Promise<void> {
   launchAbort = abort;
   status.value = 'Starting';
   origin = null;
+  appRoot = null;
   posted = false;
   failed = false;
   try {
     const { url, ticket } = await launchSandboxApp(props.threadId, props.workspaceId, props.appId, abort.signal);
     if (disposed || abort.signal.aborted) return;
     origin = new URL(url).origin;
+    appRoot = new URL('.', url).href;
     await nextTick();
     if (!frame.value || disposed || abort.signal.aborted) return;
     const form = document.createElement('form');
@@ -49,10 +52,10 @@ async function launch(): Promise<void> {
 }
 
 function reload(): void {
-  if (!frame.value || !origin) return;
+  if (!frame.value || !appRoot) return;
   status.value = 'Starting';
   failed = false;
-  frame.value.src = `${origin}/`;
+  frame.value.src = appRoot;
 }
 
 function onFrameLoad(): void {

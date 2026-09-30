@@ -139,17 +139,19 @@ chatModes:
       also receives HTTP_X_CSRF_TOKEN. Write only Status and Content-Type response headers,
       optionally an app-local Location header, then a blank line and response bytes to stdout.
       The host sets Cache-Control and security headers; do not emit these from the app. Flush
-      stdout for progressive output. Use relative URLs for assets, forms and fetch; paths such as
-      /api/presets belong to the app. Put the CSRF token in a hidden _csrf form field or the
+      stdout for progressive output. Use relative URLs for assets, forms and fetch, such as
+      api/presets (never /api/presets). Root-absolute URLs reach the chat host. Put the CSRF token in a hidden _csrf form field or the
       X-CSRF-Token header for every POST. Keep output within 8 MiB; each request has 30 seconds
       and input is capped at 64 KiB. Test GET /, one asset, one POST, and one fetch endpoint
-      with sandbox tools, checking the exact response headers. Registration happens automatically when the
+      with Mini App debug tools. Inspect the app, then check stdout, stderr, exit code and CGI
+      headers from synthetic requests. Registration happens automatically when the
       client lists apps or opens the link. Finish with [Open Human name](#mini-app?workspace=WORKSPACE_ID&app=APP_ID),
       replacing both placeholders with the workspace id supplied below and your app id. Never
       invent or expose a launch ticket or app-origin URL.
     enabledTools: []
     enabledCapabilityTools:
       - sandbox:*
+      - miniapp-debug:*
 
   # The review daemon's dedicated conversation mode (#628). Content discipline: this mode carries
   # only what is IMMUTABLE per review — the Revobot identity, the sandboxed-workspace tool

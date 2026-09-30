@@ -49,7 +49,10 @@ export async function launchSandboxApp(
   let url: URL;
   try { url = new URL(body.url ?? ''); }
   catch { throw new Error('Invalid app launch'); }
-  if (url.protocol !== 'https:' || url.pathname !== '/_launch' || url.search || url.hash
+  const dedicatedLaunch = url.pathname === '/_launch';
+  const sameOriginLaunch = /^\/_mini-app\/[A-F0-9]{32}\/_launch$/.test(url.pathname)
+    && url.origin === window.location.origin;
+  if (url.protocol !== 'https:' || (!dedicatedLaunch && !sameOriginLaunch) || url.search || url.hash
     || url.username || url.password || typeof body.ticket !== 'string' || !body.ticket) {
     throw new Error('Invalid app launch');
   }
