@@ -54,8 +54,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
-    /// <param name="providerMode">Provider-mode key: a scripted mode (<c>test</c> / <c>test-anthropic</c>) or a <c>*-mock</c> variant.</param>
-    /// <param name="builder">Scripted SSE agent builder (required for scripted modes; unused/null for <c>*-mock</c> modes).</param>
+    /// <param name="providerMode">Provider-mode key: a scripted mode, a <c>*-mock</c> variant, or <c>anthropic</c> for opt-in manual testing with a real model.</param>
+    /// <param name="builder">Scripted SSE agent builder (required for scripted modes; unused/null for <c>*-mock</c> and real-provider modes).</param>
     /// <param name="fixedPort">
     /// When set, Kestrel binds <c>http://127.0.0.1:{fixedPort}</c> instead of an ephemeral port.
     /// Needed when an external process (e.g. the sandbox gateway) must call back into this host at a
@@ -117,11 +117,12 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             string.Equals(providerMode, "claude-mock", StringComparison.OrdinalIgnoreCase)
             || string.Equals(providerMode, "codex-mock", StringComparison.OrdinalIgnoreCase)
             || string.Equals(providerMode, "copilot-mock", StringComparison.OrdinalIgnoreCase);
+        var isRealProviderMode = string.Equals(providerMode, "anthropic", StringComparison.OrdinalIgnoreCase);
 
-        if (!isScriptedMode && !isMockHostMode)
+        if (!isScriptedMode && !isMockHostMode && !isRealProviderMode)
         {
             throw new ArgumentException(
-                $"providerMode must be 'test', 'test-anthropic', or a *-mock variant; got '{providerMode}'",
+                $"providerMode must be 'test', 'test-anthropic', 'anthropic', or a *-mock variant; got '{providerMode}'",
                 nameof(providerMode)
             );
         }
