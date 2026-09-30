@@ -157,6 +157,22 @@ describe('useQuestionInbox', () => {
     wrapper.unmount();
   });
 
+  it('reads the list the way the sidebar does and skips deleted originals itself', async () => {
+    // Same request as the sidebar (includeDeleted) so the two share one URL per page; a deleted
+    // original kept for its forks is then dropped here, since it can ask nothing.
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async () => [{ ...conversation('gone'), deleted: true }, conversation('root')]),
+      loadConversationMessages: vi.fn(async () => history('question')),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(dependencies.listConversations).toHaveBeenCalledWith(expect.any(Number), 0, 'lastUsed', true);
+    expect(dependencies.loadConversationMessages).toHaveBeenCalledWith('root');
+    expect(dependencies.loadConversationMessages).not.toHaveBeenCalledWith('gone');
+    wrapper.unmount();
+  });
+
   it('retains an entry on a transient fetch error and removes it after canonical resolution', async () => {
     let state: 'pending' | 'error' | 'resolved' = 'pending';
     const dependencies: QuestionInboxDependencies = {
