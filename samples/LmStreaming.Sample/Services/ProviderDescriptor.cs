@@ -16,10 +16,16 @@ namespace LmStreaming.Sample.Services;
 /// <c>Copilot · Anthropic</c>, <c>Copilot · Google</c>). <c>null</c> for ungrouped providers, which
 /// the client renders as a flat list ahead of the grouped sections.
 /// </param>
+/// <param name="CliBacked">
+/// Whether a CLI process owns the conversation's history (Claude, Codex and Copilot CLIs and their
+/// mocks). Such a conversation cannot be forked: the CLI keeps its own session, which a fork of the
+/// stored messages would not carry. The client hides the fork controls for these.
+/// </param>
 public sealed record ProviderDescriptor(
     string Id,
     string DisplayName,
     bool Available,
     string? KnownLimitation = null,
-    string? Group = null
+    string? Group = null,
+    bool CliBacked = false
 );

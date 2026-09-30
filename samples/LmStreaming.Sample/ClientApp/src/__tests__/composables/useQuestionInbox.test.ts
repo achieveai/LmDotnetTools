@@ -119,6 +119,23 @@ describe('useQuestionInbox', () => {
     wrapper.unmount();
   });
 
+  // A deleted original kept for its forks answers 404: scanning it only logged errors on every load.
+  it('skips a deleted original that is listed only because forks still read it', async () => {
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (_limit, offset) =>
+        offset ? [] : [{ ...conversation('deleted'), deleted: true }, conversation('live')]
+      ),
+      loadConversationMessages: vi.fn(async () => []),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(dependencies.loadConversationMessages).toHaveBeenCalledWith('live');
+    expect(dependencies.loadConversationMessages).not.toHaveBeenCalledWith('deleted');
+    expect(dependencies.listSubAgents).not.toHaveBeenCalledWith('deleted');
+    wrapper.unmount();
+  });
+
   it('limits history and roster requests to two concurrent operations', async () => {
     let active = 0;
     let maximum = 0;
@@ -137,6 +154,22 @@ describe('useQuestionInbox', () => {
     const { wrapper, inbox } = render(dependencies);
     await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
     expect(maximum).toBe(2);
+    wrapper.unmount();
+  });
+
+  it('reads the list the way the sidebar does and skips deleted originals itself', async () => {
+    // Same request as the sidebar (includeDeleted) so the two share one URL per page; a deleted
+    // original kept for its forks is then dropped here, since it can ask nothing.
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async () => [{ ...conversation('gone'), deleted: true }, conversation('root')]),
+      loadConversationMessages: vi.fn(async () => history('question')),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(dependencies.listConversations).toHaveBeenCalledWith(expect.any(Number), 0, 'lastUsed', true);
+    expect(dependencies.loadConversationMessages).toHaveBeenCalledWith('root');
+    expect(dependencies.loadConversationMessages).not.toHaveBeenCalledWith('gone');
     wrapper.unmount();
   });
 

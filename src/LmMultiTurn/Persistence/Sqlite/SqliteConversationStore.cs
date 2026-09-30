@@ -67,6 +67,8 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
+        var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct).ConfigureAwait(false);
+
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // BEGIN IMMEDIATE, not deferred: the sequence is read (MAX) and then extended (INSERT) inside
@@ -78,6 +80,19 @@ public sealed class SqliteConversationStore
         {
             var next = await BackfillLegacySeqAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
 
+            // A fork with no rows of its own yet continues numbering, and the parent chain, from its
+            // fork point.
+            string? parent;
+            if (next == 0 && forkPoint is not null)
+            {
+                next = forkPoint.Seq;
+                parent = forkPoint.MessageId;
+            }
+            else
+            {
+                parent = await LastMessageIdAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
+            }
+
             foreach (var message in MessageSequence.BatchOrder(messages))
             {
                 using var command = connection.CreateCommand();
@@ -85,15 +100,19 @@ public sealed class SqliteConversationStore
                 command.CommandText = """
                     INSERT INTO messages (
                         id, thread_id, run_id, parent_run_id, generation_id,
-                        message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
+                        message_order_idx, timestamp, message_type, role, from_agent, message_json, seq,
+                        parent_message_id
                     ) VALUES (
                         $id, $thread_id, $run_id, $parent_run_id, $generation_id,
-                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json, $seq
+                        $message_order_idx, $timestamp, $message_type, $role, $from_agent, $message_json, $seq,
+                        $parent_message_id
                     );
                     """;
 
-                // The store owns Seq; whatever the caller put on the row is ignored.
+                // The store owns Seq and the parent; whatever the caller put on the row is ignored.
                 _ = command.Parameters.AddWithValue("$seq", ++next);
+                _ = command.Parameters.AddWithValue("$parent_message_id", (object?)parent ?? DBNull.Value);
+                parent = message.Id;
                 _ = command.Parameters.AddWithValue("$id", message.Id);
                 _ = command.Parameters.AddWithValue("$thread_id", message.ThreadId);
                 _ = command.Parameters.AddWithValue("$run_id", message.RunId);
@@ -178,6 +197,21 @@ public sealed class SqliteConversationStore
         return watermark;
     }
 
+    /// <summary>The id of the thread's last row in append order, or null when it has none.</summary>
+    private static async Task<string?> LastMessageIdAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT id FROM messages WHERE thread_id = $thread_id ORDER BY seq DESC LIMIT 1;";
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+    }
+
     /// <inheritdoc />
     public async Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
     {
@@ -185,16 +219,20 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        long own;
+        await using (var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
+            _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE thread_id = $thread_id;";
-        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+            own = Convert.ToInt64(
+                await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture
+            );
+        }
 
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture
-        );
+        return await ForkHistory.WatermarkAsync(this, threadId, own, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -208,12 +246,33 @@ public sealed class SqliteConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        return await ForkHistory
+            .RangeAsync(
+                this,
+                threadId,
+                fromSeq,
+                toSeq,
+                limit,
+                (from, to, max) => LoadOwnMessageRangeAsync(threadId, from, to, max, ct),
+                ct
+            )
+            .ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<PersistedMessage>> LoadOwnMessageRangeAsync(
+        string threadId,
+        long fromSeq,
+        long toSeq,
+        int limit,
+        CancellationToken ct
+    )
+    {
         if (limit <= 0 || toSeq < fromSeq)
         {
             return [];
         }
-
-        await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
@@ -238,6 +297,28 @@ public sealed class SqliteConversationStore
         }
 
         return messages;
+    }
+
+    /// <inheritdoc />
+    public async Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        // BEGIN IMMEDIATE, like an append: the backfill reads MAX(seq) and then writes after it.
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            _ = await BackfillLegacySeqAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -312,13 +393,17 @@ public sealed class SqliteConversationStore
 
         var messages = new List<PersistedMessage>();
 
-        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            messages.Add(ReadMessage(reader));
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                messages.Add(ReadMessage(reader));
+            }
         }
 
-        return messages;
+        // Release the pooled connection first: the shared history is read through this store again.
+        await connection.DisposeAsync().ConfigureAwait(false);
+        return await ForkHistory.LoadAsync(this, threadId, messages, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -466,6 +551,7 @@ public sealed class SqliteConversationStore
         // applied by this one statement to the fully filtered set, which is the whole point. See
         // ConversationListOptions for the production failure that a post-pass produced.
         var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "thread_id");
+        var deletedClause = DeletedExclusionClause(listOptions, "metadata_json");
 
         command.CommandText = FormattableString.Invariant(
             $"""
@@ -473,6 +559,7 @@ public sealed class SqliteConversationStore
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
             WHERE {exclusionClause}
+              AND {deletedClause}
             -- thread_id breaks ties so LIMIT/OFFSET pages a total order. Without it two rows
             -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
             -- between the page-1 and page-2 statements: one row comes back twice and another
@@ -534,6 +621,7 @@ public sealed class SqliteConversationStore
         // branch admitted the row. It is also a WHERE clause rather than a post-pass, so LIMIT/OFFSET
         // still applies to the fully filtered set. See ConversationListOptions.
         var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "t.thread_id");
+        var deletedClause = DeletedExclusionClause(listOptions, "t.metadata_json");
 
         // The `@userId IS NOT NULL` guards are the SQL spelling of spec 7.4 step 3: without them an
         // app-only principal would fall through into the grant branch with a NULL subject. They do
@@ -552,6 +640,7 @@ public sealed class SqliteConversationStore
                             OR {grantClause} ) )
                     OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL ) )
               AND {exclusionClause}
+              AND {deletedClause}
             -- Same total order as the unscoped overload above, and as
             -- ConversationListOptions.Order: a scoped listing must not page differently.
             ORDER BY t.last_updated DESC, t.thread_id DESC
@@ -689,6 +778,32 @@ public sealed class SqliteConversationStore
         // "1 = 1" rather than an empty string so the caller can interpolate this unconditionally and
         // the statement stays syntactically valid with nothing excluded.
         return conjuncts.Count == 0 ? "1 = 1" : string.Join(" AND ", conjuncts);
+    }
+
+    /// <summary>
+    /// The SQL spelling of <see cref="ConversationListOptions.ExcludeDeleted"/>, or <c>1 = 1</c> when
+    /// it is off. The lineage is a JSON string inside <c>metadata_json</c>, so it is extracted twice.
+    /// </summary>
+    /// <remarks>
+    /// A <c>CASE</c>, not <c>AND</c>, so an unreadable record or lineage is never parsed: SQLite does
+    /// not promise to short-circuit <c>AND</c>, and <c>json_extract</c> on malformed JSON fails the
+    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read"/> does.
+    /// </remarks>
+    /// <param name="options">The resolved (never null) listing options.</param>
+    /// <param name="metadataJsonColumn">How the <c>metadata_json</c> column is spelled in this statement.</param>
+    private static string DeletedExclusionClause(ConversationListOptions options, string metadataJsonColumn)
+    {
+        if (!options.ExcludeDeleted)
+        {
+            return "1 = 1";
+        }
+
+        var lineage = FormattableString.Invariant(
+            $"json_extract({metadataJsonColumn}, '$.properties.\"{ConversationLineage.PropertyKey}\"')"
+        );
+        return FormattableString.Invariant(
+            $"(CASE WHEN json_valid({metadataJsonColumn}) IS NOT 1 THEN 1 WHEN json_valid({lineage}) IS NOT 1 THEN 1 ELSE json_extract({lineage}, '$.deleted_at') IS NULL END) = 1"
+        );
     }
 
     /// <inheritdoc />
@@ -1554,7 +1669,8 @@ public sealed class SqliteConversationStore
 
     private const string MessageSelectSql = """
         SELECT id, thread_id, run_id, parent_run_id, generation_id,
-               message_order_idx, timestamp, message_type, role, from_agent, message_json, seq
+               message_order_idx, timestamp, message_type, role, from_agent, message_json, seq,
+               parent_message_id
         FROM messages
         """;
 
@@ -1574,6 +1690,7 @@ public sealed class SqliteConversationStore
             Role = reader.GetString(8),
             FromAgent = reader.IsDBNull(9) ? null : reader.GetString(9),
             MessageJson = reader.GetString(10),
+            ParentMessageId = reader.IsDBNull(12) ? null : reader.GetString(12),
         };
     }
 

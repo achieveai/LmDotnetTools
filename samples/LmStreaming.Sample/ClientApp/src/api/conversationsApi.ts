@@ -2,6 +2,7 @@ import type {
   ConversationSummary,
   ConversationMetadataUpdate,
   ConversationSortMode,
+  ForkOrigin,
 } from '@/types/conversations';
 import { DEFAULT_CONVERSATION_SORT_MODE } from '@/types/conversations';
 import { apiFetch } from '@/api/http';
@@ -18,6 +19,8 @@ export interface PersistedMessage {
   messageOrderIdx?: number | null;
   /** Store-assigned append order (#680); null on a row persisted before the column existed. */
   seq?: number | null;
+  /** The message before this one in the conversation's history; null for the first message. */
+  parentMessageId?: string | null;
   timestamp: number;
   messageType: string;
   role: string;
@@ -32,14 +35,19 @@ export interface PersistedMessage {
  * list infers exhaustion from a short page (fewer than `limit` rows). `sort` selects the backend
  * ordering; it must match the order the caller is already holding, since pages fetched under
  * different sorts cannot be concatenated into one coherent list.
+ *
+ * `includeDeleted` also returns deleted conversations kept for their forks (`deleted: true`). They
+ * cannot be opened; only the sidebar asks for them, to group their forks under them.
  */
 export async function listConversations(
   limit = 30,
   offset = 0,
-  sort: ConversationSortMode = DEFAULT_CONVERSATION_SORT_MODE
+  sort: ConversationSortMode = DEFAULT_CONVERSATION_SORT_MODE,
+  includeDeleted = false
 ): Promise<ConversationSummary[]> {
+  const deleted = includeDeleted ? '&includeDeleted=true' : '';
   const response = await apiFetch(
-    `/api/conversations?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}`
+    `/api/conversations?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}${deleted}`
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch conversations: ${response.statusText}`);
@@ -367,4 +375,78 @@ export async function getConversationCapabilities(): Promise<ConversationCapabil
   } catch {
     return { sandboxEnv: false };
   }
+}
+
+/**
+ * Where a fork starts. Exactly one anchor is sent:
+ * - `afterRunId` — "Fork from here": after the END of that run (turn).
+ * - `beforeMessageId` — "Edit in fork": just before that USER message; the response carries its text
+ *   as `prefillText` so the composer can offer it for editing.
+ * - `afterMessageId` — after that exact persisted message.
+ */
+export type ForkAnchor =
+  | { afterRunId: string }
+  | { beforeMessageId: string }
+  | { afterMessageId: string };
+
+/** 201 body of `POST /api/conversations/{threadId}/fork`. */
+export interface ForkConversationResponse {
+  threadId: string;
+  title: string;
+  forkedFrom: ForkOrigin;
+  rootThreadId: string;
+  /** The old user text, only for a `beforeMessageId` fork; null otherwise. */
+  prefillText?: string | null;
+}
+
+/**
+ * Creates a new conversation whose history is `threadId`'s history up to the anchor. Nothing is
+ * copied on the server: the fork shares the parent's messages by id.
+ *
+ * Refusals keep their `code` (`invalid_anchor`, `turn_in_progress`, `pending_delayed_result`,
+ * `cli_provider_unsupported`) on the thrown {@link ConversationApiError}.
+ */
+export async function forkConversation(
+  threadId: string,
+  anchor: ForkAnchor,
+  title?: string
+): Promise<ForkConversationResponse> {
+  const body = title === undefined ? { ...anchor } : { ...anchor, title };
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/fork`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await toConversationApiError(response, `Failed to fork conversation: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/** One conversation a branch point can switch to. Exactly one option per point is `current`. */
+export interface BranchOption {
+  threadId: string;
+  title: string;
+  current: boolean;
+}
+
+/** A message in this conversation's history where two or more readable continuations exist. */
+export interface BranchPoint {
+  afterMessageId: string;
+  afterSeq: number;
+  /** Ordered by creation. */
+  options: BranchOption[];
+}
+
+export interface ConversationBranches {
+  points: BranchPoint[];
+}
+
+/** Reads the branch switcher data for a conversation (`GET /api/conversations/{threadId}/branches`). */
+export async function loadBranches(threadId: string): Promise<ConversationBranches> {
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/branches`);
+  if (!response.ok) {
+    throw await toConversationApiError(response, `Failed to load branches: ${response.statusText}`);
+  }
+  return response.json();
 }
