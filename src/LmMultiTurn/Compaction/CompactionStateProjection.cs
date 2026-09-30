@@ -528,6 +528,23 @@ public static class CompactionStateProjection
         return written;
     }
 
+    /// <summary>
+    ///     <paramref name="metadata" /> carrying <paramref name="state" />, for a record being written
+    ///     whole (a new fork) rather than updated in place.
+    /// </summary>
+    internal static ThreadMetadata WithState(ThreadMetadata metadata, CompactionState state) =>
+        MetadataProjectionJson.WithProperties(
+            metadata,
+            metadata.ThreadId,
+            (
+                PropertyKey,
+                JsonSerializer.Serialize(
+                    Trim(state with { SchemaVersion = CompactionState.CurrentSchemaVersion }),
+                    MetadataProjectionJson.Options
+                )
+            )
+        );
+
     private static Task<CompactionState?> Transition(
         IConversationStore store,
         string threadId,

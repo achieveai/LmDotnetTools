@@ -50,6 +50,15 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
     private readonly record struct CatalogEntry(string Id, string DisplayName, string? KnownLimitation = null);
 
+    /// <summary>
+    /// Whether <paramref name="providerId"/> runs a CLI that keeps the conversation's history in its
+    /// own session. See <see cref="ProviderDescriptor.CliBacked"/>. Compared after the same trimming
+    /// and lower-casing the agent pool applies to a stored id, so a spelling that runs on a CLI loop
+    /// is classified as one.
+    /// </summary>
+    public static bool IsCliBacked(string? providerId) =>
+        NormalizeId(providerId) is "claude" or "codex" or "copilot" or "claude-mock" or "codex-mock" or "copilot-mock";
+
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;
     private readonly ImmutableDictionary<string, AnthropicCompatModel> _anthropicCompatModelsById;
@@ -147,7 +156,13 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
                 _ = staticBuilder.Add(id);
             }
 
-            builder[id] = new ProviderDescriptor(id, displayName, isStatic, entry.KnownLimitation);
+            builder[id] = new ProviderDescriptor(
+                id,
+                displayName,
+                isStatic,
+                entry.KnownLimitation,
+                CliBacked: IsCliBacked(id)
+            );
         }
 
         // Dynamically discovered GitHub Copilot models — one entry per routable model, keyed by its

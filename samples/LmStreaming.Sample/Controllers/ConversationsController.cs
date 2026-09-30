@@ -481,12 +481,17 @@ public class ConversationsController(
     /// <param name="limit">Page size, 1..100. Defaults to the client's page size.</param>
     /// <param name="offset">Rows to skip. Must not be negative.</param>
     /// <param name="sort"><c>lastUsed</c> (default) or <c>created</c>, case-insensitive.</param>
+    /// <param name="includeDeleted">
+    /// Also list deleted conversations kept for their forks, marked <c>deleted</c>. Off by default:
+    /// they cannot be opened, and a client that does not know the marker would offer them.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     [HttpGet]
     public async Task<IActionResult> List(
         int limit = 30,
         int offset = 0,
         string? sort = null,
+        bool includeDeleted = false,
         CancellationToken ct = default
     )
     {
@@ -518,6 +523,7 @@ public class ConversationsController(
         {
             ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes,
             SortOrder = sortOrder,
+            ExcludeDeleted = !includeDeleted,
         };
 
         var scope = await authorizer.CreateListScopeAsync(ct);
@@ -559,6 +565,7 @@ public class ConversationsController(
             // could not tell from real refused attempts - and it consults the grant batch the scope
             // already resolved rather than re-querying grants once per row.
             var canShare = await authorizer.MayShareForListingAsync(t, scope?.GrantedThreadIds, ct);
+            var lineage = ConversationLineage.Read(t);
 
             result.Add(
                 new ConversationSummary
@@ -589,6 +596,9 @@ public class ConversationsController(
                     // first-class stamped field (spec 8.3), and it is what the share control reflects.
                     Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
                     CanShare = canShare,
+                    ForkedFrom = lineage?.ForkedFrom is { } origin ? ToForkOrigin(origin) : null,
+                    RootThreadId = lineage?.ForkedFrom is null ? null : lineage.RootThreadId,
+                    Deleted = lineage?.DeletedAt is not null,
                 }
             );
         }
@@ -1181,7 +1191,7 @@ public class ConversationsController(
             return denied;
         }
 
-        if (metadata == null)
+        if (metadata == null || ConversationLineage.IsDeleted(metadata))
         {
             return UnknownThread(threadId);
         }
@@ -1459,7 +1469,8 @@ public class ConversationsController(
         }
 
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
-        if (metadata == null)
+        // A deleted original its forks still read is unknown too.
+        if (metadata == null || ConversationLineage.IsDeleted(metadata))
         {
             return UnknownThread(threadId);
         }
@@ -1973,7 +1984,8 @@ public class ConversationsController(
         }
 
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
-        if (metadata == null)
+        // A deleted original its forks still read is unknown too.
+        if (metadata == null || ConversationLineage.IsDeleted(metadata))
         {
             return UnknownThread(threadId);
         }
@@ -2090,7 +2102,10 @@ public class ConversationsController(
         }
 
         await agentPool.RemoveAgentAsync(threadId);
-        await store.DeleteThreadAsync(threadId, ct);
+
+        // Not store.DeleteThreadAsync: a fork reads its original's messages in place, so an original
+        // with forks is only marked deleted and kept until its last fork goes.
+        _ = await ConversationForks.DeleteAsync(store, threadId, ct);
 
         // Owner-keyed invalidation (see SubAgentScanCoverageCache's remarks) already covers every
         // mode/provider/restart reset automatically, but a deleted thread id CAN be reused by a caller
@@ -2101,6 +2116,292 @@ public class ConversationsController(
         scanCoverageCache.Forget(threadId);
 
         return NoContent();
+    }
+
+    /// <summary>
+    /// The settings a fork carries over from its source: what the conversation runs with. Everything
+    /// else - usage, context and todo projections, the collaboration identity, provider session ids -
+    /// describes the source's own runs and starts empty on the fork.
+    /// </summary>
+    private static readonly string[] ForkCarriedPropertyKeys =
+    [
+        MultiTurnAgentPool.ProviderPropertyKey,
+        MultiTurnAgentPool.WorkspacePropertyKey,
+        MultiTurnAgentPool.ModePropertyKey,
+        SystemPromptAugmenter.AppendixPropertyKey,
+        ConversationSubAgentModel.PropertyKey,
+        ConversationSandboxEnv.PropertyKey,
+        ConversationRootReasoningEffort.PropertyKey,
+    ];
+
+    /// <summary>
+    /// Forks a conversation: creates a new, independent conversation whose history is this one's up to
+    /// the anchor. Nothing is copied - the fork reads the shared messages in place, under their own ids,
+    /// and its own messages continue from the fork point.
+    /// </summary>
+    /// <remarks>
+    /// Needs Write on the source, not just Read: the fork keeps the source's messages alive past its
+    /// deletion, so a viewer must not be able to pin a conversation it cannot change. CLI-backed
+    /// providers are refused (<c>cli_provider_unsupported</c>): the CLI holds the conversation in its
+    /// own session, which a fork of the stored messages would not carry.
+    /// </remarks>
+    [HttpPost("{threadId}/fork")]
+    public async Task<IActionResult> Fork(
+        string threadId,
+        [FromBody] ForkConversationRequest request,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Write, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        var source = await store.LoadMetadataAsync(threadId, ct);
+        if (source is null || ConversationLineage.IsDeleted(source))
+        {
+            return UnknownThread(threadId);
+        }
+
+        // The provider it would run on, resolved as the agent pool does: a conversation with none
+        // stored runs on the default.
+        var providerId = PropertyString(source, MultiTurnAgentPool.ProviderPropertyKey);
+        if (string.IsNullOrWhiteSpace(providerId))
+        {
+            providerId = providerRegistry.DefaultProviderId;
+        }
+
+        if (ProviderRegistry.IsCliBacked(providerId))
+        {
+            return Conflict(
+                new
+                {
+                    error = "Conversations on a CLI provider cannot be forked.",
+                    code = "cli_provider_unsupported",
+                    providerId,
+                }
+            );
+        }
+
+        // A turn running under an id not known yet could own any row of the tail, so it refuses the
+        // fork outright; a known one refuses only a fork whose shared history reaches its rows.
+        var runState = agentPool.GetRunStateInfo(threadId);
+        if (runState.IsInProgress && runState.CurrentRunId is null)
+        {
+            return Conflict(
+                new { error = "The conversation cannot be forked there right now.", code = ForkRefusals.TurnInProgress }
+            );
+        }
+
+        var resolution = await ConversationForks.ResolveAsync(
+            store,
+            threadId,
+            new ForkAnchor(request.AfterRunId, request.AfterMessageId, request.BeforeMessageId),
+            runState.IsInProgress ? runState.CurrentRunId : null,
+            ct
+        );
+
+        if (resolution.Refusal is { } code)
+        {
+            logger.LogInformation("Fork of {ThreadId} refused: {Code}", threadId, code);
+            return code is ForkRefusals.TurnInProgress or ForkRefusals.PendingDelayedResult
+                ? Conflict(new { error = "The conversation cannot be forked there right now.", code })
+                : BadRequest(new { error = "The fork anchor is not valid for this conversation.", code });
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var forkThreadId = $"thread-{now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
+        var title = string.IsNullOrWhiteSpace(request.Title)
+            ? $"{PropertyString(source, "title") ?? "New Conversation"} (fork)"
+            : request.Title.Trim();
+
+        var properties = ImmutableDictionary.CreateBuilder<string, object>();
+        foreach (var key in ForkCarriedPropertyKeys)
+        {
+            if (source.Properties?.TryGetValue(key, out var value) == true && value is not null)
+            {
+                properties[key] = value;
+            }
+        }
+
+        properties["title"] = title;
+
+        var lineage = await ConversationForks.CreateAsync(
+            store,
+            forkThreadId,
+            resolution,
+            authorizer.StampOwnership(
+                new ThreadMetadata
+                {
+                    ThreadId = forkThreadId,
+                    LastUpdated = now.ToUnixTimeMilliseconds(),
+                    Properties = properties.ToImmutable(),
+                }
+            ),
+            ct
+        );
+        if (lineage is null)
+        {
+            // Deleted between the checks above and the write: nothing was created.
+            return UnknownThread(threadId);
+        }
+
+        logger.LogInformation(
+            "Forked {ThreadId} at seq {Seq} into {ForkThreadId}",
+            threadId,
+            resolution.Point!.Seq,
+            forkThreadId
+        );
+
+        return StatusCode(
+            StatusCodes.Status201Created,
+            new ForkConversationResponse
+            {
+                ThreadId = forkThreadId,
+                Title = title,
+                ForkedFrom = ToForkOrigin(lineage.ForkedFrom!),
+                RootThreadId = lineage.RootThreadId!,
+                PrefillText = resolution.EditedMessage is { } edited ? PrefillTextOf(edited) : null,
+            }
+        );
+    }
+
+    /// <summary>
+    /// The branch switcher for a conversation: each message on its history after which two or more
+    /// conversations of its fork family continue, with the ones this viewer may open.
+    /// </summary>
+    [HttpGet("{threadId}/branches")]
+    public async Task<IActionResult> GetBranches(string threadId, CancellationToken ct = default)
+    {
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode) is { } refusal)
+        {
+            return refusal;
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        var current = await store.LoadMetadataAsync(threadId, ct);
+        if (current is null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        // The family is found by scanning, as the sidebar does: lineage lives on each fork, so the
+        // original has no list of its forks to read.
+        var root = ConversationLineage.Read(current)?.RootThreadId ?? threadId;
+        var family = (await ListAllThreadsAsync(ct))
+            .Where(t => t.ThreadId == root || ConversationLineage.Read(t)?.RootThreadId == root)
+            .ToDictionary(t => t.ThreadId, StringComparer.Ordinal);
+        family[threadId] = current;
+
+        if (family.Count < 2)
+        {
+            return Ok(new ConversationBranchesResponse { Points = [] });
+        }
+
+        // Scope.Admits is the predicate the scoped listing applies, so checking the family already in
+        // hand answers "may this viewer see it" without listing the catalog a second time.
+        var scope = await authorizer.CreateListScopeAsync(ct);
+        var watermark = await store.GetMessageWatermarkAsync(threadId, ct);
+
+        var nodes = new List<BranchNode>(family.Count);
+        foreach (var member in family.Values)
+        {
+            var lineage = ConversationLineage.Read(member);
+            nodes.Add(
+                new BranchNode(
+                    member.ThreadId,
+                    lineage?.ForkedFrom,
+                    member.ThreadId == threadId ? watermark : 0,
+                    lineage?.DeletedAt is null && (scope is null || scope.Admits(member))
+                )
+            );
+        }
+
+        var points = ForkBranches.Compute(
+            threadId,
+            nodes,
+            Comparer<string>.Create(
+                (a, b) =>
+                    ConversationListOptions
+                        .CreationTimestampOf(family[a])
+                        .CompareTo(ConversationListOptions.CreationTimestampOf(family[b]))
+            )
+        );
+
+        return Ok(
+            new ConversationBranchesResponse
+            {
+                Points =
+                [
+                    .. points.Select(p => new ConversationBranchPoint
+                    {
+                        AfterMessageId = p.AfterMessageId,
+                        AfterSeq = p.AfterSeq,
+                        Options =
+                        [
+                            .. p.Options.Select(o => new ConversationBranchOption
+                            {
+                                ThreadId = o.ThreadId,
+                                Title = PropertyString(family[o.ThreadId], "title") ?? "New Conversation",
+                                Current = o.Current,
+                            }),
+                        ],
+                    }),
+                ],
+            }
+        );
+    }
+
+    /// <summary>
+    /// Every root conversation the store lists, in ONE call: the file store re-reads and sorts its
+    /// whole catalog for each call, so paging through it cost one full scan per page.
+    /// </summary>
+    private async Task<IReadOnlyList<ThreadMetadata>> ListAllThreadsAsync(CancellationToken ct) =>
+        await store.ListThreadsAsync(
+            int.MaxValue,
+            0,
+            new ConversationListOptions { ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes },
+            ct
+        );
+
+    private static ForkOrigin ToForkOrigin(ForkPoint point) =>
+        new()
+        {
+            ThreadId = point.ThreadId,
+            MessageId = point.MessageId,
+            Seq = point.Seq,
+        };
+
+    private static string? PropertyString(ThreadMetadata metadata, string key) =>
+        metadata.Properties?.TryGetValue(key, out var value) == true ? value?.ToString() : null;
+
+    /// <summary>The text of the user message an edit-in-fork re-asks, or null when it has none.</summary>
+    private static string? PrefillTextOf(PersistedMessage message)
+    {
+        try
+        {
+            return MessagePersistenceConverter.FromPersistedMessage(message) is ICanGetText text
+                ? text.GetText()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     [HttpPost("{threadId}/mode")]
@@ -2320,6 +2621,23 @@ public class ConversationsController(
             return denied;
         }
 
+        // A fork's history starts in the conversation it came from, and a CLI provider never replays
+        // stored messages - it would run the fork without the history it shows. See Fork.
+        if (
+            ProviderRegistry.IsCliBacked(request.ProviderId)
+            && ConversationLineage.Read(await store.LoadMetadataAsync(threadId, ct))?.ForkedFrom is not null
+        )
+        {
+            return Conflict(
+                new
+                {
+                    error = "A forked conversation cannot move to a CLI provider.",
+                    code = "cli_provider_unsupported",
+                    providerId = request.ProviderId,
+                }
+            );
+        }
+
         var runState = agentPool.GetRunStateInfo(threadId);
         if (runState.IsInProgress)
         {
@@ -2514,15 +2832,23 @@ public class ConversationsController(
     /// <param name="threadId">The conversation being addressed.</param>
     /// <param name="action">The action being attempted.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// A deleted original that forks still read is refused as unknown whether or not authorization is
+    /// enforced: it is kept only for those forks, so to every route it is gone. That check runs after
+    /// the authorizer, so an enforced refusal still costs the same work for every id.
+    /// </remarks>
     private async Task<IActionResult?> AuthorizeAsync(string threadId, AccessAction action, CancellationToken ct)
     {
-        if (!authorizer.IsEnforced)
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (
+            authorizer.IsEnforced
+            && Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, action, ct)) is { } denied
+        )
         {
-            return null;
+            return denied;
         }
 
-        var metadata = await store.LoadMetadataAsync(threadId, ct);
-        return Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, action, ct));
+        return ConversationLineage.IsDeleted(metadata) ? UnknownThread(threadId) : null;
     }
 
     /// <summary>
