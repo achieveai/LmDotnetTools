@@ -8,6 +8,10 @@ import NotificationPill from './NotificationPill.vue';
 import TurnActivity from './TurnActivity.vue';
 import PendingMessage from './PendingMessage.vue';
 import AssistantTypingIndicator from './AssistantTypingIndicator.vue';
+import ForkMessageButton from './ForkMessageButton.vue';
+import BranchSwitcher from './BranchSwitcher.vue';
+import type { BranchPoint } from '@/api/conversationsApi';
+import { resolveBranchAnchors } from '@/utils/conversationForks';
 import { logger } from '@/utils/logger';
 
 // #region agent log
@@ -21,7 +25,23 @@ const props = withDefaults(defineProps<{
   displayItems: readonly DisplayItem[];
   isLoading?: boolean;
   viewPreference?: 'consumer' | 'developer';
-}>(), { viewPreference: 'developer' });
+  /**
+   * Offer "Fork from here" / "Edit in fork". Off by default: only the main conversation of a started,
+   * forkable (non-CLI) thread turns it on; sub-agent transcripts never do.
+   */
+  forkActions?: boolean;
+  /** Branch points of this conversation (`GET .../branches`); each renders a switcher at its message. */
+  branchPoints?: readonly BranchPoint[];
+}>(), { viewPreference: 'developer', forkActions: false, branchPoints: () => [] });
+
+const emit = defineEmits<{
+  /** "Fork from here": fork after the end of this run. */
+  forkAfterRun: [runId: string];
+  /** "Edit in fork": fork just before this stored user message. */
+  editInFork: [persistedId: string];
+  /** A branch switcher arrow: open that conversation. */
+  openBranch: [threadId: string];
+}>();
 
 const messageListRef = ref<HTMLDivElement | null>(null);
 const activeConversationMinHeight = ref(0);
@@ -240,6 +260,45 @@ function offersCopy(item: DisplayItem): boolean {
   return !isThinkingBubble(item) && item.id !== streamingItemId.value;
 }
 
+/**
+ * The last answer bubble of each run, by display id. "Fork from here" forks after the END of a run,
+ * so only that bubble offers it; an earlier bubble of the same run would fork at the same place.
+ */
+const lastBubbleIdOfEachRun = computed<Set<string>>(() => {
+  const byRun = new Map<string, string>();
+  for (const item of props.displayItems) {
+    if (item.type === 'assistant-message' && !isThinkingBubble(item) && item.runId) {
+      byRun.set(item.runId, item.id);
+    }
+  }
+  return new Set(byRun.values());
+});
+
+/**
+ * Fork actions are hidden while anything streams: the run on screen is not finished, and the server
+ * refuses a fork while a turn is in progress (409 `turn_in_progress`).
+ */
+const forkActionsLive = computed(() => props.forkActions && !props.isLoading);
+
+function forkAfterRunId(item: DisplayItem): string | null {
+  if (!forkActionsLive.value || item.type !== 'assistant-message' || !item.runId) return null;
+  return lastBubbleIdOfEachRun.value.has(item.id) ? item.runId : null;
+}
+
+/** "Edit in fork" needs the stored id of the user message; a live one learns it after its run. */
+function editInForkId(item: DisplayItem): string | null {
+  if (!forkActionsLive.value || item.type !== 'user-message' || item.status === 'pending') return null;
+  return item.persistedId ?? null;
+}
+
+const branchAnchors = computed(() => resolveBranchAnchors(props.displayItems, props.branchPoints));
+
+function branchPointsAfter(row: RenderRow): BranchPoint[] {
+  if (branchAnchors.value.size === 0) return [];
+  const ids = row.kind === 'item' ? [row.item.id] : row.items.map((item) => item.id);
+  return ids.flatMap((id) => branchAnchors.value.get(id) ?? []);
+}
+
 // Track the last user message to scroll to it when it is added (pending or active)
 const lastScrolledMessageId = ref<string | null>(null);
 
@@ -383,6 +442,9 @@ watch(
               <template v-if="row.item.type === 'user-message'">
                 <PendingMessage v-if="row.item.status === 'pending'" :content="row.item.content" />
                 <TextMessage v-else :message="row.item.content" :is-streaming="false" />
+                <div v-if="editInForkId(row.item)" class="user-actions">
+                  <ForkMessageButton kind="edit-in-fork" @click="emit('editInFork', editInForkId(row.item)!)" />
+                </div>
               </template>
 
               <MetadataPill
@@ -414,8 +476,17 @@ watch(
                   class="bubble-copy"
                   :text="row.item.content.text"
                 />
+                <div v-if="forkAfterRunId(row.item)" class="bubble-actions">
+                  <ForkMessageButton kind="fork-from-here" @click="emit('forkAfterRun', forkAfterRunId(row.item)!)" />
+                </div>
               </div>
               </template>
+              <BranchSwitcher
+                v-for="point in branchPointsAfter(row)"
+                :key="`branch-${point.afterMessageId}`"
+                :point="point"
+                @open="emit('openBranch', $event)"
+              />
             </template>
           </div>
         </div>
@@ -468,6 +539,9 @@ watch(
                 <template v-if="row.item.type === 'user-message'">
                   <PendingMessage v-if="row.item.status === 'pending'" :content="row.item.content" />
                   <TextMessage v-else :message="row.item.content" :is-streaming="false" />
+                  <div v-if="editInForkId(row.item)" class="user-actions">
+                    <ForkMessageButton kind="edit-in-fork" @click="emit('editInFork', editInForkId(row.item)!)" />
+                  </div>
                 </template>
                 
                 <!-- Assistant message with pill -->
@@ -502,8 +576,17 @@ watch(
                     class="bubble-copy"
                     :text="row.item.content.text"
                   />
+                  <div v-if="forkAfterRunId(row.item)" class="bubble-actions">
+                    <ForkMessageButton kind="fork-from-here" @click="emit('forkAfterRun', forkAfterRunId(row.item)!)" />
+                  </div>
                 </div>
                 </template>
+                <BranchSwitcher
+                  v-for="point in branchPointsAfter(row)"
+                  :key="`branch-${point.afterMessageId}`"
+                  :point="point"
+                  @open="emit('openBranch', $event)"
+                />
               </template>
             </div>
           </div>
@@ -665,6 +748,30 @@ watch(
 .text-bubble-row:focus-within :deep(.bubble-copy) {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Fork actions sit under the message they act on, right-aligned, revealed on hover or keyboard focus
+   like Copy. They stay in the DOM (opacity) so Tab reaches them; touch screens always show them. */
+.bubble-actions,
+.user-actions {
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+}
+
+.text-bubble-row:hover .bubble-actions,
+.text-bubble-row:focus-within .bubble-actions,
+.user-message-wrapper:hover .user-actions,
+.user-message-wrapper:focus-within .user-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .bubble-actions,
+  .user-actions {
+    opacity: 1;
+  }
 }
 
 @media (max-width: 600px) {

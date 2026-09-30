@@ -44,10 +44,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// is configured. SDK metadata such as <c>SystemInitMessage</c> is intentionally
     /// NOT published into the common message stream — read this property instead.
     ///
-    /// May also be pre-populated via the <c>initialSessionId</c> constructor
-    /// parameter so callers driving session resumption can have the first
-    /// underlying run pass <c>--resume &lt;SessionId&gt;</c> before any
-    /// <c>SystemInitMessage</c> has been observed.
+    /// May also be pre-populated before any <c>SystemInitMessage</c> has been
+    /// observed, so the first underlying run passes <c>--resume &lt;SessionId&gt;</c>:
+    /// explicitly via the <c>initialSessionId</c> constructor parameter, or
+    /// automatically on recovery from the store's <see cref="ThreadMetadata.SessionMappings"/>
+    /// (see <see cref="OnThreadRecoveredAsync"/>), so a loop rebuilt after a host
+    /// restart continues its CLI session without the caller passing anything.
     /// </summary>
     public string? CurrentSessionId { get; private set; }
 
@@ -124,7 +126,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// the seed is preserved regardless so callers managing persistence externally are not
     /// silently overridden, and a Warning is logged on each request build.
     /// Mutually exclusive with <see cref="ClaudeAgentSdkOptions.AssignSessionId"/>; passing
-    /// both throws <see cref="ArgumentException"/>.
+    /// both throws <see cref="ArgumentException"/>. Not needed to resume a conversation after a
+    /// restart when <paramref name="store"/> is set: recovery restores the stored session id.
+    /// When passed, it takes precedence over the stored one.
     /// </param>
     /// <param name="persistRunLedger">
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
@@ -257,10 +261,128 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
+    /// Key prefix for this loop's entries in <see cref="ThreadMetadata.SessionMappings"/>.
+    /// </summary>
+    private const string SessionMappingKeyPrefix = "claude-sdk:";
+
+    /// <summary>
+    /// Restores <see cref="CurrentSessionId"/> from <see cref="ThreadMetadata.SessionMappings"/> so a
+    /// loop rebuilt after a host restart or agent-pool eviction resumes its CLI session
+    /// (<c>--resume</c>) instead of starting a new one. The CLI holds the conversation: each turn
+    /// sends only the new input, so a fresh session means the agent forgets everything.
+    /// </summary>
+    /// <remarks>
+    /// Precedence, highest first: an id already held (the <c>initialSessionId</c> constructor seed,
+    /// or one captured live) is kept; <see cref="ClaudeAgentSdkOptions.AssignSessionId"/> suppresses
+    /// the restore, because the host has taken explicit control of session identity and the loop
+    /// never emits both <c>--resume</c> and <c>--session-id</c>; with
+    /// <see cref="ClaudeAgentSdkOptions.DisableSessionPersistence"/> nothing was written to disk to
+    /// resume, and a profile with skills or subagents points <c>CLAUDE_CONFIG_DIR</c> (where the CLI
+    /// keeps sessions) at a new temp directory per loop, so in both cases nothing is restored.
+    /// The restored id is seeded exactly like the constructor seed.
+    /// </remarks>
+    protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
+    {
+        await base.OnThreadRecoveredAsync(ct);
+
+        if (!string.IsNullOrEmpty(CurrentSessionId))
+        {
+            return;
+        }
+
+        // Use the metadata recovery already loaded. Reading it again could fail after the first
+        // read succeeded, and that failure would silently start a fresh CLI session.
+        var storedSessionId = SelectStoredSessionId(RecoveredMetadata);
+        if (storedSessionId == null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(_claudeOptions.AssignSessionId))
+        {
+            Logger.LogInformation(
+                "Not restoring stored Claude SDK SessionId {StoredSessionId} for thread {ThreadId}: AssignSessionId {AssignedSessionId} takes precedence",
+                storedSessionId,
+                ThreadId,
+                _claudeOptions.AssignSessionId
+            );
+            return;
+        }
+
+        if (_claudeOptions.DisableSessionPersistence)
+        {
+            Logger.LogWarning(
+                "Not restoring stored Claude SDK SessionId {StoredSessionId} for thread {ThreadId}: DisableSessionPersistence=true, so the CLI has no session on disk to resume",
+                storedSessionId,
+                ThreadId
+            );
+            return;
+        }
+
+        if (_materializedProfile.StagingDirectory != null)
+        {
+            Logger.LogWarning(
+                "Not restoring stored Claude SDK SessionId {StoredSessionId} for thread {ThreadId}: the profile stages a fresh CLAUDE_CONFIG_DIR per loop, so the previous session is not on disk to resume",
+                storedSessionId,
+                ThreadId
+            );
+            return;
+        }
+
+        CaptureSessionId(storedSessionId, isSeed: true);
+        Logger.LogInformation(
+            "Restored Claude SDK SessionId {SessionId} for thread {ThreadId} from stored session mappings (LatestRunId: {LatestRunId})",
+            storedSessionId,
+            ThreadId,
+            RecoveredMetadata?.LatestRunId
+        );
+    }
+
+    /// <summary>
+    /// Picks the Claude session to resume from stored mappings: the <c>claude-sdk:</c> entry whose
+    /// run id equals <see cref="ThreadMetadata.LatestRunId"/> (the session the latest run used);
+    /// otherwise the last <c>claude-sdk:</c> entry in stored order. Stored order is insertion order
+    /// (<see cref="UpdateMetadataAsync"/> adds a new session's key at the end, and the JSON round
+    /// trip preserves it), so the fallback is the most recently added session. When several entries
+    /// match the latest run, the last one wins for the same reason. Null when there is none.
+    /// </summary>
+    private static string? SelectStoredSessionId(ThreadMetadata? metadata)
+    {
+        if (metadata?.SessionMappings is not { Count: > 0 } mappings)
+        {
+            return null;
+        }
+
+        string? latestRunMatch = null;
+        string? lastClaudeEntry = null;
+        foreach (var (key, runId) in mappings)
+        {
+            if (!key.StartsWith(SessionMappingKeyPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var sessionId = key[SessionMappingKeyPrefix.Length..];
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                continue;
+            }
+
+            lastClaudeEntry = sessionId;
+            if (!string.IsNullOrEmpty(metadata.LatestRunId) && runId == metadata.LatestRunId)
+            {
+                latestRunMatch = sessionId;
+            }
+        }
+
+        return latestRunMatch ?? lastClaudeEntry;
+    }
+
+    /// <summary>
     /// Persist the latest Claude SDK session id into <see cref="ThreadMetadata.SessionMappings"/>
     /// alongside the base metadata. The mapping uses the conventional
     /// <c>"claude-sdk:{sessionId}"</c> key shape so it does not collide with mappings
-    /// from other providers.
+    /// from other providers. <see cref="OnThreadRecoveredAsync"/> reads it back on recovery.
     /// </summary>
     protected override async Task UpdateMetadataAsync(CancellationToken ct)
     {
@@ -279,7 +401,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             if (!string.IsNullOrEmpty(CurrentSessionId) && !string.IsNullOrEmpty(latestRun))
             {
                 var merged = sessionMappings == null ? [] : new Dictionary<string, string>(sessionMappings);
-                merged[$"claude-sdk:{CurrentSessionId}"] = latestRun;
+                merged[$"{SessionMappingKeyPrefix}{CurrentSessionId}"] = latestRun;
                 sessionMappings = merged;
             }
 
@@ -343,8 +465,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
     /// <summary>
     /// Tracks whether the current <see cref="CurrentSessionId"/> originated from the
-    /// <c>initialSessionId</c> constructor parameter (i.e. caller-seeded for
-    /// <c>--resume</c>) rather than from a live SDK event. Used by
+    /// <c>initialSessionId</c> constructor parameter or was restored from the store on
+    /// recovery (i.e. seeded for <c>--resume</c>) rather than from a live SDK event. Used by
     /// <see cref="CaptureSessionId"/> to escalate the log level when a seeded id is
     /// later replaced by a live one — that transition is a correctness signal for
     /// callers driving resume workflows.
@@ -362,7 +484,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// </summary>
     /// <param name="sessionId">The session id to record.</param>
     /// <param name="isSeed">
-    /// True when the source is the constructor's <c>initialSessionId</c> parameter; false
+    /// True when the source is the constructor's <c>initialSessionId</c> parameter or the
+    /// store-restored id (<see cref="OnThreadRecoveredAsync"/>); false
     /// when the source is the live SDK (<see cref="SystemInitMessage"/> or
     /// <see cref="IClaudeAgentSdkClient.CurrentSession"/>).
     /// </param>

@@ -91,6 +91,13 @@ public sealed record ConversationListOptions
     public ConversationSortOrder SortOrder { get; init; } = ConversationSortOrder.LastUsed;
 
     /// <summary>
+    /// Leave out conversations the user deleted that are kept only because forks still read their
+    /// messages (<see cref="ConversationLineage.IsDeleted"/>). They cannot be opened, so a list of
+    /// conversations to open should not offer them. False (the default) keeps them.
+    /// </summary>
+    public bool ExcludeDeleted { get; init; }
+
+    /// <summary>
     /// The explicit spelling of "what a null options argument means": no exclusion, last-used order.
     /// </summary>
     /// <remarks>
@@ -101,8 +108,8 @@ public sealed record ConversationListOptions
     public static ConversationListOptions Default { get; } = new();
 
     /// <summary>
-    /// Whether the given row survives the PRESENTATION filter. Prefix exclusion ONLY - this
-    /// deliberately says nothing about whether the caller is permitted to see the row, which is
+    /// Whether the given row survives the PRESENTATION filter: prefix exclusion and, when asked,
+    /// <see cref="ExcludeDeleted"/>. This deliberately says nothing about whether the caller is permitted to see the row, which is
     /// <see cref="ConversationListScope.Admits"/>'s job and only its job.
     /// </summary>
     /// <remarks>
@@ -114,6 +121,11 @@ public sealed record ConversationListOptions
     public bool Admits(ThreadMetadata metadata)
     {
         ArgumentNullException.ThrowIfNull(metadata);
+
+        if (ExcludeDeleted && ConversationLineage.IsDeleted(metadata))
+        {
+            return false;
+        }
 
         if (ExcludedThreadIdPrefixes.Count == 0)
         {

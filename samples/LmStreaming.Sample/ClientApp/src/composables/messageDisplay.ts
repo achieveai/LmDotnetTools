@@ -11,6 +11,7 @@ import type {
   NotificationDisplayData,
   DisplayItem,
   MessageStatus,
+  PersistedIdentity,
 } from '@/types';
 import type { CompactionState } from '@/types/context';
 import {
@@ -39,6 +40,31 @@ export interface DisplayableMessage {
   parentRunId?: string | null;
   messageOrderIdx?: number | null;
   timestamp: number;
+  /** Stored message id, when known (see {@link PersistedIdentity}). */
+  persistedId?: string | null;
+  /** Stored append order, when known (see {@link PersistedIdentity}). */
+  seq?: number | null;
+}
+
+/**
+ * The identity fields a display item carries. Keys are omitted, not nulled, when unknown, so a live
+ * item's shape is unchanged from before these fields existed.
+ */
+function identity(persistedId: string | null | undefined, seq: number | null | undefined): PersistedIdentity {
+  const result: PersistedIdentity = {};
+  if (persistedId != null) result.persistedId = persistedId;
+  if (seq != null) result.seq = seq;
+  return result;
+}
+
+function identityOf(msg: DisplayableMessage): PersistedIdentity {
+  return identity(msg.persistedId, msg.seq);
+}
+
+/** The larger of two optional seqs; a pill spans several messages and is placed by its last one. */
+function maxSeq(a: number | null, b: number | null | undefined): number | null {
+  if (b == null) return a;
+  return a == null ? b : Math.max(a, b);
 }
 
 /**
@@ -145,6 +171,8 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
   let pillRunId: string | null = null;
   let pillParentRunId: string | null = null;
   let pillMessageOrderIdx: number | null = null;
+  let pillSeq: number | null = null;
+  let pillPersistedId: string | null = null;
 
   function flushPill() {
     if (pillBuffer.length > 0) {
@@ -155,12 +183,20 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         runId: pillRunId,
         parentRunId: pillParentRunId,
         messageOrderIdx: pillMessageOrderIdx,
+        ...identity(pillPersistedId, pillSeq),
       });
       pillBuffer = [];
       pillRunId = null;
       pillParentRunId = null;
       pillMessageOrderIdx = null;
+      pillSeq = null;
+      pillPersistedId = null;
     }
+  }
+
+  function trackPillIdentity(msg: DisplayableMessage) {
+    pillSeq = maxSeq(pillSeq, msg.seq);
+    pillPersistedId = msg.persistedId ?? pillPersistedId;
   }
 
   for (const msg of sortedMessages) {
@@ -177,6 +213,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         id: msg.id,
         notification: notifyToDisplayData(content),
         runId: msg.runId,
+        ...identityOf(msg),
       });
     } else if (isTextMessage(content) && content.context_discovery != null) {
       flushPill();
@@ -190,6 +227,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
           text: content.text,
         },
         runId: msg.runId,
+        ...identityOf(msg),
       });
     } else if (isCompactionCheckpointMessage(content)) {
       // A compaction checkpoint (#721) is a divider, never a user bubble: the row serializes as Role.User
@@ -200,6 +238,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         id: msg.id,
         notification: checkpointToDisplayData(content),
         runId: msg.runId,
+        ...identityOf(msg),
       });
     } else if (isAgentMessage(content)) {
       // One agent speaking to another (#244). Placed with the notification branch, and likewise
@@ -211,6 +250,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         id: msg.id,
         notification: agentToDisplayData(content),
         runId: msg.runId,
+        ...identityOf(msg),
       });
     } else if (msg.role === 'user') {
       flushPill();
@@ -220,6 +260,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         content: msg.content as TextMessage,
         status: msg.status,
         timestamp: msg.timestamp,
+        ...identityOf(msg),
       });
     } else if (isReasoningMessage(msg.content)) {
       const reasoning = msg.content as ReasoningMessage;
@@ -257,6 +298,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
       pillRunId = msg.runId ?? null;
       pillParentRunId = msg.parentRunId ?? null;
       pillMessageOrderIdx = msg.messageOrderIdx ?? null;
+      trackPillIdentity(msg);
     } else if (isToolsCallMessage(msg.content)) {
       // Split multi-tool-call messages into individual pills (one per tool call)
       const toolsCall = msg.content as ToolsCallMessage;
@@ -276,6 +318,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
       pillRunId = msg.runId ?? null;
       pillParentRunId = msg.parentRunId ?? null;
       pillMessageOrderIdx = msg.messageOrderIdx ?? null;
+      trackPillIdentity(msg);
     } else if (isToolCallMessage(msg.content)) {
       // Wrap individual tool call as its own pill (no merging)
       const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
@@ -297,6 +340,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
       pillRunId = msg.runId ?? null;
       pillParentRunId = msg.parentRunId ?? null;
       pillMessageOrderIdx = msg.messageOrderIdx ?? null;
+      trackPillIdentity(msg);
     } else if (isTextMessage(msg.content)) {
       // Text message - flush pill and add text
       flushPill();
@@ -307,6 +351,7 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
         runId: msg.runId,
         parentRunId: msg.parentRunId,
         messageOrderIdx: msg.messageOrderIdx,
+        ...identityOf(msg),
       });
     }
   }
