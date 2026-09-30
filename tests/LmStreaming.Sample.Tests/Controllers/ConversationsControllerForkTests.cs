@@ -139,6 +139,49 @@ public sealed class ConversationsControllerForkTests
     }
 
     /// <summary>
+    /// A CLI provider is refused however the stored id is spelled, and when none is stored and the
+    /// default is a CLI: the agent pool trims and lower-cases the stored id, and falls back to the
+    /// default, so both run on the CLI loop.
+    /// </summary>
+    [Theory]
+    [InlineData(" Claude ", "test")]
+    [InlineData(null, "claude")]
+    public async Task Fork_RefusesACliProvider_SpelledAnyWay_OrInheritedFromTheDefault(
+        string? storedProviderId,
+        string defaultProviderId
+    )
+    {
+        await SeedSourceAsync(providerId: storedProviderId);
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var controller = CreateController(pool, defaultProviderId: defaultProviderId);
+
+        Code(await controller.Fork(Source, new ForkConversationRequest { AfterRunId = "run-1" }))
+            .Should()
+            .Be((409, "cli_provider_unsupported"));
+        (await _store.ListThreadsAsync(100, 0)).Select(t => t.ThreadId).Should().Equal(Source);
+    }
+
+    /// <summary>
+    /// A fork cannot be moved to a CLI provider afterwards either: the CLI would start a session
+    /// without the shared history the fork shows. Its provider is left as it was.
+    /// </summary>
+    [Fact]
+    public async Task SwitchProvider_OfAFork_ToACliProvider_IsRefused_AndKeepsItsProvider()
+    {
+        await SeedSourceAsync(providerId: "test");
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var controller = CreateController(pool);
+        var fork = await ForkAsync(controller, "run-1");
+
+        Code(await controller.SwitchProvider(fork, new SwitchProviderRequest { ProviderId = " Claude " }))
+            .Should()
+            .Be((409, "cli_provider_unsupported"));
+        (await _store.LoadMetadataAsync(fork))!
+            .Properties.Should()
+            .Contain(MultiTurnAgentPool.ProviderPropertyKey, "test");
+    }
+
+    /// <summary>
     /// Forking needs Write on the source: a fork keeps the source's messages alive past its deletion,
     /// so a viewer must not be able to pin a conversation it cannot change.
     /// </summary>
@@ -192,7 +235,14 @@ public sealed class ConversationsControllerForkTests
 
         (await controller.Delete(Source)).Should().BeOfType<NoContentResult>();
 
-        ListOf(await controller.List()).Single(c => c.ThreadId == Source).Deleted.Should().BeTrue();
+        ListOf(await controller.List())
+            .Select(c => c.ThreadId)
+            .Should()
+            .Equal([fork], "it cannot be opened, so the default list does not offer it");
+        ListOf(await controller.List(includeDeleted: true))
+            .Single(c => c.ThreadId == Source)
+            .Deleted.Should()
+            .BeTrue("the fork-aware sidebar asks for it to group the forks under");
         var messages = Assert.IsType<OkObjectResult>(await controller.GetMessages(fork));
         messages.Value.Should().BeAssignableTo<IEnumerable<PersistedMessage>>().Which.Should().HaveCount(2);
 
@@ -261,6 +311,42 @@ public sealed class ConversationsControllerForkTests
         Code(await controller.GetBranches("thread-missing")).Should().Be((404, "unknown_thread"));
     }
 
+    /// <summary>
+    /// The family is found in ONE listing of the catalog, however large: paging it made the file store
+    /// re-read and sort every metadata file once per page, on every conversation the user opened. The
+    /// viewer's access check reuses that listing instead of listing the catalog again.
+    /// </summary>
+    [Fact]
+    public async Task Branches_ListTheCatalogOnce_HoweverLargeItIs()
+    {
+        const string Tenant = "tnt_a";
+        await SeedSourceAsync(providerId: "test", tenantId: Tenant, ownerUserId: "dir-a:alice");
+        for (var i = 0; i < 1_200; i++)
+        {
+            await _store.SaveMetadataAsync(
+                $"thread-other-{i}",
+                new ThreadMetadata { ThreadId = $"thread-other-{i}", LastUpdated = 2 + i }
+            );
+        }
+
+        var alice = new Principal
+        {
+            TenantId = Tenant,
+            Actor = new PrincipalRef(PrincipalKind.EndUser, "dir-a:alice"),
+            Roles = new HashSet<string>(StringComparer.Ordinal),
+            Source = PrincipalSource.Interactive,
+        };
+        var authorizer = TestAuthorizers.Enforcing(alice, new InMemoryResourceGrantStore(), new RecordingAuditSink());
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var fork = await ForkAsync(CreateController(pool, authorizer), "run-1");
+        var counting = new CountingConversationStore(_store);
+
+        var points = Points(await CreateController(pool, authorizer, store: counting).GetBranches(fork));
+
+        points.Single().Options.Select(o => o.ThreadId).Should().Equal(Source, fork);
+        counting.ListThreadsCallCount.Should().Be(1);
+    }
+
     /// <summary>The provider catalog tells the client which providers cannot fork.</summary>
     [Fact]
     public void ProviderCatalog_MarksTheCliBackedProviders()
@@ -279,14 +365,16 @@ public sealed class ConversationsControllerForkTests
     private ConversationsController CreateController(
         MultiTurnAgentPool pool,
         ConversationAuthorizer? authorizer = null,
-        TimeProvider? time = null
+        TimeProvider? time = null,
+        string defaultProviderId = "test",
+        IConversationStore? store = null
     ) =>
         new(
-            _store,
+            store ?? _store,
             pool,
             Mock.Of<IChatModeStore>(),
             Mock.Of<IWorkspaceStore>(),
-            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
+            new FakeProviderRegistry(defaultProviderId, available: ["test", defaultProviderId]).ToReal(),
             new ConversationStatusResolver(_store, _store),
             time ?? TimeProvider.System,
             new WorkflowRunRegistry(),
@@ -298,8 +386,18 @@ public sealed class ConversationsControllerForkTests
         );
 
     /// <summary>Two runs: <c>u1 a1</c> (run-1) then <c>u2 a2</c> (run-2).</summary>
-    private async Task SeedSourceAsync(string providerId, string? tenantId = null, string? ownerUserId = null)
+    private async Task SeedSourceAsync(string? providerId, string? tenantId = null, string? ownerUserId = null)
     {
+        var properties = ImmutableDictionary<string, object>
+            .Empty.Add("title", "Plan")
+            .Add(MultiTurnAgentPool.WorkspacePropertyKey, "ws-1")
+            .Add(MultiTurnAgentPool.ModePropertyKey, "math-helper")
+            .Add("usage.source-only", "42");
+        if (providerId is not null)
+        {
+            properties = properties.Add(MultiTurnAgentPool.ProviderPropertyKey, providerId);
+        }
+
         await _store.SaveMetadataAsync(
             Source,
             new ThreadMetadata
@@ -308,12 +406,7 @@ public sealed class ConversationsControllerForkTests
                 LastUpdated = 1,
                 TenantId = tenantId,
                 OwnerUserId = ownerUserId,
-                Properties = ImmutableDictionary<string, object>
-                    .Empty.Add("title", "Plan")
-                    .Add(MultiTurnAgentPool.ProviderPropertyKey, providerId)
-                    .Add(MultiTurnAgentPool.WorkspacePropertyKey, "ws-1")
-                    .Add(MultiTurnAgentPool.ModePropertyKey, "math-helper")
-                    .Add("usage.source-only", "42"),
+                Properties = properties,
             }
         );
 

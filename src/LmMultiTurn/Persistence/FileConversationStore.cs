@@ -166,6 +166,29 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
+    public async Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
+            var existingMessages = await LoadMessagesFromFileAsync(messagesFile, ct);
+            if (existingMessages.All(m => m.Seq is not null))
+            {
+                return;
+            }
+
+            await WriteJsonFileAsync(messagesFile, MessageSequence.Append(existingMessages, []), ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
     public async Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);

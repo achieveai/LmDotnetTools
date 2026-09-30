@@ -97,7 +97,7 @@ describe('useConversations — incremental paging', () => {
 
     await api.loadConversations();
 
-    expect(calls).toEqual(['/api/conversations?limit=30&offset=0&sort=lastUsed']);
+    expect(calls).toEqual(['/api/conversations?limit=30&offset=0&sort=lastUsed&includeDeleted=true']);
     expect(api.conversations.value).toHaveLength(CONVERSATIONS_PAGE_SIZE);
     expect(api.hasMoreConversations.value).toBe(true);
     scope.stop();
@@ -110,7 +110,7 @@ describe('useConversations — incremental paging', () => {
     await api.loadConversations();
     await api.loadMoreConversations();
 
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed&includeDeleted=true');
     expect(api.conversations.value).toHaveLength(35);
     // Appended, not prepended and not re-sorted.
     expect(ids(api.conversations.value).slice(0, 3)).toEqual(['c0', 'c1', 'c2']);
@@ -227,7 +227,7 @@ describe('useConversations — incremental paging', () => {
     await api.loadMoreConversations();
 
     // 30 fetched rows so far — the local-only entry must not push the offset to 31.
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed&includeDeleted=true');
     scope.stop();
   });
 });
@@ -243,7 +243,7 @@ describe('useConversations — sort modes', () => {
     queue = [[summary('created-a', 1), summary('created-b', 2)]];
     await api.setSortMode('created');
 
-    expect(calls[2]).toBe('/api/conversations?limit=30&offset=0&sort=created');
+    expect(calls[2]).toBe('/api/conversations?limit=30&offset=0&sort=created&includeDeleted=true');
     // Cleared: none of the lastUsed-ordered rows survive into the created-ordered list.
     expect(ids(api.conversations.value)).toEqual(['created-a', 'created-b']);
     expect(api.sortMode.value).toBe('created');
@@ -260,7 +260,7 @@ describe('useConversations — sort modes', () => {
     await api.setSortMode('created');
     await api.loadMoreConversations();
 
-    expect(calls[3]).toBe('/api/conversations?limit=30&offset=30&sort=created');
+    expect(calls[3]).toBe('/api/conversations?limit=30&offset=30&sort=created&includeDeleted=true');
     scope.stop();
   });
 
@@ -338,7 +338,7 @@ describe('useConversations — sort modes', () => {
     await api.setSortMode('created');
 
     expect(api.sortMode.value).toBe('created');
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=0&sort=created');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=0&sort=created&includeDeleted=true');
     scope.stop();
   });
 

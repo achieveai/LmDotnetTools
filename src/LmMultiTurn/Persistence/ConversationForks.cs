@@ -70,7 +70,16 @@ public enum ForkDeleteOutcome
 /// </summary>
 public static class ConversationForks
 {
-    private const int ListPageSize = 500;
+    /// <summary>
+    /// Serializes <see cref="CreateAsync"/> with <see cref="DeleteAsync"/>. A delete that found no forks
+    /// erases the conversation; a fork created between that scan and the erase would point at messages
+    /// that no longer exist. Under the gate, a fork is written either before the scan (so the delete
+    /// keeps the messages) or after the erase (so the fork is refused).
+    /// </summary>
+    /// <remarks>
+    /// In-process only. Hosts that share one store across processes need a store-level lock instead.
+    /// </remarks>
+    private static readonly SemaphoreSlim LineageGate = new(1, 1);
 
     /// <summary>
     /// Resolves <paramref name="anchor"/> against the full history of <paramref name="sourceThreadId"/>.
@@ -101,6 +110,13 @@ public static class ConversationForks
         }
 
         var history = await store.LoadMessagesAsync(sourceThreadId, ct).ConfigureAwait(false);
+        if (history.Any(m => m.Seq is null))
+        {
+            // Rows from before Seq existed get numbered by the next append. An idle conversation has
+            // none coming, so number them now, in the order they already read, and read again.
+            await store.NumberLegacyMessagesAsync(sourceThreadId, ct).ConfigureAwait(false);
+            history = await store.LoadMessagesAsync(sourceThreadId, ct).ConfigureAwait(false);
+        }
 
         long cut;
         PersistedMessage? edited = null;
@@ -176,8 +192,11 @@ public static class ConversationForks
     /// chose to carry over. Its lineage, latest run and compaction state are set here.
     /// </param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>The lineage written to the fork.</returns>
-    public static async Task<ConversationLineage> CreateAsync(
+    /// <returns>
+    /// The lineage written to the fork, or null when the source was deleted after
+    /// <see cref="ResolveAsync"/> - nothing is written then.
+    /// </returns>
+    public static async Task<ConversationLineage?> CreateAsync(
         IConversationStore store,
         string forkThreadId,
         ForkResolution resolution,
@@ -193,50 +212,63 @@ public static class ConversationForks
             resolution.Point
             ?? throw new ArgumentException("The resolution carries no fork point.", nameof(resolution));
 
-        var sourceMetadata = await store.LoadMetadataAsync(point.ThreadId, ct).ConfigureAwait(false);
-        var lineage = new ConversationLineage
+        await LineageGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            ForkedFrom = point,
-            RootThreadId = ConversationLineage.Read(sourceMetadata)?.RootThreadId ?? point.ThreadId,
-        };
-
-        var metadata = ConversationLineage.Write(
-            seed with
+            var sourceMetadata = await store.LoadMetadataAsync(point.ThreadId, ct).ConfigureAwait(false);
+            var sourceLineage = ConversationLineage.Read(sourceMetadata);
+            if (sourceMetadata is null || sourceLineage?.DeletedAt is not null)
             {
-                ThreadId = forkThreadId,
-                CurrentRunId = null,
-                LatestRunId = resolution.LatestRunId,
-                SessionMappings = null,
-            },
-            lineage
-        );
+                return null;
+            }
 
-        await store
-            .UpdateMetadataAsync(
-                forkThreadId,
-                existing =>
-                    existing is null
-                        ? metadata
-                        : throw new InvalidOperationException($"Conversation '{forkThreadId}' already exists."),
-                ct
-            )
-            .ConfigureAwait(false);
+            var lineage = new ConversationLineage
+            {
+                ForkedFrom = point,
+                RootThreadId = sourceLineage?.RootThreadId ?? point.ThreadId,
+            };
 
-        var inherited = InheritedCompaction(CompactionStateProjection.FromMetadata(sourceMetadata), point.Seq);
-        if (inherited is not null)
-        {
-            _ = await CompactionStateProjection
-                .UpdateAsync(store, forkThreadId, _ => inherited, ct)
+            var metadata = ConversationLineage.Write(
+                seed with
+                {
+                    ThreadId = forkThreadId,
+                    CurrentRunId = null,
+                    LatestRunId = resolution.LatestRunId,
+                    SessionMappings = null,
+                },
+                lineage
+            );
+
+            // One write, so a fork never exists without the compaction state it inherits.
+            var inherited = InheritedCompaction(CompactionStateProjection.FromMetadata(sourceMetadata), point.Seq);
+            if (inherited is not null)
+            {
+                metadata = CompactionStateProjection.WithState(metadata, inherited);
+            }
+
+            await store
+                .UpdateMetadataAsync(
+                    forkThreadId,
+                    existing =>
+                        existing is null
+                            ? metadata
+                            : throw new InvalidOperationException($"Conversation '{forkThreadId}' already exists."),
+                    ct
+                )
                 .ConfigureAwait(false);
-        }
 
-        return lineage;
+            return lineage;
+        }
+        finally
+        {
+            _ = LineageGate.Release();
+        }
     }
 
     /// <summary>
     /// Deletes <paramref name="threadId"/>, unless forks still read its messages: then it is marked
     /// deleted and kept until its last fork is deleted. Deleting a fork also erases any deleted
-    /// conversation up its chain that no fork needs any more.
+    /// conversation up its chain that no fork needs any more. A deleted conversation cannot be forked.
     /// </summary>
     public static async Task<ForkDeleteOutcome> DeleteAsync(
         IConversationStore store,
@@ -247,6 +279,23 @@ public static class ConversationForks
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(threadId);
 
+        await LineageGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await DeleteUnderGateAsync(store, threadId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = LineageGate.Release();
+        }
+    }
+
+    private static async Task<ForkDeleteOutcome> DeleteUnderGateAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct
+    )
+    {
         if ((await FindDirectForksAsync(store, threadId, ct).ConfigureAwait(false)).Count > 0)
         {
             var deletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -300,27 +349,16 @@ public static class ConversationForks
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(threadId);
 
-        // A full walk, not a page: a fork missed here is a fork whose shared messages get erased.
-        var forks = new List<string>();
-        for (var offset = 0; ; offset += ListPageSize)
-        {
-            var page = await store.ListThreadsAsync(ListPageSize, offset, options: null, ct).ConfigureAwait(false);
-            forks.AddRange(
-                page.Where(m =>
-                        string.Equals(
-                            ConversationLineage.Read(m)?.ForkedFrom?.ThreadId,
-                            threadId,
-                            StringComparison.Ordinal
-                        )
-                    )
-                    .Select(m => m.ThreadId)
-            );
-
-            if (page.Count < ListPageSize)
-            {
-                return forks;
-            }
-        }
+        // The whole catalog, not a page: a fork missed here is a fork whose shared messages get erased.
+        // One call rather than paging, since the file store re-reads its whole catalog per call.
+        var all = await store.ListThreadsAsync(int.MaxValue, 0, options: null, ct).ConfigureAwait(false);
+        return
+        [
+            .. all.Where(m =>
+                    string.Equals(ConversationLineage.Read(m)?.ForkedFrom?.ThreadId, threadId, StringComparison.Ordinal)
+                )
+                .Select(m => m.ThreadId),
+        ];
     }
 
     /// <summary>

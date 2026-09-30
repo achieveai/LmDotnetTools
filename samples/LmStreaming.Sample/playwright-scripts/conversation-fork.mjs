@@ -5,10 +5,12 @@
 //   browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/conversation-fork.mjs" })
 //
 // Returns { pass, failures, steps, consoleErrors, badResponses }. Uses the `test` mock provider (plain
-// text prompts) and `claude-mock` (CLI-backed) for the no-fork-buttons case. Adjust BASE / SHOTS.
+// text prompts) and `claude-mock` (CLI-backed) for the no-fork-buttons case. Adjust BASE.
 async (page) => {
   const BASE = 'http://localhost:5077';
-  const SHOTS = 'B:/sources/LmDotnetTools/.claude/worktrees/egress-policy-docker-proxy-3f18ff/.logs/fork-manual';
+  // Relative, under the gitignored `.logs/`: Playwright resolves a relative screenshot path against the
+  // MCP server's cwd, the repo/worktree root (see ask-question-notify-client.mjs).
+  const SHOTS = '.logs/fork-manual';
   const LONG =
     '<|instruction_start|>{"instruction_chain":[{"id":"long-text","id_message":"Long response","messages":[{"text_message":{"length":300}}]}]}<|instruction_end|>';
   const stamp = Date.now().toString(36);

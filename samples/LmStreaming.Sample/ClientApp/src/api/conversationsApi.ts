@@ -35,14 +35,19 @@ export interface PersistedMessage {
  * list infers exhaustion from a short page (fewer than `limit` rows). `sort` selects the backend
  * ordering; it must match the order the caller is already holding, since pages fetched under
  * different sorts cannot be concatenated into one coherent list.
+ *
+ * `includeDeleted` also returns deleted conversations kept for their forks (`deleted: true`). They
+ * cannot be opened; only the sidebar asks for them, to group their forks under them.
  */
 export async function listConversations(
   limit = 30,
   offset = 0,
-  sort: ConversationSortMode = DEFAULT_CONVERSATION_SORT_MODE
+  sort: ConversationSortMode = DEFAULT_CONVERSATION_SORT_MODE,
+  includeDeleted = false
 ): Promise<ConversationSummary[]> {
+  const deleted = includeDeleted ? '&includeDeleted=true' : '';
   const response = await apiFetch(
-    `/api/conversations?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}`
+    `/api/conversations?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}${deleted}`
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch conversations: ${response.statusText}`);

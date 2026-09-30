@@ -50,10 +50,12 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
     /// <summary>
     /// Whether <paramref name="providerId"/> runs a CLI that keeps the conversation's history in its
-    /// own session. See <see cref="ProviderDescriptor.CliBacked"/>.
+    /// own session. See <see cref="ProviderDescriptor.CliBacked"/>. Compared after the same trimming
+    /// and lower-casing the agent pool applies to a stored id, so a spelling that runs on a CLI loop
+    /// is classified as one.
     /// </summary>
     public static bool IsCliBacked(string? providerId) =>
-        providerId is "claude" or "codex" or "copilot" or "claude-mock" or "codex-mock" or "copilot-mock";
+        NormalizeId(providerId) is "claude" or "codex" or "copilot" or "claude-mock" or "codex-mock" or "copilot-mock";
 
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;

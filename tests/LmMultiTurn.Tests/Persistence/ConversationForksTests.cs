@@ -24,6 +24,8 @@ public sealed class ConversationForksTests : IAsyncLifetime
 
     public static TheoryData<string> AllKinds => ConversationStoreHarness.AllKinds;
 
+    public static TheoryData<string> DurableKinds => ConversationStoreHarness.DurableKinds;
+
     [Fact]
     public async Task Resolve_CutsAfterARun_AfterAMessage_OrBeforeAUserMessage()
     {
@@ -106,6 +108,40 @@ public sealed class ConversationForksTests : IAsyncLifetime
             .NotBeNull("the pending result lies after this fork point");
     }
 
+    [Theory]
+    [MemberData(nameof(DurableKinds))]
+    public async Task Resolve_OfAnIdleLegacyConversation_NumbersItsRows_InTheOrderTheyRead(string kind)
+    {
+        // Rows written before Seq existed are numbered only by an append. An idle old conversation
+        // gets no append, yet must still be forkable, with the fork seeing the order the user saw.
+        _ = _harness.Open(kind);
+        await _harness.SeedLegacyRowsAsync(
+            kind,
+            Source,
+            [
+                ConversationStoreHarness.Row(Source, "a1", 200, runId: "run-1", role: "Assistant"),
+                ConversationStoreHarness.Row(Source, "u1", 100, runId: "run-1", role: "User"),
+                ConversationStoreHarness.Row(Source, "u2", 300, runId: "run-2", role: "User"),
+            ]
+        );
+        var store = _harness.Reopen(kind);
+        await store.SaveMetadataAsync(Source, Seed(Source));
+
+        var afterRun = await ConversationForks.ResolveAsync(store, Source, new(AfterRunId: "run-1"), null);
+        afterRun.Refusal.Should().BeNull();
+        afterRun.Point!.Seq.Should().Be(2);
+        (await ConversationForks.ResolveAsync(store, Source, new(BeforeMessageId: "u2"), null))
+            .Point!.MessageId.Should()
+            .Be("a1");
+
+        (await ConversationForks.CreateAsync(store, Fork, afterRun, Seed(Fork))).Should().NotBeNull();
+        (await store.LoadMessagesAsync(Fork)).Select(m => m.Id).Should().Equal("u1", "a1");
+        (await _harness.Reopen(kind).LoadMessagesAsync(Source))
+            .Select(m => (m.Id, m.Seq))
+            .Should()
+            .Equal(("u1", 1L), ("a1", 2L), ("u2", 3L));
+    }
+
     [Fact]
     public async Task Create_WritesLineage_TheRootOfTheFamily_AndTheLatestRun_AndRefusesAnExistingThread()
     {
@@ -114,7 +150,7 @@ public sealed class ConversationForksTests : IAsyncLifetime
         var first = await ConversationForks.ResolveAsync(store, Source, new(AfterRunId: "run-2"), null);
         var lineage = await ConversationForks.CreateAsync(store, Fork, first, Seed(Fork));
 
-        lineage.RootThreadId.Should().Be(Source);
+        lineage!.RootThreadId.Should().Be(Source);
         var metadata = await store.LoadMetadataAsync(Fork);
         metadata!.LatestRunId.Should().Be("run-2");
         metadata.Properties!["title"].Should().Be("seeded", "the host's seed is kept");
@@ -123,7 +159,7 @@ public sealed class ConversationForksTests : IAsyncLifetime
 
         await store.AppendMessagesAsync(Fork, [ConversationStoreHarness.Row(Fork, "f1", 900, runId: "run-f")]);
         var second = await ConversationForks.ResolveAsync(store, Fork, new(AfterMessageId: "f1"), null);
-        (await ConversationForks.CreateAsync(store, ForkOfFork, second, Seed(ForkOfFork)))
+        (await ConversationForks.CreateAsync(store, ForkOfFork, second, Seed(ForkOfFork)))!
             .RootThreadId.Should()
             .Be(Source, "a fork of a fork belongs to the original's family");
 
@@ -184,6 +220,42 @@ public sealed class ConversationForksTests : IAsyncLifetime
         (await store.LoadMessagesAsync(Source)).Should().BeEmpty();
     }
 
+    [Theory]
+    [MemberData(nameof(AllKinds))]
+    public async Task List_LeavesOutDeletedOriginals_WhenAsked_BeforeItPages(string kind)
+    {
+        // The deleted original is the newest row. Filtering after the page was cut would return an
+        // empty first page and skip a real conversation.
+        var store = _harness.Open(kind);
+        await store.SaveMetadataAsync("thread-old", Seed("thread-old") with { LastUpdated = 100 });
+        await store.SaveMetadataAsync(Fork, Seed(Fork) with { LastUpdated = 200 });
+        await store.SaveMetadataAsync(
+            Source,
+            ConversationLineage.Write(
+                Seed(Source) with
+                {
+                    LastUpdated = 300,
+                },
+                new ConversationLineage { DeletedAt = 1 }
+            )
+        );
+        var hide = new ConversationListOptions { ExcludeDeleted = true };
+        var scope = ConversationListScope.ForTenantIncludingUntenanted("tenant-a");
+
+        foreach (
+            var list in new Func<int, ConversationListOptions?, Task<IReadOnlyList<ThreadMetadata>>>[]
+            {
+                (offset, options) => store.ListThreadsAsync(1, offset, options),
+                (offset, options) => store.ListThreadsAsync(scope, 1, offset, options),
+            }
+        )
+        {
+            (await list(0, hide)).Select(m => m.ThreadId).Should().Equal(Fork);
+            (await list(1, hide)).Select(m => m.ThreadId).Should().Equal("thread-old");
+            (await list(0, null)).Select(m => m.ThreadId).Should().Equal([Source], "by default every row is listed");
+        }
+    }
+
     [Fact]
     public async Task Delete_OfAForkWithSiblings_LeavesTheHiddenOriginalForThem()
     {
@@ -197,6 +269,36 @@ public sealed class ConversationForksTests : IAsyncLifetime
 
         (await store.LoadMetadataAsync(Source)).Should().NotBeNull();
         (await store.LoadMessagesAsync(ForkOfFork)).Select(m => m.Id).Should().Equal("u1", "a1");
+    }
+
+    [Fact]
+    public async Task Create_RacingADeleteThatFoundNoForks_IsRefused_AndLeavesNoDanglingFork()
+    {
+        // The delete has scanned for forks and found none. A fork created before the delete erases
+        // the source would point at messages that are about to vanish, so it must be refused.
+        var store = new PauseFirstListStore(await TwoTurnSourceAsync());
+        var point = await ConversationForks.ResolveAsync(store, Source, new(AfterRunId: "run-1"), null);
+
+        var delete = ConversationForks.DeleteAsync(store, Source);
+        await store.ListReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var create = ConversationForks.CreateAsync(store, Fork, point, Seed(Fork));
+        store.Resume.SetResult();
+
+        (await delete).Should().Be(ForkDeleteOutcome.Deleted);
+        (await create).Should().BeNull("its source was erased");
+        (await store.LoadMetadataAsync(Fork)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Create_OfADeletedConversation_IsRefused()
+    {
+        var store = await TwoTurnSourceAsync();
+        var point = await ConversationForks.ResolveAsync(store, Source, new(AfterRunId: "run-1"), null);
+        _ = await ConversationForks.CreateAsync(store, Fork, point, Seed(Fork));
+        (await ConversationForks.DeleteAsync(store, Source)).Should().Be(ForkDeleteOutcome.Hidden);
+
+        (await ConversationForks.CreateAsync(store, ForkOfFork, point, Seed(ForkOfFork))).Should().BeNull();
+        (await store.LoadMetadataAsync(ForkOfFork)).Should().BeNull();
     }
 
     private async Task<IConversationStore> TwoTurnSourceAsync()
@@ -253,6 +355,65 @@ public sealed class ConversationForksTests : IAsyncLifetime
             threadId,
             runId
         );
+
+    /// <summary>Holds the first catalog listing - a delete's fork scan - until <see cref="Resume"/> is set.</summary>
+    private sealed class PauseFirstListStore(IConversationStore inner) : IConversationStore
+    {
+        private int _lists;
+
+        public TaskCompletionSource ListReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        )
+        {
+            var listed = await inner.ListThreadsAsync(limit, offset, options, ct);
+            if (Interlocked.Increment(ref _lists) == 1)
+            {
+                ListReached.SetResult();
+                await Resume.Task.WaitAsync(ct);
+            }
+
+            return listed;
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+    }
 
     private static CheckpointEntry Checkpoint(string id, long rowSeq, CheckpointStatus status) =>
         new()

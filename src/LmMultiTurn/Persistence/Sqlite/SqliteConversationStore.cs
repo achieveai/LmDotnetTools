@@ -300,6 +300,28 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
+    public async Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        // BEGIN IMMEDIATE, like an append: the backfill reads MAX(seq) and then writes after it.
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            _ = await BackfillLegacySeqAsync(connection, transaction, threadId, ct).ConfigureAwait(false);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
@@ -529,6 +551,7 @@ public sealed class SqliteConversationStore
         // applied by this one statement to the fully filtered set, which is the whole point. See
         // ConversationListOptions for the production failure that a post-pass produced.
         var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "thread_id");
+        var deletedClause = DeletedExclusionClause(listOptions, "metadata_json");
 
         command.CommandText = FormattableString.Invariant(
             $"""
@@ -536,6 +559,7 @@ public sealed class SqliteConversationStore
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
             WHERE {exclusionClause}
+              AND {deletedClause}
             -- thread_id breaks ties so LIMIT/OFFSET pages a total order. Without it two rows
             -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
             -- between the page-1 and page-2 statements: one row comes back twice and another
@@ -597,6 +621,7 @@ public sealed class SqliteConversationStore
         // branch admitted the row. It is also a WHERE clause rather than a post-pass, so LIMIT/OFFSET
         // still applies to the fully filtered set. See ConversationListOptions.
         var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "t.thread_id");
+        var deletedClause = DeletedExclusionClause(listOptions, "t.metadata_json");
 
         // The `@userId IS NOT NULL` guards are the SQL spelling of spec 7.4 step 3: without them an
         // app-only principal would fall through into the grant branch with a NULL subject. They do
@@ -615,6 +640,7 @@ public sealed class SqliteConversationStore
                             OR {grantClause} ) )
                     OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL ) )
               AND {exclusionClause}
+              AND {deletedClause}
             -- Same total order as the unscoped overload above, and as
             -- ConversationListOptions.Order: a scoped listing must not page differently.
             ORDER BY t.last_updated DESC, t.thread_id DESC
@@ -752,6 +778,32 @@ public sealed class SqliteConversationStore
         // "1 = 1" rather than an empty string so the caller can interpolate this unconditionally and
         // the statement stays syntactically valid with nothing excluded.
         return conjuncts.Count == 0 ? "1 = 1" : string.Join(" AND ", conjuncts);
+    }
+
+    /// <summary>
+    /// The SQL spelling of <see cref="ConversationListOptions.ExcludeDeleted"/>, or <c>1 = 1</c> when
+    /// it is off. The lineage is a JSON string inside <c>metadata_json</c>, so it is extracted twice.
+    /// </summary>
+    /// <remarks>
+    /// A <c>CASE</c>, not <c>AND</c>, so an unreadable record or lineage is never parsed: SQLite does
+    /// not promise to short-circuit <c>AND</c>, and <c>json_extract</c> on malformed JSON fails the
+    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read"/> does.
+    /// </remarks>
+    /// <param name="options">The resolved (never null) listing options.</param>
+    /// <param name="metadataJsonColumn">How the <c>metadata_json</c> column is spelled in this statement.</param>
+    private static string DeletedExclusionClause(ConversationListOptions options, string metadataJsonColumn)
+    {
+        if (!options.ExcludeDeleted)
+        {
+            return "1 = 1";
+        }
+
+        var lineage = FormattableString.Invariant(
+            $"json_extract({metadataJsonColumn}, '$.properties.\"{ConversationLineage.PropertyKey}\"')"
+        );
+        return FormattableString.Invariant(
+            $"(CASE WHEN json_valid({metadataJsonColumn}) IS NOT 1 THEN 1 WHEN json_valid({lineage}) IS NOT 1 THEN 1 ELSE json_extract({lineage}, '$.deleted_at') IS NULL END) = 1"
+        );
     }
 
     /// <inheritdoc />

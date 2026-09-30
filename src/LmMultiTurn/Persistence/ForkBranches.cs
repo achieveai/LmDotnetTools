@@ -3,7 +3,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// <summary>One conversation of a fork family, as <see cref="ForkBranches.Compute"/> sees it.</summary>
 /// <param name="ThreadId">The conversation.</param>
 /// <param name="ForkedFrom">Where it was forked from; null for the family's original.</param>
-/// <param name="Watermark">The highest Seq of its full history.</param>
+/// <param name="Watermark">
+/// The highest Seq of its full history. Only the viewed conversation's is read, so a caller may pass 0
+/// for the others.
+/// </param>
 /// <param name="Visible">Whether the viewer may be offered it: readable and not deleted.</param>
 public sealed record BranchNode(string ThreadId, ForkPoint? ForkedFrom, long Watermark, bool Visible);
 

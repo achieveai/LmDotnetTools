@@ -280,37 +280,19 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// resume, and a profile with skills or subagents points <c>CLAUDE_CONFIG_DIR</c> (where the CLI
     /// keeps sessions) at a new temp directory per loop, so in both cases nothing is restored.
     /// The restored id is seeded exactly like the constructor seed.
-    /// Best-effort: a metadata read failure is logged and the loop starts a fresh session.
     /// </remarks>
     protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
     {
         await base.OnThreadRecoveredAsync(ct);
 
-        if (Store == null || !string.IsNullOrEmpty(CurrentSessionId))
+        if (!string.IsNullOrEmpty(CurrentSessionId))
         {
             return;
         }
 
-        ThreadMetadata? metadata;
-        try
-        {
-            metadata = await Store.LoadMetadataAsync(ThreadId, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(
-                ex,
-                "Could not read session mappings for thread {ThreadId}; the next run starts a new Claude SDK session",
-                ThreadId
-            );
-            return;
-        }
-
-        var storedSessionId = SelectStoredSessionId(metadata);
+        // Use the metadata recovery already loaded. Reading it again could fail after the first
+        // read succeeded, and that failure would silently start a fresh CLI session.
+        var storedSessionId = SelectStoredSessionId(RecoveredMetadata);
         if (storedSessionId == null)
         {
             return;
@@ -352,7 +334,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             "Restored Claude SDK SessionId {SessionId} for thread {ThreadId} from stored session mappings (LatestRunId: {LatestRunId})",
             storedSessionId,
             ThreadId,
-            metadata?.LatestRunId
+            RecoveredMetadata?.LatestRunId
         );
     }
 

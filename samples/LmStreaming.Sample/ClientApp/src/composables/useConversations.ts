@@ -15,6 +15,12 @@ import {
  */
 export const CONVERSATIONS_PAGE_SIZE = 30;
 
+/**
+ * The sidebar lists deleted originals its forks still read, greyed, so the forks keep their parent
+ * row. The server leaves them out unless asked.
+ */
+const INCLUDE_DELETED_FORK_ORIGINALS = true;
+
 /** Where the chosen sort mode is remembered across reloads. */
 export const SORT_MODE_STORAGE_KEY = 'lmstreaming.conversations.sortMode';
 
@@ -104,7 +110,8 @@ export function useConversations() {
       const fetched = await apiListConversations(
         CONVERSATIONS_PAGE_SIZE,
         0,
-        sortMode.value
+        sortMode.value,
+        INCLUDE_DELETED_FORK_ORIGINALS
       );
       if (requestGeneration !== generation) return;
       // Merge rather than overwrite: this fetch is kicked off once, on mount, and can still be
@@ -146,7 +153,8 @@ export function useConversations() {
       const page = await apiListConversations(
         CONVERSATIONS_PAGE_SIZE,
         fetchedRowCount,
-        sortMode.value
+        sortMode.value,
+        INCLUDE_DELETED_FORK_ORIGINALS
       );
       if (requestGeneration !== generation) return;
       fetchedRowCount += page.length;

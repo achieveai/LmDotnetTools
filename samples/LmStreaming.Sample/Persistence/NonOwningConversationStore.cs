@@ -97,6 +97,10 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         _conversation.ReplaceMessageAsync(threadId, replacement, ct);
 
     /// <inheritdoc />
+    public Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default) =>
+        _conversation.NumberLegacyMessagesAsync(threadId, ct);
+
+    /// <inheritdoc />
     public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
         _conversation.GetMessageWatermarkAsync(threadId, ct);
 

@@ -174,6 +174,19 @@ public class ClaudeAgentLoopSessionRestoreTests
         argv.Should().NotContain("--resume");
     }
 
+    [Fact]
+    public async Task Recovery_UsesTheMetadataRecoveryAlreadyLoaded()
+    {
+        // Base recovery reads the metadata once. A second read that fails (a transient store
+        // fault) must not turn a successful recovery into a fresh CLI session.
+        const string threadId = "restore-second-read-fails";
+        var store = await StoreWithMappingsAsync(threadId, latestRunId: "run-1", ("claude-sdk:sess-stored", "run-1"));
+
+        var argv = await CaptureFirstLaunchArgvAsync(threadId, new FailAfterFirstMetadataReadStore(store));
+
+        ResumeIdOf(argv).Should().Be("sess-stored");
+    }
+
     private static string? ResumeIdOf(IReadOnlyList<string> argv) => ValueAfter(argv, "--resume");
 
     private static string? SessionIdFlagOf(IReadOnlyList<string> argv) => ValueAfter(argv, "--session-id");
@@ -289,6 +302,53 @@ public class ClaudeAgentLoopSessionRestoreTests
             _ = Launched.TrySetResult(request.Arguments);
             throw new ProcessLauncherException("recording launcher: never spawns");
         }
+    }
+
+    /// <summary>Serves the first metadata read, then fails every later one.</summary>
+    private sealed class FailAfterFirstMetadataReadStore(IConversationStore inner) : IConversationStore
+    {
+        private int _metadataReads;
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            Interlocked.Increment(ref _metadataReads) == 1
+                ? inner.LoadMetadataAsync(threadId, ct)
+                : throw new InvalidOperationException("injected: second metadata read failed");
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>

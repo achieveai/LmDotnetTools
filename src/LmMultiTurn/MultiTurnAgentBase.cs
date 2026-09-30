@@ -1168,6 +1168,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return false;
         }
 
+        RecoveredMetadata = metadata;
+
         // Load messages
         var persistedMessages = await Store.LoadMessagesAsync(ThreadId, ct);
         if (persistedMessages.Count == 0)
@@ -1317,6 +1319,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
+    /// The metadata the latest <see cref="RecoverAsync"/> loaded, or null before any recovery found
+    /// some. Set before <see cref="OnHistoryRestoredAsync"/> and <see cref="OnThreadRecoveredAsync"/> run.
+    /// </summary>
+    protected ThreadMetadata? RecoveredMetadata { get; private set; }
+
+    /// <summary>
     /// Called from <see cref="RecoverAsync"/> exactly once per recovery attempt, after metadata
     /// has been loaded — regardless of whether any message rows exist for this thread. Some
     /// recoverable state (e.g. notify_waits) is persisted separately from message history, keyed
@@ -1325,6 +1333,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// messages exist, or in its place when there are none.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <see cref="RecoveredMetadata"/> holds the metadata this recovery loaded. Read it instead of
+    /// loading again: a second read can fail after the first succeeded.
+    /// </remarks>
     protected virtual Task OnThreadRecoveredAsync(CancellationToken ct)
     {
         return Task.CompletedTask;

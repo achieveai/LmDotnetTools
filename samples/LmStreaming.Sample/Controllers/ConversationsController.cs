@@ -481,12 +481,17 @@ public class ConversationsController(
     /// <param name="limit">Page size, 1..100. Defaults to the client's page size.</param>
     /// <param name="offset">Rows to skip. Must not be negative.</param>
     /// <param name="sort"><c>lastUsed</c> (default) or <c>created</c>, case-insensitive.</param>
+    /// <param name="includeDeleted">
+    /// Also list deleted conversations kept for their forks, marked <c>deleted</c>. Off by default:
+    /// they cannot be opened, and a client that does not know the marker would offer them.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     [HttpGet]
     public async Task<IActionResult> List(
         int limit = 30,
         int offset = 0,
         string? sort = null,
+        bool includeDeleted = false,
         CancellationToken ct = default
     )
     {
@@ -518,6 +523,7 @@ public class ConversationsController(
         {
             ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes,
             SortOrder = sortOrder,
+            ExcludeDeleted = !includeDeleted,
         };
 
         var scope = await authorizer.CreateListScopeAsync(ct);
@@ -2137,7 +2143,14 @@ public class ConversationsController(
             return UnknownThread(threadId);
         }
 
+        // The provider it would run on, resolved as the agent pool does: a conversation with none
+        // stored runs on the default.
         var providerId = PropertyString(source, MultiTurnAgentPool.ProviderPropertyKey);
+        if (string.IsNullOrWhiteSpace(providerId))
+        {
+            providerId = providerRegistry.DefaultProviderId;
+        }
+
         if (ProviderRegistry.IsCliBacked(providerId))
         {
             return Conflict(
@@ -2207,6 +2220,11 @@ public class ConversationsController(
             ),
             ct
         );
+        if (lineage is null)
+        {
+            // Deleted between the checks above and the write: nothing was created.
+            return UnknownThread(threadId);
+        }
 
         logger.LogInformation(
             "Forked {ThreadId} at seq {Seq} into {ForkThreadId}",
@@ -2254,7 +2272,7 @@ public class ConversationsController(
         // The family is found by scanning, as the sidebar does: lineage lives on each fork, so the
         // original has no list of its forks to read.
         var root = ConversationLineage.Read(current)?.RootThreadId ?? threadId;
-        var family = (await ListAllThreadsAsync(scope: null, ct))
+        var family = (await ListAllThreadsAsync(ct))
             .Where(t => t.ThreadId == root || ConversationLineage.Read(t)?.RootThreadId == root)
             .ToDictionary(t => t.ThreadId, StringComparer.Ordinal);
         family[threadId] = current;
@@ -2264,10 +2282,10 @@ public class ConversationsController(
             return Ok(new ConversationBranchesResponse { Points = [] });
         }
 
+        // Scope.Admits is the predicate the scoped listing applies, so checking the family already in
+        // hand answers "may this viewer see it" without listing the catalog a second time.
         var scope = await authorizer.CreateListScopeAsync(ct);
-        var readable = scope is null
-            ? null
-            : (await ListAllThreadsAsync(scope, ct)).Select(t => t.ThreadId).ToHashSet(StringComparer.Ordinal);
+        var watermark = await store.GetMessageWatermarkAsync(threadId, ct);
 
         var nodes = new List<BranchNode>(family.Count);
         foreach (var member in family.Values)
@@ -2277,8 +2295,8 @@ public class ConversationsController(
                 new BranchNode(
                     member.ThreadId,
                     lineage?.ForkedFrom,
-                    await store.GetMessageWatermarkAsync(member.ThreadId, ct),
-                    lineage?.DeletedAt is null && (readable is null || readable.Contains(member.ThreadId))
+                    member.ThreadId == threadId ? watermark : 0,
+                    lineage?.DeletedAt is null && (scope is null || scope.Admits(member))
                 )
             );
         }
@@ -2318,27 +2336,17 @@ public class ConversationsController(
         );
     }
 
-    /// <summary>Every root conversation the store lists, optionally within a viewer's scope.</summary>
-    private async Task<List<ThreadMetadata>> ListAllThreadsAsync(ConversationListScope? scope, CancellationToken ct)
-    {
-        const int pageSize = 500;
-        var options = new ConversationListOptions
-        {
-            ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes,
-        };
-        var all = new List<ThreadMetadata>();
-        for (var offset = 0; ; offset += pageSize)
-        {
-            var page = scope is null
-                ? await store.ListThreadsAsync(pageSize, offset, options, ct)
-                : await store.ListThreadsAsync(scope, pageSize, offset, options, ct);
-            all.AddRange(page);
-            if (page.Count < pageSize)
-            {
-                return all;
-            }
-        }
-    }
+    /// <summary>
+    /// Every root conversation the store lists, in ONE call: the file store re-reads and sorts its
+    /// whole catalog for each call, so paging through it cost one full scan per page.
+    /// </summary>
+    private async Task<IReadOnlyList<ThreadMetadata>> ListAllThreadsAsync(CancellationToken ct) =>
+        await store.ListThreadsAsync(
+            int.MaxValue,
+            0,
+            new ConversationListOptions { ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes },
+            ct
+        );
 
     private static ForkOrigin ToForkOrigin(ForkPoint point) =>
         new()
@@ -2581,6 +2589,23 @@ public class ConversationsController(
         if (await AuthorizeAsync(threadId, AccessAction.Write, ct) is { } denied)
         {
             return denied;
+        }
+
+        // A fork's history starts in the conversation it came from, and a CLI provider never replays
+        // stored messages - it would run the fork without the history it shows. See Fork.
+        if (
+            ProviderRegistry.IsCliBacked(request.ProviderId)
+            && ConversationLineage.Read(await store.LoadMetadataAsync(threadId, ct))?.ForkedFrom is not null
+        )
+        {
+            return Conflict(
+                new
+                {
+                    error = "A forked conversation cannot move to a CLI provider.",
+                    code = "cli_provider_unsupported",
+                    providerId = request.ProviderId,
+                }
+            );
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);
