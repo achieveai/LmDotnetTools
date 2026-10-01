@@ -70,50 +70,119 @@ public sealed class AgentDelegatedToolExecutor : IDelegatedToolExecutor, IAsyncD
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The executor's turn runs on this instance's lifetime, not on the caller's token. A caller that
+    /// stops waiting (the planner's run was cancelled) leaves the executor to finish the turn it is on,
+    /// and the gate opens only when that turn has ended. Released any earlier, the next call's input
+    /// would be batched into the still-running turn and its answer would carry the previous call's
+    /// results. If the executor loop itself stops, a pending call fails at once instead of waiting
+    /// for a turn that will never be assigned.
+    /// </remarks>
     public async Task<string> ExecuteAsync(DelegatedToolCall call, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(call);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfUnavailable();
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var turn = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var activity = new DelegationActivity(_executor.ThreadId);
+        Task<AgentTextResult> collect;
         try
         {
+            ThrowIfUnavailable();
             _logger.LogDebug(
                 "Executor {ExecutorThreadId} starting {ToolName} (call {ToolCallId})",
                 _executor.ThreadId,
                 call.ToolName,
                 call.ToolCallId
             );
-
-            var activity = new DelegationActivity(_executor.ThreadId);
-            var result = await AgentTextCollector
-                .CollectAsync(_executor, ComposeTurn(call), cancellationToken, activity.Observe)
-                .ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(result.Text))
-            {
-                // An empty tool result reads to the planner like "nothing there". A silent executor
-                // is a failure, and the planner has to be able to tell the two apart.
-                throw new InvalidOperationException("the executor finished without reporting anything");
-            }
-
-            if (DelegationActivity.Describe(call, activity.Executed) is not { } note)
-            {
-                return result.Text;
-            }
-
-            _logger.LogInformation(
-                "Executor {ExecutorThreadId} run for {ToolName} (call {ToolCallId}) was not exactly that call: {ExecutedCount} tool calls ran",
-                _executor.ThreadId,
-                call.ToolName,
-                call.ToolCallId,
-                activity.Executed.Count
-            );
-            return result.Text.TrimEnd() + "\n\n" + note;
+            collect = AgentTextCollector.CollectAsync(_executor, ComposeTurn(call), turn.Token, activity.Observe);
         }
-        finally
+        catch
         {
+            turn.Dispose();
             _ = _gate.Release();
+            throw;
+        }
+
+        // Whatever happens to the caller, the gate opens when the turn is over, and not before.
+        _ = collect.ContinueWith(
+            finished =>
+            {
+                _ = finished.Exception; // observed: an abandoned turn's failure has no one to throw to
+                turn.Dispose();
+                _ = _gate.Release();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
+
+        try
+        {
+            var first = await Task.WhenAny(collect, _runTask).WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (first != collect)
+            {
+                // The loop ended under this call: no run will complete it. End the turn so the gate opens.
+                try
+                {
+                    turn.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The turn ended in the same instant; nothing left to cancel.
+                }
+
+                throw new InvalidOperationException(
+                    "the executor loop stopped before the call completed",
+                    _runTask.Exception?.GetBaseException()
+                );
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Executor {ExecutorThreadId} call {ToolCallId} ({ToolName}) was abandoned by its caller; its turn runs on, and the next call waits for it",
+                _executor.ThreadId,
+                call.ToolCallId,
+                call.ToolName
+            );
+            throw;
+        }
+
+        var result = await collect.ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(result.Text))
+        {
+            // An empty tool result reads to the planner like "nothing there". A silent executor
+            // is a failure, and the planner has to be able to tell the two apart.
+            throw new InvalidOperationException("the executor finished without reporting anything");
+        }
+
+        if (DelegationActivity.Describe(call, activity.Executed) is not { } note)
+        {
+            return result.Text;
+        }
+
+        _logger.LogInformation(
+            "Executor {ExecutorThreadId} run for {ToolName} (call {ToolCallId}) was not exactly that call: {ExecutedCount} tool calls ran",
+            _executor.ThreadId,
+            call.ToolName,
+            call.ToolCallId,
+            activity.Executed.Count
+        );
+        return result.Text.TrimEnd() + "\n\n" + note;
+    }
+
+    /// <summary>Disposed, or the executor loop has already ended: no call can be served.</summary>
+    private void ThrowIfUnavailable()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_runTask.IsCompleted)
+        {
+            throw new InvalidOperationException(
+                "the executor loop is not running",
+                _runTask.Exception?.GetBaseException()
+            );
         }
     }
 

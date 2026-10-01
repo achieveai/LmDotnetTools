@@ -23,8 +23,15 @@ public class DualLayerAgentTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
 
-    /// <summary>A provider whose next reply is computed from the request it receives.</summary>
-    internal sealed class ScriptedAgent(Func<IReadOnlyList<IMessage>, IReadOnlyList<IMessage>> script) : IStreamingAgent
+    /// <summary>
+    /// A provider whose next reply is computed from the request it receives. <paramref name="beforeReply"/>
+    /// runs after the request is recorded and before the reply is computed, so a test can hold a model
+    /// call open.
+    /// </summary>
+    internal sealed class ScriptedAgent(
+        Func<IReadOnlyList<IMessage>, IReadOnlyList<IMessage>> script,
+        Func<IReadOnlyList<IMessage>, CancellationToken, Task>? beforeReply = null
+    ) : IStreamingAgent
     {
         public ConcurrentQueue<IReadOnlyList<IMessage>> Requests { get; } = new();
 
@@ -33,7 +40,7 @@ public class DualLayerAgentTests
         /// <summary>What this model would answer, so another script can extend it.</summary>
         public IReadOnlyList<IMessage> Reply(IReadOnlyList<IMessage> request) => script(request);
 
-        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+        public async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
             CancellationToken cancellationToken = default
@@ -42,7 +49,12 @@ public class DualLayerAgentTests
             var request = messages.ToList();
             Requests.Enqueue(request);
             OfferedTools.Enqueue([.. options?.Functions ?? []]);
-            return Task.FromResult(Stream([.. script(request).Select(m => m.WithIds(options))]));
+            if (beforeReply is not null)
+            {
+                await beforeReply(request, cancellationToken);
+            }
+
+            return Stream([.. script(request).Select(m => m.WithIds(options))]);
         }
 
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
@@ -184,7 +196,10 @@ public class DualLayerAgentTests
             includeNotifyClientTool: false,
             systemPrompt: DualLayerPrompts.ComposeExecutorSystemPrompt(null),
             externalUsageSink: executorUsage
-        );
+        )
+        {
+            OwnUsageKind = UsageExecutionKind.Executor,
+        };
         var executor = new AgentDelegatedToolExecutor(executorLoop);
         var planner = new MultiTurnAgentLoop(
             plannerModel,
@@ -359,7 +374,89 @@ public class DualLayerAgentTests
 
         // One conversation, one bill: the cheap layer's spend is not invisible to the host.
         var ledger = pair.Planner.UsageSink.Should().BeOfType<UsageLedger>().Subject;
-        ledger.SnapshotRecords().Should().Contain(r => r.InputTokens == ExecutorPromptTokens);
+        // And it is the executor's spend, not a second primary: a reader splitting the bill by kind
+        // must be able to tell the two layers apart. (One record per executor model request.)
+        ledger
+            .SnapshotRecords()
+            .Where(r => r.InputTokens == ExecutorPromptTokens)
+            .Should()
+            .NotBeEmpty()
+            .And.OnlyContain(r => r.ExecutionKind == UsageExecutionKind.Executor);
+    }
+
+    [Fact]
+    public async Task An_executor_run_that_errors_reaches_the_planner_as_a_failure_not_as_its_partial_text()
+    {
+        var plannerModel = new ScriptedAgent(request =>
+            ToolResults(request).Any()
+                ? [Say("saw: " + ToolResults(request).Single().Result)]
+                : [Call("p1", "read_file", $$"""{"path":"notes.md","rationale":"{{Rationale}}"}""")]
+        );
+        // Narrates, runs the tool, then the provider fails on the request that would have reported.
+        var faithful = FaithfulExecutor();
+        var dyingExecutor = new ScriptedAgent(request =>
+            ToolResults(request).Any()
+                ? throw new InvalidOperationException("provider connection reset")
+                : [Say("working on it"), .. faithful.Reply(request)]
+        );
+        await using var pair = Build(plannerModel, dyingExecutor);
+
+        var answer = await pair.AskAsync("Read notes.md");
+
+        answer
+            .Text.Should()
+            .Contain("could not carry out read_file")
+            .And.Contain("ended in error")
+            .And.NotContain("working on it", "the narration of a failed run is not its report");
+    }
+
+    [Fact]
+    public async Task An_abandoned_call_keeps_the_executor_until_its_turn_ends_so_the_next_call_is_not_folded_into_it()
+    {
+        // The planner's run is cancelled while the executor is mid-call. The executor's turn runs on
+        // regardless (there is no way to stop a run), so the next call has to wait for it: released
+        // early, its delegation would be drained into the running turn and answered by it.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var faithful = FaithfulExecutor();
+        var gatedExecutor = new ScriptedAgent(
+            faithful.Reply,
+            beforeReply: (request, ct) =>
+                LastUserText(request) is { } text && text.Contains("<planner-tool-call>") && text.Contains("a.md")
+                    ? gate.Task.WaitAsync(ct)
+                    : Task.CompletedTask
+        );
+        await using var pair = Build(new ScriptedAgent(_ => [Say("unused")]), gatedExecutor);
+
+        using var abandon = new CancellationTokenSource();
+        var callA = pair.Executor.ExecuteAsync(
+            new DelegatedToolCall("read_file", """{"path":"a.md"}""", Rationale, "p1"),
+            abandon.Token
+        );
+        await WaitUntilAsync(() => gatedExecutor.Requests.Count == 1, pair.Cts.Token);
+        await abandon.CancelAsync();
+        var abandoned = () => callA;
+        await abandoned.Should().ThrowAsync<OperationCanceledException>();
+
+        var callB = pair.Executor.ExecuteAsync(
+            new DelegatedToolCall("read_file", """{"path":"b.md"}""", Rationale, "p2"),
+            pair.Cts.Token
+        );
+        await Task.Delay(50, pair.Cts.Token);
+        callB.IsCompleted.Should().BeFalse("the executor is still on the abandoned call's turn");
+        gatedExecutor.Requests.Should().HaveCount(1);
+
+        gate.SetResult();
+
+        (await callB).Should().Be("report: contents of b.md");
+        pair.Tools.ReadArgs.Select(a => JsonNode.Parse(a)!["path"]!.GetValue<string>()).Should().Equal("a.md", "b.md");
+        // The abandoned run ended on its own turns: the first request carrying a.md's result (the run's
+        // reporting turn) ends on that result, not on the next call's delegation. Later requests carry
+        // it too, as history.
+        var afterARead = gatedExecutor.Requests.First(r =>
+            ToolResults(r).Any(t => t.Result.Contains("contents of a.md"))
+        );
+        LastUserText(afterARead).Should().BeNull("the next call was not drained into the abandoned call's run");
+        Delegations(gatedExecutor).Should().HaveCount(2);
     }
 
     [Fact]

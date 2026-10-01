@@ -290,6 +290,61 @@ public sealed class ProgramSubAgentCompositionTests
         second.OwnsAgent.Should().BeTrue();
     }
 
+    /// <summary>
+    /// The dual-layer executor's sub-agents are the executor's. The host builds the options once with
+    /// the PLANNER's provider baked into every template, so without the rebind a child spawned from
+    /// the cheap layer that inherits its parent's model would run on the expensive one.
+    /// </summary>
+    [Fact]
+    public void RebindSubAgentProvider_PointsEveryTemplateAndInheritedSpawnAtTheExecutorsProvider()
+    {
+        var plannerAgent = new Mock<IStreamingAgent>().Object;
+        var executorAgent = new Mock<IStreamingAgent>().Object;
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        var plannerBound = global::Program.ApplyCharacteristicsAgentFactory(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["worker"] = Template("worker", () => plannerAgent),
+                    ["reviewer"] = Template("reviewer", () => plannerAgent),
+                },
+            },
+            _ => new SubAgentProviderAgent(plannerAgent, ImmutableDictionary<string, object?>.Empty)
+        );
+
+        var rebound = global::Program.RebindSubAgentProvider(
+            plannerBound,
+            () => executorAgent,
+            characteristics => new SubAgentProviderAgent(
+                characteristics.IsModelExplicitlySelected ? routedAgent : executorAgent,
+                ImmutableDictionary<string, object?>.Empty
+            )
+        );
+
+        rebound.Templates.Keys.Should().BeEquivalentTo("worker", "reviewer");
+        foreach (var template in rebound.Templates.Values)
+        {
+            template.AgentFactory().Should().BeSameAs(executorAgent);
+            template
+                .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null))
+                .Agent.Should()
+                .BeSameAs(executorAgent, "an inherited model is the executor's model");
+            template
+                .CharacteristicsAgentFactory!(
+                    new SubAgentCharacteristics("explicit-model", null) { IsModelExplicitlySelected = true }
+                )
+                .Agent.Should()
+                .BeSameAs(routedAgent, "an explicit model still routes through the executor's factory");
+        }
+
+        plannerBound
+            .Templates["worker"]
+            .AgentFactory()
+            .Should()
+            .BeSameAs(plannerAgent, "the planner's options are untouched");
+    }
+
     [Fact]
     public async Task BindConversationSubAgents_PassesCharacteristicsFactoryToSessionBinding()
     {

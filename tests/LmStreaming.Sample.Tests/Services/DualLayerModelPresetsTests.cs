@@ -106,33 +106,62 @@ public class DualLayerModelPresetsTests
     public void Registry_PresetIsAvailable_OnlyWhileBothMembersAre()
     {
         using var envMode = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        // Planner is a Copilot model gated on the token; executor is the OpenAI provider gated on its key.
+        static ProviderRegistry Build(bool copilotToken) =>
+            new(
+                new FakeFileSystemProbe(),
+                () => false,
+                [Astra],
+                copilotTokenAvailable: () => copilotToken,
+                dualLayerPresets: [new DualLayerModelPreset("astopen", "gpt-6-astra", "openai", "Astra + OpenAI")]
+            );
+
+        using (EnvScope.Set("OPENAI_API_KEY", null))
+        {
+            var noKey = Build(copilotToken: true);
+            noKey.IsAvailable("astopen").Should().BeFalse("the executor has no API key");
+            noKey.Get("astopen")!.Available.Should().BeFalse();
+            noKey.IsKnown("astopen").Should().BeTrue();
+        }
+
+        using (EnvScope.Set("OPENAI_API_KEY", "sk-test-not-a-real-key"))
+        {
+            var both = Build(copilotToken: true);
+            both.IsAvailable("astopen").Should().BeTrue();
+            both.ListAll().Single(p => p.Id == "astopen").Available.Should().BeTrue();
+
+            var noToken = Build(copilotToken: false);
+            noToken.IsAvailable("astopen").Should().BeFalse("the planner has no Copilot token");
+            noToken.IsKnown("astopen").Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public void Registry_DropsAPreset_ThatNamesACliBackedMember()
+    {
+        // The host builds a pair as two in-process loops over one tool registry. A CLI-backed member
+        // has no such loop: as planner it would run alone and never delegate, as executor it cannot be
+        // built at all. The members stay usable on their own; only the pair is refused.
+        using var envMode = EnvScope.Set("LM_PROVIDER_MODE", "test");
         using var envCli = EnvScope.Set("CLAUDE_CLI_PATH", null);
-        var mockHostRunning = false;
-        // Planner is a Copilot model gated on the token; executor is a mock gated on the live host.
         var registry = new ProviderRegistry(
             new FakeFileSystemProbe(executablesOnPath: ["claude"]),
-            () => mockHostRunning,
-            [Astra],
-            copilotTokenAvailable: () => true,
-            dualLayerPresets: [new DualLayerModelPreset("astmock", "gpt-6-astra", "claude-mock", "Astra + mock")]
-        );
-
-        registry.IsAvailable("astmock").Should().BeFalse("the mock executor's host is down");
-        registry.Get("astmock")!.Available.Should().BeFalse();
-
-        mockHostRunning = true;
-        registry.IsAvailable("astmock").Should().BeTrue();
-        registry.ListAll().Single(p => p.Id == "astmock").Available.Should().BeTrue();
-
-        var noToken = new ProviderRegistry(
-            new FakeFileSystemProbe(executablesOnPath: ["claude"]),
             () => true,
-            [Astra],
-            copilotTokenAvailable: () => false,
-            dualLayerPresets: [new DualLayerModelPreset("astmock", "gpt-6-astra", "claude-mock", "Astra + mock")]
+            [Astra, Luna],
+            copilotTokenAvailable: () => true,
+            dualLayerPresets:
+            [
+                new DualLayerModelPreset("clauna", "claude", "gpt-6-luna", "Claude CLI + Luna"),
+                new DualLayerModelPreset("astmock", "gpt-6-astra", "claude-mock", "Astra + mock"),
+                new DualLayerModelPreset("astuna", "gpt-6-astra", "gpt-6-luna", "Astuna"),
+            ]
         );
-        noToken.IsAvailable("astmock").Should().BeFalse("the planner has no Copilot token");
-        noToken.IsKnown("astmock").Should().BeTrue();
+
+        registry.IsKnown("clauna").Should().BeFalse("a CLI planner never delegates");
+        registry.IsKnown("astmock").Should().BeFalse("a CLI executor cannot be wired");
+        registry.IsAvailable("claude").Should().BeTrue();
+        registry.IsAvailable("claude-mock").Should().BeTrue();
+        registry.TryGetDualLayerPreset("astuna", out _).Should().BeTrue();
     }
 
     [Fact]

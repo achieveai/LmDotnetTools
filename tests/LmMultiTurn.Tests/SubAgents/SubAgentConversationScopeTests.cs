@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.DualLayer;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -236,6 +237,31 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         nestedManager.TryGetAgent(grandchildId, out var grandchild).Should().BeTrue();
         TagOf(grandchild!.ThreadId).Should().Be(TagOf(child.ThreadId), "the grandchild lives in the root's scope");
         grandchild.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(root, "agent-2"));
+    }
+
+    [Fact]
+    public async Task SpawnAsync_FromAPairedExecutor_DrawsFromThePlannerConversationsCounter()
+    {
+        // Dual layer. The executor loop is the planner's other half, not a conversation of its own: a
+        // child it spawns is numbered in the planner's sequence and lands in the planner's scope, so
+        // one conversation never mints agent-1 twice.
+        const string planner = "thread-ordinal-paired";
+        var store = await StoreWithRootAsync(planner);
+        var plannerManager = CreateManager(planner, store);
+        var executorManager = CreateManager(DualLayerThreadIds.ExecutorFor(planner), store);
+
+        var first = ParseAgentId(await plannerManager.SpawnAsync("worker", "first", runInBackground: true));
+        var second = ParseAgentId(await executorManager.SpawnAsync("worker", "second", runInBackground: true));
+        var third = ParseAgentId(await plannerManager.SpawnAsync("worker", "third", runInBackground: true));
+
+        first.Should().Be("agent-1");
+        second.Should().Be("agent-2");
+        third.Should().Be("agent-3");
+
+        executorManager.TryGetAgent(second, out var child).Should().BeTrue();
+        child!.ThreadId.Should().Be(SubAgentManager.SubAgentThreadId(planner, "agent-2"));
+        var rootMetadata = await store.LoadMetadataAsync(planner);
+        Convert.ToInt32(rootMetadata!.Properties![SubAgentManager.NextOrdinalProperty]).Should().Be(4);
     }
 
     [Fact]

@@ -230,6 +230,7 @@ internal static class UsageReader
         "WorkflowTask",
         "Continuation",
         UsageRecordRow.CompactionKind,
+        "Executor",
     ];
 
     /// <summary>Parses the records array out of the raw <c>usage.records</c> property value.</summary>

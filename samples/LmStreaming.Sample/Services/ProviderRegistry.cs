@@ -245,6 +245,20 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
                 continue;
             }
 
+            if (IsCliBacked(preset.PlannerId) || IsCliBacked(preset.ExecutorId))
+            {
+                // The pair is two in-process loops sharing one tool registry. A CLI-backed member has no
+                // such loop: as planner it would run alone and never delegate, as executor it cannot be
+                // built at all. Either way the preset would not be the pair it claims to be.
+                logger.LogError(
+                    "DualLayerModels entry '{PresetId}' names a CLI-backed model (planner {Planner}, executor {Executor}); a pair needs two in-process models, so it is dropped",
+                    preset.Id,
+                    preset.PlannerId,
+                    preset.ExecutorId
+                );
+                continue;
+            }
+
             dualLayerBuilder[preset.Id] = preset;
             builder[preset.Id] = new ProviderDescriptor(preset.Id, preset.DisplayName, false, Group: DualLayerGroup);
         }

@@ -53,12 +53,30 @@ public static class AgentTextCollector
         var streamedText = new StringBuilder();
         string? streamedGenerationId = null;
         string? runId = null;
+        // Runs assigned since this subscription began. ExecuteRunAsync yields every completion it sees,
+        // so an errored completion is treated as this call's only when it belongs to one of these runs, or
+        // when no assignment has been seen at all (the error ended the agent before our run could start).
+        var assignedRunIds = new HashSet<string>(StringComparer.Ordinal);
 
         await foreach (var message in agent.ExecuteRunAsync(userInput, cancellationToken).ConfigureAwait(false))
         {
             observe?.Invoke(message);
             switch (message)
             {
+                case RunAssignmentMessage assigned when assigned.Assignment.RunId is { Length: > 0 } assignedRunId:
+                    _ = assignedRunIds.Add(assignedRunId);
+                    break;
+
+                case RunCompletedMessage { IsError: true } failed
+                    when assignedRunIds.Count == 0 || assignedRunIds.Contains(failed.CompletedRunId):
+                    // The run ended in error. The text collected before that is the agent's partial work,
+                    // and returning it would hand the caller a failed run that reads like an answer.
+                    throw new InvalidOperationException(
+                        $"The agent's run {failed.CompletedRunId} ended in error"
+                            + (failed.ErrorCode is { Length: > 0 } code ? $" ({code})" : string.Empty)
+                            + $": {failed.ErrorMessage ?? "no details were reported"}"
+                    );
+
                 case TextMessage finalized:
                     runId ??= finalized.RunId;
                     if (

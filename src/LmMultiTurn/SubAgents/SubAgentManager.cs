@@ -630,8 +630,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             ?? collaboration?.Bundle.GetOrCreateOrdinals(CreateRootOrdinals)
             ?? CreateRootOrdinals();
 
-        SubAgentOrdinalAllocator CreateRootOrdinals() =>
-            new(parentAgent.ThreadId, ResolveOrdinalStore(options, parentAgent.ThreadId), _logger);
+        SubAgentOrdinalAllocator CreateRootOrdinals()
+        {
+            // The executor half of a dual-layer pair numbers its children in the CONVERSATION's sequence.
+            // Its thread is executor-{conversation}, its children's threads are scoped to the conversation
+            // (SubAgentThreadIds.ScopeTag), and a conversation can switch between a plain loop and the pair.
+            // Two counters over one scope would hand out an ordinal twice and overwrite a child's transcript.
+            var root = DualLayer.DualLayerThreadIds.TryGetPlannerThreadId(parentAgent.ThreadId, out var conversation)
+                ? conversation
+                : parentAgent.ThreadId;
+            return new(root, ResolveOrdinalStore(options, root), _logger);
+        }
         ChildOptions = options.ForChildLoop() with { OrdinalAllocator = _ordinals };
         _usageSink = usageSink;
         _persistUsageAsync = persistUsageAsync;

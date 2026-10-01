@@ -2534,6 +2534,28 @@ try
 
                         var dualLayerTuning = sp.GetRequiredService<DualLayerTuning>();
                         var executorUsage = new DeferredUsageSink();
+                        // The executor's sub-agents are the executor's. The options above bake the
+                        // PLANNER's provider into every template, so a child that inherits its parent's
+                        // model would run on the planner's model and transport: the expensive layer,
+                        // spawned from the cheap one. Rebind every template to the executor's provider.
+                        var executorSubAgentOptions = subAgentOptions is null
+                            ? null
+                            : RebindSubAgentProvider(
+                                subAgentOptions,
+                                () => agentFactory(executorProviderId),
+                                new CharacteristicsAgentFactory(
+                                    providerRegistry,
+                                    executorProviderAgent,
+                                    model => CreateCopilotModelAgent(model, loggerFactory),
+                                    loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
+                                    parentCopilotModel: providerRegistry.TryGetCopilotModel(
+                                        executorProviderId,
+                                        out var executorParentModel
+                                    )
+                                        ? executorParentModel
+                                        : null
+                                ).Create
+                            );
                         var executorLoop = new MultiTurnAgentLoop(
                             executorProviderAgent,
                             filteredRegistry,
@@ -2560,7 +2582,7 @@ try
                             outputChannelCapacity: outputChannelCapacity,
                             store: conversationStore,
                             logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
-                            subAgentOptions: subAgentOptions,
+                            subAgentOptions: executorSubAgentOptions,
                             subAgentTemplateSource: sharedSubAgentSource,
                             loggerFactory: loggerFactory,
                             persistRunLedger: true,
@@ -2579,6 +2601,9 @@ try
                             // A question from one of the executor's sub-agents still has to reach the tabs.
                             PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
                             OwnsProviderAgent = true,
+                            // In the planner's ledger these records are the executor's spend under the
+                            // conversation, not a second primary.
+                            OwnUsageKind = UsageExecutionKind.Executor,
                         };
                         var executor = new AgentDelegatedToolExecutor(
                             executorLoop,
@@ -4487,6 +4512,33 @@ public partial class Program
     /// owned agent from the template rather than the parent's provider instance. No child ever holds the
     /// parent loop's provider, which is what lets the loop own and dispose it on an in-place switch.
     /// </remarks>
+    /// <summary>
+    /// The same catalog bound to another provider: every template builds its agent from
+    /// <paramref name="agentFactory"/> and routes characteristics through
+    /// <paramref name="characteristicsAgentFactory"/>. For the executor half of a dual-layer pair, whose
+    /// sub-agents must inherit the executor's model and transport, not the planner's that the options
+    /// were first built for.
+    /// </summary>
+    internal static SubAgentOptions RebindSubAgentProvider(
+        SubAgentOptions options,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory
+    )
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(agentFactory);
+
+        var rebound = options with
+        {
+            Templates = options.Templates.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value with { AgentFactory = agentFactory },
+                StringComparer.Ordinal
+            ),
+        };
+        return ApplyCharacteristicsAgentFactory(rebound, characteristicsAgentFactory);
+    }
+
     internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
         SubAgentOptions options,
         Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory

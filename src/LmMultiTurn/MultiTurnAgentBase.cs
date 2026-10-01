@@ -621,6 +621,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
+    /// The execution kind stamped on this loop's own provider calls. <see cref="UsageExecutionKind.Primary"/>
+    /// for a conversation. A host sets <see cref="UsageExecutionKind.Executor"/> on the executor half of a
+    /// dual-layer pair: its records are forwarded into the planner's ledger, where they must read as the
+    /// executor's spend under the conversation, not as a second primary.
+    /// </summary>
+    public UsageExecutionKind OwnUsageKind { get; init; } = UsageExecutionKind.Primary;
+
+    /// <summary>
     /// Records the primary loop's usage into the conversation-wide ledger and, when a store is configured,
     /// persists the updated aggregate snapshot (fire-and-forget). The snapshot reflects both this primary
     /// usage and any descendant usage already folded in via the SubAgentManager relay (#196).
@@ -633,12 +641,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return;
         }
 
-        var record = UsageRecordMapper.FromUsageMessage(
-            usageMessage,
-            ThreadId,
-            UsageExecutionKind.Primary,
-            DefaultOptions.ModelId
-        );
+        var record = UsageRecordMapper.FromUsageMessage(usageMessage, ThreadId, OwnUsageKind, DefaultOptions.ModelId);
         ledger.RecordUsage(record);
 
         EnsureUsageWriter()?.Schedule();
