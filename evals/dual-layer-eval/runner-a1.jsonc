@@ -1,0 +1,54 @@
+// Round a1: Arbor-shaped executor. a1-exec swaps only the executor prompt (fixed RESULT/GAPS/NOTE report,
+// filter with an omission note, small repairs to answer the same rationale, no deliberation). a1-pair also
+// tells the planner to ask questions, not mechanics. Compare with p2/p3 opuna (bc2, mb1), r9 (tr1) and s1 (sw1).
+// Run: --models opuna --variants a1-exec,a1-pair.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "a1-exec",
+      "extraArgs": [
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-arbor.md"
+      ],
+      "reasoningEffort": "medium"
+    },
+    {
+      "name": "a1-pair",
+      "extraArgs": [
+        "--DualLayer:ExecutorInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/executor-arbor.md",
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-arbor.md"
+      ],
+      "reasoningEffort": "medium"
+    }
+  ],
+  "tasks": [
+    "bc2",
+    "mb1",
+    "tr1",
+    "sw1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

@@ -1,0 +1,40 @@
+// Public round p2: bc2 = bc1's six BrowseComp-Plus questions over a 25x larger corpus (11,370 pages,
+// every evidence and hard-negative page of the 139 shard-0 questions). p1 showed bc1 too easy: all three
+// arms 6/6 with a few greps. Medium effort; seed 1 runs all three arms.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "p2-medium",
+      "extraArgs": [],
+      "reasoningEffort": "medium"
+    }
+  ],
+  "tasks": [
+    "bc2"
+  ],
+  "seeds": 1,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

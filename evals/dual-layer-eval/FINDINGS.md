@@ -423,9 +423,13 @@ Best flow found (now the built-in default, no prompt files needed):
 
 1. **Reference context off.** With it on, the executor sees the task and answers it itself, and
    the planner submits unchecked answers (finding 11).
-2. **Executor reads, planner judges.** The planner asks for one short record per document, in
-   batches of 15 to 25, with named fields, facts not verdicts, a short quote where judgment is
-   needed, and "not stated" for gaps. It never pre-filters by keyword (findings 17, 19).
+2. **Executor reads, planner judges.** The planner calls `map_read`: one call fans out to a cheap
+   reader per document, in parallel, and returns one short line per document. Two passes: a filter
+   over the whole set (at most 4 fields, "yes/no + quote", never an abstain rule), then detail over
+   the kept documents ("never abstain"; abstentions on named paths are listed so the planner can
+   read them itself). Documents longer than one part are skipped in favour of Grep. Facts, not
+   verdicts; it never pre-filters by keyword (findings 17, 19; rounds m1–m4 took tr1 from 0.70x to
+   0.60x Opus at 1.0 on 3 seeds). Without `map_read` it falls back to records in batches of 15 to 25.
 3. **Empty-reply nudge in the run loop.** A turn after tool results with no text and no tool call
    gets a hidden "please continue", at most two in a row per silent streak. Without it the built-in
    prompt ended 4 of 4 tr1 runs without an answer (findings 15, 18).

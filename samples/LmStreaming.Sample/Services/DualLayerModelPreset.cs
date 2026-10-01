@@ -81,11 +81,20 @@ internal static class DualLayerModelPresets
 /// answered it instead of the planner's call and wrote the answers itself, which the planner then
 /// submitted. With the copy off it can only act on the call it was given.
 /// </param>
+/// <param name="MapRead">
+/// Whether the planner gets the <c>map_read</c> tool: one call reads many documents with parallel
+/// cheap readers and returns one line per document (eval direction D5). On unless configured off:
+/// on the must-read-everything task it held Opus's score at 0.60x the cost (m4, 3 seeds), and the
+/// built-in planner prompt tells the planner how to use it.
+/// </param>
+/// <param name="MapReadParallelism">Readers running at once for one <c>map_read</c> call.</param>
 public sealed record DualLayerTuning(
     string? PairInstructions,
     string? PlannerInstructions,
     string? ExecutorInstructions,
-    bool ShareReferenceContext
+    bool ShareReferenceContext,
+    bool MapRead = true,
+    int MapReadParallelism = 8
 )
 {
     public const string SectionName = "DualLayer";
@@ -104,8 +113,17 @@ public sealed record DualLayerTuning(
             ReadFile(section, "PairInstructionsFile", contentRoot, logger),
             ReadFile(section, "PlannerInstructionsFile", contentRoot, logger),
             ReadFile(section, "ExecutorInstructionsFile", contentRoot, logger),
-            section.GetValue("ShareReferenceContext", false)
+            section.GetValue("ShareReferenceContext", false),
+            section.GetValue("MapRead", true),
+            section.GetValue("MapReadParallelism", 8)
         );
+        if (tuning.MapRead)
+        {
+            logger.LogInformation(
+                "Dual layer: the planner gets map_read ({Parallelism} parallel readers)",
+                tuning.MapReadParallelism
+            );
+        }
         if (tuning.ShareReferenceContext)
         {
             logger.LogInformation("Dual layer: the executor gets a reference copy of the planner's inputs");

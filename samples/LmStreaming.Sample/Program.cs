@@ -2586,15 +2586,57 @@ try
                         );
                         ownedResources.Add(executor);
 
+                        // Built from the executor's registry AFTER the executor's constructor added its
+                        // own built-ins to it, so the planner mirrors those too (sub-agent tools included).
+                        var plannerRegistry = DelegatingToolProvider.CreatePlannerRegistry(
+                            filteredRegistry,
+                            executor,
+                            loggerFactory: loggerFactory
+                        );
+                        if (dualLayerTuning.MapRead)
+                        {
+                            // map_read reads with the executor's own Read/Glob (so the sandbox rules hold)
+                            // and asks a second instance of the executor's model, one prompt per document.
+                            var (_, executorHandlers) = filteredRegistry.Build();
+                            if (executorHandlers.TryGetValue("Read", out var readHandler))
+                            {
+                                _ = executorHandlers.TryGetValue("Glob", out var globHandler);
+                                var reader = agentFactory(executorProviderId);
+                                if (reader is IAsyncDisposable disposableReader)
+                                {
+                                    ownedResources.Add(disposableReader);
+                                }
+
+                                _ = plannerRegistry.AddProvider(
+                                    new MapReadToolProvider(
+                                        reader,
+                                        new GenerateReplyOptions
+                                        {
+                                            ModelId = executorWireModelId,
+                                            PromptCaching = PromptCachingMode.Auto,
+                                        },
+                                        readHandler,
+                                        globHandler,
+                                        executorUsage,
+                                        executor.ExecutorThreadId,
+                                        new MapReadOptions { MaxParallel = dualLayerTuning.MapReadParallelism },
+                                        loggerFactory.CreateLogger<MapReadToolProvider>()
+                                    )
+                                );
+                            }
+                            else
+                            {
+                                loggerFactory
+                                    .CreateLogger<Program>()
+                                    .LogWarning(
+                                        "DualLayer:MapRead is on but the executor has no Read tool; map_read not added"
+                                    );
+                            }
+                        }
+
                         var plannerLoop = new MultiTurnAgentLoop(
                             providerAgent,
-                            // Built from the executor's registry AFTER the executor's constructor added its
-                            // own built-ins to it, so the planner mirrors those too (sub-agent tools included).
-                            DelegatingToolProvider.CreatePlannerRegistry(
-                                filteredRegistry,
-                                executor,
-                                loggerFactory: loggerFactory
-                            ),
+                            plannerRegistry,
                             threadId,
                             includeAskUserQuestionTool: askUserQuestionToolEnabled,
                             includeNotifyClientTool: true,

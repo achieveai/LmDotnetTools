@@ -16,6 +16,12 @@
 #   idset   a set of ids such as ticket numbers: the answer may be a JSON array or one string; every token
 #           shaped like LETTERS-DIGITS is taken, case-folded, and the answer passes only when its set equals
 #           the gold set (answers[0], comma-separated). Order and duplicates do not matter; no partial credit
+#   wordset like idset for bare words such as stock tickers: every run of letters/digits is a token, case-folded;
+#           passes only on set equality with the gold (answers[0], comma-separated). No partial credit
+#   loc     code locations 'path/to/file.py::Class.method' (a JSON array, or one string split on commas and
+#           whitespace). Every gold entry is an acceptable location. Passes when at most three are given and
+#           one has a gold entry's path (case-folded, '\' as '/', a leading './' or 'repo/' dropped) and
+#           its function: the same qualname, or the same last segment ('method' for 'Class.method')
 # answers.json values may be the answer itself or { "answer": ..., "evidence": [...] }. Evidence is
 # never scored; its recall against the key's evidence is reported per check as a diagnostic.
 param(
@@ -69,6 +75,17 @@ function Get-ChoiceLetter([string] $s) {
 
 function Get-IdSet([string[]] $items) {
     @($items | ForEach-Object { [regex]::Matches($_, '[A-Za-z]+-\d+') | ForEach-Object { $_.Value.ToUpperInvariant() } } | Sort-Object -Unique)
+}
+
+function ConvertTo-Location([string] $s) {
+    $m = [regex]::Match($s.Trim(), '^(?<p>[^\s:]+\.py)::?(?<q>[A-Za-z_][\w.]*)')
+    if (-not $m.Success) { return $null }
+    $path = ($m.Groups['p'].Value -replace '\\', '/').ToLowerInvariant() -replace '^(\./)?(repo/)?', ''
+    [pscustomobject]@{ Path = $path; Qual = $m.Groups['q'].Value.TrimEnd('.'); Last = ($m.Groups['q'].Value.TrimEnd('.') -split '\.')[-1] }
+}
+
+function Get-WordSet([string[]] $items) {
+    @($items | ForEach-Object { [regex]::Matches($_, '[A-Za-z0-9]+') | ForEach-Object { $_.Value.ToUpperInvariant() } } | Sort-Object -Unique)
 }
 
 function Get-WholeNumber($v) {
@@ -144,6 +161,21 @@ foreach ($q in $key['questions']) {
                 $wantIds = @(Get-IdSet @([string] $gold[0]))
                 $pass = $wantIds.Count -gt 0 -and (($haveIds -join ',') -eq ($wantIds -join ','))
                 $how = "ids [$($haveIds -join ', ')]"
+            }
+            'wordset' {
+                $items = if ($raw -is [System.Collections.IEnumerable] -and $raw -isnot [string]) { @($raw | ForEach-Object { [string] $_ }) } else { @([string] $raw) }
+                $haveIds = @(Get-WordSet $items)
+                $wantIds = @(Get-WordSet @([string] $gold[0]))
+                $pass = $wantIds.Count -gt 0 -and (($haveIds -join ',') -eq ($wantIds -join ','))
+                $how = "words [$($haveIds -join ', ')]"
+            }
+            'loc' {
+                $items = @(if ($raw -is [System.Collections.IEnumerable] -and $raw -isnot [string]) { $raw | ForEach-Object { [string] $_ } } else { ([string] $raw) -split '[,\s]+' | Where-Object { $_ } })
+                $have = @($items | ForEach-Object { ConvertTo-Location $_ } | Where-Object { $_ })
+                $want = @($gold | ForEach-Object { ConvertTo-Location ([string] $_) } | Where-Object { $_ })
+                $hit = @($have | Where-Object { $h = $_; @($want | Where-Object { $_.Path -eq $h.Path -and ($_.Qual -eq $h.Qual -or $_.Last -eq $h.Last) }).Count -gt 0 })
+                $pass = $items.Count -le 3 -and $hit.Count -gt 0
+                $how = if ($items.Count -gt 3) { "$($items.Count) locations (more than 3)" } else { "$($hit.Count) of $($items.Count) locations match" }
             }
             default { [Console]::Error.WriteLine("unknown kind '$($q['kind'])' for $id"); exit 2 }
         }

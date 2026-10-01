@@ -1,0 +1,77 @@
+// Round m1 (tree direction D5): map_read. One planner call fans out to parallel cheap readers (MinionS
+// pattern); the planner sees one line per document and nothing for abstained ones. Dev signal: tr1, then
+// held-out on bc2/mb1/sw1. Opus-alone control stays at the same (medium) effort: the knob under test is L2.
+// Run: --models opuna --variants m1-map --tasks tr1 (dev), then the held-out tasks.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "m1-map",
+      "extraArgs": [
+        "--DualLayer:MapRead=true",
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-mapread.md"
+      ],
+      "reasoningEffort": "medium"
+    },
+    {
+      // m2: map_read names the shared directory once, "-" for silent fields, and the planner is told to
+      // filter first (<=4 fields, abstain rule) and ask for detail only on the survivors.
+      "name": "m2-map",
+      "extraArgs": [
+        "--DualLayer:MapRead=true",
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-mapread-twopass.md"
+      ],
+      "reasoningEffort": "medium"
+    },
+    {
+      // m3: as m2, but the filter pass asks for yes/no + quote instead of an abstain rule (m2b seed0 0.75:
+      // a reader's abstain decision is a judgment, and it over-counted outages by 1-2 tickets).
+      "name": "m3-map",
+      "extraArgs": [
+        "--DualLayer:MapRead=true",
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-mapread-facts.md"
+      ],
+      "reasoningEffort": "medium"
+    },
+    {
+      // m4: as m3, plus map_read lists abstained documents by name when the planner named the paths
+      // (m3 seed1 lost one kept ticket to a silent pass-2 abstention), and pass 2 says "never abstain".
+      "name": "m4-map",
+      "extraArgs": [
+        "--DualLayer:MapRead=true",
+        "--DualLayer:PlannerInstructionsFile=B:/sources/LmDotnetTools/.claude/worktrees/lmstreaming-dropped-conversations-f9dc50/evals/dual-layer-eval/variants/planner-mapread-facts.md"
+      ],
+      "reasoningEffort": "medium"
+    }
+  ],
+  "tasks": [
+    "tr1",
+    "bc2",
+    "mb1",
+    "sw1"
+  ],
+  "seeds": 2,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

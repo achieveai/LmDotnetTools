@@ -1,0 +1,42 @@
+// Public round (p1): two public read-heavy benchmarks built by tools/build_public.py (git-ignored).
+// mb1 = MuDABench US 10-K ranking (5 questions, 37 full reports); bc1 = BrowseComp-Plus (6 questions,
+// 461 pages: evidence + hard negatives). Medium effort, the round-9 winner. Seed 1 runs all three arms;
+// the second seed reruns opuna and Opus only: --models opuna,claude-opus-5.5.
+{
+  "evalDir": "evals/dual-layer-eval",
+  "modeName": "dual-layer-eval",
+  "modeFile": "mode.json",
+  "workspaceName": "dual-layer-eval",
+  "workspacesRoot": "B:/sandbox-workspaces/workspaces/lmstreaming-sample-7f7fa61a839e7f56",
+  "models": [
+    "claude-opus-5.5",
+    "gpt-6-luna",
+    "opuna"
+  ],
+  "variants": [
+    {
+      "name": "p1-medium",
+      "extraArgs": [],
+      "reasoningEffort": "medium"
+    }
+  ],
+  "tasks": [
+    "mb1",
+    "bc1"
+  ],
+  "seeds": 1,
+  "maxParallelRuns": 3,
+  "perRunTimeoutMinutes": 50,
+  "host": {
+    "sandbox": true,
+    "extraArgs": [
+      "--SandboxGateway:BaseUrl=http://127.0.0.1:3000",
+      "--SandboxGateway:AutoSpawn=true",
+      "--SandboxGateway:WorkspaceBasePath=B:/sandbox-workspaces/workspaces",
+      "--SandboxGateway:Marketplaces=demo",
+      "--ClientTools:AskUserQuestion=false"
+    ],
+    "shutdownGraceSeconds": 15,
+    "readinessTimeoutSeconds": 180
+  }
+}

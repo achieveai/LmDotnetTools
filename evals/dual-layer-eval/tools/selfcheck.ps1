@@ -72,7 +72,9 @@ foreach ($id in $Task) {
     $want = (1..$qs.Count | ForEach-Object { "q$_" }) -join ','
     Assert $id 'key' ($ids -eq $want) "$($qs.Count) questions ($ids)"
     $bytes = (Get-ChildItem -LiteralPath $fixtures -Recurse -File | Measure-Object Length -Sum).Sum
-    Assert $id 'size' ($bytes -lt 8MB) ("fixtures {0:N2} MB (< 8 MB)" -f ($bytes / 1MB))
+    # A git-ignored task may declare a larger budget (meta.maxFixtureMB); committed tasks stay under 8 MB.
+    $capMB = if ($meta.PSObject.Properties['maxFixtureMB']) { [double] $meta.maxFixtureMB } else { 8 }
+    Assert $id 'size' ($bytes -lt $capMB * 1MB) ("fixtures {0:N2} MB (< {1} MB)" -f ($bytes / 1MB), $capMB)
 
     # isolation ------------------------------------------------------------------------------------
     $bad = @($rel | Where-Object { $_ -match '(^|/)(key|build|build-report)\.json$|answers\.json$' })
@@ -134,6 +136,8 @@ foreach ($id in $Task) {
             'int' { ([int64] $a).ToString('N0', [Globalization.CultureInfo]::InvariantCulture) }
             'exact' { " $(([string] $a).ToLowerInvariant()) " }
             'idset' { ((([string] $a) -split ',\s*') | Sort-Object -Descending | ForEach-Object { $_.ToLowerInvariant() }) -join '; ' }
+            'wordset' { @((([string] $a) -split ',\s*') | Sort-Object -Descending | ForEach-Object { $_.ToLowerInvariant() }) }
+            'loc' { $f, $fn = ([string] $a) -split '::'; @('./repo/' + ($f -replace '/', '\') + '::' + ($fn -split '\.')[-1] + '()', 'src/zz.py::zz') }
         }
     }
     $ws = Join-Path $Scratch "$id-variants"; Remove-Item $ws -Recurse -Force -ErrorAction SilentlyContinue
@@ -158,6 +162,8 @@ foreach ($id in $Task) {
             'int' { [int64] $a + 1 }
             'exact' { 'ZZZ' }
             'idset' { ((([string] $a) -split ',\s*') | Select-Object -Skip 1) -join ', ' }
+            'wordset' { ((([string] $a) -split ',\s*') | Select-Object -Skip 1) -join ', ' }
+            'loc' { @((([string] $a) -split '::')[0] + '::zzqx_not_a_function') }
         }
     }
     $ws = Join-Path $Scratch "$id-wrong"; Remove-Item $ws -Recurse -Force -ErrorAction SilentlyContinue

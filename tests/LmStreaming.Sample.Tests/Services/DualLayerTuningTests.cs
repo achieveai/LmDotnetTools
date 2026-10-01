@@ -32,6 +32,16 @@ public sealed class DualLayerTuningTests : IDisposable
     }
 
     [Fact]
+    public void MapRead_IsOnUnlessConfiguredOff()
+    {
+        DualLayerTuning.Load(Config(), _root, NullLogger.Instance).MapRead.Should().BeTrue();
+        DualLayerTuning
+            .Load(Config(("DualLayer:MapRead", "false")), _root, NullLogger.Instance)
+            .MapRead.Should()
+            .BeFalse();
+    }
+
+    [Fact]
     public void ARelativeFile_ResolvesFromTheContentRoot_AndReplacesThatTextOnly()
     {
         File.WriteAllText(Path.Combine(_root, "planner.md"), "## Plan in briefs");

@@ -55,10 +55,6 @@ public static class DualLayerPrompts
         The executor is cheap, but its judgment is weaker than yours. Every word it reports back is
         added to your context at your price. So it reads, and you judge.
         - Ask for verbatim text only when you will copy or edit it. Otherwise ask for the facts you need.
-        - When many documents must each be read, first decide which facts you need from each one to
-          apply the rules. Then ask for one record per document, in batches of about 15 to 25 documents
-          per call. Name the fields. Ask for facts, not verdicts, with a short verbatim quote for any
-          field that needs judgment, and "not stated" when the document is silent.
         - Record every document the answer could depend on. Do not narrow the set with a keyword
           search when a relevant document might not use the keyword.
         - Apply the rules, dates and exceptions yourself. When a record looks wrong or unclear, ask a
@@ -66,6 +62,31 @@ public static class DualLayerPrompts
         - Send independent calls in the same turn.
         - If the executor does work you did not ask for, such as answering the task or writing files,
           treat it as unverified.
+
+        ## Reading many documents: map_read, in two passes
+        When a question needs a fact from each of several documents, call `map_read` with the
+        instruction and the documents (paths, or glob_path + glob). A separate cheap reader reads each
+        document in full, in parallel, and you get one line per document: name | the fields you named.
+        Readers abstain on documents that have nothing for the instruction, and those are left out.
+        Every line comes back into your context at your price, so keep the lines short:
+        - Pass 1, the filter: over the whole set, ask only for what decides whether a document matters:
+          at most 4 short fields (an id, a date, a yes/no with a quote under 12 words, a number). The
+          reader must not judge: ask "does it mention X: yes/no + quote", not "abstain unless X". Let it
+          abstain only for documents that have none of the named things at all. You decide from the quotes.
+        - Pass 2, the detail: over the documents you kept, ask for the fields you need to apply the
+          rules. Short values and quotes under 12 words; "-" means the document is silent. You chose
+          these documents, so say "never abstain"; if a line still comes back under "abstained:", read
+          that document yourself before dropping it.
+        - Ask for facts, never verdicts. You apply the rules.
+        - map_read is for many documents of modest size. A document longer than one part (about 60k
+          characters) is skipped with a note: a reader that sees one slice of a long report cannot tell
+          this year's statement from last year's comparative. For one figure in a long report, Grep for
+          the line and Read around it. Pass allow_long only for questions a slice can answer on its own.
+        - Prefer map_read over Read, Grep or Bash scripts for anything that must be read document by
+          document. One map_read call costs you one turn however many documents it covers.
+        - Use the other tools for everything else: a single file, a search, a write, a command.
+        - If map_read is not among your tools, ask the executor for one record per document instead, in
+          batches of about 15 to 25 documents per call, with the same short named fields.
         """;
 
     /// <summary>

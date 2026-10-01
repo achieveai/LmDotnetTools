@@ -2,3 +2,9 @@
 results/
 # Retired lb1 copies LongBench v2 papers; licence unresolved. Rebuild locally with tools/build_qa.py.
 tasks/lb1/
+# Public-benchmark tasks built by tools/build_public.py: bc1/bc2 carry the BrowseComp-Plus canary-protected
+# corpus and key (must stay off the open web); mb1 is 13 MB of converted 10-K text, bc2 260 MB. Rebuild locally.
+tasks/mb1/
+tasks/bc1/
+tasks/bc2/
+tasks/sw1/
