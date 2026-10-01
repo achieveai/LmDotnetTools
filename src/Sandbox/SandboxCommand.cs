@@ -30,6 +30,75 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// </remarks>
 public sealed record SandboxCommand
 {
+    private IReadOnlyDictionary<string, string>? _environment;
+    private long? _maxOutputBytes;
+    private TimeSpan? _executionTimeout;
+
+    /// <summary>Optional environment overlay. The gateway validates allowed variable names.</summary>
+    public IReadOnlyDictionary<string, string>? Environment
+    {
+        get => _environment;
+        init
+        {
+            if (value is null)
+            {
+                _environment = null;
+                return;
+            }
+            var copy = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (key, text) in value)
+            {
+                if (
+                    string.IsNullOrEmpty(key)
+                    || key.Contains('=')
+                    || key.Contains('\0')
+                    || text is null
+                    || text.Contains('\0')
+                )
+                {
+                    throw new ArgumentException(
+                        "Environment keys and values must be valid non-NUL strings.",
+                        nameof(Environment)
+                    );
+                }
+
+                copy.Add(key, text);
+            }
+            _environment = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(copy);
+        }
+    }
+
+    /// <summary>Optional combined stdout/stderr cap, from 1 byte through the gateway's 256 MiB limit.
+    /// The SDK still limits each downloaded artifact to 64 MiB.</summary>
+    public long? MaxOutputBytes
+    {
+        get => _maxOutputBytes;
+        init
+        {
+            if (value is <= 0 or > 268_435_456)
+            {
+                throw new ArgumentOutOfRangeException(nameof(MaxOutputBytes));
+            }
+
+            _maxOutputBytes = value;
+        }
+    }
+
+    /// <summary>Optional remote execution timeout. Does not change caller cancellation behavior.</summary>
+    public TimeSpan? ExecutionTimeout
+    {
+        get => _executionTimeout;
+        init
+        {
+            if (value is { } timeout && (timeout < TimeSpan.FromSeconds(1) || timeout > TimeSpan.FromDays(1)))
+            {
+                throw new ArgumentOutOfRangeException(nameof(ExecutionTimeout));
+            }
+
+            _executionTimeout = value;
+        }
+    }
+
     /// <summary>
     /// The ordered argument vector, program name first. Non-empty; no element contains a NUL byte.
     /// Empty-string elements are allowed and survive as distinct arguments.

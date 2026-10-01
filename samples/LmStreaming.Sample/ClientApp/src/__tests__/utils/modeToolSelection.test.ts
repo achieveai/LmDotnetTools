@@ -72,6 +72,18 @@ function mode(overrides: Partial<ChatMode>): ChatMode {
 }
 
 describe('groupTools', () => {
+  it('round-trips the browser debugging group without selecting general sandbox tools', () => {
+    const tools: ToolDefinition[] = [
+      { name: 'All browser debugging tools', id: 'browser-debug:*', group: 'browser-debug', isWildcard: true, requiresSandbox: true },
+      { name: 'OpenDebugBrowser', id: 'browser-debug:OpenDebugBrowser', group: 'browser-debug', requiresSandbox: true },
+    ];
+    const [group] = groupTools(tools);
+    expect(group.qualified).toBe(true);
+    expect(group.requiresSandbox).toBe(true);
+    expect(selectionToModeFields(['browser-debug:*'], tools).enabledCapabilityTools).toEqual(['browser-debug:*']);
+    expect(selectionFromMode(mode({ enabledCapabilityTools: ['browser-debug:*'] }), tools)).toEqual(['browser-debug:*']);
+    expect(selectionToModeFields([], tools).enabledCapabilityTools).toEqual([]);
+  });
   it('treats Mini App debugging as a qualified, sandbox-backed mode group', () => {
     const debugTools: ToolDefinition[] = [
       { name: 'All Mini App debug tools', id: 'miniapp-debug:*', group: 'miniapp-debug', isWildcard: true, requiresSandbox: true },

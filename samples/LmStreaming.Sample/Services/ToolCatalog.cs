@@ -132,6 +132,20 @@ public sealed class ToolCatalog(
             )
         );
 
+        catalog.Add(
+            Wildcard(ToolGroups.BrowserDebug, "All browser preview and debugging tools", requiresSandbox: true)
+        );
+        catalog.AddRange(
+            BrowserDebugToolProvider.ToolNames.Select(name =>
+                Qualified(
+                    ToolGroups.BrowserDebug,
+                    name,
+                    BrowserDebugToolProvider.Description(name),
+                    requiresSandbox: true
+                )
+            )
+        );
+
         // 8. Sandbox/workspace tools, listed live from the gateway when it is reachable. The wildcard
         //    row goes first and is the only entry that can cover marketplace-provided tools installed
         //    after this listing was taken.
@@ -146,12 +160,14 @@ public sealed class ToolCatalog(
             }
         );
         catalog.AddRange(
-            sandbox.Tools.Select(t =>
-                Qualified(ToolGroups.Sandbox, t.Name, t.Description, requiresSandbox: true) with
-                {
-                    CatalogWarning = sandbox.Warning,
-                }
-            )
+            sandbox
+                .Tools.Where(t => t.Name != "Browser")
+                .Select(t =>
+                    Qualified(ToolGroups.Sandbox, t.Name, t.Description, requiresSandbox: true) with
+                    {
+                        CatalogWarning = sandbox.Warning,
+                    }
+                )
         );
 
         return catalog;

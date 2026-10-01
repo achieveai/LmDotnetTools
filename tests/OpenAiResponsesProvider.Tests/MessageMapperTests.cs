@@ -17,6 +17,39 @@ namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests;
 /// </summary>
 public sealed class MessageMapperTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Tool_images_serialize_as_function_output_content(bool aggregate)
+    {
+        var result = new ToolCallResult(
+            "image-call",
+            "Screenshot evidence",
+            [new ImageToolResultBlock { Data = "AQID", MimeType = "image/png" }]
+        );
+        IMessage message = aggregate
+            ? new ToolsCallResultMessage { ToolCallResults = [result] }
+            : ToolCallResultMessage.FromToolCallResult(result);
+        var request = MessageMapper.BuildRequest(
+            [
+                new ToolCallMessage
+                {
+                    ToolCallId = "image-call",
+                    FunctionName = "screenshot",
+                    FunctionArgs = "{}",
+                },
+                message,
+            ],
+            options: null
+        );
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(request));
+        var output = json.RootElement.GetProperty("input")[1].GetProperty("output");
+        output.ValueKind.Should().Be(System.Text.Json.JsonValueKind.Array);
+        output[0].GetProperty("text").GetString().Should().Be("Screenshot evidence");
+        output[1].GetProperty("type").GetString().Should().Be("input_image");
+        output[1].GetProperty("image_url").GetString().Should().Be("data:image/png;base64,AQID");
+    }
+
     [Fact]
     public void System_messages_concatenate_into_instructions_with_newline_join()
     {

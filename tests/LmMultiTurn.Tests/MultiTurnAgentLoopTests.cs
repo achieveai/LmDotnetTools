@@ -26,6 +26,101 @@ public class MultiTurnAgentLoopTests
     private readonly Mock<IStreamingAgent> _mockAgent = new();
     private readonly Mock<ILogger<MultiTurnAgentLoop>> _loggerMock = new();
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(10)]
+    public async Task Tool_images_reach_provider_but_not_history_or_next_run(int maxTurnsPerRun)
+    {
+        var requests = new List<IMessage[]>();
+        _mockAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (messages, _, _) =>
+                {
+                    requests.Add([.. messages]);
+                    IMessage reply =
+                        requests.Count == 1
+                            ? new ToolCallMessage
+                            {
+                                FunctionName = "screenshot",
+                                FunctionArgs = "{}",
+                                ToolCallId = "image-call",
+                                Role = Role.Assistant,
+                            }
+                            : new TextMessage { Text = "Image inspected", Role = Role.Assistant };
+                    return Task.FromResult(ToAsyncEnumerable([reply]));
+                }
+            );
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "screenshot",
+                Description = "Read screenshot",
+                Parameters = [],
+            },
+            (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromMultiModal(
+                        "Screenshot evidence",
+                        [new ImageToolResultBlock { Data = "AQID", MimeType = "image/png" }]
+                    )
+                )
+        );
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "image-thread",
+            maxTurnsPerRun: maxTurnsPerRun
+        );
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var runTask = loop.RunAsync(cts.Token);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "Inspect image", Role = Role.User }]),
+                cts.Token
+            )
+        ) { }
+        static IEnumerable<ToolCallResult> Results(IEnumerable<IMessage> messages) =>
+            messages.SelectMany<IMessage, ToolCallResult>(m =>
+                m switch
+                {
+                    ToolCallResultMessage single => new[] { single.ToToolCallResult() },
+                    ToolsCallResultMessage batch => batch.ToolCallResults,
+                    _ => [],
+                }
+            );
+        Results(requests[1])
+            .Single()
+            .ContentBlocks.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOfType<ImageToolResultBlock>();
+        if (maxTurnsPerRun == 1)
+        {
+            requests[1]
+                .OfType<TextMessage>()
+                .Should()
+                .Contain(m => m.Text.Contains("maximum number of tool-use turns"));
+        }
+        loop.GetHistorySnapshot().OfType<ToolCallResultMessage>().Should().OnlyContain(r => r.ContentBlocks == null);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "Next run", Role = Role.User }]),
+                cts.Token
+            )
+        ) { }
+        Results(requests[2]).Should().OnlyContain(r => r.ContentBlocks == null);
+        await cts.CancelAsync();
+        await runTask;
+    }
+
     [Fact]
     public void Constructor_ThrowsOnNullProviderAgent()
     {

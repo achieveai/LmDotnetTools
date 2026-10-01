@@ -189,6 +189,8 @@ public sealed class MiniAppDebugToolProvider : IFunctionProvider
                             id = app.Id,
                             name = app.Name,
                             link = app.Link,
+                            directory = $"mini-web-apps/{appId}",
+                            file_path = file is null ? null : $"mini-web-apps/{appId}/{file}",
                             manifest = Encoding.UTF8.GetString(manifest),
                             files = entries.Select(e => new
                             {
