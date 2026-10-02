@@ -129,6 +129,41 @@ public class SandboxCommandTests
     }
 
     [Fact]
+    public void ExecutionTimeout_AtTheMaximum_IsAccepted()
+    {
+        var command = new SandboxCommand(["ls"]) { ExecutionTimeout = SandboxCommand.MaxExecutionTimeout };
+
+        command.ExecutionTimeout.Should().Be(TimeSpan.FromMilliseconds(int.MaxValue));
+    }
+
+    [Fact]
+    public void ExecutionTimeout_AboveTheMaximum_Throws()
+    {
+        // One tick over the bound, and TimeSpan.MaxValue: both would otherwise overflow the SDK's poll
+        // deadline (UtcNow + timeout) or a caller's CancelAfter only after the operation was submitted.
+        foreach (var timeout in new[] { SandboxCommand.MaxExecutionTimeout + TimeSpan.FromTicks(1), TimeSpan.MaxValue })
+        {
+            var act = () => new SandboxCommand(["ls"]) { ExecutionTimeout = timeout };
+
+            act.Should().Throw<ArgumentOutOfRangeException>().Which.ParamName.Should().Be("ExecutionTimeout");
+        }
+    }
+
+    [Fact]
+    public void Environment_CannotBeMutatedThroughACastToIDictionary()
+    {
+        var command = new SandboxCommand(["ls"])
+        {
+            Environment = new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1" },
+        };
+
+        var act = () => ((IDictionary<string, string>)command.Environment!)["BAD=X"] = "v";
+
+        act.Should().Throw<NotSupportedException>();
+        command.Environment.Should().Equal(new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1" });
+    }
+
+    [Fact]
     public void Environment_DefaultsToNull()
     {
         new SandboxCommand(["ls"]).Environment.Should().BeNull();

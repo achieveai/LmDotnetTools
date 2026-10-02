@@ -62,7 +62,8 @@ public sealed record SandboxCommand
     /// environment (the gateway's <c>env</c> field). <c>null</c> (the default) sends nothing and the gateway
     /// defaults it. Validated on assignment: every key is non-empty and contains neither <c>=</c> nor a NUL
     /// byte, and no value contains a NUL byte — the two characters a POSIX environment block cannot carry.
-    /// The dictionary is copied, so later mutation of the caller's instance does not change the command.
+    /// The dictionary is copied into a read-only wrapper, so neither later mutation of the caller's instance
+    /// nor a cast back to <see cref="IDictionary{TKey, TValue}"/> can change the command or bypass validation.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Environment
     {
@@ -78,19 +79,20 @@ public sealed record SandboxCommand
     /// operation's <c>timeout_secs</c> (rounded up to whole seconds, at least 1) and what bounds the
     /// SDK's own poll for a terminal status, so one long-running command can be allowed more than the
     /// client's default without raising the ceiling for every other command on the session. Must be
-    /// positive.
+    /// positive and at most <see cref="MaxExecutionTimeout"/>.
     /// </summary>
     public TimeSpan? ExecutionTimeout
     {
         get => _executionTimeout;
         init
         {
-            if (value is { } timeout && timeout <= TimeSpan.Zero)
+            if (value is { } timeout && (timeout <= TimeSpan.Zero || timeout > MaxExecutionTimeout))
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(ExecutionTimeout),
                     timeout,
-                    "A per-command execution timeout must be positive."
+                    $"A per-command execution timeout must be positive and at most {MaxExecutionTimeout} "
+                        + "(int.MaxValue milliseconds)."
                 );
             }
 
@@ -99,6 +101,15 @@ public sealed record SandboxCommand
     }
 
     private readonly TimeSpan? _executionTimeout;
+
+    /// <summary>
+    /// The largest accepted <see cref="ExecutionTimeout"/>: <see cref="int.MaxValue"/> milliseconds (about
+    /// 24.8 days). Larger values are rejected at assignment because the timeout is later added to the current
+    /// time for the SDK's poll deadline and handed to <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+    /// by callers that bound the command client-side; either would otherwise throw only after the operation
+    /// was already submitted. The bound also fits the wire's <c>timeout_secs</c>.
+    /// </summary>
+    public static readonly TimeSpan MaxExecutionTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
 
     /// <summary>
     /// The <see cref="WorkingDirectory"/> normalized to a clean, forward-slash, workspace-relative
@@ -178,6 +189,6 @@ public sealed record SandboxCommand
             copy[key] = entry;
         }
 
-        return copy;
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(copy);
     }
 }

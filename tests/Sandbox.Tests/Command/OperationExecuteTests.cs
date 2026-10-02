@@ -609,6 +609,38 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_EmptyEnvironment_OmitsTheEnvFieldLikeNoEnvironment()
+    {
+        const string sessionId = "sess-emptyenv";
+        const string operationId = "op-emptyenv";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["git", "status"], operationId: operationId)
+            {
+                Environment = new Dictionary<string, string>(),
+            }
+        );
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CallerCancelsDuringPoll_ThrowsOperationCanceled_NotSandboxException()
     {
         const string sessionId = "sess-cancel";
