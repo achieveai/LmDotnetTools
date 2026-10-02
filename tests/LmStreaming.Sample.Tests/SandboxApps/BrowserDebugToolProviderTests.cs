@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.SandboxApps;
 
@@ -183,6 +184,59 @@ public sealed class BrowserDebugToolProviderTests
         fixture.Gateway.Closed.Should().Contain(id);
     }
 
+    [Fact]
+    public async Task FailedClose_RevokesThePreviewButKeepsTheLease_SoRetryReleasesTheSameBrowser()
+    {
+        await using var fixture = new Fixture();
+        var handle = await fixture.Open();
+        var id = fixture.Gateway.Calls[0].Id;
+        fixture.Gateway.FailCloses = 1;
+        var args = JsonSerializer.Serialize(new { browserHandle = handle });
+
+        (await fixture.Call("CloseDebugBrowser", args)).Payload.ErrorCode.Should().Be("browser_unavailable");
+        fixture.Bindings.TryGetOwned(handle, "thread", "workspace", "session", out _).Should().BeFalse();
+
+        (await fixture.Call("CloseDebugBrowser", args)).Payload.IsError.Should().BeFalse();
+        fixture.Gateway.CloseAttempts.Should().Equal(id, id);
+        (await fixture.Call("CloseDebugBrowser", args)).Payload.ErrorCode.Should().Be("browser_not_found");
+    }
+
+    [Fact]
+    public async Task FailedClose_IsReleasedAgainWhenTheProviderIsDisposed()
+    {
+        var fixture = new Fixture();
+        var handle = await fixture.Open();
+        var id = fixture.Gateway.Calls[0].Id;
+        fixture.Gateway.FailCloses = 1;
+        (await fixture.Call("CloseDebugBrowser", JsonSerializer.Serialize(new { browserHandle = handle })))
+            .Payload.ErrorCode.Should()
+            .Be("browser_unavailable");
+
+        await fixture.DisposeAsync();
+
+        fixture.Gateway.CloseAttempts.Should().Equal(id, id);
+    }
+
+    [Fact]
+    public async Task ExpiredPreviews_AreReleasedBeforeTheCapacityCheck()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await using var fixture = new Fixture(clock);
+        for (var i = 0; i < 8; i++)
+        {
+            await fixture.Open();
+        }
+        var expired = fixture.Gateway.Calls.Select(c => c.Id).Distinct().ToArray();
+        (await fixture.Call("OpenDebugBrowser", """{"htmlFilePath":"reports/index.html"}"""))
+            .Payload.ErrorCode.Should()
+            .Be("browser_limit");
+
+        clock.Advance(TimeSpan.FromMinutes(31));
+
+        await fixture.Open();
+        fixture.Gateway.Closed.Should().BeEquivalentTo(expired);
+    }
+
     [Theory]
     [InlineData("{}", "invalid_args")]
     [InlineData("{\"miniAppId\":\"demo\",\"htmlFilePath\":\"reports/index.html\"}", "invalid_args")]
@@ -205,7 +259,7 @@ public sealed class BrowserDebugToolProviderTests
         public Gateway Gateway { get; }
         private readonly BrowserDebugToolProvider _provider;
 
-        public Fixture()
+        public Fixture(TimeProvider? clock = null)
         {
             var files = new FakeFileBrowser
             {
@@ -260,7 +314,7 @@ public sealed class BrowserDebugToolProviderTests
                     GatewayAppId = "sample",
                     SigningSecret = new string('k', 32),
                 },
-                TimeProvider.System
+                clock ?? TimeProvider.System
             );
             Gateway = new(Bindings);
             _provider = new(Bindings, Access, files, new(files), Gateway, "thread", "workspace", "session", null);
@@ -293,6 +347,8 @@ public sealed class BrowserDebugToolProviderTests
     {
         public List<(string Id, string Toolkit, string? Tool)> Calls { get; } = [];
         public List<string> Closed { get; } = [];
+        public List<string> CloseAttempts { get; } = [];
+        public int FailCloses { get; set; }
         public string Instance { get; set; } = "instance-1";
         public bool Error { get; set; }
         public bool OmitMetadata { get; set; }
@@ -349,6 +405,12 @@ public sealed class BrowserDebugToolProviderTests
 
         public Task<bool> CloseAsync(string browserId, CancellationToken ct)
         {
+            CloseAttempts.Add(browserId);
+            if (FailCloses > 0)
+            {
+                FailCloses--;
+                throw new SandboxException(SandboxErrorKind.TransportTimeout, "close timed out");
+            }
             Closed.Add(browserId);
             return Task.FromResult(true);
         }

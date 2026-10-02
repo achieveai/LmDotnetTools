@@ -41,12 +41,24 @@ public sealed class SandboxClientBrowserTests
     [Theory]
     [InlineData("{\"tools\":[{\"name\":\"Browser\"}]}", true)]
     [InlineData("{\"tools\":[{\"name\":\"Bash\"}]}", false)]
+    [InlineData("{\"tools\":[null,{\"name\":7},\"Browser\",{\"name\":\"Browser\"}]}", true)]
     public async Task BrowserSupport_UsesAdvertisedToolsWithoutCreatingALease(string response, bool expected)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
         handler.OnJson(HttpMethod.Get, "/mcp/tools", response);
         (await client.SupportsBrowserAsync()).Should().Be(expected);
         handler.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task BrowserCall_RefusesAResponseLargerThanTheBrowserCapBeforeParsing()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", new string(' ', (int)SandboxClient.MaxBrowserResponseBytes + 1));
+
+        var act = () => client.CallBrowserAsync("owned-browser", "playwright");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.IsDirectReadCapExceeded.Should().BeTrue();
     }
 
     [Fact]

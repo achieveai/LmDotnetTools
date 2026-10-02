@@ -122,6 +122,86 @@ public class MultiTurnAgentLoopTests
     }
 
     [Fact]
+    public async Task Tool_images_respect_the_4_MiB_single_and_8_MiB_run_budgets_at_their_boundaries()
+    {
+        const int MiB = 1024 * 1024;
+        // One screenshot per turn: exactly 4 MiB (kept), 4 MiB + 1 (over the single-image cap), exactly
+        // 4 MiB again (fills the run budget to exactly 8 MiB, kept), then 1 byte (over the run budget).
+        int[] sizes = [4 * MiB, (4 * MiB) + 1, 4 * MiB, 1];
+        var requests = new List<IMessage[]>();
+        _mockAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (messages, _, _) =>
+                {
+                    requests.Add([.. messages]);
+                    var turn = requests.Count - 1;
+                    IMessage reply =
+                        turn < sizes.Length
+                            ? new ToolCallMessage
+                            {
+                                FunctionName = "screenshot",
+                                FunctionArgs = $$"""{"size":{{sizes[turn]}}}""",
+                                ToolCallId = $"image-{turn}",
+                                Role = Role.Assistant,
+                            }
+                            : new TextMessage { Text = "Images inspected", Role = Role.Assistant };
+                    return Task.FromResult(ToAsyncEnumerable([reply]));
+                }
+            );
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "screenshot",
+                Description = "Read screenshot",
+                Parameters = [],
+            },
+            (args, _, _) =>
+            {
+                var size = System.Text.Json.JsonDocument.Parse(args).RootElement.GetProperty("size").GetInt32();
+                return Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromMultiModal(
+                        "Screenshot evidence",
+                        [new ImageToolResultBlock { Data = new string('A', size), MimeType = "image/png" }]
+                    )
+                );
+            }
+        );
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "budget-thread");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var runTask = loop.RunAsync(cts.Token);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "Inspect images", Role = Role.User }]),
+                cts.Token
+            )
+        ) { }
+
+        requests.Should().HaveCount(sizes.Length + 1);
+        var withImages = requests[^1]
+            .SelectMany<IMessage, ToolCallResult>(m =>
+                m switch
+                {
+                    ToolCallResultMessage single => new[] { single.ToToolCallResult() },
+                    ToolsCallResultMessage batch => batch.ToolCallResults,
+                    _ => [],
+                }
+            )
+            .Where(r => r.ContentBlocks is { Count: > 0 })
+            .Select(r => r.ToolCallId);
+        withImages.Should().BeEquivalentTo(["image-0", "image-2"]);
+        await cts.CancelAsync();
+        await runTask;
+    }
+
+    [Fact]
     public void Constructor_ThrowsOnNullProviderAgent()
     {
         // Arrange

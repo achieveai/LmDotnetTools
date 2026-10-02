@@ -125,6 +125,9 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
 
     public SandboxStreamResult StreamResult { get; set; } = new(0, 0, 0);
 
+    /// <summary>Stdin and CGI environment of each streaming command, in order.</summary>
+    public List<(byte[] Stdin, IReadOnlyDictionary<string, string>? Environment)> StreamCalls { get; } = [];
+
     public async Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
         string sessionId,
         SandboxCommand command,
@@ -136,6 +139,7 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     )
     {
         Commands.Add(command);
+        StreamCalls.Add((stdin.ToArray(), environment));
         await onOutput(new(SandboxOutputStream.Stdout, StreamBytes), ct);
         return StreamResult;
     }

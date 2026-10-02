@@ -2337,10 +2337,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
                 if (replayState.RunActive && ReplayMessagePolicy.IsCanonicalOrControl(message))
                 {
-                    if (replayState.Buffer.Count < _maxReplayBufferSize && replayState.Bytes < _maxReplayBufferBytes)
+                    // Admission is checked against the message's own size, not just the running total, so a
+                    // single multi-MiB message (e.g. a screenshot tool result) cannot overshoot the cap.
+                    var messageBytes = EstimateMessageBytes(message);
+                    if (
+                        !replayState.Truncated
+                        && replayState.Buffer.Count < _maxReplayBufferSize
+                        && messageBytes <= _maxReplayBufferBytes - replayState.Bytes
+                    )
                     {
                         replayState.Buffer.Add(message);
-                        replayState.Bytes += EstimateMessageBytes(message);
+                        replayState.Bytes += messageBytes;
                     }
                     else if (!replayState.Truncated)
                     {
@@ -2453,7 +2460,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// against <c>_maxReplayBufferBytes</c>. Dominated by text-ish payloads (≈2 bytes/char); other
     /// shapes fall back to a small base overhead. Intentionally approximate — it caps memory, it is
     /// not exact accounting, and runs under the replay lock so it must stay allocation-free and O(1)
-    /// per message (tool-call args are summed, which is bounded by the call count).
+    /// per message (tool-call args and tool-result content blocks are summed, bounded by their count).
     /// </summary>
     private static long EstimateMessageBytes(IMessage message)
     {
@@ -2472,6 +2479,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     foreach (var call in calls)
                     {
                         bytes += ((call.FunctionName?.Length ?? 0) + (call.FunctionArgs?.Length ?? 0)) * 2L;
+                    }
+                }
+
+                return bytes;
+            }
+
+            // Tool results can carry base64 screenshots that dwarf any text frame; counting them is what
+            // keeps an image-heavy run inside the byte cap instead of at 128 bytes per multi-MiB result.
+            case ToolCallResultMessage tr:
+            {
+                var bytes = baseOverhead + ((tr.Result?.Length ?? 0) * 2L);
+                if (tr.ContentBlocks is { } blocks)
+                {
+                    foreach (var block in blocks)
+                    {
+                        bytes += block switch
+                        {
+                            ImageToolResultBlock image => ((image.Data?.Length ?? 0) + (image.MimeType?.Length ?? 0))
+                                * 2L,
+                            TextToolResultBlock text => (text.Text?.Length ?? 0) * 2L,
+                            _ => 0,
+                        };
                     }
                 }
 

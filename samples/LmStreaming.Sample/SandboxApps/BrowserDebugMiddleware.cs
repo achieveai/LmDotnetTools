@@ -70,7 +70,12 @@ public sealed class BrowserDebugMiddleware(
                         or NotSupportedException
             )
         {
-            logger.LogWarning("Browser preview failed: {FailureType}", ex.GetType().Name);
+            logger.LogWarning(
+                ex,
+                "Browser preview of {BrowserId} failed: {ErrorKind}",
+                binding.BrowserId,
+                (ex as SandboxException)?.Kind.ToString() ?? ex.GetType().Name
+            );
             if (context.Response.HasStarted)
             {
                 context.Abort();

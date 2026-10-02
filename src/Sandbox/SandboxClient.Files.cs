@@ -334,7 +334,8 @@ public sealed partial class SandboxClient
         var status = await SubmitOperationAsync(sessionId, operationId, requestDto, ct).ConfigureAwait(false);
         if (IsRunning(status.Status))
         {
-            status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
+            status = await PollOperationAsync(sessionId, operationId, _options.ExecutionTimeout, ct)
+                .ConfigureAwait(false);
         }
 
         // Happy path: an EXPLICIT exit-0 mkdir -p needs no artifact download — proceed straight to the

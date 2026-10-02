@@ -413,6 +413,42 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_PerCommandTimeoutLongerThanClientDefault_KeepsPollingUntilTerminal()
+    {
+        const string sessionId = "sess-long";
+        const string operationId = "op-long";
+        // Client default deadline = 150ms + 1s grace. The command asks the gateway for 30s and finishes
+        // after ~1.4s, so polling bounded by the client default would throw ExecutionTimeout.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMilliseconds(150));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 7);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        handler.On(
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ =>
+                Json(
+                    clock.Elapsed < TimeSpan.FromMilliseconds(1_400)
+                        ? "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}"
+                        : "{\"operation_id\":\""
+                            + operationId
+                            + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"stdout\",\"stderr_path\":\"stderr\"}}"
+                )
+        );
+        RegisterDownload(handler, "stdout", "done");
+        RegisterDownload(handler, "stderr", "");
+
+        var result = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["sleep", "1"], operationId: operationId) { ExecutionTimeout = TimeSpan.FromSeconds(30) }
+        );
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Should().Be("done");
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SnapshotForDifferentOperation_ThrowsProtocol()
     {
         const string sessionId = "sess-corr";

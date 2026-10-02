@@ -148,7 +148,13 @@ public sealed partial class SandboxClient
         var status = await SubmitOperationAsync(sessionId, operationId, requestDto, ct).ConfigureAwait(false);
         if (IsRunning(status.Status))
         {
-            status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
+            status = await PollOperationAsync(
+                    sessionId,
+                    operationId,
+                    command.ExecutionTimeout ?? _options.ExecutionTimeout,
+                    ct
+                )
+                .ConfigureAwait(false);
         }
 
         var result = await resolve(sessionId, operationId, status, command.MaxOutputBytes, ct).ConfigureAwait(false);
@@ -347,16 +353,18 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Bounded poll for a terminal operation status using deadline-based exponential backoff. The
-    /// deadline is the configured <see cref="SandboxClientOptions.ExecutionTimeout"/> plus a short
-    /// grace, and honours caller cancellation; it deliberately does not busy-poll a fixed tiny window.
+    /// deadline is the execution timeout the operation was submitted with plus a short grace, so a
+    /// per-command timeout longer than <see cref="SandboxClientOptions.ExecutionTimeout"/> is not cut
+    /// short client-side. Honours caller cancellation; it deliberately does not busy-poll a fixed tiny window.
     /// </summary>
     private async Task<OperationStatusDto> PollOperationAsync(
         string sessionId,
         string operationId,
+        TimeSpan executionTimeout,
         CancellationToken ct
     )
     {
-        var deadline = DateTimeOffset.UtcNow + _options.ExecutionTimeout + S_commandPollGrace;
+        var deadline = DateTimeOffset.UtcNow + executionTimeout + S_commandPollGrace;
         var delay = S_commandPollInitialDelay;
         while (true)
         {

@@ -120,6 +120,41 @@ public sealed class BrowserDebugMiddlewareTests
         fixture.Fallthrough.Should().Be(0);
     }
 
+    [Fact]
+    public async Task SignedMiniAppPreview_RunsCgiForGet_AndRequiresTheBindingCsrfTokenForPost()
+    {
+        var fixture = new Fixture(
+            new("demo", "Demo", "/plugins/sandbox-apps/demo", [], null, 65536, 8388608, TimeSpan.FromSeconds(30))
+        );
+        fixture.Files.StreamBytes = "Content-Type: application/json\r\n\r\n{\"ok\":true}"u8.ToArray();
+
+        var get = fixture.Request("api/data");
+        await fixture.Middleware.InvokeAsync(get);
+        get.Response.StatusCode.Should().Be(200);
+        Encoding.UTF8.GetString(((MemoryStream)get.Response.Body).ToArray()).Should().Be("{\"ok\":true}");
+        fixture.Files.Commands.Should().ContainSingle().Which.Arguments[0].Should().Be("/plugins/sandbox-apps/demo");
+        var env = fixture.Files.StreamCalls.Single().Environment!;
+        env["REQUEST_METHOD"].Should().Be("GET");
+        env["PATH_INFO"].Should().Be("/api/data");
+        env["SERVER_NAME"].Should().Be("preview.invalid", "CGI sees the signed preview origin");
+        env["SANDBOX_APP_CSRF_TOKEN"].Should().Be(fixture.Binding.CsrfToken);
+
+        var forged = fixture.Post("api/data", "{\"selection\":\"ok\"}", csrf: "wrong");
+        await fixture.Middleware.InvokeAsync(forged);
+        forged.Response.StatusCode.Should().Be(403);
+        fixture.Files.StreamCalls.Should().HaveCount(1, "a POST without the binding's CSRF token never runs CGI");
+
+        var post = fixture.Post("api/data", "{\"selection\":\"ok\"}", csrf: fixture.Binding.CsrfToken);
+        await fixture.Middleware.InvokeAsync(post);
+        post.Response.StatusCode.Should().Be(200);
+        var (stdin, postEnv) = fixture.Files.StreamCalls[^1];
+        Encoding.UTF8.GetString(stdin).Should().Be("{\"selection\":\"ok\"}");
+        postEnv!["REQUEST_METHOD"].Should().Be("POST");
+        postEnv["CONTENT_TYPE"].Should().Be("application/json");
+        fixture.Fallthrough.Should().Be(0);
+        fixture.Files.ReadCalls.Should().Be(0);
+    }
+
     private sealed class Fixture
     {
         private const string Secret = "test-browser-route-signing-secret-32-bytes";
@@ -147,7 +182,7 @@ public sealed class BrowserDebugMiddlewareTests
                     .Add(MultiTurnAgentPool.ModePropertyKey, "builder"),
             };
 
-        public Fixture()
+        public Fixture(SandboxAppDefinition? app = null)
         {
             Files = new()
             {
@@ -212,7 +247,7 @@ public sealed class BrowserDebugMiddlewareTests
                 "workspace",
                 "session",
                 User,
-                new(null, "reports/index.html", "reports")
+                app is null ? new(null, "reports/index.html", "reports") : new(app, null, null)
             );
             Bindings.BindInstance(Binding, Binding.BrowserId, "instance");
             Middleware = new(
@@ -224,7 +259,18 @@ public sealed class BrowserDebugMiddlewareTests
                 Bindings,
                 access,
                 Files,
-                SandboxAppCatalog.Load(new ConfigurationBuilder().Build()),
+                SandboxAppCatalog.Load(
+                    new ConfigurationBuilder()
+                        .AddInMemoryCollection(
+                            new Dictionary<string, string?>
+                            {
+                                ["SandboxApps:Enabled"] = app is null ? "false" : "true",
+                                ["SandboxApps:SiteDomain"] = "example.test",
+                                ["SandboxApps:AppDomain"] = "apps.example.test",
+                            }
+                        )
+                        .Build()
+                ),
                 NullLogger<BrowserDebugMiddleware>.Instance
             );
         }
@@ -238,6 +284,19 @@ public sealed class BrowserDebugMiddlewareTests
             context.Request.Headers["X-Sbx-Browser-Id"] = Binding.BrowserId;
             context.Request.Headers["X-Sbx-Browser-Instance"] = "instance";
             context.Response.Body = new MemoryStream();
+            Sign(context);
+            return context;
+        }
+
+        public DefaultHttpContext Post(string path, string json, string csrf)
+        {
+            var context = Request(path);
+            var body = Encoding.UTF8.GetBytes(json);
+            context.Request.Method = "POST";
+            context.Request.ContentType = "application/json";
+            context.Request.ContentLength = body.Length;
+            context.Request.Body = new MemoryStream(body);
+            context.Request.Headers["X-CSRF-Token"] = csrf;
             Sign(context);
             return context;
         }

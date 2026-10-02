@@ -5,6 +5,10 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 
 public sealed partial class SandboxClient
 {
+    // Browser results carry base64 screenshots, so they need more room than ordinary REST JSON but must
+    // still be bounded before parsing: a runaway gateway response is refused, not buffered whole.
+    internal const long MaxBrowserResponseBytes = 32L * 1024 * 1024;
+
     /// <summary>Checks the gateway's advertised browser support without leasing a browser.</summary>
     public async Task<bool> SupportsBrowserAsync(CancellationToken ct = default)
     {
@@ -20,7 +24,12 @@ public sealed partial class SandboxClient
         }
         return tools
             .EnumerateArray()
-            .Any(tool => tool.TryGetProperty("name", out var name) && name.GetString() == "Browser");
+            .Any(tool =>
+                tool.ValueKind == JsonValueKind.Object
+                && tool.TryGetProperty("name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                && name.GetString() == "Browser"
+            );
     }
 
     /// <summary>Discovers or calls a leased browser's MCP tools, preserving images and instance metadata.</summary>
@@ -107,9 +116,11 @@ public sealed partial class SandboxClient
 
     private static async Task<JsonElement> ReadBrowserJsonAsync(HttpResponseMessage response, CancellationToken ct)
     {
+        var body = await ReadStreamCappedAsync(response, "browser response", null, MaxBrowserResponseBytes, ct)
+            .ConfigureAwait(false);
         try
         {
-            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+            using var json = JsonDocument.Parse(body);
             if (json.RootElement.ValueKind != JsonValueKind.Object)
             {
                 throw new JsonException();

@@ -192,7 +192,12 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         }
         catch (Exception ex) when (ex is SandboxException or SandboxSessionUnavailableException or InvalidDataException)
         {
-            _logger.LogWarning("Sandbox browser call failed: {FailureType}", ex.GetType().Name);
+            _logger.LogWarning(
+                ex,
+                "Sandbox browser call {ToolName} failed: {ErrorKind}",
+                name,
+                (ex as SandboxException)?.Kind.ToString() ?? ex.GetType().Name
+            );
             return ToolHandlerResult.FromError(
                 "The sandbox browser call failed. Check gateway availability and reopen the preview.",
                 "browser_unavailable"
@@ -219,6 +224,12 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         if (_bindings.UnavailableReason is { } reason)
         {
             return ToolHandlerResult.FromError(reason, "browser_unavailable");
+        }
+        // Reclaim slots the agent can no longer use (expired, revoked, or a close the gateway did not
+        // confirm) before enforcing the cap, so dead handles cannot lock out new previews.
+        foreach (var stale in _owned.Values.Where(b => !IsLive(b)).ToArray())
+        {
+            await CleanupAsync(stale);
         }
         if (_owned.Count >= 8)
         {
@@ -352,7 +363,6 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         {
             if (!opened)
             {
-                _owned.Remove(binding.Handle);
                 await CleanupAsync(binding);
             }
         }
@@ -396,7 +406,6 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         );
         if (!AcceptInstance(binding, result))
         {
-            _owned.Remove(binding.Handle);
             await CleanupAsync(binding);
             return Replaced(binding, result);
         }
@@ -406,12 +415,15 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
     private async Task<ToolHandlerResult> CloseAsync(JsonElement input, CancellationToken ct)
     {
         var handle = String(input, "browserHandle");
-        if (handle is null || !_owned.Remove(handle, out var binding))
+        if (handle is null || !_owned.TryGetValue(handle, out var binding))
         {
             return ToolHandlerResult.FromError("No preview belongs to this handle.", "browser_not_found");
         }
+        // Preview routing is revoked at once, but the lease stays owned until the gateway confirms the
+        // close: a failed close can then be retried with the same handle or released by DisposeAsync.
         _bindings.Revoke(binding);
         var closed = await _gateway.CloseAsync(binding.BrowserId, ct);
+        _owned.Remove(handle);
         return ToolHandlerResult.FromText(
             JsonSerializer.Serialize(
                 new
@@ -542,6 +554,14 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
 
     private static string Parent(string path) => path.Contains('/') ? path[..path.LastIndexOf('/')] : "";
 
+    private bool IsLive(BrowserDebugBinding binding) =>
+        _bindings.TryGetOwned(binding.Handle, _threadId, _workspaceId, _sessionId, out var current)
+        && ReferenceEquals(current, binding);
+
+    /// <summary>
+    /// Revokes the preview and releases the gateway lease. The binding leaves <c>_owned</c> only once
+    /// the gateway confirms, so a failed release is retried by a later open, close or disposal.
+    /// </summary>
     private async Task CleanupAsync(BrowserDebugBinding binding)
     {
         _bindings.Revoke(binding);
@@ -549,10 +569,16 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         try
         {
             await _gateway.CloseAsync(binding.BrowserId, timeout.Token);
+            _owned.Remove(binding.Handle);
         }
         catch (Exception ex) when (ex is SandboxException or OperationCanceledException)
         {
-            _logger.LogWarning("Debug browser cleanup failed: {FailureType}", ex.GetType().Name);
+            _logger.LogWarning(
+                ex,
+                "Debug browser {BrowserId} cleanup failed ({ErrorKind}); the lease is kept for a later retry",
+                binding.BrowserId,
+                (ex as SandboxException)?.Kind.ToString() ?? ex.GetType().Name
+            );
         }
     }
 
@@ -565,7 +591,7 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         await _operations.WaitAsync();
         try
         {
-            foreach (var binding in _owned.Values)
+            foreach (var binding in _owned.Values.ToArray())
             {
                 await CleanupAsync(binding);
             }
