@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.Misc.Utils;
+using LmStreaming.Sample.SandboxApps;
 
 namespace LmStreaming.Sample.Services;
 
@@ -22,7 +23,7 @@ namespace LmStreaming.Sample.Services;
 ///     </para>
 ///     <para>
 ///         Wildcards expand only for the groups whose membership is statically enumerable —
-///         <c>tasks</c>, <c>web</c>, <c>subagents</c>, <c>workflow</c>. The dynamic groups
+///         <c>tasks</c>, <c>web</c>, <c>subagents</c>, <c>workflow</c>, <c>miniapp-debug</c>. The dynamic groups
 ///         (<c>sandbox</c>, whose tools come from a live gateway; <c>sample</c>/<c>knowledge</c>/
 ///         <c>builtin</c>) have no static roster here, so their wildcards resolve to nothing rather
 ///         than to a guess; name their tools individually instead. This is a RESOLUTION step only:
@@ -135,6 +136,7 @@ public static class ModeSubAgentRequiredTools
             ToolGroups.Web => [WebSearchTool.ToolName, WebFetchTool.ToolName],
             ToolGroups.SubAgents => SubAgentToolProvider.AllToolNames,
             ToolGroups.Workflow => [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames],
+            ToolGroups.MiniAppDebug => MiniAppDebugToolProvider.ToolNames,
             _ => [],
         };
 }

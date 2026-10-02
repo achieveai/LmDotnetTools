@@ -10,7 +10,7 @@ import {
   type PendingQuestionEvent,
   type QuestionEventStream,
 } from '@/api/eventsWsClient';
-import type { ConversationSummary } from '@/types/conversations';
+import { DEFAULT_CONVERSATION_SORT_MODE, type ConversationSummary } from '@/types/conversations';
 import type { ToolCall, ToolCallResultMessage } from '@/types';
 import { resolveRenderer } from '@/utils/toolName';
 import { answeredQuestionIdFromText, isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
@@ -214,7 +214,9 @@ export function useQuestionInbox(
   async function allConversations(): Promise<ConversationSummary[]> {
     const all: ConversationSummary[] = [];
     for (let offset = 0; ; offset += pageSize) {
-      const page = await deps.listConversations(pageSize, offset);
+      // The sidebar's own request (deleted originals included, dropped in run()), so a page the
+      // sidebar already asked for is the same URL rather than a second, different read.
+      const page = await deps.listConversations(pageSize, offset, DEFAULT_CONVERSATION_SORT_MODE, true);
       all.push(...page);
       if (page.length < pageSize) return all;
     }
@@ -224,7 +226,8 @@ export function useQuestionInbox(
     isRefreshing.value = true;
     const failures: unknown[] = [];
     try {
-      const listed = await allConversations();
+      // A deleted original is listed only because forks still read it; it has no questions to ask.
+      const listed = (await allConversations()).filter((conversation) => !conversation.deleted);
       const active = toValue(currentThreadId);
       const ordered = [...listed].sort((a, b) =>
         a.threadId === active ? -1 : b.threadId === active ? 1 : 0

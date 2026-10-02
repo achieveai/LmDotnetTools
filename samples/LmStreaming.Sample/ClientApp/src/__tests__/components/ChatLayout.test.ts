@@ -52,6 +52,7 @@ const sharedMocks = vi.hoisted(() => ({
   // it has made the server flip the conversation's visibility, and that call is what a test asserts.
   loadConversations: vi.fn(async () => {}),
   selectMode: vi.fn(),
+  loadModes: vi.fn(async (_workspaceId?: string) => {}),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
   // #435: the SPA no longer mints a thread id — `createNewConversation` POSTs /api/conversations
@@ -140,6 +141,12 @@ const sharedMocks = vi.hoisted(() => ({
   subAgentQuestionResult: null as ToolCallResultMessage | null,
   cumulativeTotalTokens: 0,
   cumulativeUsageRef: null as Ref<{ totalTokens: number }> | null,
+  // Fork a conversation + branch switcher data. Branches default to none, so every other suite here
+  // renders exactly as before.
+  forkConversation: vi.fn(async (_threadId: string, _anchor: unknown): Promise<unknown> => {
+    throw new Error('forkConversation not stubbed');
+  }),
+  loadBranches: vi.fn(async (_threadId: string) => ({ points: [] as unknown[] })),
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -214,7 +221,7 @@ vi.mock('@/composables/useChatModes', async () => {
       currentModeId,
       availableTools: ref([]),
       isLoading: ref(sharedMocks.modesLoading),
-      loadModes: vi.fn(async () => {}),
+      loadModes: sharedMocks.loadModes,
       loadTools: vi.fn(async () => {}),
       selectMode: vi.fn((modeId: string) => {
         currentModeId.value = modeId;
@@ -368,6 +375,9 @@ vi.mock('@/api/conversationsApi', () => ({
   // WorkspaceSelector probes this on mount to decide whether to offer the env editor at all.
   // Supported by default here so these cases keep exercising the full form.
   getConversationCapabilities: vi.fn(async () => ({ sandboxEnv: true })),
+  forkConversation: (threadId: string, anchor: unknown) => sharedMocks.forkConversation(threadId, anchor),
+  loadBranches: (threadId: string) => sharedMocks.loadBranches(threadId),
+  ConversationApiError: class ConversationApiError extends Error {},
 }));
 
 // The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
@@ -1329,6 +1339,7 @@ describe('ChatLayout workspace project integration', () => {
     sharedMocks.setModeId?.('default');
     sharedMocks.workspaceCatalogLoad = Promise.resolve();
     sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.loadModes.mockClear();
     sharedMocks.selectWorkspace.mockImplementation((workspaceId: string) => {
       if (sharedMocks.workspaceSelectionRef) {
         sharedMocks.workspaceSelectionRef.value = workspaceId;
@@ -1366,6 +1377,16 @@ describe('ChatLayout workspace project integration', () => {
       providerId: 'anthropic',
       modeId: 'default',
     });
+  });
+
+  it('reloads available modes for the selected workspace', async () => {
+    mountLayout();
+    await flushPromises();
+    expect(sharedMocks.loadModes).toHaveBeenCalledWith('default');
+
+    sharedMocks.selectWorkspace('repo');
+    await flushPromises();
+    expect(sharedMocks.loadModes).toHaveBeenCalledWith('repo');
   });
 
   it('shows one editable project picker above the root composer only for a blank chat', async () => {
@@ -1644,6 +1665,37 @@ describe('ChatLayout ?threadId= deep link', () => {
     expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-older');
   });
 
+  // Found by hand: a deleted original is still listed (its forks read it), so page-one membership
+  // opened it as an empty chat whose sends were refused and lost.
+  it('shows a not-found state for a deep-linked original that was deleted but is kept for its forks', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [
+      makeConversation({ threadId: 'thread-deleted', deleted: true, lastUpdated: 9 }),
+      makeConversation({ threadId: 'thread-1', lastUpdated: 1 }),
+    ];
+    setQuery('threadId=thread-deleted');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(true);
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalled();
+  });
+
+  it('never restores a deleted original as the most recent conversation', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [
+      makeConversation({ threadId: 'thread-deleted', deleted: true, lastUpdated: 9 }),
+      makeConversation({ threadId: 'thread-1', lastUpdated: 1 }),
+    ];
+
+    mountLayout();
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-1');
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalledWith('thread-deleted');
+  });
+
   it('shows a not-found state for a deep-linked thread the backend does not have', async () => {
     sharedMocks.currentThreadId = null;
     sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
@@ -1684,6 +1736,155 @@ describe('ChatLayout ?threadId= deep link', () => {
 
     expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
     expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-1');
+  });
+});
+
+// Found by hand: on page load the most recently used conversation is restored only after every
+// catalog has loaded, which can take seconds. A New chat clicked in that window was overridden by the
+// late restore, and the message typed into the "new" chat was sent into the old conversation.
+describe('ChatLayout load-time restore vs the user', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  const sidebar = (wrapper: ReturnType<typeof mountLayout>) => wrapper.findComponent({ name: 'ConversationSidebar' });
+
+  /** A promise the test resolves by hand, so a step can be held open while the user acts. */
+  const held = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  };
+
+  beforeEach(() => {
+    window.history.pushState({}, '', '/');
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [
+      makeConversation({ threadId: 'thread-newest', lastUpdated: 9 }),
+      makeConversation({ threadId: 'thread-older', lastUpdated: 1 }),
+    ];
+    sharedMocks.resumeStreamIfActive.mockReset();
+    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+    sharedMocks.setThreadId.mockClear();
+    sharedMocks.loadConversations.mockReset();
+    sharedMocks.loadConversations.mockResolvedValue(undefined);
+    sharedMocks.clearMessages.mockReset();
+  });
+
+  afterEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
+  it('keeps a New chat clicked while the catalogs load, instead of restoring the last conversation', async () => {
+    const load = held();
+    sharedMocks.loadConversations.mockReturnValueOnce(load.promise);
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sidebar(wrapper).vm.$emit('newChat');
+    await flushPromises();
+    load.release();
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalled();
+    expect(sharedMocks.setThreadId).not.toHaveBeenCalledWith('thread-newest');
+    expect(sharedMocks.setThreadId).toHaveBeenLastCalledWith(null);
+  });
+
+  it('keeps a conversation the user opened while the catalogs load', async () => {
+    const load = held();
+    sharedMocks.loadConversations.mockReturnValueOnce(load.promise);
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sidebar(wrapper).vm.$emit('selectConversation', 'thread-older');
+    await flushPromises();
+    load.release();
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-older');
+    expect(sharedMocks.setThreadId).toHaveBeenLastCalledWith('thread-older');
+  });
+
+  it('keeps a New chat clicked while the restore is still switching to the last conversation', async () => {
+    // The restore has started opening thread-newest and is waiting to clear the old transcript.
+    const clearing = held();
+    sharedMocks.clearMessages.mockReturnValueOnce(clearing.promise);
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sidebar(wrapper).vm.$emit('newChat');
+    await flushPromises();
+    clearing.release();
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalled();
+    expect(sharedMocks.setThreadId).not.toHaveBeenCalledWith('thread-newest');
+    expect(sharedMocks.setThreadId).toHaveBeenLastCalledWith(null);
+  });
+
+  it('keeps a conversation opened while an earlier New chat was still clearing', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.setThreadId.mockClear();
+
+    const clearing = held();
+    sharedMocks.clearMessages.mockReturnValueOnce(clearing.promise);
+    sidebar(wrapper).vm.$emit('newChat');
+    await flushPromises();
+    sidebar(wrapper).vm.$emit('selectConversation', 'thread-older');
+    await flushPromises();
+    clearing.release();
+    await flushPromises();
+
+    expect(sharedMocks.setThreadId).not.toHaveBeenCalledWith(null);
+    expect(sharedMocks.setThreadId).toHaveBeenLastCalledWith('thread-older');
+  });
+
+  it('keeps a New chat clicked while a deep link is still being looked up', async () => {
+    window.history.pushState({}, '', '/?threadId=thread-unlisted');
+    let answer!: (exists: boolean) => void;
+    sharedMocks.conversationExists.mockReset();
+    sharedMocks.conversationExists.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    sidebar(wrapper).vm.$emit('newChat');
+    await flushPromises();
+    answer(true);
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalled();
+    expect(sharedMocks.setThreadId).toHaveBeenLastCalledWith(null);
+  });
+
+  it('still restores the most recently used conversation when the user does nothing', async () => {
+    const load = held();
+    sharedMocks.loadConversations.mockReturnValueOnce(load.promise);
+    mountLayout();
+    await flushPromises();
+    load.release();
+    await flushPromises();
+
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-newest');
   });
 });
 
@@ -3246,6 +3447,10 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
           // The SUBJECT here is ChatLayout's mount gate, not the modal's internals
           // (ArtifactPreviewModal.test.ts owns those).
           ArtifactPreviewModal: ArtifactPreviewModalStub,
+          SandboxAppPreview: defineComponent({
+            props: ['threadId', 'workspaceId', 'appId', 'name'],
+            template: '<div data-testid="sandbox-app-preview-stub" :data-workspace-id="workspaceId">{{ name }}</div>',
+          }),
         },
       },
     });
@@ -3312,6 +3517,27 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     const wrapper = await mountWithOpenModal();
     expect(wrapper.getComponent(ArtifactPreviewModalStub).attributes()).toHaveProperty('embedded');
     expect(wrapper.find('[data-testid="workspace-preview-region"]').exists()).toBe(true);
+  });
+
+  it('opens an approved app in the existing preview tabs', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: String(url).endsWith('/apps'),
+      status: String(url).endsWith('/apps') ? 200 : 404,
+      json: async () => String(url).endsWith('/apps')
+        ? { apps: [{ kind: 'mini-web-app', workspaceId: 'workspace-1', id: 'budget', name: 'Budget explorer', link: '#mini-app?workspace=workspace-1&app=budget' }] }
+        : {},
+    })));
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-inspector-launcher"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('#inspector-tab-apps').trigger('click');
+    await wrapper.get('[data-testid="open-sandbox-app-budget"]').trigger('click');
+    expect(wrapper.get('[data-testid="sandbox-app-preview-stub"]').text()).toBe('Budget explorer');
+    expect(wrapper.get('[data-testid="sandbox-app-preview-stub"]').attributes('data-workspace-id')).toBe('workspace-1');
+    expect(wrapper.get('[role="tablist"]').text()).toContain('Budget explorer');
+    await wrapper.get('[aria-label="Close Budget explorer"]').trigger('click');
+    expect(wrapper.find('[data-testid="sandbox-app-preview-stub"]').exists()).toBe(false);
   });
 
   it('restores the mounted conversation when the inspector closes from expanded reading', async () => {
@@ -3527,5 +3753,77 @@ describe('ChatLayout artifact-preview / sidebar geometry (#594 D6 / #603 F-001, 
     );
     const sidebar = readSrc('../../components/ConversationSidebar.vue');
     expect(sidebar).toMatch(/@media\s*\(max-width:\s*768px\)/);
+  });
+});
+
+// Fork a conversation: ChatLayout decides WHETHER the buttons show (started, non-CLI conversation) and
+// what a fork does next — open the new conversation through the sidebar-select path, then pre-fill the
+// composer for "Edit in fork". MessageList's own visibility rules are covered in MessageListFork.test.ts.
+describe('ChatLayout fork a conversation', () => {
+  const mountWithForkProbe = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: {
+            props: ['forkActions', 'branchPoints'],
+            template: `<div data-test="ml" :data-fork-actions="String(forkActions)" :data-branch-count="branchPoints.length">
+              <button data-test="edit" @click="$emit('edit-in-fork', 'pm-u1')">edit</button>
+            </div>`,
+          },
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+          WorkspaceSelector: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.setThreadId.mockReset();
+    sharedMocks.resumeStreamIfActive.mockReset();
+    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+    sharedMocks.forkConversation.mockReset();
+    sharedMocks.loadBranches.mockReset();
+    sharedMocks.loadBranches.mockResolvedValue({ points: [] });
+  });
+
+  it('offers fork actions for an API provider and hides them for a CLI-backed one', async () => {
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'openai' })];
+    const api = mountWithForkProbe();
+    await flushPromises();
+    expect(api.get('[data-test="ml"]').attributes('data-fork-actions')).toBe('true');
+
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'claude' })];
+    const cli = mountWithForkProbe();
+    await flushPromises();
+    expect(cli.get('[data-test="ml"]').attributes('data-fork-actions')).toBe('false');
+  });
+
+  it('"Edit in fork" forks before the message, opens the fork like a sidebar select, and pre-fills the composer', async () => {
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'openai' })];
+    sharedMocks.forkConversation.mockResolvedValue({
+      threadId: 'fork-1',
+      title: 'Fork',
+      forkedFrom: { threadId: 'thread-1', messageId: 'm2', seq: 2 },
+      rootThreadId: 'thread-1',
+      prefillText: 'old user text',
+    });
+    const wrapper = mountWithForkProbe();
+    await flushPromises();
+
+    await wrapper.get('[data-test="edit"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.forkConversation).toHaveBeenCalledWith('thread-1', { beforeMessageId: 'pm-u1' });
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith('fork-1');
+    expect(sharedMocks.loadBranches).toHaveBeenCalledWith('fork-1');
+    expect((wrapper.get('[data-testid="chat-input-textarea"]').element as HTMLTextAreaElement).value).toBe(
+      'old user text'
+    );
   });
 });

@@ -41,7 +41,7 @@ import {
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
-import type { ConversationUsageAggregate } from '@/api/conversationsApi';
+import type { ConversationUsageAggregate, PersistedMessage } from '@/api/conversationsApi';
 import { useMessageMerger } from './useMessageMerger';
 import { collectAnsweredQuestionIds, isEarlySettledQuestionResult } from '@/utils/pendingQuestions';
 import { getMergeKey } from './messageMergeKey';
@@ -90,6 +90,14 @@ interface InternalChatMessage {
   messageOrderIdx?: number | null;
   timestamp: number;
   isStreaming?: boolean;
+  /**
+   * The stored message id. Kept apart from `id`, which is the display/merge key and must stay as it
+   * is. Known for rehydrated messages; a live user message learns it once its run completes (see
+   * `refreshLiveUserPersistedIds`). Fork actions that name a message need it.
+   */
+  persistedId?: string | null;
+  /** The stored append order, when known. Places the branch switcher. */
+  seq?: number | null;
 }
 
 /**
@@ -893,8 +901,54 @@ export function useChat(options: UseChatOptions = {}) {
     // hybrid). Fire-and-forget: banner reconciliation must not block run-completion handling.
     const reconcileId = threadId.value;
     if (reconcileId) {
+      void refreshLiveUserPersistedIds(reconcileId, completedRunId);
       void reconcileUsageFromServer(reconcileId);
     }
+  }
+
+  /**
+   * Teaches the live user messages of a completed run their stored ids, so "Edit in fork" can name
+   * them without a reload. A live user message is keyed by its input id, which is not the stored id.
+   *
+   * Matching is by run id plus order within the run: the stored user rows of `runId`, in stored
+   * order, pair up with the live user messages of `runId`, in arrival order. Only rows that render as
+   * a user bubble are counted (a notification or agent message also serializes as role user).
+   * Best-effort: a failed or late read leaves the button hidden, never wrong.
+   */
+  async function refreshLiveUserPersistedIds(forThreadId: string, runId: string): Promise<void> {
+    const liveUsers = messageOrder.value
+      .map((key) => messageIndex.value.get(key))
+      .filter((m): m is InternalChatMessage => !!m && m.role === 'user' && m.runId === runId);
+    if (liveUsers.length === 0 || liveUsers.every((m) => m.persistedId)) return;
+
+    const epochAtEntry = conversationEpoch;
+    let persisted: PersistedMessage[];
+    try {
+      const { loadConversationMessages } = await import('@/api/conversationsApi');
+      persisted = await loadConversationMessages(forThreadId);
+    } catch (e) {
+      log.debug('Could not refresh persisted user message ids', { error: String(e) });
+      return;
+    }
+    if (epochAtEntry !== conversationEpoch || threadId.value !== forThreadId || !Array.isArray(persisted)) return;
+
+    const storedUsers = persisted.filter((pm) => {
+      // The row's role is the server enum's name ("User"), not the lowercase role inside messageJson.
+      if (pm.runId !== runId || pm.role.toLowerCase() !== 'user') return false;
+      try {
+        const parsed = JSON.parse(pm.messageJson) as Message;
+        return isTextMessage(parsed) && parsed.context_discovery == null;
+      } catch {
+        return false;
+      }
+    });
+    liveUsers.forEach((message, index) => {
+      const stored = storedUsers[index];
+      if (stored && !message.persistedId) {
+        message.persistedId = stored.id;
+        message.seq = stored.seq ?? null;
+      }
+    });
   }
 
   /**
@@ -2218,6 +2272,8 @@ export function useChat(options: UseChatOptions = {}) {
           messageOrderIdx: pm.messageOrderIdx,
           timestamp: pm.timestamp,
           isStreaming: false,
+          persistedId: pm.id,
+          seq: pm.seq ?? null,
         };
 
         // Stream persistence can hold several records that collapse to one logical merge key

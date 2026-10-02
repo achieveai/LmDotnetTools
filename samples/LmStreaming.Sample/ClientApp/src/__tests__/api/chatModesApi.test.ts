@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createChatMode, updateChatMode, InvalidEnvError } from '@/api/chatModesApi';
+import { createChatMode, updateChatMode, listChatModes, activateMiniWebApps, InvalidEnvError } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 
 const fetchMock = vi.fn();
@@ -27,6 +27,21 @@ const mode = { name: 'M', systemPrompt: 'p', env: { FOO: 'bar' } } as unknown as
  */
 describe('chatModesApi typed failures', () => {
   beforeEach(() => fetchMock.mockReset());
+
+  it('requests modes for the selected workspace', async () => {
+    fetchMock.mockReturnValue(Promise.resolve({ ok: true, json: async () => [],
+      headers: new Headers({ 'X-Mini-Web-App-Activation': 'available' }) }));
+    const result = await listChatModes('my workspace');
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/chat-modes?workspace=my%20workspace');
+    expect(result.canActivateMiniWebApps).toBe(true);
+  });
+
+  it('activates Mini Web Apps only through an explicit POST', async () => {
+    fetchMock.mockReturnValue(Promise.resolve({ ok: true }));
+    await activateMiniWebApps('my workspace');
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/chat-modes/mini-web-app-builder/activate?workspace=my%20workspace');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+  });
 
   it('maps 400 invalid_env on update to InvalidEnvError with the keys, the layer and a message naming them', async () => {
     fetchMock.mockReturnValue(

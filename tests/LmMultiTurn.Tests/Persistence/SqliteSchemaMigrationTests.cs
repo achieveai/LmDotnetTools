@@ -84,9 +84,10 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         SqliteSchemaInitializer
             .LatestSchemaVersion.Should()
             .Be(
-                5,
+                6,
                 "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
-                    + "slice 1's two steps, and #680 adds the messages seq column and index (5)"
+                    + "slice 1's two steps, #680 adds the messages seq column and index (5), and "
+                    + "conversation fork adds the messages parent_message_id column (6)"
             );
     }
 

@@ -899,6 +899,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         return GetOrCreateSessionAsync(new WorkspaceRef(workspaceId), ct, credential);
     }
 
+    /// <summary>Returns an already-created default-caller session without starting a sandbox.</summary>
+    public SandboxSession? TryGetExistingSession(string workspaceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        var key = (workspaceId, _defaultCredential.AppId);
+        return _sessions.TryGetValue(key, out var lazy) && lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully
+            ? lazy.Value.Result
+            : null;
+    }
+
     /// <summary>
     /// Returns the sandbox session for <paramref name="workspaceRef"/>, creating it on first use.
     /// The cache is keyed by (<see cref="WorkspaceRef.Id"/>, the effective caller app id); on first
@@ -1427,7 +1437,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // gateway applies its legacy "all plugins" default; an empty list is a deliberate
             // "load none" that has to reach the wire as an explicit empty array.
             workspaceRef.PluginSelection,
-            workspaceRef.Env
+            workspaceRef.Env,
+            pluginMounts:
+            [
+                .. _options.PluginMounts.Select(mount => new SandboxPluginMount(mount.Path, mount.Name, mount.Origin)),
+            ]
         );
 
         if (createRequest.Env.Count > 0)
@@ -2002,6 +2016,32 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(command);
         return ClientFor(CredentialFor(sessionId)).ExecuteAsync(sessionId, command, ct);
+    }
+
+    /// <summary>Streams a native command through the session's stored gateway credential.</summary>
+    public Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
+        string sessionId,
+        SandboxCommand command,
+        Func<SandboxOutputChunk, CancellationToken, ValueTask> onOutput,
+        ReadOnlyMemory<byte> stdin = default,
+        IReadOnlyDictionary<string, string>? environment = null,
+        long maxOutputBytes = 8L * 1024 * 1024,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(onOutput);
+        return ClientFor(CredentialFor(sessionId))
+            .ExecuteStreamingAsync(sessionId, command, onOutput, stdin, environment, maxOutputBytes, ct);
+    }
+
+    public Task<bool> SupportsStreamingAsync(string sessionId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        return ClientFor(CredentialFor(sessionId)).SupportsStreamingAsync(sessionId, ct);
     }
 
     /// <summary>

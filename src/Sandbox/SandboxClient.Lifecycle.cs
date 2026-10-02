@@ -171,7 +171,10 @@ public sealed partial class SandboxClient
             PluginSelection: request.PluginSelection is null
                 ? null
                 : [.. request.PluginSelection.Select(ToPluginRefDto)],
-            Env: request.Env.Count > 0 ? request.Env : null
+            Env: request.Env.Count > 0 ? request.Env : null,
+            Plugins: request.PluginMounts.Count > 0
+                ? [.. request.PluginMounts.Select(mount => new PluginMountDto(mount.Path, mount.Name, mount.Origin))]
+                : null
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>

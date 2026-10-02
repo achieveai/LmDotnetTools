@@ -51,6 +51,7 @@ using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
@@ -183,6 +184,24 @@ try
     // false every request resolves to the development principal, which is what keeps the existing
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
+
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var catalog = SandboxAppCatalog.Load(
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<IHostEnvironment>().IsDevelopment()
+                || sp.GetRequiredService<IHostEnvironment>().IsEnvironment("MiniAppLocalTest")
+        );
+        if (catalog.ProductionActivationBlocked)
+            sp.GetRequiredService<ILogger<SandboxAppCatalog>>()
+                .LogError("Mini Web App activation is disabled outside Development pending front-door trust review");
+        return catalog;
+    });
+    _ = builder.Services.AddSingleton<SandboxAppInstanceStore>();
+    _ = builder.Services.AddSingleton<SandboxAppAccess>();
+    _ = builder.Services.AddSingleton<SandboxAppDiscovery>();
+    _ = builder.Services.AddSingleton<SandboxAppCapability>();
+    _ = builder.Services.AddSingleton<ISandboxAppModeReadiness, SandboxAppModeReadiness>();
 
     // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
     // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
@@ -911,6 +930,22 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
+                if (mode.Id == SystemChatModes.MiniWebAppBuilderModeId)
+                {
+                    if (
+                        !sp.GetRequiredService<SandboxAppCatalog>().Enabled
+                        || (
+                            !sp.GetRequiredService<SandboxAppCatalog>().SameOriginDevelopment
+                            && !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        )
+                    )
+                        throw new InvalidOperationException("Mini Web App Builder is unavailable on this host.");
+                    mode = mode with
+                    {
+                        SystemPrompt =
+                            mode.SystemPrompt + $" Workspace ID for Mini Web App links: {context.WorkspaceId}.",
+                    };
+                }
                 // The capacity resolver rides on the lifecycle bundle so every loop built below — and every
                 // sub-agent spawned from one — sizes its context against the model's window (#681). A bundle
                 // minted here for the purpose publishes nothing and stores nothing, so the loop's lifecycle
@@ -955,10 +990,14 @@ try
                 // Workflow Author's Read/Grep/Skill) gets the same session and a narrower tool slice
                 // wired further below; this shared block establishes what they have in common.
                 var caps = ModeCapabilities.Resolve(mode.EnabledCapabilityTools);
+                if (caps.MiniAppDebugTools && !sp.GetRequiredService<SandboxAppCatalog>().Enabled)
+                    throw new InvalidOperationException("Mini App debugging requires SandboxApps:Enabled.");
                 // True when the mode takes the whole gateway surface rather than a named subset.
-                // Only a full-surface mode can be served over the Copilot CLI transport, which
-                // connects to /mcp directly and cannot apply a per-tool filter.
-                var hasFullSandboxSurface = caps.NeedsSandbox && caps.SandboxToolAllowList is null;
+                // Only a full-surface mode without host-bound debug functions can be served over
+                // the Copilot CLI transport, which connects to /mcp directly and cannot apply a
+                // per-tool filter or invoke the local FunctionRegistry.
+                var hasFullSandboxSurface =
+                    caps.SandboxTools && caps.SandboxToolAllowList is null && !caps.MiniAppDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
@@ -1094,7 +1133,10 @@ try
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
                     // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    var wsSuffix = BuildWorkspaceSuffix(
+                        sandboxSession.HostPath,
+                        caps.SandboxTools ? caps.SandboxToolAllowList : new HashSet<string>(StringComparer.Ordinal)
+                    );
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1561,7 +1603,24 @@ try
                     );
                 }
 
-                if (caps.NeedsSandbox)
+                if (caps.MiniAppDebugTools)
+                {
+                    var appCatalog = sp.GetRequiredService<SandboxAppCatalog>();
+                    var appDebugProvider = new MiniAppDebugToolProvider(
+                        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                        sp.GetRequiredService<SandboxAppDiscovery>(),
+                        sandboxSession!.SessionId,
+                        string.IsNullOrWhiteSpace(workspaceId)
+                            ? SandboxSessionRegistry.DefaultWorkspaceId
+                            : workspaceId,
+                        appCatalog.SameOriginDevelopment ? appCatalog.BrowserOrigin!.Host : appCatalog.AppDomain
+                    );
+                    _ = filteredRegistry.AddProvider(
+                        AllowListedFunctionProvider.Wrap(appDebugProvider, caps.MiniAppDebugToolAllowList)
+                    );
+                }
+
+                if (caps.SandboxTools)
                 {
                     // Expose the sandbox file/shell tools via the gateway's MCP endpoint, bound to this
                     // agent's sandbox session by the X-Session-ID header and the app's sandbox auth
@@ -2808,6 +2867,9 @@ try
         };
     });
 
+    // Dedicated app hosts must terminate here, before Vite, static files, chat APIs or SPA fallback.
+    _ = app.UseMiddleware<SandboxAppMiddleware>();
+
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
     {
@@ -2920,6 +2982,67 @@ try
                         threadId
                     );
                     workspaceId = null;
+                }
+            }
+
+            var persistedMetadata = await context
+                .RequestServices.GetRequiredService<IConversationStore>()
+                .LoadMetadataAsync(threadId, cancellationToken);
+            var agentPoolForGate = context.RequestServices.GetRequiredService<MultiTurnAgentPool>();
+            var activeModeId = agentPoolForGate.GetAgentMode(threadId)?.Id;
+            var persistedModeId =
+                persistedMetadata?.Properties?.TryGetValue(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    out var persistedModeValue
+                ) == true
+                    ? persistedModeValue switch
+                    {
+                        string id => id,
+                        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                            value.GetString(),
+                        _ => null,
+                    }
+                    : null;
+            if (
+                modeId == SystemChatModes.MiniWebAppBuilderModeId
+                || (activeModeId ?? persistedModeId) == SystemChatModes.MiniWebAppBuilderModeId
+            )
+            {
+                var boundWorkspaceId =
+                    persistedMetadata?.Properties?.TryGetValue(
+                        MultiTurnAgentPool.WorkspacePropertyKey,
+                        out var boundValue
+                    ) == true
+                        ? boundValue switch
+                        {
+                            string id => id,
+                            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                                value.GetString(),
+                            _ => null,
+                        }
+                        : null;
+                var effectiveWorkspaceId =
+                    activeModeId == SystemChatModes.MiniWebAppBuilderModeId
+                        ? agentPoolForGate.GetAgentWorkspaceId(threadId)
+                    : persistedModeId == SystemChatModes.MiniWebAppBuilderModeId ? boundWorkspaceId
+                    : boundWorkspaceId ?? workspaceId ?? SandboxSessionRegistry.DefaultWorkspaceId;
+                var appCatalog = context.RequestServices.GetRequiredService<SandboxAppCatalog>();
+                var appAuthorizer = context.RequestServices.GetRequiredService<ConversationAuthorizer>();
+                if (
+                    string.IsNullOrWhiteSpace(effectiveWorkspaceId)
+                    || !appCatalog.IsAvailableFor(
+                        context.Request.Host.Host,
+                        context.Request.IsHttps,
+                        appAuthorizer.IsEnforced,
+                        context.Request.Host.Port
+                    )
+                    || !await context
+                        .RequestServices.GetRequiredService<ISandboxAppModeReadiness>()
+                        .IsReadyAsync(effectiveWorkspaceId, cancellationToken)
+                )
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
                 }
             }
 

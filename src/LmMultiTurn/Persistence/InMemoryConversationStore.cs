@@ -28,7 +28,7 @@ public sealed class InMemoryConversationStore
     private readonly object _lifecycleLock = new();
 
     /// <inheritdoc />
-    public Task AppendMessagesAsync(
+    public async Task AppendMessagesAsync(
         string threadId,
         IReadOnlyList<PersistedMessage> messages,
         CancellationToken ct = default
@@ -39,33 +39,35 @@ public sealed class InMemoryConversationStore
 
         if (messages.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
+
+        var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct).ConfigureAwait(false);
 
         lock (_messagesLock)
         {
             // The store owns Seq: a caller-supplied value is overwritten, never honoured, so two
             // writers can never hand the thread the same position.
             var threadMessages = _messages.GetOrAdd(threadId, _ => []);
-            var appended = MessageSequence.Append(threadMessages, messages);
+            var appended = MessageSequence.Append(threadMessages, messages, forkPoint);
             threadMessages.Clear();
             threadMessages.AddRange(appended);
         }
-
-        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default)
     {
+        long own;
         lock (_messagesLock)
         {
-            return Task.FromResult(
+            own =
                 _messages.TryGetValue(threadId, out var messages) && messages.Count > 0
                     ? MessageSequence.Watermark(messages)
-                    : 0
-            );
+                    : 0;
         }
+
+        return ForkHistory.WatermarkAsync(this, threadId, own, ct);
     }
 
     /// <inheritdoc />
@@ -75,17 +77,26 @@ public sealed class InMemoryConversationStore
         long toSeq,
         int limit,
         CancellationToken ct = default
-    )
-    {
-        lock (_messagesLock)
-        {
-            return Task.FromResult<IReadOnlyList<PersistedMessage>>(
-                _messages.TryGetValue(threadId, out var messages)
-                    ? MessageSequence.Range(messages, fromSeq, toSeq, limit)
-                    : []
-            );
-        }
-    }
+    ) =>
+        ForkHistory.RangeAsync(
+            this,
+            threadId,
+            fromSeq,
+            toSeq,
+            limit,
+            (from, to, max) =>
+            {
+                lock (_messagesLock)
+                {
+                    return Task.FromResult<IReadOnlyList<PersistedMessage>>(
+                        _messages.TryGetValue(threadId, out var messages)
+                            ? MessageSequence.Range(messages, from, to, max)
+                            : []
+                    );
+                }
+            },
+            ct
+        );
 
     /// <inheritdoc />
     public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
@@ -115,6 +126,7 @@ public sealed class InMemoryConversationStore
             {
                 Timestamp = threadMessages[idx].Timestamp,
                 Seq = threadMessages[idx].Seq,
+                ParentMessageId = threadMessages[idx].ParentMessageId,
             };
         }
 
@@ -124,16 +136,14 @@ public sealed class InMemoryConversationStore
     /// <inheritdoc />
     public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
     {
+        IReadOnlyList<PersistedMessage> own;
         lock (_messagesLock)
         {
-            if (_messages.TryGetValue(threadId, out var messages))
-            {
-                // Return a copy in append order.
-                return Task.FromResult<IReadOnlyList<PersistedMessage>>(MessageSequence.Order(messages));
-            }
+            // A copy in append order.
+            own = _messages.TryGetValue(threadId, out var messages) ? MessageSequence.Order(messages) : [];
         }
 
-        return Task.FromResult<IReadOnlyList<PersistedMessage>>([]);
+        return ForkHistory.LoadAsync(this, threadId, own, ct);
     }
 
     /// <inheritdoc />

@@ -24,7 +24,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Abstract base class for multi-turn agents providing common infrastructure for
 /// channel management, subscription handling, and lifecycle management.
 /// </summary>
-public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent
+public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent, IStartupReadinessAgent
 {
     #region Fields
 
@@ -100,6 +100,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
+    private TaskCompletionSource? _startupReady;
 
     // Cancelled once, at disposal. Distinct from _internalCts, which is recreated by every
     // RunAsync and cancelled by every StopAsync: work that belongs to the agent rather than to one
@@ -1168,6 +1169,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return false;
         }
 
+        RecoveredMetadata = metadata;
+
         // Load messages
         var persistedMessages = await Store.LoadMessagesAsync(ThreadId, ct);
         if (persistedMessages.Count == 0)
@@ -1317,6 +1320,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
+    /// The metadata the latest <see cref="RecoverAsync"/> loaded, or null before any recovery found
+    /// some. Set before <see cref="OnHistoryRestoredAsync"/> and <see cref="OnThreadRecoveredAsync"/> run.
+    /// </summary>
+    protected ThreadMetadata? RecoveredMetadata { get; private set; }
+
+    /// <summary>
     /// Called from <see cref="RecoverAsync"/> exactly once per recovery attempt, after metadata
     /// has been loaded — regardless of whether any message rows exist for this thread. Some
     /// recoverable state (e.g. notify_waits) is persisted separately from message history, keyed
@@ -1325,6 +1334,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// messages exist, or in its place when there are none.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <see cref="RecoveredMetadata"/> holds the metadata this recovery loaded. Read it instead of
+    /// loading again: a second read can fail after the first succeeded.
+    /// </remarks>
     protected virtual Task OnThreadRecoveredAsync(CancellationToken ct)
     {
         return Task.CompletedTask;
@@ -2475,6 +2488,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     #region Lifecycle API
 
     /// <inheritdoc />
+    public Task WaitUntilReadyAsync(CancellationToken ct = default)
+    {
+        var readiness =
+            Volatile.Read(ref _startupReady) ?? throw new InvalidOperationException("RunAsync has not started.");
+        return readiness.Task.WaitAsync(ct);
+    }
+
+    /// <inheritdoc />
     public async Task RunAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -2487,6 +2508,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // Ensure channel exists (recreate if it was completed by previous stop)
         EnsureChannelExists();
 
+        var readiness = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref _startupReady, readiness);
+
         // PUBLISHED BEFORE the pre-loop startup below, not after it (#506). Every step of that
         // startup - history recovery, run-ledger reconciliation, lifecycle reconciliation, usage
         // hydration, OnBeforeRunAsync - reads and WRITES the conversation store, and while these two
@@ -2495,9 +2519,31 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // proceeded, and the startup writes carried on behind it. Assigning here makes the whole run,
         // not merely its loop, the thing StopAsync cancels and then waits for.
         _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _runTask = RunCoreAsync(_internalCts.Token);
+        _runTask = RunCoreAsync(_internalCts.Token, readiness);
 
-        await _runTask;
+        try
+        {
+            await _runTask;
+            if (!readiness.Task.IsCompleted)
+            {
+                _ = readiness.TrySetException(
+                    new InvalidOperationException("Agent loop exited before startup completed.")
+                );
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _ = readiness.TrySetCanceled();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _ = readiness.TrySetException(ex);
+            // Some callers only await RunAsync. Observe the signal's exception even
+            // when no host waits on it, without changing what later awaiters see.
+            _ = readiness.Task.Exception;
+            throw;
+        }
     }
 
     /// <summary>
@@ -2508,7 +2554,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// The run's own linked token. Cancelling it ends the startup steps as well as the loop, which is
     /// the point: before #506 the startup ran on the caller's token only and no stop could reach it.
     /// </param>
-    private async Task RunCoreAsync(CancellationToken ct)
+    /// <param name="readiness">Completion for this run's startup attempt.</param>
+    private async Task RunCoreAsync(CancellationToken ct, TaskCompletionSource readiness)
     {
         // Rehydrate persisted conversation history before the loop processes any input. The agent
         // pool creates a loop and starts it via RunAsync without ever calling RecoverAsync, so
@@ -2589,7 +2636,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // provider usage to stamp or flush, and giving it a terminal outcome would invent one.
         try
         {
-            await RunLoopAsync(ct);
+            var loopTask = RunLoopAsync(ct);
+            if (loopTask.IsCompleted)
+            {
+                await loopTask;
+                _ = readiness.TrySetException(
+                    new InvalidOperationException("Agent loop exited before startup completed.")
+                );
+                _ = readiness.Task.Exception;
+            }
+            else
+            {
+                _ = readiness.TrySetResult();
+                await loopTask;
+            }
 
             // Clean terminal exit (loop returned, incl. a deliberate cancellation): every provider call
             // this loop observed is captured, so the conversation's usage is Complete (#196, BUG 2).

@@ -27,13 +27,22 @@ namespace LmStreaming.Sample.Services;
 public sealed record ModeCapabilities
 {
     /// <summary>Whether this mode needs a sandbox gateway session for each conversation.</summary>
-    public required bool NeedsSandbox { get; init; }
+    public bool NeedsSandbox => SandboxTools || MiniAppDebugTools;
+
+    /// <summary>Whether gateway file and shell tools are selected.</summary>
+    public required bool SandboxTools { get; init; }
 
     /// <summary>
     ///     Which sandbox tools to expose: <c>null</c> means "every tool the gateway offers", including
     ///     ones a marketplace plugin adds later. A non-null set is an explicit allow-list.
     /// </summary>
     public required IReadOnlySet<string>? SandboxToolAllowList { get; init; }
+
+    /// <summary>Whether this mode exposes Mini App debugging tools.</summary>
+    public required bool MiniAppDebugTools { get; init; }
+
+    /// <summary>Selected Mini App debugging tools; null selects the whole group.</summary>
+    public required IReadOnlySet<string>? MiniAppDebugToolAllowList { get; init; }
 
     /// <summary>Whether the workflow authoring/mutation tools (<c>SetWorkflow</c>, <c>AddNode</c>, …) are exposed.</summary>
     public required bool WorkflowAuthoringTools { get; init; }
@@ -93,8 +102,10 @@ public sealed record ModeCapabilities
     public static ModeCapabilities LegacyDefaults { get; } =
         new()
         {
-            NeedsSandbox = false,
+            SandboxTools = false,
             SandboxToolAllowList = null,
+            MiniAppDebugTools = false,
+            MiniAppDebugToolAllowList = null,
             WorkflowAuthoringTools = false,
             StartWorkflowTools = false,
             WorkflowToolAllowList = null,
@@ -118,12 +129,14 @@ public sealed record ModeCapabilities
     /// </remarks>
     public bool Equals(ModeCapabilities? other) =>
         other is not null
-        && NeedsSandbox == other.NeedsSandbox
+        && SandboxTools == other.SandboxTools
+        && MiniAppDebugTools == other.MiniAppDebugTools
         && WorkflowAuthoringTools == other.WorkflowAuthoringTools
         && StartWorkflowTools == other.StartWorkflowTools
         && SubAgents == other.SubAgents
         && Collaboration == other.Collaboration
         && SameSet(SandboxToolAllowList, other.SandboxToolAllowList)
+        && SameSet(MiniAppDebugToolAllowList, other.MiniAppDebugToolAllowList)
         && SameSet(WorkflowToolAllowList, other.WorkflowToolAllowList)
         && SameSet(SubAgentToolAllowList, other.SubAgentToolAllowList);
 
@@ -131,12 +144,14 @@ public sealed record ModeCapabilities
     public override int GetHashCode()
     {
         var hash = new HashCode();
-        hash.Add(NeedsSandbox);
+        hash.Add(SandboxTools);
+        hash.Add(MiniAppDebugTools);
         hash.Add(WorkflowAuthoringTools);
         hash.Add(StartWorkflowTools);
         hash.Add(SubAgents);
         hash.Add(Collaboration);
         AddSet(ref hash, SandboxToolAllowList);
+        AddSet(ref hash, MiniAppDebugToolAllowList);
         AddSet(ref hash, WorkflowToolAllowList);
         AddSet(ref hash, SubAgentToolAllowList);
         return hash.ToHashCode();
@@ -181,17 +196,20 @@ public sealed record ModeCapabilities
             return LegacyDefaults;
         }
 
-        var needsSandbox = selection.IsEnabled(ToolGroups.Sandbox);
+        var sandboxTools = selection.IsEnabled(ToolGroups.Sandbox);
+        var miniAppDebugTools = selection.IsEnabled(ToolGroups.MiniAppDebug);
         var needsSubAgents = selection.IsEnabled(ToolGroups.SubAgents);
         var workflowAuthoring = selection.AnySelected(ToolGroups.Workflow, WorkflowToolProvider.AllToolNames);
         var startWorkflow = selection.AnySelected(ToolGroups.Workflow, StartWorkflowToolProvider.ToolNames);
 
         return new ModeCapabilities
         {
-            NeedsSandbox = needsSandbox,
+            SandboxTools = sandboxTools,
             // Only meaningful when a sandbox is needed; keep it null otherwise so a caller cannot
             // accidentally read an empty allow-list as "connect and expose nothing".
-            SandboxToolAllowList = needsSandbox ? selection.AllowListFor(ToolGroups.Sandbox) : null,
+            SandboxToolAllowList = sandboxTools ? selection.AllowListFor(ToolGroups.Sandbox) : null,
+            MiniAppDebugTools = miniAppDebugTools,
+            MiniAppDebugToolAllowList = miniAppDebugTools ? selection.AllowListFor(ToolGroups.MiniAppDebug) : null,
             WorkflowAuthoringTools = workflowAuthoring,
             StartWorkflowTools = startWorkflow,
             // Same null-means-everything contract as the sandbox allow-list, and null whenever no

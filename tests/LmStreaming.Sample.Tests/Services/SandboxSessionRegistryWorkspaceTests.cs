@@ -15,6 +15,19 @@ public class SandboxSessionRegistryWorkspaceTests
     private const string DefaultLeaf = "default-leaf";
 
     [Fact]
+    public async Task TryGetExistingSession_DoesNotCreateASandbox()
+    {
+        using var baseDir = new TempWorkspaceBase();
+        await using var registry = CreateRegistry(baseDir.Path, out var captured);
+
+        registry.TryGetExistingSession("ws-1").Should().BeNull();
+        captured.LastWorkspace.Should().BeNull();
+
+        var created = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", "projA"));
+        registry.TryGetExistingSession("ws-1").Should().BeSameAs(created);
+    }
+
+    [Fact]
     public async Task GetOrCreateSession_SelectedWorkspace_MountsItsOwnLeaf_NotTheDefault()
     {
         using var baseDir = new TempWorkspaceBase();

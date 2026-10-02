@@ -75,6 +75,21 @@ public record ConversationSummary
     /// </remarks>
     public required bool CanShare { get; init; }
 
+    /// <summary>Where this conversation was forked from; null when it is not a fork.</summary>
+    public ForkOrigin? ForkedFrom { get; init; }
+
+    /// <summary>
+    /// The original conversation of this fork family - the one every fork, including a fork of a
+    /// fork, nests under in the sidebar. Null when it is not a fork.
+    /// </summary>
+    public string? RootThreadId { get; init; }
+
+    /// <summary>
+    /// True for a deleted original kept only because forks still read its messages. The sidebar shows
+    /// it as a greyed header over its forks and offers nothing else.
+    /// </summary>
+    public bool Deleted { get; init; }
+
     /// <summary>
     /// Renders a stored visibility for the wire. Hand-mapped the way the sharing routes hand-map
     /// <c>GrantRole</c> to <c>viewer</c>/<c>editor</c>: the enum carries no
@@ -406,4 +421,73 @@ public record ConversationStatusResponse
     public string? RunId { get; init; }
     public required string Status { get; init; }
     public object? Response { get; init; }
+}
+
+/// <summary>The conversation and message a fork starts from.</summary>
+public record ForkOrigin
+{
+    public required string ThreadId { get; init; }
+
+    /// <summary>The last shared message; null when the fork shares nothing (it edits the first question).</summary>
+    public string? MessageId { get; init; }
+
+    /// <summary>The last shared message's Seq; 0 when the fork shares nothing.</summary>
+    public required long Seq { get; init; }
+}
+
+/// <summary>
+/// Body of <c>POST /api/conversations/{threadId}/fork</c>. Exactly one anchor is set.
+/// </summary>
+public record ForkConversationRequest
+{
+    /// <summary>"Fork from here": after the last message of this run.</summary>
+    public string? AfterRunId { get; init; }
+
+    /// <summary>After exactly this persisted message.</summary>
+    public string? AfterMessageId { get; init; }
+
+    /// <summary>"Edit in fork": just before this user message, whose text comes back as the prefill.</summary>
+    public string? BeforeMessageId { get; init; }
+
+    /// <summary>The fork's title; defaults to the source's title with " (fork)".</summary>
+    public string? Title { get; init; }
+}
+
+/// <summary>201 body of <c>POST /api/conversations/{threadId}/fork</c>.</summary>
+public record ForkConversationResponse
+{
+    public required string ThreadId { get; init; }
+    public required string Title { get; init; }
+    public required ForkOrigin ForkedFrom { get; init; }
+    public required string RootThreadId { get; init; }
+
+    /// <summary>The edited user message's text, for an edit-in-fork; null otherwise.</summary>
+    public string? PrefillText { get; init; }
+}
+
+/// <summary>Body of <c>GET /api/conversations/{threadId}/branches</c>.</summary>
+public record ConversationBranchesResponse
+{
+    public required IReadOnlyList<ConversationBranchPoint> Points { get; init; }
+}
+
+/// <summary>A message after which two or more conversations the viewer can open continue.</summary>
+public record ConversationBranchPoint
+{
+    /// <summary>Null only for a point before the first message.</summary>
+    public string? AfterMessageId { get; init; }
+
+    /// <summary>Always sent: the client places the switcher by it when the message itself is not rendered.</summary>
+    public required long AfterSeq { get; init; }
+
+    /// <summary>Ordered: the conversation that owns the message first, then its forks by creation.</summary>
+    public required IReadOnlyList<ConversationBranchOption> Options { get; init; }
+}
+
+/// <summary>One continuation at a branch point. Exactly one per point is current.</summary>
+public record ConversationBranchOption
+{
+    public required string ThreadId { get; init; }
+    public required string Title { get; init; }
+    public required bool Current { get; init; }
 }

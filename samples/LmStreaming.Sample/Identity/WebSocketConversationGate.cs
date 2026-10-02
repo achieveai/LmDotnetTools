@@ -61,6 +61,9 @@ public sealed record SubAgentSocketAdmission(bool Admitted, bool MayReplayPersis
 /// </remarks>
 public sealed class WebSocketConversationGate
 {
+    /// <summary>The logged reason for refusing a deleted original; the wire answer is the unknown-thread 404.</summary>
+    private const string DeletedConversationReason = "conversation_deleted";
+
     private readonly ConversationAuthorizer _authorizer;
     private readonly IConversationStore _store;
     private readonly ILogger<WebSocketConversationGate> _logger;
@@ -119,20 +122,31 @@ public sealed class WebSocketConversationGate
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
-        if (!_authorizer.IsEnforced)
-        {
-            return true;
-        }
-
         var metadata = await _store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
-        var result = await _authorizer.AuthorizeAsync(threadId, metadata, action, ct).ConfigureAwait(false);
-        if (result.Allowed)
+        var result = _authorizer.IsEnforced
+            ? await _authorizer.AuthorizeAsync(threadId, metadata, action, ct).ConfigureAwait(false)
+            : null;
+        if (result is { Allowed: false })
         {
-            return true;
+            await RefuseAsync(context, threadId, result).ConfigureAwait(false);
+            return false;
         }
 
-        await RefuseAsync(context, threadId, result).ConfigureAwait(false);
-        return false;
+        // A deleted original that forks still read is kept only for them: a stale tab must not run
+        // turns in it. Refused as unknown with authorization on or off, after the authorizer so an
+        // enforced refusal costs the same work for every id.
+        if (ConversationLineage.IsDeleted(metadata))
+        {
+            await RefuseAsync(
+                    context,
+                    threadId,
+                    new ConversationAccessResult(false, DeletedConversationReason, HidesExistence: true)
+                )
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
