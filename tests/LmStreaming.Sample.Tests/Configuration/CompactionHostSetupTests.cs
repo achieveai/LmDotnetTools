@@ -116,6 +116,34 @@ public class CompactionHostSetupTests
         setup.TextTokens!("").Should().Be(0);
     }
 
+    [Theory]
+    [InlineData('x', 4096, 512L)]
+    [InlineData('x', 4097, 4097L)]
+    [InlineData('三', 1365, 1365L)]
+    [InlineData('三', 1366, 4098L)]
+    public void O200kTextTokenizer_BoundsNativePiecesByUtf8Bytes(char character, int length, long expected)
+    {
+        var setup = Create(
+            new Dictionary<string, string?> { ["Compaction:Mode"] = "Compact", ["Compaction:TextTokenizer"] = "o200k" }
+        );
+
+        setup!.TextTokens!(new string(character, length)).Should().Be(expected);
+        setup.Options.Mode.Should().Be(CompactionMode.Compact);
+    }
+
+    [Fact]
+    public void O200kTextTokenizer_PreservesExactCountsForLongOrdinaryCode()
+    {
+        var setup = Create(
+            new Dictionary<string, string?> { ["Compaction:Mode"] = "Compact", ["Compaction:TextTokenizer"] = "o200k" }
+        );
+        var text = string.Concat(Enumerable.Repeat("const value = 42;\n", 10_000));
+
+        // This 180KB input has short encoding pieces. A whole-input byte fallback
+        // would charge 180,000 instead of the pinned encoding's 60,000 tokens.
+        setup!.TextTokens!(text).Should().Be(60_000);
+    }
+
     [Fact]
     public void UnknownTextTokenizer_IsRefusedAtStartup()
     {

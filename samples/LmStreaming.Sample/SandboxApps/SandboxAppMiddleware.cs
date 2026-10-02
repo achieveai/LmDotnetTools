@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.AspNetCore.WebUtilities;
 
 namespace LmStreaming.Sample.SandboxApps;
@@ -19,7 +18,6 @@ public sealed class SandboxAppMiddleware(
 {
     private const string DedicatedCookieName = "__Host-sandbox-app";
     private const string SameOriginCookieName = "__Secure-sandbox-app";
-    private static readonly SemaphoreSlim Capacity = new(4, 4);
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -133,75 +131,18 @@ public sealed class SandboxAppMiddleware(
             return;
         }
 
-        if (!await Capacity.WaitAsync(0, context.RequestAborted))
-        {
-            await FailInitialPageAsync(context, StatusCodes.Status429TooManyRequests);
-            return;
-        }
-
-        var cgi = new SandboxCgiResponse(context.Response, pathPrefix);
-        try
-        {
-            using var executionCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-            executionCts.CancelAfter(app.ExecutionTimeout);
-            var env = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["REQUEST_METHOD"] = request.Method,
-                ["PATH_INFO"] = path,
-                ["QUERY_STRING"] = query.TrimStart('?'),
-                ["CONTENT_TYPE"] = request.ContentType ?? string.Empty,
-                ["CONTENT_LENGTH"] = body.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["HTTPS"] = "on",
-                ["SERVER_NAME"] = request.Host.Host,
-                ["SANDBOX_APP_CSRF_TOKEN"] = grant.CsrfToken,
-            };
-            var csrfHeader = request.Headers["X-CSRF-Token"].ToString();
-            if (HttpMethods.IsPost(request.Method) && !string.IsNullOrEmpty(csrfHeader))
-            {
-                env["HTTP_X_CSRF_TOKEN"] = csrfHeader;
-            }
-            var args = new[] { app.Executable }.Concat(app.Arguments).ToArray();
-            var command = new SandboxCommand(args, app.WorkingDirectory);
-            var result = await browser.ExecuteWorkspaceCommandStreamingAsync(
-                resolved.SessionId,
-                command,
-                async (chunk, ct) =>
-                {
-                    if (chunk.Stream == SandboxOutputStream.Stdout)
-                        await cgi.WriteAsync(chunk.Data, ct);
-                    else if (!chunk.Data.IsEmpty)
-                        logger.LogWarning("Sandbox app {AppId} wrote {Bytes} stderr bytes", app.Id, chunk.Data.Length);
-                },
-                body,
-                env,
-                app.MaxOutputBytes,
-                executionCts.Token
-            );
-            await cgi.CompleteAsync(executionCts.Token);
-            if (result.ExitCode != 0)
-            {
-                logger.LogWarning("Sandbox app {AppId} exited with code {ExitCode}", app.Id, result.ExitCode);
-                await FailCgiAsync(context, cgi, StatusCodes.Status502BadGateway);
-            }
-        }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
-        {
-            // The SDK cancels the gateway operation when the browser disconnects.
-        }
-        catch (OperationCanceledException)
-        {
-            logger.LogWarning("Sandbox app {AppId} exceeded its execution time limit", app.Id);
-            await FailCgiAsync(context, cgi, StatusCodes.Status504GatewayTimeout);
-        }
-        catch (Exception ex) when (ex is SandboxException or SandboxSessionUnavailableException or InvalidDataException)
-        {
-            logger.LogWarning(ex, "Sandbox app {AppId} failed", app.Id);
-            await FailCgiAsync(context, cgi, StatusCodes.Status502BadGateway);
-        }
-        finally
-        {
-            Capacity.Release();
-        }
+        await SandboxCgiRunner.ExecuteAsync(
+            context,
+            browser,
+            logger,
+            app,
+            resolved.SessionId,
+            path,
+            pathPrefix,
+            body,
+            grant.CsrfToken,
+            FailInitialPageAsync
+        );
     }
 
     private async Task ExchangeAsync(HttpContext context, string pathPrefix, string cookieName)
@@ -264,17 +205,6 @@ public sealed class SandboxAppMiddleware(
         context.Response.Headers.Location = pathPrefix;
     }
 
-    private static async Task FailCgiAsync(HttpContext context, SandboxCgiResponse cgi, int status)
-    {
-        if (context.Response.HasStarted || cgi.HasWrittenBody)
-        {
-            context.Abort();
-            return;
-        }
-        context.Response.Headers.Remove("Location");
-        await FailInitialPageAsync(context, status);
-    }
-
     private static Task FailInitialPageAsync(HttpContext context, int status)
     {
         if (HttpMethods.IsGet(context.Request.Method) && context.Request.Path == "/")
@@ -294,7 +224,7 @@ public sealed class SandboxAppMiddleware(
         return context.Response.WriteAsync(html, context.RequestAborted);
     }
 
-    private static async Task<byte[]> ReadBodyAsync(HttpRequest request, int cap, CancellationToken ct)
+    internal static async Task<byte[]> ReadBodyAsync(HttpRequest request, int cap, CancellationToken ct)
     {
         if (request.ContentLength > cap)
             throw new InvalidDataException("Request body exceeds limit.");
@@ -311,7 +241,7 @@ public sealed class SandboxAppMiddleware(
         }
     }
 
-    private static bool ValidCsrf(HttpRequest request, byte[] body, string expected)
+    internal static bool ValidCsrf(HttpRequest request, byte[] body, string expected)
     {
         var supplied = request.Headers["X-CSRF-Token"].ToString();
         if (
@@ -363,7 +293,7 @@ public sealed class SandboxAppMiddleware(
         return true;
     }
 
-    private static void SetSecurityHeaders(HttpResponse response, string siteDomain, int httpsPort, bool sameOrigin)
+    internal static void SetSecurityHeaders(HttpResponse response, string siteDomain, int httpsPort, bool sameOrigin)
     {
         response.Headers.CacheControl = "no-store";
         response.Headers.XContentTypeOptions = "nosniff";

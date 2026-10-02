@@ -27,7 +27,7 @@ namespace LmStreaming.Sample.Services;
 public sealed record ModeCapabilities
 {
     /// <summary>Whether this mode needs a sandbox gateway session for each conversation.</summary>
-    public bool NeedsSandbox => SandboxTools || MiniAppDebugTools;
+    public bool NeedsSandbox => SandboxTools || MiniAppDebugTools || BrowserDebugTools;
 
     /// <summary>Whether gateway file and shell tools are selected.</summary>
     public required bool SandboxTools { get; init; }
@@ -43,6 +43,12 @@ public sealed record ModeCapabilities
 
     /// <summary>Selected Mini App debugging tools; null selects the whole group.</summary>
     public required IReadOnlySet<string>? MiniAppDebugToolAllowList { get; init; }
+
+    /// <summary>Whether this mode exposes sandbox Chrome tools for apps and HTML previews.</summary>
+    public bool BrowserDebugTools { get; init; }
+
+    /// <summary>Selected browser tools; null selects the whole group.</summary>
+    public IReadOnlySet<string>? BrowserDebugToolAllowList { get; init; }
 
     /// <summary>Whether the workflow authoring/mutation tools (<c>SetWorkflow</c>, <c>AddNode</c>, …) are exposed.</summary>
     public required bool WorkflowAuthoringTools { get; init; }
@@ -131,12 +137,14 @@ public sealed record ModeCapabilities
         other is not null
         && SandboxTools == other.SandboxTools
         && MiniAppDebugTools == other.MiniAppDebugTools
+        && BrowserDebugTools == other.BrowserDebugTools
         && WorkflowAuthoringTools == other.WorkflowAuthoringTools
         && StartWorkflowTools == other.StartWorkflowTools
         && SubAgents == other.SubAgents
         && Collaboration == other.Collaboration
         && SameSet(SandboxToolAllowList, other.SandboxToolAllowList)
         && SameSet(MiniAppDebugToolAllowList, other.MiniAppDebugToolAllowList)
+        && SameSet(BrowserDebugToolAllowList, other.BrowserDebugToolAllowList)
         && SameSet(WorkflowToolAllowList, other.WorkflowToolAllowList)
         && SameSet(SubAgentToolAllowList, other.SubAgentToolAllowList);
 
@@ -146,12 +154,14 @@ public sealed record ModeCapabilities
         var hash = new HashCode();
         hash.Add(SandboxTools);
         hash.Add(MiniAppDebugTools);
+        hash.Add(BrowserDebugTools);
         hash.Add(WorkflowAuthoringTools);
         hash.Add(StartWorkflowTools);
         hash.Add(SubAgents);
         hash.Add(Collaboration);
         AddSet(ref hash, SandboxToolAllowList);
         AddSet(ref hash, MiniAppDebugToolAllowList);
+        AddSet(ref hash, BrowserDebugToolAllowList);
         AddSet(ref hash, WorkflowToolAllowList);
         AddSet(ref hash, SubAgentToolAllowList);
         return hash.ToHashCode();
@@ -198,6 +208,7 @@ public sealed record ModeCapabilities
 
         var sandboxTools = selection.IsEnabled(ToolGroups.Sandbox);
         var miniAppDebugTools = selection.IsEnabled(ToolGroups.MiniAppDebug);
+        var browserDebugTools = selection.IsEnabled(ToolGroups.BrowserDebug);
         var needsSubAgents = selection.IsEnabled(ToolGroups.SubAgents);
         var workflowAuthoring = selection.AnySelected(ToolGroups.Workflow, WorkflowToolProvider.AllToolNames);
         var startWorkflow = selection.AnySelected(ToolGroups.Workflow, StartWorkflowToolProvider.ToolNames);
@@ -210,6 +221,8 @@ public sealed record ModeCapabilities
             SandboxToolAllowList = sandboxTools ? selection.AllowListFor(ToolGroups.Sandbox) : null,
             MiniAppDebugTools = miniAppDebugTools,
             MiniAppDebugToolAllowList = miniAppDebugTools ? selection.AllowListFor(ToolGroups.MiniAppDebug) : null,
+            BrowserDebugTools = browserDebugTools,
+            BrowserDebugToolAllowList = browserDebugTools ? selection.AllowListFor(ToolGroups.BrowserDebug) : null,
             WorkflowAuthoringTools = workflowAuthoring,
             StartWorkflowTools = startWorkflow,
             // Same null-means-everything contract as the sandbox allow-list, and null whenever no

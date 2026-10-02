@@ -88,6 +88,19 @@ public class ModeCapabilitiesTests
             .BeEquivalentTo(["TestMiniAppRequest"]);
     }
 
+    [Theory]
+    [InlineData("browser-debug:*")]
+    [InlineData("browser-debug:OpenDebugBrowser")]
+    public void BrowserDebugSelection_RequiresSandboxWithoutGrantingFileTools(string selectionId)
+    {
+        var caps = ModeCapabilities.Resolve([selectionId]);
+
+        caps.NeedsSandbox.Should().BeTrue();
+        caps.SandboxTools.Should().BeFalse();
+        ModeToolSelection.Parse([selectionId]).IsEnabled("browser-debug").Should().BeTrue();
+        ModeCapabilities.Resolve([]).NeedsSandbox.Should().BeFalse();
+    }
+
     [Fact]
     public void MiniAppDebugWildcard_GrantsOnlyItsOwnGroup()
     {

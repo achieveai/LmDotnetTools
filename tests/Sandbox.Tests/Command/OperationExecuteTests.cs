@@ -91,6 +91,74 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_UsesPerCommandEnvironmentOutputCapAndTimeout()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, "session", 7);
+        RegisterSubmit(
+            handler,
+            """{"operation_id":"limits","status":"succeeded","exit_code":0,"artifacts":{"mount_id":7,"stdout_path":"stdout","stderr_path":"stderr"}}""",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "stdout", "AQID");
+        RegisterDownload(handler, "stderr", "");
+        await client.ExecuteAsync(
+            "session",
+            new SandboxCommand(["python3", "-I"], operationId: "limits")
+            {
+                Environment = new Dictionary<string, string> { ["PATH"] = "/usr/local/bin" },
+                MaxOutputBytes = 11_188_908,
+                ExecutionTimeout = TimeSpan.FromSeconds(15),
+            }
+        );
+        var submit = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.GetProperty("env").GetProperty("PATH").GetString().Should().Be("/usr/local/bin");
+        body.RootElement.GetProperty("max_output_bytes").GetInt64().Should().Be(11_188_908);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(15);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExplicitOutputCapAlsoBoundsCombinedArtifactDownloads()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, "session", 7);
+        RegisterSubmit(
+            handler,
+            """{"operation_id":"cap","status":"succeeded","exit_code":0,"artifacts":{"mount_id":7,"stdout_path":"stdout","stderr_path":"stderr"}}""",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "stdout", "abc");
+        RegisterDownload(handler, "stderr", "def");
+        var act = () =>
+            client.ExecuteAsync("session", new SandboxCommand(["echo"], operationId: "cap") { MaxOutputBytes = 5 });
+        (await act.Should().ThrowAsync<SandboxException>()).Which.IsDirectReadCapExceeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExecuteBytesAsync_PreservesNonUtf8OutputAndCallerOwnedRecord()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, "session", 7);
+        RegisterSubmit(
+            handler,
+            """{"operation_id":"binary","status":"succeeded","exit_code":0,"artifacts":{"mount_id":7,"stdout_path":"stdout","stderr_path":"stderr"}}""",
+            HttpStatusCode.OK
+        );
+        byte[] expected = [0, 255, 128, 1];
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("stdout", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(expected) }
+        );
+        RegisterDownload(handler, "stderr", "");
+        var result = await client.ExecuteBytesAsync("session", new SandboxCommand(["python3"], operationId: "binary"));
+        result.StandardOutput.Should().Equal(expected);
+        result.StandardError.Should().BeEmpty();
+        result.OperationRecordReleased.Should().BeFalse();
+        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Delete);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SubmitReturnsTerminalImmediately_DoesNotPoll()
     {
         const string sessionId = "sess-2";
@@ -342,6 +410,42 @@ public sealed class OperationExecuteTests
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId));
 
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PerCommandTimeoutLongerThanClientDefault_KeepsPollingUntilTerminal()
+    {
+        const string sessionId = "sess-long";
+        const string operationId = "op-long";
+        // Client default deadline = 150ms + 1s grace. The command asks the gateway for 30s and finishes
+        // after ~1.4s, so polling bounded by the client default would throw ExecutionTimeout.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMilliseconds(150));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 7);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        handler.On(
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ =>
+                Json(
+                    clock.Elapsed < TimeSpan.FromMilliseconds(1_400)
+                        ? "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}"
+                        : "{\"operation_id\":\""
+                            + operationId
+                            + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"stdout\",\"stderr_path\":\"stderr\"}}"
+                )
+        );
+        RegisterDownload(handler, "stdout", "done");
+        RegisterDownload(handler, "stderr", "");
+
+        var result = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["sleep", "1"], operationId: operationId) { ExecutionTimeout = TimeSpan.FromSeconds(30) }
+        );
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Should().Be("done");
     }
 
     [Fact]

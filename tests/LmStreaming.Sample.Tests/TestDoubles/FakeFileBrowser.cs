@@ -103,6 +103,46 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     public List<(string Path, byte[] Bytes)> Writes { get; } = [];
     public List<SandboxCommand> Commands { get; } = [];
     public int ReadCalls { get; private set; }
+    public byte[] StreamBytes { get; set; } = [];
+    public SandboxCommandBytesResult BinaryExecResult { get; set; } =
+        new()
+        {
+            ExitCode = 0,
+            StandardOutput = [],
+            StandardError = [],
+            OperationId = "read",
+        };
+
+    public Task<SandboxCommandBytesResult> ExecuteWorkspaceCommandBytesAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    )
+    {
+        Commands.Add(command);
+        return Task.FromResult(BinaryExecResult);
+    }
+
+    public SandboxStreamResult StreamResult { get; set; } = new(0, 0, 0);
+
+    /// <summary>Stdin and CGI environment of each streaming command, in order.</summary>
+    public List<(byte[] Stdin, IReadOnlyDictionary<string, string>? Environment)> StreamCalls { get; } = [];
+
+    public async Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
+        string sessionId,
+        SandboxCommand command,
+        Func<SandboxOutputChunk, CancellationToken, ValueTask> onOutput,
+        ReadOnlyMemory<byte> stdin = default,
+        IReadOnlyDictionary<string, string>? environment = null,
+        long maxOutputBytes = 8L * 1024 * 1024,
+        CancellationToken ct = default
+    )
+    {
+        Commands.Add(command);
+        StreamCalls.Add((stdin.ToArray(), environment));
+        await onOutput(new(SandboxOutputStream.Stdout, StreamBytes), ct);
+        return StreamResult;
+    }
 
     public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
         string threadId,

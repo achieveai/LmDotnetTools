@@ -137,6 +137,7 @@ public static class ModeSubAgentRequiredTools
             ToolGroups.SubAgents => SubAgentToolProvider.AllToolNames,
             ToolGroups.Workflow => [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames],
             ToolGroups.MiniAppDebug => MiniAppDebugToolProvider.ToolNames,
+            ToolGroups.BrowserDebug => BrowserDebugToolProvider.ToolNames,
             _ => [],
         };
 }

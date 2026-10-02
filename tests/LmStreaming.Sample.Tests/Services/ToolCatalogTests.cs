@@ -146,6 +146,23 @@ public class ToolCatalogTests
     }
 
     [Fact]
+    public async Task BrowserDebugGroup_IsSelectableAsABlock_WithoutRawBrowserInWorkspaceTools()
+    {
+        var listing = new SandboxToolCatalog([("Bash", "Run commands"), ("Browser", "Raw browser")], true, null);
+        var catalog = await Create(listing).GetAsync();
+        var group = catalog.Where(t => t.Group == "browser-debug").ToList();
+
+        group.Should().ContainSingle(t => t.Id == "browser-debug:*" && t.IsWildcard);
+        group
+            .Where(t => !t.IsWildcard)
+            .Select(t => t.Name)
+            .Should()
+            .BeEquivalentTo(["OpenDebugBrowser", "RunBrowserTool", "CloseDebugBrowser"]);
+        group.Should().OnlyContain(t => t.RequiresSandbox);
+        catalog.Should().NotContain(t => t.Id == "sandbox:Browser");
+    }
+
+    [Fact]
     public async Task TaskTools_AreEnumeratedFromTheRealTaskManager()
     {
         var catalog = await Create(LiveSandbox).GetAsync();

@@ -5,9 +5,11 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -51,6 +53,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly IReadOnlyDictionary<string, string?>? _settings;
     private readonly X509Certificate2? _httpsCertificate;
     private readonly string? _localTestSecret;
+    private readonly int? _callbackPort;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -93,6 +96,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// </param>
     /// <param name="httpsCertificate">Dedicated certificate for the opt-in local HTTPS browser scenario.</param>
     /// <param name="localTestSecret">Per-run browser cookie secret; valid only with the HTTPS test host.</param>
+    /// <param name="callbackPort">Optional separate loopback HTTP listener for authenticated gateway callbacks in local HTTPS tests.</param>
     public BrowserWebAppFactory(
         string providerMode,
         ITestAgentBuilder? builder,
@@ -103,9 +107,21 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
         IReadOnlyDictionary<string, string?>? settings = null,
         X509Certificate2? httpsCertificate = null,
-        string? localTestSecret = null
+        string? localTestSecret = null,
+        int? callbackPort = null
     )
     {
+        if (
+            callbackPort is not null
+            && (httpsCertificate is null || callbackPort is <= 0 or > 65535 || callbackPort == fixedPort)
+        )
+        {
+            throw new ArgumentException(
+                "A callback port requires HTTPS and a separate valid port.",
+                nameof(callbackPort)
+            );
+        }
+        _callbackPort = callbackPort;
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
         // MockProviderHostLifetime that boots automatically at app startup; for those modes the
@@ -219,6 +235,10 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
+            if (_callbackPort is { } callbackPort)
+            {
+                services.AddSingleton<IStartupFilter>(new GatewayCallbackOnlyStartupFilter(callbackPort));
+            }
             if (_localTestSecret is not null)
             {
                 services.AddSingleton<LmStreaming.Sample.Identity.IRequestPrincipalSource>(
@@ -309,6 +329,36 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         });
     }
 
+    private sealed class GatewayCallbackOnlyStartupFilter(int port) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+                app.Use(
+                    async (context, nextRequest) =>
+                    {
+                        if (
+                            context.Connection.LocalPort == port
+                            && (
+                                !HttpMethods.IsPost(context.Request.Method)
+                                || !string.Equals(
+                                    context.Request.Path.Value,
+                                    "/api/discovery/context_discovery",
+                                    StringComparison.Ordinal
+                                )
+                            )
+                        )
+                        {
+                            context.Response.StatusCode = StatusCodes.Status404NotFound;
+                            return;
+                        }
+                        await nextRequest(context);
+                    }
+                );
+                next(app);
+            };
+    }
+
     protected override IHost CreateHost(IHostBuilder builder)
     {
         // Idempotent — base.EnsureServer may re-enter after its (TestServer) cast fails
@@ -330,8 +380,13 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             else
             {
                 webHost.UseKestrel(options =>
-                    options.Listen(IPAddress.Loopback, _fixedPort!.Value, listen => listen.UseHttps(_httpsCertificate))
-                );
+                {
+                    options.Listen(IPAddress.Loopback, _fixedPort!.Value, listen => listen.UseHttps(_httpsCertificate));
+                    if (_callbackPort is { } callbackPort)
+                    {
+                        options.Listen(IPAddress.Loopback, callbackPort);
+                    }
+                });
             }
         });
 
