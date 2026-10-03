@@ -30,43 +30,7 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// </remarks>
 public sealed record SandboxCommand
 {
-    private IReadOnlyDictionary<string, string>? _environment;
     private long? _maxOutputBytes;
-    private TimeSpan? _executionTimeout;
-
-    /// <summary>Optional environment overlay. The gateway validates allowed variable names.</summary>
-    public IReadOnlyDictionary<string, string>? Environment
-    {
-        get => _environment;
-        init
-        {
-            if (value is null)
-            {
-                _environment = null;
-                return;
-            }
-            var copy = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var (key, text) in value)
-            {
-                if (
-                    string.IsNullOrEmpty(key)
-                    || key.Contains('=')
-                    || key.Contains('\0')
-                    || text is null
-                    || text.Contains('\0')
-                )
-                {
-                    throw new ArgumentException(
-                        "Environment keys and values must be valid non-NUL strings.",
-                        nameof(Environment)
-                    );
-                }
-
-                copy.Add(key, text);
-            }
-            _environment = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(copy);
-        }
-    }
 
     /// <summary>Optional combined stdout/stderr cap, from 1 byte through the gateway's 256 MiB limit.
     /// The SDK still limits each downloaded artifact to 64 MiB.</summary>
@@ -81,21 +45,6 @@ public sealed record SandboxCommand
             }
 
             _maxOutputBytes = value;
-        }
-    }
-
-    /// <summary>Optional remote execution timeout. Does not change caller cancellation behavior.</summary>
-    public TimeSpan? ExecutionTimeout
-    {
-        get => _executionTimeout;
-        init
-        {
-            if (value is { } timeout && (timeout < TimeSpan.FromSeconds(1) || timeout > TimeSpan.FromDays(1)))
-            {
-                throw new ArgumentOutOfRangeException(nameof(ExecutionTimeout));
-            }
-
-            _executionTimeout = value;
         }
     }
 
@@ -125,6 +74,60 @@ public sealed record SandboxCommand
     /// <see cref="SandboxClient.ExecuteAsync"/>), so recovery is not promised across a restart.
     /// </summary>
     public string? OperationId { get; }
+
+    /// <summary>
+    /// Optional environment overlay applied to the command's process on top of the sandbox's own
+    /// environment (the gateway's <c>env</c> field). <c>null</c> (the default) sends nothing and the gateway
+    /// defaults it. Validated on assignment: every key is non-empty and contains neither <c>=</c> nor a NUL
+    /// byte, and no value contains a NUL byte — the two characters a POSIX environment block cannot carry.
+    /// The dictionary is copied into a read-only wrapper, so neither later mutation of the caller's instance
+    /// nor a cast back to <see cref="IDictionary{TKey, TValue}"/> can change the command or bypass validation.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Environment
+    {
+        get => _environment;
+        init => _environment = ValidateEnvironment(value);
+    }
+
+    private readonly IReadOnlyDictionary<string, string>? _environment;
+
+    /// <summary>
+    /// Optional execution timeout for THIS operation. <c>null</c> (the default) uses the client-wide
+    /// <see cref="SandboxClientOptions.ExecutionTimeout"/>. When set it is what the SDK sends as the
+    /// operation's <c>timeout_secs</c> (rounded up to whole seconds, at least 1) and what bounds the
+    /// SDK's own poll for a terminal status, so one long-running command can be allowed more than the
+    /// client's default without raising the ceiling for every other command on the session. Must be
+    /// positive and at most <see cref="MaxExecutionTimeout"/>.
+    /// </summary>
+    public TimeSpan? ExecutionTimeout
+    {
+        get => _executionTimeout;
+        init
+        {
+            if (value is { } timeout && (timeout <= TimeSpan.Zero || timeout > MaxExecutionTimeout))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(ExecutionTimeout),
+                    timeout,
+                    $"A per-command execution timeout must be positive and at most {MaxExecutionTimeout} "
+                        + "(int.MaxValue milliseconds)."
+                );
+            }
+
+            _executionTimeout = value;
+        }
+    }
+
+    private readonly TimeSpan? _executionTimeout;
+
+    /// <summary>
+    /// The largest accepted <see cref="ExecutionTimeout"/>: <see cref="int.MaxValue"/> milliseconds (about
+    /// 24.8 days). Larger values are rejected at assignment because the timeout is later added to the current
+    /// time for the SDK's poll deadline and handed to <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+    /// by callers that bound the command client-side; either would otherwise throw only after the operation
+    /// was already submitted. The bound also fits the wire's <c>timeout_secs</c>.
+    /// </summary>
+    public static readonly TimeSpan MaxExecutionTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
 
     /// <summary>
     /// The <see cref="WorkingDirectory"/> normalized to a clean, forward-slash, workspace-relative
@@ -168,5 +171,42 @@ public sealed record SandboxCommand
         OperationId = operationId is null
             ? null
             : CommandOperation.ValidateAndCanonicalizeOperationId(operationId, nameof(operationId));
+    }
+
+    private static IReadOnlyDictionary<string, string>? ValidateEnvironment(IReadOnlyDictionary<string, string>? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var copy = new Dictionary<string, string>(value.Count, StringComparer.Ordinal);
+        foreach (var (key, entry) in value)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                throw new ArgumentException("Environment variable names must be non-empty.", nameof(Environment));
+            }
+
+            if (key.Contains('=', StringComparison.Ordinal) || key.Contains('\0', StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Environment variable name '{key}' contains '=' or a NUL byte.",
+                    nameof(Environment)
+                );
+            }
+
+            if (entry is null || entry.Contains('\0', StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Environment variable '{key}' has a null value or one containing a NUL byte.",
+                    nameof(Environment)
+                );
+            }
+
+            copy[key] = entry;
+        }
+
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(copy);
     }
 }

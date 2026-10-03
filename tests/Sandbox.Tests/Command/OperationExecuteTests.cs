@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -557,6 +558,190 @@ public sealed class OperationExecuteTests
         // to its neighbours rather than standing alone as its own array element.
         submit.Body!.Contains("-m '", StringComparison.Ordinal).Should().BeFalse();
         submit.Body.Contains("commit -m", StringComparison.Ordinal).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExecutionTimeout_OverridesTheOptionsTimeoutSecsForThatOperation()
+    {
+        const string sessionId = "sess-cmd-timeout";
+        const string operationId = "op-cmd-timeout";
+        // Client-wide ceiling of 5 minutes; this one operation is allowed 11.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMinutes(5));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["python3", "setup.py"], operationId: operationId)
+            {
+                ExecutionTimeout = TimeSpan.FromMinutes(11),
+            }
+        );
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(660);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoExecutionTimeout_SendsTheOptionsTimeoutSecs()
+    {
+        const string sessionId = "sess-opt-timeout";
+        const string operationId = "op-opt-timeout";
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMinutes(5));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"], operationId: operationId));
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(300);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollDeadline_UsesThePerCommandExecutionTimeout()
+    {
+        const string sessionId = "sess-stuck-cmd";
+        const string operationId = "op-stuck-cmd";
+        // A client-wide ceiling well above the per-command value: only the latter can make the poll deadline
+        // (value + 1 s grace) fire before the elapsed bound below.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromSeconds(4));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(handler, operationId, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+
+        var act = () =>
+            client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["sleep", "999"], operationId: operationId)
+                {
+                    ExecutionTimeout = TimeSpan.FromMilliseconds(150),
+                }
+            );
+
+        var clock = Stopwatch.StartNew();
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Environment_IsSentAsTheEnvOverlayOfTheSubmitBody()
+    {
+        const string sessionId = "sess-env";
+        const string operationId = "op-env";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["git", "status"], operationId: operationId)
+            {
+                Environment = new Dictionary<string, string>
+                {
+                    ["GIT_CONFIG_COUNT"] = "1",
+                    ["GIT_CONFIG_KEY_0"] = "safe.directory",
+                    ["GIT_CONFIG_VALUE_0"] = "*",
+                },
+            }
+        );
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        var env = body.RootElement.GetProperty("env");
+        env.GetProperty("GIT_CONFIG_COUNT").GetString().Should().Be("1");
+        env.GetProperty("GIT_CONFIG_KEY_0").GetString().Should().Be("safe.directory");
+        env.GetProperty("GIT_CONFIG_VALUE_0").GetString().Should().Be("*");
+        env.EnumerateObject().Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoEnvironment_OmitsTheEnvFieldSoTheGatewayDefaultsIt()
+    {
+        const string sessionId = "sess-noenv";
+        const string operationId = "op-noenv";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"], operationId: operationId));
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_EmptyEnvironment_OmitsTheEnvFieldLikeNoEnvironment()
+    {
+        const string sessionId = "sess-emptyenv";
+        const string operationId = "op-emptyenv";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        _ = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["git", "status"], operationId: operationId)
+            {
+                Environment = new Dictionary<string, string>(),
+            }
+        );
+
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(submit.Body!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
     }
 
     [Fact]
