@@ -55,6 +55,9 @@ public static class ToolGroups
     /// <summary>Tools for inspecting and exercising Mini Web Apps. Qualified ids.</summary>
     public const string MiniAppDebug = "miniapp-debug";
 
+    /// <summary>Sandbox Chrome preview and debugging tools. Qualified ids.</summary>
+    public const string BrowserDebug = "browser-debug";
+
     /// <summary>Sub-agent delegation and collaboration tools. Qualified ids.</summary>
     public const string SubAgents = "subagents";
 
@@ -66,7 +69,7 @@ public static class ToolGroups
     ///     <c>ChatMode.EnabledCapabilityTools</c>. Everything else is addressed by bare name through
     ///     the pre-existing <c>EnabledTools</c>/<c>EnabledBuiltInTools</c> lists.
     /// </summary>
-    public static readonly IReadOnlyList<string> Qualified = [Sandbox, MiniAppDebug, SubAgents, Workflow];
+    public static readonly IReadOnlyList<string> Qualified = [Sandbox, MiniAppDebug, BrowserDebug, SubAgents, Workflow];
 
     /// <summary>
     ///     Every catalog group, bare-id and qualified alike. This is the group vocabulary of the
@@ -84,6 +87,7 @@ public static class ToolGroups
         Knowledge,
         Sandbox,
         MiniAppDebug,
+        BrowserDebug,
         SubAgents,
         Workflow,
     ];
@@ -102,6 +106,7 @@ public static class ToolGroups
             Knowledge => "Knowledge base",
             Sandbox => "Workspace (sandbox)",
             MiniAppDebug => "Mini App debugging",
+            BrowserDebug => "Browser preview and debugging",
             SubAgents => "Sub-agents",
             Workflow => "Workflow",
             _ => group,

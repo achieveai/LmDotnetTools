@@ -91,10 +91,39 @@ public sealed partial class SandboxClient
     /// gateway response (<see cref="SandboxErrorKind.Protocol"/>).
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
-    public async Task<SandboxCommandResult> ExecuteAsync(
+    public Task<SandboxCommandResult> ExecuteAsync(
         string sessionId,
         SandboxCommand command,
         CancellationToken ct = default
+    ) =>
+        ExecuteCommandCoreAsync(
+            sessionId,
+            command,
+            ResolveResultAsync,
+            (result, released) => result with { OperationRecordReleased = released },
+            ct
+        );
+
+    /// <summary>Runs a native command and returns exact stdout/stderr bytes. Shares ExecuteAsync's lifecycle and limits.</summary>
+    public Task<SandboxCommandBytesResult> ExecuteBytesAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    ) =>
+        ExecuteCommandCoreAsync(
+            sessionId,
+            command,
+            ResolveBytesResultAsync,
+            (result, released) => result with { OperationRecordReleased = released },
+            ct
+        );
+
+    private async Task<TResult> ExecuteCommandCoreAsync<TResult>(
+        string sessionId,
+        SandboxCommand command,
+        Func<string, string, OperationStatusDto, long?, CancellationToken, Task<TResult>> resolve,
+        Func<TResult, bool, TResult> stampReleased,
+        CancellationToken ct
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -114,7 +143,7 @@ public sealed partial class SandboxClient
             command.Environment is { Count: > 0 } ? command.Environment : null,
             new OperationCwdDto(mountId, command.NormalizedWorkingDirectory),
             GatewayExecutionTimeoutSeconds(executionTimeout),
-            null
+            command.MaxOutputBytes
         );
 
         var status = await SubmitOperationAsync(sessionId, operationId, requestDto, ct).ConfigureAwait(false);
@@ -123,7 +152,7 @@ public sealed partial class SandboxClient
             status = await PollOperationAsync(sessionId, operationId, executionTimeout, ct).ConfigureAwait(false);
         }
 
-        var result = await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
+        var result = await resolve(sessionId, operationId, status, command.MaxOutputBytes, ct).ConfigureAwait(false);
 
         // The terminal result is fully consumed here — both artifacts are downloaded and decoded — so a
         // record this call alone can name has nothing left to serve and is released (ADR 0031 §5's explicit
@@ -147,12 +176,11 @@ public sealed partial class SandboxClient
         //     a lost artifact download would turn a recoverable failure into a forced re-run.
         var callerOwnsOperationRecord = command.OperationId is not null;
 
-        return result with
-        {
-            OperationRecordReleased =
-                !callerOwnsOperationRecord
-                && await ReleaseOperationRecordAsync(sessionId, operationId, ct).ConfigureAwait(false),
-        };
+        return stampReleased(
+            result,
+            !callerOwnsOperationRecord
+                && await ReleaseOperationRecordAsync(sessionId, operationId, ct).ConfigureAwait(false)
+        );
     }
 
     /// <summary>
@@ -322,9 +350,10 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Bounded poll for a terminal operation status using deadline-based exponential backoff. The
-    /// deadline is the operation's execution timeout (the command's own, else the configured
-    /// <see cref="SandboxClientOptions.ExecutionTimeout"/>) plus a short grace, and honours caller
-    /// cancellation; it deliberately does not busy-poll a fixed tiny window.
+    /// deadline is the execution timeout the operation was submitted with (the command's own, else the
+    /// configured <see cref="SandboxClientOptions.ExecutionTimeout"/>) plus a short grace, so a per-command
+    /// timeout longer than the client default is not cut short client-side. Honours caller cancellation;
+    /// it deliberately does not busy-poll a fixed tiny window.
     /// </summary>
     private async Task<OperationStatusDto> PollOperationAsync(
         string sessionId,
@@ -454,10 +483,37 @@ public sealed partial class SandboxClient
     /// Maps a terminal <see cref="OperationStatusDto"/> to its <see cref="SandboxCommandResult"/>,
     /// downloading the stdout/stderr artifacts once the exit disposition is resolved.
     /// </summary>
+    private Task<SandboxCommandResult> ResolveResultAsync(
+        string sessionId,
+        string operationId,
+        OperationStatusDto status,
+        CancellationToken ct
+    ) => ResolveResultAsync(sessionId, operationId, status, null, ct);
+
     private async Task<SandboxCommandResult> ResolveResultAsync(
         string sessionId,
         string operationId,
         OperationStatusDto status,
+        long? maxOutputBytes,
+        CancellationToken ct
+    )
+    {
+        var bytes = await ResolveBytesResultAsync(sessionId, operationId, status, maxOutputBytes, ct)
+            .ConfigureAwait(false);
+        return new SandboxCommandResult
+        {
+            ExitCode = bytes.ExitCode,
+            StandardOutput = DecodeArtifact(bytes.StandardOutput, "stdout", operationId),
+            StandardError = DecodeArtifact(bytes.StandardError, "stderr", operationId),
+            OperationId = operationId,
+        };
+    }
+
+    private async Task<SandboxCommandBytesResult> ResolveBytesResultAsync(
+        string sessionId,
+        string operationId,
+        OperationStatusDto status,
+        long? maxOutputBytes,
         CancellationToken ct
     )
     {
@@ -523,6 +579,7 @@ public sealed partial class SandboxClient
                 artifacts.StdoutPath,
                 "stdout",
                 operationId,
+                maxOutputBytes,
                 ct
             )
             .ConfigureAwait(false);
@@ -532,11 +589,12 @@ public sealed partial class SandboxClient
                 artifacts.StderrPath,
                 "stderr",
                 operationId,
+                maxOutputBytes is { } cap ? cap - standardOutput.LongLength : null,
                 ct
             )
             .ConfigureAwait(false);
 
-        return new SandboxCommandResult
+        return new SandboxCommandBytesResult
         {
             ExitCode = exitCode,
             StandardOutput = standardOutput,
@@ -547,26 +605,28 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Downloads one terminal operation's artifact verbatim (<c>GET .../files/{mount_id}?path=...</c>)
-    /// and decodes it as strict UTF-8. A zero-byte artifact decodes to the empty string.
+    /// under the direct-read ceiling and any tighter remaining command output budget.
     /// </summary>
-    private async Task<string> DownloadArtifactAsync(
+    private Task<byte[]> DownloadArtifactAsync(
         string sessionId,
         long mountId,
         string path,
         string streamName,
         string operationId,
+        long? maxBytes,
         CancellationToken ct
-    )
+    ) =>
+        DownloadCappedBytesAsync(
+            $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(path)}",
+            sessionId,
+            $"downloading {streamName} for operation '{operationId}'",
+            operationId,
+            maxBytes,
+            ct
+        );
+
+    private static string DecodeArtifact(byte[] bytes, string streamName, string operationId)
     {
-        var bytes = await DownloadCappedBytesAsync(
-                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(path)}",
-                sessionId,
-                $"downloading {streamName} for operation '{operationId}'",
-                operationId,
-                maxBytes: null,
-                ct
-            )
-            .ConfigureAwait(false);
         try
         {
             return S_strictUtf8.GetString(bytes);

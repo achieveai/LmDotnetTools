@@ -2018,6 +2018,19 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         return ClientFor(CredentialFor(sessionId)).ExecuteAsync(sessionId, command, ct);
     }
 
+    /// <summary>Reads byte-exact native output through the session's stored gateway credential.</summary>
+    public Task<SandboxCommandBytesResult> ExecuteWorkspaceCommandBytesAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(command);
+        return ClientFor(CredentialFor(sessionId)).ExecuteBytesAsync(sessionId, command, ct);
+    }
+
     /// <summary>Streams a native command through the session's stored gateway credential.</summary>
     public Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
         string sessionId,

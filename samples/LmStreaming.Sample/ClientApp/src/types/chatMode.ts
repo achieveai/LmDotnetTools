@@ -109,7 +109,7 @@ export interface ChatModeCopy {
  * (`sandbox`, `miniapp-debug`, `subagents`, `workflow`) address tools by a `group:tool` id; every other group
  * uses the bare tool name it has always used.
  */
-export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'miniapp-debug', 'subagents', 'workflow'] as const;
+export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'miniapp-debug', 'browser-debug', 'subagents', 'workflow'] as const;
 
 /** The group whose tools are selected through `enabledBuiltInTools`. */
 export const BUILT_IN_TOOL_GROUP = 'builtin';

@@ -90,6 +90,13 @@ public interface IWorkspaceFileBrowser
         CancellationToken ct = default
     );
 
+    /// <summary>Runs a native command and returns bounded byte-exact stdout/stderr artifacts.</summary>
+    Task<SandboxCommandBytesResult> ExecuteWorkspaceCommandBytesAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    ) => throw new NotSupportedException("Binary commands are unavailable for this workspace browser.");
+
     /// <summary>Runs a native workspace command and forwards byte-exact stdout/stderr with callback backpressure.</summary>
     Task<SandboxStreamResult> ExecuteWorkspaceCommandStreamingAsync(
         string sessionId,

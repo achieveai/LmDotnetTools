@@ -108,6 +108,8 @@ public sealed class MiniAppDebugToolProviderTests
         result.Payload.IsError.Should().BeFalse();
         using var json = JsonDocument.Parse(result.Payload.Text);
         json.RootElement.GetProperty("file_content").GetString().Should().Be("print('ok')");
+        json.RootElement.GetProperty("directory").GetString().Should().Be("mini-web-apps/demo");
+        json.RootElement.GetProperty("file_path").GetString().Should().Be("mini-web-apps/demo/app.py");
         browser.Verify(
             x =>
                 x.ReadWorkspaceFileBytesAsync(

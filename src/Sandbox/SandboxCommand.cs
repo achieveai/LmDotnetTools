@@ -30,6 +30,24 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// </remarks>
 public sealed record SandboxCommand
 {
+    private long? _maxOutputBytes;
+
+    /// <summary>Optional combined stdout/stderr cap, from 1 byte through the gateway's 256 MiB limit.
+    /// The SDK still limits each downloaded artifact to 64 MiB.</summary>
+    public long? MaxOutputBytes
+    {
+        get => _maxOutputBytes;
+        init
+        {
+            if (value is <= 0 or > 268_435_456)
+            {
+                throw new ArgumentOutOfRangeException(nameof(MaxOutputBytes));
+            }
+
+            _maxOutputBytes = value;
+        }
+    }
+
     /// <summary>
     /// The ordered argument vector, program name first. Non-empty; no element contains a NUL byte.
     /// Empty-string elements are allowed and survive as distinct arguments.

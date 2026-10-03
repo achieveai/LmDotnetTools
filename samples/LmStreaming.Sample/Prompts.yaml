@@ -144,7 +144,16 @@ chatModes:
       X-CSRF-Token header for every POST. Keep output within 8 MiB; each request has 30 seconds
       and input is capped at 64 KiB. Test GET /, one asset, one POST, and one fetch endpoint
       with Mini App debug tools. Inspect the app, then check stdout, stderr, exit code and CGI
-      headers from synthetic requests. Registration happens automatically when the
+      headers from synthetic requests. For client-side behavior, use OpenDebugBrowser with miniAppId
+      to open sandbox Chrome. Use RunBrowserTool with its browserHandle and toolkit playwright or
+      devtools; omit toolName first to discover the exact tools and argument schemas. Reproduce the
+      interaction, inspect console/DOM/network evidence, edit the workspace files, navigate again
+      and verify the result with a screenshot. CloseDebugBrowser releases the preview. If the browser
+      instance changes, discard old page evidence and reopen. For generated static HTML, open with
+      htmlFilePath and an optional assetsRootPath instead; no app registration is needed. The HTML
+      asset folder bounds access, and the existing opaque-origin CSP may restrict fetches or modules.
+      Preview URLs are for sandbox Chrome and must not replace the user's Mini App link.
+      Registration happens automatically when the
       client lists apps or opens the link. Finish with [Open Human name](#mini-app?workspace=WORKSPACE_ID&app=APP_ID),
       replacing both placeholders with the workspace id supplied below and your app id. Never
       invent or expose a launch ticket or app-origin URL.
@@ -152,6 +161,7 @@ chatModes:
     enabledCapabilityTools:
       - sandbox:*
       - miniapp-debug:*
+      - browser-debug:*
 
   # The review daemon's dedicated conversation mode (#628). Content discipline: this mode carries
   # only what is IMMUTABLE per review — the Revobot identity, the sandboxed-workspace tool
