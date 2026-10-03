@@ -660,6 +660,7 @@ public class PricingCatalogTests
     [Theory]
     [InlineData("gpt-6-astra")]
     [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6.1-sol")]
     [InlineData("gpt-6-luna")]
     [InlineData("gemini-3.8-flash")]
     [InlineData("gpt-5.6-sol")]
