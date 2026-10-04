@@ -1897,7 +1897,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>
     /// Attempts to deliver out-of-band context (a sandbox-discovered directory <c>CLAUDE.md</c>/
-    /// <c>AGENTS.md</c>) into a currently-running sub-agent identified by id or caller-supplied name.
+    /// <c>AGENTS.md</c>) into a currently-running sub-agent identified by its scoped transcript thread id.
     /// Implements the running-branch half of <see cref="ISubAgentContextSink"/>: it delivers ONLY into a
     /// genuinely-running loop under a side-effect-free inject lease, and NEVER restarts a finished run,
     /// mutates the parent-relay preference, or relays a spurious completion. A target that is not safely
@@ -1917,10 +1917,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(messages);
 
-        if (!TryResolveAgentId(agentId, out var resolvedId) || !_agents.TryGetValue(resolvedId, out var state))
+        if (
+            !SubAgentThreadIds.TryGetAgentId(agentId, out var resolvedId)
+            || !_agents.TryGetValue(resolvedId, out var state)
+            || !string.Equals(state.Agent.ThreadId, agentId, StringComparison.Ordinal)
+        )
         {
-            // Not one of this sink's sub-agents (unknown id/name, or a pre-registration race). The caller
-            // keeps looking / drops without marking-seen so a gateway redelivery can still route it.
+            // Ordinal ids and names are not unique across roots sharing a sandbox session.
             return SubAgentContextDeliveryResult.NotOwned;
         }
 
@@ -1934,13 +1937,19 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            var injectCancelledByLifecycle = await InjectIntoRunningLoopAsync(state, messages, ct);
-
-            // A lifecycle cancel means a terminal disposal began mid-send, so the send did not land: drop
-            // the context. Unlike SendMessageAsync, a context delivery does NOT re-evaluate into a restart.
-            return injectCancelledByLifecycle
-                ? SubAgentContextDeliveryResult.TargetNotDeliverable
-                : SubAgentContextDeliveryResult.Delivered;
+            if (state.Agent is not IContextNotificationSink sink)
+            {
+                return SubAgentContextDeliveryResult.TargetNotDeliverable;
+            }
+            using var linkedCts = state.LinkLifecycleToken(ct);
+            foreach (var message in messages)
+            {
+                if (message is not NotifyMessage notify || !await sink.TryAppendContextAsync(notify, linkedCts.Token))
+                {
+                    return SubAgentContextDeliveryResult.TargetNotDeliverable;
+                }
+            }
+            return SubAgentContextDeliveryResult.Delivered;
         }
         finally
         {

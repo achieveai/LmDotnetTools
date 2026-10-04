@@ -1,277 +1,115 @@
 using System.Collections.Concurrent;
-using System.Net;
 using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Services;
 
-/// <summary>
-/// Pins the end-to-end behaviour of <see cref="ContextDiscoveryInjector.InjectAsync"/>:
-/// dedup, multi-thread fan-out, per-thread error isolation, and the F3 mode-switch invariant
-/// (a recreated agent on the same threadId still receives subsequent injections).
-/// </summary>
 public class ContextDiscoveryInjectorTests
 {
     private const string SessionId = "session-inject";
-    private const string Path = "CLAUDE.md";
-    private const string Kind = "context_file";
-    private const string Content = "Project rules.";
 
     [Fact]
-    public async Task InjectAsync_RecordsTheAcceptedInput_LikeTheTransportsDo()
+    public async Task InjectAsync_MissingOwner_TwoRootsReceiveNothing()
     {
-        // The third accept path (#418). REST and WebSocket reach a pooled agent through its accept
-        // path and are covered by the ledger the agent writes for them; this one sends straight to
-        // the same entry and must be covered the same way. Without a ledger entry the entry reads
-        // idle the moment the injection is queued - no run id, not running - and a grantee handoff or
-        // a sandbox-session refresh arriving in that window disposes the agent with the injected
-        // context still on it, which is the same lost turn through a third door. Since #442 the entry
-        // comes from the agent's own report rather than a call this injector makes, so what stays
-        // pinned here is that the injector reaches the agent through an accept path at all.
         using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-ledger");
-
-        // Baseline: nothing in hand before the injection, so the assertion below is a change and not
-        // a state the harness started in.
-        harness.Pool.TryGetHandoffState("thread-ledger", out var before).Should().BeTrue();
-        before.IsBusy.Should().BeFalse();
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(1);
-        agent.SentMessages.Should().ContainSingle("the injection really was accepted");
-
-        harness.Pool.TryGetHandoffState("thread-ledger", out var after).Should().BeTrue();
-        after.IsBusy.Should().BeTrue("an injected turn the agent has not started is still work in hand");
-        (await harness.Pool.TryReleaseIdleAgentAsync("thread-ledger", after))
-            .Should()
-            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+        var first = harness.Register("first-root");
+        var second = harness.Register("idle-peer");
+        (await harness.Injector.InjectAsync(Payload(null), CancellationToken.None)).Should().Be(0);
+        first.SentMessages.Should().BeEmpty();
+        second.SentMessages.Should().BeEmpty();
+        first.RecordedContext.Should().BeEmpty();
+        second.RecordedContext.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task InjectAsync_HappyPath_SendsToSingleThread()
+    public async Task OwnerContext_AppendsOnlyToOwner_WithoutInputAcceptance_AndDeduplicates()
     {
         using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-1");
+        var owner = harness.Register("owner");
+        var peer = harness.Register("peer");
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(1);
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(0);
+        owner.RecordedContext.Should().ContainSingle().Which.Text.Should().Contain("Project rules.");
+        owner.SentMessages.Should().BeEmpty();
+        peer.RecordedContext.Should().BeEmpty();
+        peer.SentMessages.Should().BeEmpty();
+        owner.CurrentRunId = null;
+        harness.Pool.TryGetHandoffState("owner", out var state).Should().BeTrue();
+        state.IsBusy.Should().BeFalse("passive context did not create an accepted input");
+    }
 
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(1);
-        agent.SentMessages.Should().ContainSingle();
-        var message = agent.SentMessages[0].Should().BeOfType<NotifyMessage>().Subject;
-        message.Role.Should().Be(Role.User);
-        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
-        message.Label.Should().Be(Path);
-        // The formatted file body stays reachable to the LLM inside the notification envelope.
-        message.Text.Should().Contain("<context-discovery path=\"CLAUDE.md\">");
-        message.Text.Should().Contain(Content);
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("agent-1")]
+    [InlineData("unknown")]
+    public async Task UnidentifiedOwner_DropsWithoutBroadcast(string? owner)
+    {
+        using var harness = new Harness();
+        var first = harness.Register("first");
+        var second = harness.Register("second");
+        (await harness.Injector.InjectAsync(Payload(owner), CancellationToken.None)).Should().Be(0);
+        first.RecordedContext.Should().BeEmpty();
+        second.RecordedContext.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task InjectAsync_MultipleThreads_FansOutToAll()
+    public async Task IdleOwner_DropsWithoutQueuedInput()
     {
         using var harness = new Harness();
-        var a = harness.RegisterThread(SessionId, "thread-1");
-        var b = harness.RegisterThread(SessionId, "thread-2");
-        var c = harness.RegisterThread(SessionId, "thread-3");
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(3);
-        a.SentMessages.Should().HaveCount(1);
-        b.SentMessages.Should().HaveCount(1);
-        c.SentMessages.Should().HaveCount(1);
+        var owner = harness.Register("owner");
+        owner.CurrentRunId = null;
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(0);
+        owner.RecordedContext.Should().BeEmpty();
+        owner.SentMessages.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task InjectAsync_DuplicateDelivery_DropsSecond()
+    public async Task OwnerFailure_DoesNotRedirectToPeer()
     {
         using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-1");
-
-        var first = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-        var second = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        first.Should().Be(1);
-        second.Should().Be(0);
-        agent.SentMessages.Should().HaveCount(1);
+        harness.Register("owner").ThrowOnSend = true;
+        var peer = harness.Register("peer");
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(0);
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(0);
+        peer.RecordedContext.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task InjectAsync_DifferentPaths_SameSession_BothInject()
+    public async Task DistinctOwnersAndPaths_HaveIndependentDedup()
     {
         using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-1");
-
-        _ = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, path: "CLAUDE.md", content: Content),
-            CancellationToken.None
-        );
-        _ = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, path: "AGENTS.md", content: Content),
-            CancellationToken.None
-        );
-
-        agent.SentMessages.Should().HaveCount(2);
-    }
-
-    [Fact]
-    public async Task InjectAsync_NoSessionId_DropsAndReturnsZero()
-    {
-        using var harness = new Harness();
-        _ = harness.RegisterThread(SessionId, "thread-1");
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: null, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task InjectAsync_EmptyContent_DropsAndReturnsZero()
-    {
-        using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-1");
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: string.Empty),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(0);
-        agent.SentMessages.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task InjectAsync_NoLiveThreads_DropsAndStillMarksDedup()
-    {
-        using var harness = new Harness();
-        // No RegisterThread call — registry has no thread routed for this session yet.
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(0);
-        // Dedup MUST be marked even when no thread received the injection — by design, so a later
-        // redelivery doesn't surprise a freshly-spun-up thread with stale content. The fallback path
-        // marks under the session-level sentinel target.
-        harness
-            .Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
-            .Should()
-            .BeFalse();
-    }
-
-    [Fact]
-    public async Task InjectAsync_TruncatedFlag_PropagatesToEnvelope()
-    {
-        using var harness = new Harness();
-        var agent = harness.RegisterThread(SessionId, "thread-1");
-
-        _ = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content, truncated: true),
-            CancellationToken.None
-        );
-
-        var message = agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
-        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
-        message.Text.Should().Contain("truncated=\"true\"");
-    }
-
-    [Fact]
-    public async Task InjectAsync_OneThreadThrows_OthersStillReceive()
-    {
-        using var harness = new Harness();
-        var good1 = harness.RegisterThread(SessionId, "thread-good-1");
-        var bad = harness.RegisterThread(SessionId, "thread-bad", throwOnSend: true);
-        var good2 = harness.RegisterThread(SessionId, "thread-good-2");
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(2);
-        good1.SentMessages.Should().HaveCount(1);
-        good2.SentMessages.Should().HaveCount(1);
-        bad.SentMessages.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task InjectAsync_AfterModeSwitch_StillReachesRecreatedAgent()
-    {
-        // F3 regression: a mode switch tears down the agent entry and creates a new one keyed by
-        // the same threadId. The pool intentionally does NOT raise ThreadRemoved for that path,
-        // so the registry's session→thread map must continue routing the injection to the new
-        // agent rather than dropping the message.
-        using var harness = new Harness();
-        _ = harness.RegisterThread(SessionId, "thread-mode-swap");
-
-        var newMode = SystemChatModes.All[0];
-        var recreated = await harness.Pool.SwitchModeAsync("thread-mode-swap", newMode);
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(1);
-        ((RecordingMultiTurnAgent)recreated.Agent).SentMessages.Should().ContainSingle();
-    }
-
-    [Fact]
-    public async Task InjectAsync_AfterThreadRemoved_DropsForRemovedThread()
-    {
-        using var harness = new Harness();
-        var a = harness.RegisterThread(SessionId, "thread-stays");
-        _ = harness.RegisterThread(SessionId, "thread-goes");
-
-        // RemoveAgentAsync raises ThreadRemoved → registry.UnregisterThreadFromAllSessions wired
-        // by the harness. Subsequent injection should only reach the surviving thread.
-        await harness.Pool.RemoveAgentAsync("thread-goes");
-
-        var sent = await harness.Injector.InjectAsync(
-            BuildPayload(sessionId: SessionId, content: Content),
-            CancellationToken.None
-        );
-
-        sent.Should().Be(1);
-        a.SentMessages.Should().HaveCount(1);
-    }
-
-    private static ContextDiscoveryPayload BuildPayload(
-        string? sessionId,
-        string content,
-        string path = Path,
-        bool truncated = false
-    )
-    {
-        return new ContextDiscoveryPayload
+        var first = harness.Register("first");
+        var second = harness.Register("second");
+        foreach (var owner in new[] { "first", "second" })
         {
-            SessionId = sessionId,
-            Kind = Kind,
-            Path = path,
-            Content = content,
-            Truncated = truncated,
-        };
+            (await harness.Injector.InjectAsync(Payload(owner), CancellationToken.None)).Should().Be(1);
+            (await harness.Injector.InjectAsync(Payload(owner, "AGENTS.md"), CancellationToken.None)).Should().Be(1);
+        }
+        first.RecordedContext.Should().HaveCount(2);
+        second.RecordedContext.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task RemovedOwner_DropsRatherThanRedirecting()
+    {
+        using var harness = new Harness();
+        _ = harness.Register("owner");
+        var peer = harness.Register("peer");
+        await harness.Pool.RemoveAgentAsync("owner");
+        (await harness.Injector.InjectAsync(Payload("owner"), CancellationToken.None)).Should().Be(0);
+        peer.RecordedContext.Should().BeEmpty();
+    }
+
+    private static ContextDiscoveryPayload Payload(string? owner, string path = "CLAUDE.md") =>
+        new()
+        {
+            SessionId = SessionId,
+            AgentId = owner,
+            Kind = "context_file",
+            Path = path,
+            Content = "Project rules.",
+        };
 
     private sealed class Harness : IDisposable
     {
@@ -279,24 +117,36 @@ public class ContextDiscoveryInjectorTests
 
         public Harness()
         {
-            Registry = CreateRegistry();
+            var options = new SandboxGatewayOptions { BaseUrl = "http://unused.invalid" };
+            var gateway = new SandboxGatewayLifetime(
+                options,
+                NullLogger<SandboxGatewayLifetime>.Instance,
+                new HttpClient(new RejectNetwork())
+            );
+            Registry = new SandboxSessionRegistry(
+                gateway,
+                options,
+                NullLogger<SandboxSessionRegistry>.Instance,
+                new HttpClient(new RejectNetwork()),
+                new AuthOptions(),
+                new SessionSecretStore(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ctx-tests-" + Guid.NewGuid().ToString("N")),
+                    NullLogger<SessionSecretStore>.Instance
+                )
+            );
             Pool = new MultiTurnAgentPool(
-                (threadId, _, _) =>
-                {
-                    var agent = _agents.GetOrAdd(threadId, id => new RecordingMultiTurnAgent(id));
-                    return new MultiTurnAgentPool.AgentCreationResult(agent);
-                },
+                (thread, _, _) =>
+                    new MultiTurnAgentPool.AgentCreationResult(
+                        _agents.GetOrAdd(thread, id => new RecordingMultiTurnAgent(id))
+                    ),
                 NullLogger<MultiTurnAgentPool>.Instance
             );
-
-            // Mirror Program.cs's wiring: pool-side teardown invalidates the registry's routing.
-            Pool.ThreadRemoved += threadId => Registry.UnregisterThreadFromAllSessions(threadId);
-
+            Pool.ThreadRemoved += Registry.UnregisterThreadFromAllSessions;
             Injector = new ContextDiscoveryInjector(
                 Registry,
                 Pool,
                 new ContextDiscoveryFormatter(),
-                new ContextDiscoveryOptions(),
+                new ContextDiscoveryOptions { RouteToOpeningSubAgent = true },
                 new ContextDiscoveryDiagnostics(),
                 NullLogger<ContextDiscoveryInjector>.Instance
             );
@@ -306,14 +156,12 @@ public class ContextDiscoveryInjectorTests
         public MultiTurnAgentPool Pool { get; }
         public ContextDiscoveryInjector Injector { get; }
 
-        public RecordingMultiTurnAgent RegisterThread(string sessionId, string threadId, bool throwOnSend = false)
+        public RecordingMultiTurnAgent Register(string thread)
         {
-            var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-            _ = Pool.GetOrCreateAgent(threadId, mode);
-            var agent = _agents[threadId];
-            agent.ThrowOnSend = throwOnSend;
-            Registry.RegisterThread(sessionId, threadId);
-            return agent;
+            _ = Pool.GetOrCreateAgent(thread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+            Registry.RegisterThread(SessionId, thread);
+            _agents[thread].CurrentRunId = "active-run";
+            return _agents[thread];
         }
 
         public void Dispose()
@@ -321,43 +169,11 @@ public class ContextDiscoveryInjectorTests
             Pool.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Registry.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
-
-        private static SandboxSessionRegistry CreateRegistry()
-        {
-            static HttpResponseMessage Unused(HttpRequestMessage _) => new(HttpStatusCode.OK);
-
-            var gateway = new SandboxGatewayLifetime(
-                new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
-                NullLogger<SandboxGatewayLifetime>.Instance,
-                new HttpClient(new StubHandler(Unused))
-            );
-
-            return new SandboxSessionRegistry(
-                gateway,
-                new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
-                NullLogger<SandboxSessionRegistry>.Instance,
-                new HttpClient(new StubHandler(Unused)),
-                new AuthOptions(),
-                new SessionSecretStore(
-                    System.IO.Path.Combine(
-                        System.IO.Path.GetTempPath(),
-                        "lmstreaming-test-secrets",
-                        Guid.NewGuid().ToString("N")
-                    ),
-                    NullLogger<SessionSecretStore>.Instance
-                )
-            );
-        }
     }
 
-    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    private sealed class RejectNetwork : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken
-        )
-        {
-            return Task.FromResult(respond(request));
-        }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            throw new InvalidOperationException("No network expected");
     }
 }

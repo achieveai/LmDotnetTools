@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// the chain above it) enqueued onto the thread. <see cref="ThrowOnSend"/> simulates a thread
 /// whose send fails, to exercise per-thread error isolation.
 /// </summary>
-internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
+internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent, IContextNotificationSink
 {
     private readonly List<IMessage> _sent = [];
     private readonly Lock _lock = new();
@@ -44,6 +44,19 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceRepo
                 return [.. _sent];
             }
         }
+    }
+
+    public List<NotifyMessage> RecordedContext { get; } = [];
+
+    public ValueTask<bool> TryAppendContextAsync(NotifyMessage message, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (CurrentRunId is null)
+            return ValueTask.FromResult(false);
+        if (ThrowOnSend)
+            throw new InvalidOperationException("context append failed");
+        RecordedContext.Add(message);
+        return ValueTask.FromResult(true);
     }
 
     public ValueTask<SendReceipt> SendAsync(

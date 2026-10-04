@@ -24,7 +24,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Abstract base class for multi-turn agents providing common infrastructure for
 /// channel management, subscription handling, and lifecycle management.
 /// </summary>
-public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent
+public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent, IContextNotificationSink
 {
     #region Fields
 
@@ -497,6 +497,32 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     #endregion
 
     #region Conversation History Thread-Safe Access
+
+    /// <inheritdoc />
+    public async ValueTask<bool> TryAppendContextAsync(NotifyMessage message, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ct.ThrowIfCancellationRequested();
+        if (message.NotifyKind != NotifyKinds.ContextDiscovery)
+        {
+            return false;
+        }
+        string runId;
+        lock (_stateLock)
+        {
+            if (_currentRunId is null)
+            {
+                return false;
+            }
+            runId = _currentRunId;
+        }
+        // An explicit run id keeps a concurrent completion from attributing this to another run.
+        // This never touches the input channel, even if the run finishes during publication.
+        AddToHistory(message, runId);
+        await PublishToAllAsync(message, ct);
+        Logger.LogDebug("Context appended without input: thread {ThreadId}, run {RunId}", ThreadId, runId);
+        return true;
+    }
 
     /// <summary>
     /// Adds a message to the conversation history in a thread-safe manner.

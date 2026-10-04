@@ -38,7 +38,7 @@ public interface ISubAgentContextSink
 {
     /// <summary>
     /// Attempts to deliver <paramref name="messages"/> into a currently-running sub-agent
-    /// identified by <paramref name="agentId"/> (matched by id or caller-supplied name).
+    /// identified by <paramref name="agentId"/> (the exact scoped transcript thread id).
     /// Never restarts a finished sub-agent and never triggers a spurious extra run.
     /// </summary>
     /// <returns>

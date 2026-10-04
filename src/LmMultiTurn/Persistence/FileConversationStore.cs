@@ -28,8 +28,8 @@ public sealed class FileConversationStore
     /// How long a caller waits for an admission record that exists but is not yet readable before calling it
     /// a fault. The threshold separates "a live writer has not finished" from "a dead host left a half-written
     /// record", and any fixed threshold there is a starvation-class discriminator: the waiter is starved by the
-    /// very load it is waiting on. The two defenses are keeping await points out of the guarded window — see
-    /// <see cref="TryReserveAcceptanceAsync"/> — and leaving the margin far wider than any plausible stall.
+    /// very load it is waiting on. New reservations publish a complete staged record atomically; the
+    /// budget still protects readers of older or externally damaged records.
     /// </summary>
     private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
@@ -1100,9 +1100,7 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
 
-        // Serialized BEFORE the create, deliberately: everything between winning the arbitration and the
-        // record's content being durable happens inside the window a losing contender has to wait out, and
-        // this is the only part of it that does not have to be there.
+        // Serialize before acquiring the gate; publication must expose only a complete record.
         var payload = JsonSerializer.SerializeToUtf8Bytes(acceptance, AcceptanceJsonOptions);
 
         // Bounded by the same settle budget the reader uses rather than by a count of tries: what has to be
@@ -1114,22 +1112,44 @@ public sealed class FileConversationStore
         var started = _time.GetTimestamp();
         while (true)
         {
-            FileStream claim;
+            ct.ThrowIfCancellationRequested();
             try
             {
-                // FileShare.None, and not FileShare.Read: the exclusive create is the arbitration, so the
-                // record's NAME necessarily exists before its content does, and a reader let in during that
-                // gap sees a zero-length record it can only report as unsettled. Denying the open instead
-                // makes "the record exists" imply "the record is readable" — the gap is still there, but
-                // nothing can observe the record in it.
-                claim = new FileStream(
-                    acceptanceFile,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 0,
-                    FileOptions.None
-                );
+                var gate =
+                    await OpenMutationGateAsync(acceptanceFile + MutationGateSuffix, ct)
+                    ?? throw new IOException("The admission publication gate did not settle.");
+                await using (gate)
+                {
+                    if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is { } existing)
+                    {
+                        return existing;
+                    }
+
+                    // Unix FileShare locks are acquired after open creates the name. Staging and
+                    // renaming under the same gate as outcome/release avoids publishing empty JSON
+                    // and serializes independent store instances and processes. Every writer sharing
+                    // this storage must use the gate: quiesce pre-gate writers before upgrading.
+                    var tempFile = acceptanceFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        // Do not recreate a thread directory deleted while this reservation waits.
+                        await File.WriteAllBytesAsync(tempFile, payload, ct);
+                        ct.ThrowIfCancellationRequested();
+                        File.Move(tempFile, acceptanceFile, overwrite: false);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            File.Delete(tempFile);
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            // A leftover staging file is not an admission; preserve the original failure.
+                        }
+                    }
+                    return null;
+                }
             }
             catch (IOException)
             {
@@ -1160,40 +1180,6 @@ public sealed class FileConversationStore
                 await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
-
-            try
-            {
-                // Straight-line synchronous, with no await between the create and the close. An async
-                // FileStream buffers a record this small entirely in memory and flushes it from a
-                // continuation, so the record sat visibly EMPTY across a thread-pool scheduling point — and
-                // on a loaded runner that point is exactly where the wait becomes unbounded, which is how a
-                // contender came to spend its whole settle budget on a writer that was merely descheduled.
-                // Unbuffered plus synchronous makes the window a handful of syscalls that nothing can
-                // deschedule.
-                using (claim)
-                {
-                    claim.Write(payload);
-                }
-            }
-            catch
-            {
-                TryDeleteRecordFile(acceptanceFile);
-                throw;
-            }
-
-            return null;
-        }
-    }
-
-    private static void TryDeleteRecordFile(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The original write failure remains authoritative; a leftover claim stays fail closed.
         }
     }
 
@@ -1265,13 +1251,10 @@ public sealed class FileConversationStore
     /// Takes the exclusive gate that serializes mutations of one admission record, waiting out a holder
     /// that is merely mid-mutation rather than reporting the record as not this caller's.
     /// <para>
-    /// A retraction deletes the record and only THEN drops its handle, so between those two moments the
-    /// id is free: the next caller can be granted it by the exclusive create — which takes no gate,
-    /// because the create is itself the arbitration — and arrive here holding a record that is
-    /// demonstrably its own while the previous owner's handle is still open. Answering that caller
-    /// <c>false</c> tells it there was nothing of its own to retract, and it then leaves an admission
-    /// standing for work that never ran. A gate still held once the settle budget is spent is a mutation
-    /// genuinely in flight, and standing down is the right answer to that.
+    /// Reservations, outcomes and retractions share this gate. A retraction deletes the record before
+    /// its handle closes, so callers must wait for that handle rather than treating a transient lock as
+    /// a permanent refusal. A gate still held once the settle budget is spent is a mutation genuinely
+    /// in flight, and standing down is the right answer to that.
     /// </para>
     /// </summary>
     private async Task<FileStream?> OpenMutationGateAsync(string gateFile, CancellationToken ct)

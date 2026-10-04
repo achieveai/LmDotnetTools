@@ -15,10 +15,9 @@ public sealed class ContextDiscoveryOptions
     public const string SectionName = "ContextDiscovery";
 
     /// <summary>
-    /// When true, a <c>context_file</c> discovery carrying a non-blank <c>agent_id</c> is routed to
-    /// the sub-agent that opened the file instead of fanned out to the primary conversation. Default
-    /// <c>false</c> so the routing path is dormant-but-correct until the gateway actually stamps
-    /// <c>agent_id</c> (cf. #187): with the flag off, discovery behaves byte-identically to today.
+    /// Enables owner-only passive delivery. The callback must identify an exact root or scoped
+    /// sub-agent thread. When disabled, or ownership is absent, discovery is dropped, never broadcast.
+    /// Explicit file reads and root context seeding remain available.
     /// </summary>
     public bool RouteToOpeningSubAgent { get; set; } = false;
 }

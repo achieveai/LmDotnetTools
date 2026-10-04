@@ -2913,26 +2913,37 @@ public class SubAgentManagerTests : IAsyncLifetime
             .Should()
             .BeTrue();
 
-        // Act: deliver directory context to the running sub-agent.
+        _manager.TryGetAgent(agentId, out var child).Should().BeTrue();
         const string contextMarker = "CTX_MARKER directory rules";
-        var result = await _manager.TryDeliverToRunningAsync(
-            agentId,
-            [new TextMessage { Role = Role.User, Text = contextMarker }],
-            CancellationToken.None
-        );
+        var context = new NotifyMessage { NotifyKind = NotifyKinds.ContextDiscovery, Detail = contextMarker };
+        foreach (
+            var unscoped in new[]
+            {
+                agentId,
+                _manager.ListAgents().Single().Name!,
+                SubAgentThreadIds.For("another-root", agentId),
+            }
+        )
+        {
+            (await _manager.TryDeliverToRunningAsync(unscoped, [context], CancellationToken.None))
+                .Should()
+                .Be(SubAgentContextDeliveryResult.NotOwned);
+        }
+
+        var result = await _manager.TryDeliverToRunningAsync(child!.ThreadId, [context], CancellationToken.None);
 
         // Assert: accepted for the running target.
         result.Should().Be(SubAgentContextDeliveryResult.Delivered);
 
-        // Let the first turn finish with a tool call so the loop polls the injected context and runs turn 2.
+        // A tool call drives the next model turn; passive context itself must not schedule a run.
         releaseCall1.SetResult(true);
         (await call2Entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
 
         // The injected context reached the SUB-AGENT's next model call...
         secondCallMessages.Should().NotBeNull();
         secondCallMessages!
-            .OfType<TextMessage>()
-            .Any(m => m.Text != null && m.Text.Contains(contextMarker))
+            .OfType<NotifyMessage>()
+            .Any(m => m.NotifyKind == NotifyKinds.ContextDiscovery && m.Detail == contextMarker)
             .Should()
             .BeTrue("routed context must be delivered into the sub-agent's own conversation");
 
@@ -2994,10 +3005,10 @@ public class SubAgentManagerTests : IAsyncLifetime
         // Ignore the legitimate completion relay; assert the delivery adds none.
         _parentMock.Invocations.Clear();
 
-        // Act
+        _manager.TryGetAgent(agentId, out var child).Should().BeTrue();
         var result = await _manager.TryDeliverToRunningAsync(
-            agentId,
-            [new TextMessage { Role = Role.User, Text = "late context" }],
+            child!.ThreadId,
+            [new NotifyMessage { NotifyKind = NotifyKinds.ContextDiscovery, Detail = "late context" }],
             CancellationToken.None
         );
 
@@ -3036,8 +3047,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         _manager = CreateManager();
 
         var result = await _manager.TryDeliverToRunningAsync(
-            "no-such-agent",
-            [new TextMessage { Role = Role.User, Text = "ctx" }],
+            SubAgentThreadIds.For("unknown-root", "agent-999"),
+            [new NotifyMessage { NotifyKind = NotifyKinds.ContextDiscovery, Detail = "ctx" }],
             CancellationToken.None
         );
 
@@ -3084,9 +3095,10 @@ public class SubAgentManagerTests : IAsyncLifetime
             TimeSpan.FromSeconds(10)
         );
 
+        _manager.TryGetAgent(agentId, out var child).Should().BeTrue();
         var result = await _manager.TryDeliverToRunningAsync(
-            agentId,
-            [new TextMessage { Role = Role.User, Text = "boundary context" }],
+            child!.ThreadId,
+            [new NotifyMessage { NotifyKind = NotifyKinds.ContextDiscovery, Detail = "boundary context" }],
             CancellationToken.None
         );
         result.Should().Be(SubAgentContextDeliveryResult.TargetNotDeliverable);
