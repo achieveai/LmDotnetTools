@@ -325,12 +325,9 @@ public sealed class AgentHierarchyServiceTests
     }
 
     [Fact]
-    public async Task ScanPersistedSubAgentChildren_WarnsWhenTheThreadCapIsReached()
+    public async Task ScanPersistedSubAgentChildren_FindsOldChildrenBeyondTwoThousandUnrelatedThreads()
     {
-        // Seeds ONE MORE thread than the scan's cap, which is exactly what truncation is: the scan asks for
-        // cap + 1 and gets it back full, so it knows a thread it will not look at exists. Without the
-        // warning an operator has no signal that the sub-agent listing for a very long-lived store became
-        // incomplete — and the incomplete roster is then cached for the process lifetime.
+        // Newer unrelated rows must not hide an older running child.
         const int scanCap = 2000;
         var store = new InMemoryConversationStore();
         for (var i = 0; i <= scanCap; i++)
@@ -350,17 +347,11 @@ public sealed class AgentHierarchyServiceTests
             new SubAgentScanCoverageCache()
         );
 
-        _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+        await SeedProvenanceChildAsync(store, "old-child", tenantId: null);
+        var nodes = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
-        logger
-            .Entries.Should()
-            .Contain(
-                e =>
-                    e.Level == LogLevel.Warning
-                    && e.Message.Contains(RootThread, StringComparison.Ordinal)
-                    && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
-                "hitting the scan cap must be observable, not a silent truncation"
-            );
+        nodes.Rows.Select(n => n.AgentId).Should().Contain("old-child");
+        logger.Entries.Should().NotContain(e => e.Level == LogLevel.Warning);
     }
 
     [Fact]

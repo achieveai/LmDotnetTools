@@ -542,13 +542,10 @@ public sealed class ConversationDescendantScannerTests
     }
 
     /// <summary>
-    /// The scan is bounded, so a store that outgrows the bound must say so: the roster it returns is
-    /// cached, and a descendant persisted past the cap is not merely absent from one response but absent
-    /// for the life of the entry. Truncation is what the scan asks for one row MORE than the cap to
-    /// detect — a page filled exactly to the cap is otherwise indistinguishable from a complete read.
+    /// Newer unrelated conversations must not hide an older child from the persisted graph.
     /// </summary>
     [Fact]
-    public async Task ScanAsync_WarnsWhenTheStoreHoldsMoreThreadsThanTheCap()
+    public async Task ScanAsync_FindsOldChildrenBeyondTwoThousandUnrelatedThreads()
     {
         const int scanCap = 2000;
         var logger = new CapturingLogger<ConversationDescendantScanner>();
@@ -559,14 +556,11 @@ public sealed class ConversationDescendantScannerTests
             await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = i });
         }
 
-        _ = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
+        await SeedChildAsync(store, "thread-cap-0", "old-child", "subagent-old-child");
+        var nodes = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
 
-        logger
-            .Entries.Should()
-            .Contain(
-                e => e.Level == LogLevel.Warning && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
-                "hitting the scan cap must be observable, not a silent truncation"
-            );
+        nodes.Select(n => n.ThreadId).Should().Contain("subagent-old-child");
+        logger.Entries.Should().NotContain(e => e.Level == LogLevel.Warning);
     }
 
     /// <summary>The other side of that boundary: a store read IN FULL must not raise a false alarm.</summary>

@@ -43,6 +43,7 @@
          inspects internal wiring, so the generated top-level Program and any internal types must be
          visible to the test assembly. -->
     <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
+    <InternalsVisibleTo Include="Reviewd.Sample" />
   </ItemGroup>
   <ItemGroup>
     <!-- The Web SDK does not auto-glob EmbeddedResource items, so the daemon's YAML/Scriban prompt

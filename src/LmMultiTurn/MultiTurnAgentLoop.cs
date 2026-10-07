@@ -679,7 +679,7 @@ public sealed class MultiTurnAgentLoop
                 triggerOptions,
                 resolve: (toolCallId, result, isError, ct) =>
                     ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
-                notify: (payload, isError, ct) => EnqueueTriggerNotifyAsync(payload, isError, ct),
+                notify: EnqueueTriggerNotifyAsync,
                 tryNotify: TryEnqueueTriggerNotify,
                 logger: logger
             );

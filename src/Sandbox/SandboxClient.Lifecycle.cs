@@ -208,7 +208,8 @@ public sealed partial class SandboxClient
             dto.Volumes?.Workspace?.Id,
             dto.Status,
             ToInventory(dto.Inventory, operation, statusCode),
-            ToPluginResolution(dto.PluginResolution, operation, statusCode)
+            ToPluginResolution(dto.PluginResolution, operation, statusCode),
+            dto.Volumes?.Workspace?.RelativePath
         );
 
     /// <summary>

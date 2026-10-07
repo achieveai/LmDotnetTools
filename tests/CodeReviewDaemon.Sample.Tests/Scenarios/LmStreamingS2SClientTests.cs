@@ -381,6 +381,45 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
+    public async Task ListWorkspacesAsync_rejects_a_null_catalog_instead_of_reporting_empty_success()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "api/workspaces", "{\"workspaces\":null}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.ListWorkspacesAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<System.Text.Json.JsonException>();
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_uses_the_running_hosts_working_directory_contract()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/conversations/capabilities", "{\"conversationWorkingDirectory\":true}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"cwd-thread\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var thread = await client.ProvisionAsync(
+            "ws",
+            "provider",
+            "workspace-agent",
+            null,
+            null,
+            null,
+            ".scratch",
+            CancellationToken.None
+        );
+
+        thread.Should().Be("cwd-thread");
+        handler
+            .Requests.Single(r => r.Method == HttpMethod.Post)
+            .Body.Should()
+            .Contain("\"workingDirectoryRelPath\":\".scratch\"");
+    }
+
+    [Fact]
     public async Task SendMessageAsync_then_GetStatusByInputIdAsync_round_trip_the_run_status()
     {
         var handler = new FakeHttpMessageHandler()

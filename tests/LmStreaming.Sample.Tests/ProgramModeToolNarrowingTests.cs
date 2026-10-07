@@ -119,7 +119,7 @@ public sealed class ProgramModeToolNarrowingTests
         // children's. Writing the mode's selection into the wrong one would strip a delegate's tools.
         var options = Options() with
         {
-            NonInheritedToolNames = new HashSet<string> { "Agent" },
+            NonInheritedToolNames = ["Agent"],
         };
 
         var narrowed = global::Program.ApplySubAgentToolNarrowing(
@@ -231,7 +231,7 @@ public sealed class ProgramModeToolNarrowingTests
     public void AddWorkflowNonInheritedTools_ExcludesWorkflowFamiliesButLeavesTaskToolsInheritable()
     {
         var excluded = global::Program
-            .AddWorkflowNonInheritedTools(Options() with { NonInheritedToolNames = new HashSet<string> { "Agent" } })
+            .AddWorkflowNonInheritedTools(Options() with { NonInheritedToolNames = ["Agent"] })
             .NonInheritedToolNames;
 
         excluded.Should().Contain("Agent");

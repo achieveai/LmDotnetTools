@@ -274,6 +274,7 @@ internal sealed class AdoPrProvider : IPrProvider
         return new PullRequestPage
         {
             PullRequests = pullRequests,
+            IsComplete = !MoreMayRemain(continuationToken, lastPageCount, PageSize),
             NextCursor = new OpaqueCursor
             {
                 Provider = Provider,

@@ -660,6 +660,7 @@ public class PricingCatalogTests
     [Theory]
     [InlineData("gpt-6-astra")]
     [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6.1-sol")]
     [InlineData("gpt-6-luna")]
     [InlineData("gemini-3.8-flash")]
     [InlineData("gpt-5.6-sol")]
@@ -680,7 +681,16 @@ public class PricingCatalogTests
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        var resolver = ResolverFrom(configuration);
+        resolver.Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        if (modelId == "gpt-6.1-sol")
+            resolver
+                .Resolve(modelId)
+                .Should()
+                .BeEquivalentTo(
+                    resolver.Resolve("gpt-6-sol"),
+                    options => options.Excluding(pricing => pricing!.ModelId)
+                );
         CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(196_000);
     }
 

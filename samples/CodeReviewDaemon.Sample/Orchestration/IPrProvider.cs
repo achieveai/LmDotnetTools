@@ -85,6 +85,9 @@ internal sealed record PullRequestPage
     public required IReadOnlyList<PullRequestDescriptor> PullRequests { get; init; }
 
     public required OpaqueCursor NextCursor { get; init; }
+
+    /// <summary>False when the provider stopped while additional results may remain.</summary>
+    public bool IsComplete { get; init; } = true;
 }
 
 /// <summary>

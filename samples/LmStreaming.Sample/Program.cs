@@ -613,7 +613,10 @@ try
     // Register the FileConversationStore for conversation persistence (it also implements the
     // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
     var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    var conversationStore = new FileConversationStore(conversationsPath);
+    var conversationStore = new IndexedConversationStore(
+        new FileConversationStore(conversationsPath, timeProvider: null, strictMetadataReads: true),
+        Path.Combine(conversationsPath, ".parent-child-index.json")
+    );
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
 
@@ -961,6 +964,15 @@ try
                 var hasFullSandboxSurface = caps.NeedsSandbox && caps.SandboxToolAllowList is null;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
+                var requestedWorkingDirectory = ConversationWorkingDirectory
+                    .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                ConversationWorkingDirectory? conversationWorkingDirectory = null;
+                if (requestedWorkingDirectory is not null)
+                {
+                    ConversationWorkingDirectory.EnsureSupported(providerId, caps.NeedsSandbox);
+                }
                 SandboxSession? sandboxSession = null;
                 // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
@@ -1090,11 +1102,23 @@ try
                         )
                         .GetAwaiter()
                         .GetResult();
+                    if (requestedWorkingDirectory is not null)
+                    {
+                        conversationWorkingDirectory = ConversationWorkingDirectory
+                            .ResolveAsync(sandboxRegistry, sandboxSession, requestedWorkingDirectory)
+                            .GetAwaiter()
+                            .GetResult();
+                    }
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
                     // narrowed suffix instead of Workspace Agent's promises.
                     var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    if (requestedWorkingDirectory is not null)
+                    {
+                        wsSuffix +=
+                            $"\nConversation shell/file default working directory: {requestedWorkingDirectory} (relative to workspace root). This is not a filesystem jail. Background Bash and unsupported sandbox tools are refused.";
+                    }
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1598,6 +1622,16 @@ try
                         (callerCredential ?? sandboxCredential).AppId
                     );
                     var keptSandboxClient = ReusedResource<McpClient>(context.Existing, sandboxClientKey);
+                    Func<FunctionContract, ToolHandler, ToolHandler>? cwdDecorator = conversationWorkingDirectory
+                        is null
+                        ? null
+                        : (contract, handler) =>
+                            conversationWorkingDirectory.Wrap(
+                                contract,
+                                handler,
+                                sandboxRegistry,
+                                sandboxSession.SessionId
+                            );
                     var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
                         ? ConnectFilteredHttpMcpClient(
                             filteredRegistry,
@@ -1609,7 +1643,8 @@ try
                             omitServerPrefix: true,
                             handlerDecorator: SandboxToolHealth.Wrap,
                             transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient
+                            existingClient: keptSandboxClient,
+                            namedHandlerDecorator: cwdDecorator
                         )
                         : ConnectHttpMcpClient(
                             filteredRegistry,
@@ -1620,7 +1655,8 @@ try
                             omitServerPrefix: true,
                             handlerDecorator: SandboxToolHealth.Wrap,
                             transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient
+                            existingClient: keptSandboxClient,
+                            namedHandlerDecorator: cwdDecorator
                         );
 
                     if (sandboxClients.Count > 0)
@@ -2780,6 +2816,13 @@ try
     _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
+
+    // Rebuild from authoritative metadata before this host serves indexed hierarchy reads. A test
+    // host may replace the store, so initialize the registered instance, not the captured default.
+    if (app.Services.GetRequiredService<IConversationStore>() is IndexedConversationStore indexedStore)
+    {
+        await indexedStore.InitializeAsync();
+    }
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
@@ -5302,6 +5345,7 @@ public partial class Program
     ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
+    /// <param name="namedHandlerDecorator">Optional conversation-specific wrapper using the discovered tool contract.</param>
     private static List<McpClient> ConnectHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5311,7 +5355,8 @@ public partial class Program
         bool omitServerPrefix = false,
         Func<ToolHandler, ToolHandler>? handlerDecorator = null,
         HttpMessageHandler? transportHandler = null,
-        McpClient? existingClient = null
+        McpClient? existingClient = null,
+        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5324,7 +5369,7 @@ public partial class Program
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
-            if (handlerDecorator is null)
+            if (handlerDecorator is null && namedHandlerDecorator is null)
             {
                 _ = registry
                     .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
@@ -5349,7 +5394,8 @@ public partial class Program
                 {
                     if (handlers.TryGetValue(contract.Name, out var handler))
                     {
-                        _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                        var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
+                        _ = registry.AddFunction(contract, handlerDecorator?.Invoke(wrapped) ?? wrapped, name);
                     }
                 }
             }
@@ -5363,6 +5409,19 @@ public partial class Program
         }
         catch (Exception ex)
         {
+            if (namedHandlerDecorator is not null)
+            {
+                // Explicit cwd is a contract, not an optional tool connection. Never build a model
+                // agent with missing/partially decorated sandbox tools after a registration failure.
+                if (existingClient is null)
+                {
+                    foreach (var client in createdClients)
+                    {
+                        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                }
+                throw;
+            }
             logger.LogWarning(
                 ex,
                 "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",
@@ -5433,6 +5492,7 @@ public partial class Program
     ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
+    /// <param name="namedHandlerDecorator">Optional conversation-specific wrapper using the discovered tool contract.</param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5443,7 +5503,8 @@ public partial class Program
         bool omitServerPrefix,
         Func<ToolHandler, ToolHandler> handlerDecorator,
         HttpMessageHandler? transportHandler = null,
-        McpClient? existingClient = null
+        McpClient? existingClient = null,
+        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5465,7 +5526,8 @@ public partial class Program
             {
                 if (toolNames.Contains(contract.Name) && handlers.TryGetValue(contract.Name, out var handler))
                 {
-                    _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                    var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
+                    _ = registry.AddFunction(contract, handlerDecorator(wrapped), name);
                 }
             }
 
@@ -5479,6 +5541,19 @@ public partial class Program
         }
         catch (Exception ex)
         {
+            if (namedHandlerDecorator is not null)
+            {
+                // Explicit cwd is a contract, not an optional tool connection. Never build a model
+                // agent with missing/partially decorated sandbox tools after a registration failure.
+                if (existingClient is null)
+                {
+                    foreach (var client in createdClients)
+                    {
+                        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                }
+                throw;
+            }
             logger.LogWarning(
                 ex,
                 "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",

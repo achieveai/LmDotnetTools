@@ -352,6 +352,34 @@ public class ConversationsController(
             );
         }
 
+        string? workingDirectory = null;
+        if (request.WorkingDirectoryRelPath is not null)
+        {
+            try
+            {
+                workingDirectory = ConversationWorkingDirectory.Validate(request.WorkingDirectoryRelPath);
+                ConversationWorkingDirectory.EnsureSupported(
+                    request.ProviderId,
+                    ModeCapabilities.Resolve(mode.EnabledCapabilityTools).NeedsSandbox
+                );
+                if (sandboxSessionRegistry is null)
+                {
+                    throw new ArgumentException("Sandbox registry is unavailable for explicit working directory.");
+                }
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(
+                    new
+                    {
+                        error = "working_directory_invalid",
+                        code = "working_directory_invalid",
+                        detail = ex.Message,
+                    }
+                );
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
 
         // The epoch-millisecond segment is load-bearing, not decoration: it is the ONLY record of
@@ -373,6 +401,10 @@ public class ConversationsController(
                 propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
                 propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
+                if (workingDirectory is not null)
+                {
+                    propertiesBuilder[ConversationWorkingDirectory.PropertyKey] = workingDirectory;
+                }
 
                 if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                 {
@@ -973,13 +1005,20 @@ public class ConversationsController(
             return denied;
         }
 
-        if (recursive)
+        try
         {
-            return await BuildDescendantTreeAsync(threadId, ct);
-        }
+            if (recursive)
+            {
+                return await BuildDescendantTreeAsync(threadId, ct);
+            }
 
-        var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
-        return isKnown ? Ok(rows.ToArray()) : UnknownThread(threadId);
+            var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
+            return isKnown ? Ok(rows.ToArray()) : UnknownThread(threadId);
+        }
+        catch (IndexedConversationStore.HierarchyBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { code = "hierarchy_busy" });
+        }
     }
 
     /// <summary>
@@ -1089,6 +1128,7 @@ public class ConversationsController(
                 // made the capability a claim about the build rather than about the running gateway.
                 SandboxEnv = sandboxSessionRegistry?.SessionEnvSupported ?? false,
                 ManualCompaction = ManualCompactionConfigured,
+                ConversationWorkingDirectory = sandboxSessionRegistry is not null,
             }
         );
 

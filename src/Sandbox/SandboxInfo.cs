@@ -19,6 +19,9 @@ public sealed class SandboxInfo
     /// </summary>
     public string? WorkspaceContainerPath { get; }
 
+    /// <summary>Gateway-reported logical workspace identity, never a host filesystem path.</summary>
+    public string? WorkspaceRelativePath { get; }
+
     /// <summary>
     /// The persisted workspace mount id (<c>session_mounts.id</c>) the gateway's direct file/command
     /// APIs are keyed by, when the gateway reports one. Present on a create/get result from a
@@ -59,13 +62,15 @@ public sealed class SandboxInfo
         long? workspaceMountId = null,
         string? status = null,
         SandboxInventory? inventory = null,
-        SandboxPluginResolution? pluginResolution = null
+        SandboxPluginResolution? pluginResolution = null,
+        string? workspaceRelativePath = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         SessionId = sessionId;
         ContainerId = containerId;
         WorkspaceContainerPath = workspaceContainerPath;
+        WorkspaceRelativePath = workspaceRelativePath;
         WorkspaceMountId = workspaceMountId;
         Status = status ?? string.Empty;
         // A result that carries no inventory at all — a create against a gateway that predates the
