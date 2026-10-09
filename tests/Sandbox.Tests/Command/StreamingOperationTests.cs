@@ -239,6 +239,113 @@ public sealed class StreamingOperationTests
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(kind);
     }
 
+    [Theory]
+    // Verbatim gateway terminal frames (api/operations.rs stream_result_frame over a sanitized OperationResult).
+    [InlineData(
+        """{"protocol_version":4,"outcome":"failed","stdout_bytes":0,"stderr_bytes":0,"error":"executable is not runnable (permission denied; is it marked executable?)","error_code":"executable_not_runnable"}""",
+        SandboxErrorKind.ExecutableNotRunnable,
+        "is it marked executable?"
+    )]
+    [InlineData(
+        """{"protocol_version":4,"outcome":"failed","stdout_bytes":0,"stderr_bytes":0,"error":"operation request was rejected"}""",
+        SandboxErrorKind.OperationFailed,
+        "operation request was rejected"
+    )]
+    public async Task ExecuteStreamingAsync_FailedWithoutExitCode_MapsToGatewayReason(
+        string result,
+        SandboxErrorKind kind,
+        string gatewayMessage
+    )
+    {
+        var (client, gateway) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(gateway);
+        var frame = "{\"type\":\"result\",\"result\":" + result + "}\n";
+        RegisterStream(gateway, new MemoryStream(Encoding.UTF8.GetBytes(frame)));
+
+        var act = () =>
+            client.ExecuteStreamingAsync("sess-1", new SandboxCommand(["app"]), (_, _) => ValueTask.CompletedTask);
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(kind);
+        thrown.Message.Should().Contain(gatewayMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_CommandTimeout_IsSentAndSetsTheClientDeadline()
+    {
+        var clock = new RecordingTimeProvider();
+        var gateway = new FakeGatewayHandler();
+        using var client = new SandboxClient(
+            new SandboxClientOptions(
+                TestSupport.NewLoopbackAddress(),
+                "app-1",
+                TestSupport.ValidSecret,
+                TimeSpan.FromMinutes(5),
+                TimeSpan.FromSeconds(7)
+            ),
+            new HttpClient(gateway)
+        )
+        {
+            TransportClock = clock,
+        };
+        RegisterWorkspaceMount(gateway);
+        RegisterStream(
+            gateway,
+            new MemoryStream(
+                Encoding.UTF8.GetBytes(
+                    "{\"type\":\"result\",\"result\":{\"protocol_version\":4,\"outcome\":\"succeeded\",\"exit_code\":0,\"stdout_bytes\":0,\"stderr_bytes\":0}}\n"
+                )
+            )
+        );
+
+        await client.ExecuteStreamingAsync(
+            "sess-1",
+            new SandboxCommand(["app"]) { ExecutionTimeout = TimeSpan.FromSeconds(89.2) },
+            (_, _) => ValueTask.CompletedTask
+        );
+
+        var request = gateway.Requests.Single(r =>
+            r.Uri.AbsolutePath.EndsWith("/operations/stream", StringComparison.Ordinal)
+        );
+        using var body = JsonDocument.Parse(request.Body!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(90, "rounded up to whole seconds");
+        clock
+            .DueTimes.Should()
+            .Contain(TimeSpan.FromSeconds(97), "the call deadline is the gateway timeout plus the transport grace");
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_TimeoutAboveTheGatewayLimit_IsRejectedBeforeAnyRequest()
+    {
+        var (client, gateway) = TestSupport.CreateBorrowedClient();
+
+        var act = () =>
+            client.ExecuteStreamingAsync(
+                "sess-1",
+                new SandboxCommand(["app"]) { ExecutionTimeout = TimeSpan.FromSeconds(120.5) },
+                (_, _) => ValueTask.CompletedTask
+            );
+
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        gateway.Requests.Should().BeEmpty();
+    }
+
+    /// <summary>A system clock that records every timer's due time, so a test can read the deadline the SDK armed.</summary>
+    private sealed class RecordingTimeProvider : TimeProvider
+    {
+        public List<TimeSpan> DueTimes { get; } = [];
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            lock (DueTimes)
+            {
+                DueTimes.Add(dueTime);
+            }
+
+            return System.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
     private static void RegisterWorkspaceMount(FakeGatewayHandler gateway) =>
         gateway.OnJson(
             HttpMethod.Get,

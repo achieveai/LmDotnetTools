@@ -30,7 +30,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "marketplace preview");
+            throw await MapErrorResponseAsync(response, "marketplace preview", ct).ConfigureAwait(false);
         }
 
         MarketplaceCatalogDto? payload;
@@ -113,7 +113,8 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"listing discovered items for session '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"listing discovered items for session '{sessionId}'", ct)
+                .ConfigureAwait(false);
         }
 
         DiscoveredItemsResponseDto? payload;

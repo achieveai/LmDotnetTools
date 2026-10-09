@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.Sandbox.Wire;
@@ -13,8 +12,13 @@ public sealed partial class SandboxClient
     /// path; the gateway (which may be remote) owns workspace directory creation.
     /// </summary>
     /// <exception cref="SandboxException">
-    /// The gateway rejected the credential (<see cref="SandboxErrorKind.Authorization"/>) or returned
-    /// an unexpected response (<see cref="SandboxErrorKind.Protocol"/>).
+    /// The gateway rejected the credential (<see cref="SandboxErrorKind.Authorization"/>), the environment
+    /// map (<see cref="SandboxErrorKind.InvalidEnv"/>), or the image
+    /// (<see cref="SandboxErrorKind.ImageRejected"/>); the workspace is busy or has only partial backups
+    /// (<see cref="SandboxErrorKind.Conflict"/>) or was purged (<see cref="SandboxErrorKind.WorkspacePurged"/>);
+    /// an image pull or workspace restore failed (<see cref="SandboxErrorKind.Unavailable"/>); or the gateway
+    /// returned an unexpected response (<see cref="SandboxErrorKind.Protocol"/>).
+    /// <see cref="SandboxException.ErrorCode"/> names the exact reason.
     /// </exception>
     public async Task<SandboxInfo> CreateAsync(SandboxCreateRequest request, CancellationToken ct = default)
     {
@@ -25,12 +29,10 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            // A 400 is the only sandbox-create failure whose body is safe to read (never the
-            // credential-rejection response) and worth reading (it is the sole source of
-            // invalid_env's offending keys) — see MapRestBadRequestAsync.
-            throw response.StatusCode == HttpStatusCode.BadRequest
-                ? await MapRestBadRequestAsync(response, "sandbox creation", ct).ConfigureAwait(false)
-                : MapErrorResponse(response, "sandbox creation");
+            // The create-time codes (invalid_env with its keys, the image-policy and workspace-backup
+            // rejections) all come from the error body, which MapErrorResponseAsync reads for every status
+            // except the credential rejections.
+            throw await MapErrorResponseAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
@@ -58,7 +60,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"sandbox '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"sandbox '{sessionId}'", ct).ConfigureAwait(false);
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct)
@@ -85,7 +87,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "sandbox list");
+            throw await MapErrorResponseAsync(response, "sandbox list", ct).ConfigureAwait(false);
         }
 
         ListSandboxesResponseDto? payload;
@@ -142,7 +144,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"deleting sandbox '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"deleting sandbox '{sessionId}'", ct).ConfigureAwait(false);
         }
 
         // The sandbox (and its workspace mount) no longer exist — drop any cached sessionId→mountId entry

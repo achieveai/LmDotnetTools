@@ -380,19 +380,85 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsProtocol()
+    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsOperationFailedWithGatewayReason()
     {
         const string sessionId = "sess-noexit";
         const string operationId = "op-noexit";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        // A `failed` status with no exit_code is a protocol anomaly (a real failure always carries the
-        // child's code) — the SDK refuses to fabricate one.
-        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\"}", HttpStatusCode.OK);
+        // The gateway reports `failed` with NO exit_code for a command rejected before it spawned (PATH miss,
+        // policy refusal) or killed by a signal (gateway-types operation.rs OperationOutcome::Failed). That is a
+        // coherent answer, not a protocol anomaly: the SDK must not fabricate an exit code, and must not call
+        // it Protocol either — it is OperationFailed, carrying the gateway's sanitized reason.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
+                + "\"error\":\"child was terminated by signal 9\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["false"], operationId: operationId));
 
-        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.OperationFailed);
+        thrown.Message.Should().Contain("child was terminated by signal 9");
+        thrown.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExecutableNotRunnable_ThrowsItsOwnKindWithGatewayMessage()
+    {
+        const string sessionId = "sess-noexec";
+        const string operationId = "op-noexec";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // Issue #198: an executable that exists but lacks the execute bit. Verbatim gateway status shape
+        // (api/operations.rs status_response): failed, no exit_code, allow-listed error + error_code.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
+                + "\"error\":\"executable is not runnable (permission denied; is it marked executable?)\","
+                + "\"error_code\":\"executable_not_runnable\","
+                + "\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["./tool.sh"], operationId: operationId));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.ExecutableNotRunnable);
+        thrown.ErrorCode.Should().Be("executable_not_runnable");
+        thrown.Message.Should().Contain("is it marked executable?");
+        thrown.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollReportsCancelled_ThrowsOperationFailed()
+    {
+        const string sessionId = "sess-cancelled";
+        const string operationId = "op-cancelled";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"cancelled\",\"stdout_bytes\":0,\"stderr_bytes\":0,\"error\":\"operation was cancelled\"}"
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "5"], operationId: operationId));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown
+            .Kind.Should()
+            .Be(SandboxErrorKind.OperationFailed, "cancelled is a gateway outcome, not an unknown status");
+        thrown.OperationId.Should().Be(operationId);
     }
 
     [Fact]

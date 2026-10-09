@@ -229,8 +229,8 @@ public sealed partial class SandboxClient
             // copied into an in-memory ByteArrayContent BEFORE this method returns, so the caller can still
             // read the response after `using var request` disposes it — the request's own JsonContent was
             // fully sent by the time the headers arrived, and the body now lives in memory, not on the
-            // connection. A non-success response is returned unread (its body is never touched — the same
-            // no-body-on-error invariant MapErrorResponse relies on).
+            // connection. A non-success response is returned unread: MapErrorResponseAsync decides whether
+            // its body may be read at all (never for 401/403) and bounds that read itself.
             response = await Transport
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
                 .ConfigureAwait(false);
@@ -335,16 +335,22 @@ public sealed partial class SandboxClient
     private Uri ResolveRequestUri(string relativeUri) => new(_options.ServerAddress, relativeUri);
 
     /// <summary>
-    /// Classifies a non-success gateway response into a <see cref="SandboxException"/> WITHOUT ever
-    /// reading <paramref name="response"/>'s body: an auth-rejection response is the upstream output
-    /// most likely to echo submitted credential material, and an empty body (e.g. a bare <c>401</c>)
-    /// must classify identically to one carrying an (ignored) error payload — reading the body first
-    /// would risk a JSON-parse failure masking the real classification. The ONE exception is
-    /// <see cref="MapRestBadRequestAsync"/>, used only for a <c>400</c> on the sandbox-create path: it
-    /// is safe to read there because a <c>400</c> is never the credential-rejection response (that is
-    /// <c>401</c>/<c>403</c>, still handled body-unread below), and the parse only extracts the
-    /// closed-vocabulary <c>error_code</c>/<c>keys</c> fields — the free-text <c>error</c> message is
-    /// never echoed or logged, same as <see cref="MapDirectErrorAsync"/>.
+    /// Upper bound on a non-2xx error body the SDK reads to classify a failure. Gateway error bodies are a
+    /// few hundred bytes; anything past this is not a gateway error body and is classified by status alone.
+    /// </summary>
+    internal const long MaxErrorBodyBytes = 64 * 1024;
+
+    /// <summary>
+    /// Classifies a non-success control-plane (REST) response into a <see cref="SandboxException"/>.
+    /// A <c>401</c>/<c>403</c> is classified as <see cref="SandboxErrorKind.Authorization"/> WITHOUT reading
+    /// the body: an auth rejection is the upstream output most likely to echo submitted credential material,
+    /// and an empty body (e.g. a bare <c>401</c>) must classify identically to one carrying a payload. Every
+    /// other status has its body read — bounded to <see cref="MaxErrorBodyBytes"/> under a fresh transport
+    /// budget, see <see cref="TryReadGatewayErrorAsync"/> — so the gateway's closed-vocabulary
+    /// <c>error_code</c>, <c>retryable</c>, and structured fields drive the classification (for example
+    /// <c>404 image_not_found</c> is <see cref="SandboxErrorKind.ImageRejected"/>, never "session gone"). An
+    /// unreadable body falls back to status-only classification. The free-text <c>error</c> message is never
+    /// echoed or logged, same as <see cref="MapDirectErrorAsync"/>.
     /// </summary>
     /// <remarks>
     /// A <c>3xx</c> is treated as an explicit protocol violation, never followed: this SDK's owned
@@ -354,62 +360,72 @@ public sealed partial class SandboxClient
     /// enforceable at this seam, and it keeps this SDK from ever replaying the <c>X-Sbx-*</c>
     /// credential headers to a redirect target itself.
     /// </remarks>
-    private static SandboxException MapErrorResponse(HttpResponseMessage response, string operation)
-    {
-        var statusCode = (int)response.StatusCode;
-        if (statusCode is >= 300 and < 400)
-        {
-            return new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
-                    + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
-                    + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
-                statusCode
-            );
-        }
-
-        var kind = response.StatusCode switch
-        {
-            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => SandboxErrorKind.Authorization,
-            HttpStatusCode.NotFound => SandboxErrorKind.NotFound,
-            _ => SandboxErrorKind.Protocol,
-        };
-
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
-    }
-
-    /// <summary>
-    /// Classifies a <c>400</c> REST response (currently only sandbox create) into a
-    /// <see cref="SandboxException"/>, reading the gateway's small, stable
-    /// <c>{ error, error_code, keys }</c> body under the transport budget to recover
-    /// <c>invalid_env</c> and its offending <c>keys</c> — the same shape and safety contract as
-    /// <see cref="MapDirectErrorAsync"/>'s error-body read (a <c>400</c> is never the credential
-    /// rejection response, and only the closed-vocabulary <c>error_code</c>/<c>keys</c> fields are
-    /// ever surfaced; the free-text <c>error</c> message is never echoed or logged). A malformed or
-    /// unreadable body, or an <c>error_code</c> other than <c>invalid_env</c>, falls back to the
-    /// same <see cref="SandboxErrorKind.Protocol"/> classification <see cref="MapErrorResponse"/>
-    /// would have produced.
-    /// </summary>
-    private async Task<SandboxException> MapRestBadRequestAsync(
+    private async Task<SandboxException> MapErrorResponseAsync(
         HttpResponseMessage response,
         string operation,
         CancellationToken ct
     )
     {
         var statusCode = (int)response.StatusCode;
-        string? errorCode = null;
-        IReadOnlyList<string>? invalidKeys = null;
+        if (statusCode is >= 300 and < 400)
+        {
+            return RedirectRefused(statusCode, operation, operationId: null);
+        }
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new SandboxException(
+                SandboxErrorKind.Authorization,
+                $"Sandbox gateway returned {statusCode} for {operation}.",
+                statusCode
+            );
+        }
+
+        using var budgetCts = StartTransportBudget();
+        var error = await TryReadGatewayErrorAsync(response, ct, budgetCts.Token).ConfigureAwait(false);
+        return ToGatewayException(response, operation, error, operationId: null);
+    }
+
+    private static SandboxException RedirectRefused(int statusCode, string operation, string? operationId) =>
+        new(
+            SandboxErrorKind.Protocol,
+            $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
+                + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
+                + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
+            statusCode,
+            operationId: operationId
+        );
+
+    /// <summary>
+    /// Reads and parses a non-2xx gateway error body, bounded to <see cref="MaxErrorBodyBytes"/> and to
+    /// <paramref name="readBudget"/> (linked with <paramref name="callerToken"/>). Returns <c>null</c> when
+    /// the body is empty, oversized, malformed, not JSON, or did not arrive within the budget — the caller
+    /// then classifies by status alone, so an already-received gateway error is never lost to an
+    /// SDK-internal read failure. Genuine CALLER cancellation propagates as a plain
+    /// <see cref="OperationCanceledException"/>, honouring this SDK's documented cancellation contract.
+    /// </summary>
+    /// <remarks>
+    /// The body is parsed from raw bytes, never through the <c>Content-Type</c>: a proxy's error page with a
+    /// <c>text/html</c> type or a charset the runtime does not know (<c>charset=windows-1252</c>) would
+    /// otherwise throw <see cref="NotSupportedException"/>/<see cref="InvalidOperationException"/> from the
+    /// media-type-validating readers and escape every caller's <c>catch (SandboxException)</c>. A connection
+    /// failure mid-body (<see cref="HttpRequestException"/>/<see cref="IOException"/>) is likewise a lost
+    /// body, not a new failure: the status already arrived.
+    /// </remarks>
+    private static async Task<GatewayErrorDto?> TryReadGatewayErrorAsync(
+        HttpResponseMessage response,
+        CancellationToken callerToken,
+        CancellationToken readBudget
+    )
+    {
         try
         {
-            using var budgetCts = StartTransportBudget();
-            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
-            var error = await response
-                .Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token)
+            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(callerToken, readBudget);
+            var body = await ReadStreamCappedAsync(response, "error body", null, MaxErrorBodyBytes, bodyCts.Token)
                 .ConfigureAwait(false);
-            errorCode = error?.ErrorCode;
-            invalidKeys = error?.Keys;
+            return body.Length == 0 ? null : JsonSerializer.Deserialize<GatewayErrorDto>(body, SandboxJson.RestOptions);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
             throw;
         }
@@ -419,25 +435,44 @@ public sealed partial class SandboxClient
                         or InvalidOperationException
                         or NotSupportedException
                         or OperationCanceledException
+                        or HttpRequestException
+                        or IOException
+                        or SandboxException { IsDirectReadCapExceeded: true }
             )
         {
-            // The read deadline fired, or the body was unreadable — fall back to status-only
-            // classification below (errorCode stays null). See MapDirectErrorAsync's sibling catch for
-            // why the non-JSON cases need three types rather than JsonException alone.
+            return null;
         }
+    }
 
-        var kind = string.Equals(errorCode, "invalid_env", StringComparison.Ordinal)
-            ? SandboxErrorKind.InvalidEnv
-            : SandboxErrorKind.Protocol;
+    /// <summary>
+    /// Builds the classified <see cref="SandboxException"/> for a non-2xx response from its (possibly
+    /// absent) parsed error body: the kind from <see cref="MapGatewayErrorKind"/>, plus every structured
+    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>) and a
+    /// delta-seconds <c>Retry-After</c>. Shared by the control-plane and direct-API mappers so both speak
+    /// one vocabulary.
+    /// </summary>
+    private static SandboxException ToGatewayException(
+        HttpResponseMessage response,
+        string operation,
+        GatewayErrorDto? error,
+        string? operationId
+    )
+    {
+        var statusCode = (int)response.StatusCode;
+        var errorCode = error?.ErrorCode;
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
         return new SandboxException(
-            kind,
+            MapGatewayErrorKind(response.StatusCode, errorCode),
             $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.",
-            statusCode
+            statusCode,
+            operationId: operationId
         )
         {
             ErrorCode = errorCode,
-            InvalidKeys = invalidKeys,
+            Retryable = error?.Retryable,
+            InvalidKeys = error?.Keys,
+            SnapshotIds = error?.Snapshots,
+            RetryAfter = response.Headers.RetryAfter?.Delta,
         };
     }
 
@@ -527,7 +562,7 @@ public sealed partial class SandboxClient
     /// <see cref="SandboxErrorKind"/>; the human <c>error</c> message is never echoed. A <c>401</c>/
     /// <c>403</c> is classified as <see cref="SandboxErrorKind.Authorization"/> WITHOUT reading the
     /// body (an auth rejection is the response most likely to echo credential material — the same
-    /// invariant <see cref="MapErrorResponse"/> holds; the gateway's own <c>403</c> error codes like
+    /// invariant <see cref="MapErrorResponseAsync"/> holds; the gateway's own <c>403</c> error codes like
     /// <c>mount_read_only</c> are therefore indistinguishable here, which is acceptable because the
     /// write path only ever targets the writable workspace). A <c>3xx</c> is refused, never followed.
     /// </summary>
@@ -562,14 +597,7 @@ public sealed partial class SandboxClient
         var statusCode = (int)response.StatusCode;
         if (statusCode is >= 300 and < 400)
         {
-            return new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
-                    + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
-                    + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
-                statusCode,
-                operationId: operationId
-            );
+            return RedirectRefused(statusCode, operation, operationId);
         }
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -582,100 +610,73 @@ public sealed partial class SandboxClient
             );
         }
 
-        string? errorCode = null;
-        IReadOnlyList<string>? invalidKeys = null;
-        try
-        {
-            // Link to the caller's token so a caller cancel trips IMMEDIATELY. When the caller (the download
-            // path) supplies its already-running whole-call CTS, the read shares that ONE deadline (headers +
-            // error body bounded together); otherwise impose the SDK's transport deadline here.
-            using var bodyBudgetCts = readBudget is null ? StartTransportBudget() : null;
-            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(
-                callerToken,
-                readBudget ?? bodyBudgetCts!.Token
-            );
-
-            var error = await response
-                .Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token)
-                .ConfigureAwait(false);
-            errorCode = error?.ErrorCode;
-            invalidKeys = error?.Keys;
-        }
-        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-        {
-            // Genuine CALLER cancellation — honour the documented plain-OCE contract rather than masking it
-            // as a SandboxException.
-            throw;
-        }
-        catch (Exception ex)
-            when (ex
-                    is JsonException
-                        or InvalidOperationException
-                        or NotSupportedException
-                        or OperationCanceledException
-            )
-        {
-            // The caller did NOT cancel: the read deadline fired, or the body was unreadable — fall back to
-            // status-only classification (errorCode stays null). An already-received gateway error is never
-            // lost to an SDK-internal timeout.
-            //
-            // The non-JSON cases are the reason this catch is not JsonException alone. A proxy's error page
-            // arrives with its own headers, and which exception that produces depends on WHICH header is
-            // wrong (verified against the runtime, not assumed): a non-JSON media type such as text/html
-            // still reaches the parser and fails as JsonException, but a Content-Type naming a charset the
-            // runtime does not know (`charset=windows-1252`) throws InvalidOperationException before any
-            // parsing. NotSupportedException is the shape the media-type-validating HttpClient overloads
-            // raise. Any of them escaping here would pass every caller's `catch (SandboxException)`
-            // untouched — and on the env routes that also means the old-gateway 404/405 degradation never
-            // runs, so the session faults instead of quietly reporting the feature unsupported.
-        }
+        // Link to the caller's token so a caller cancel trips IMMEDIATELY. When the caller (the download
+        // path) supplies its already-running whole-call CTS, the read shares that ONE deadline (headers +
+        // error body bounded together); otherwise impose the SDK's transport deadline here. On the env
+        // routes an unreadable body falling back to status-only (rather than escaping as a non-Sandbox
+        // exception) is also what lets the old-gateway 404/405 degradation run.
+        using var bodyBudgetCts = readBudget is null ? StartTransportBudget() : null;
+        var error = await TryReadGatewayErrorAsync(response, callerToken, readBudget ?? bodyBudgetCts!.Token)
+            .ConfigureAwait(false);
 
         // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later
         // call re-resolves the mount (or fails cleanly) instead of replaying a dead mapping. Skipped when
         // the body did not parse (errorCode null) — best-effort, acceptable.
-        if (string.Equals(errorCode, "session_not_found", StringComparison.Ordinal))
+        if (string.Equals(error?.ErrorCode, "session_not_found", StringComparison.Ordinal))
         {
             EvictWorkspaceMountId(sessionId);
         }
 
-        var kind = MapDirectErrorKind(response.StatusCode, errorCode);
-        var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(
-            kind,
-            $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.",
-            statusCode,
-            operationId: operationId
-        )
-        {
-            ErrorCode = errorCode,
-            InvalidKeys = invalidKeys,
-        };
+        return ToGatewayException(response, operation, error, operationId);
     }
 
     /// <summary>
-    /// Maps a direct-API <c>error_code</c> (preferred) or, absent one, the raw status to a
-    /// <see cref="SandboxErrorKind"/>. The operation terminal states <c>timed_out</c>/
-    /// <c>output_limit_exceeded</c> are NOT handled here — they arrive as a <c>200</c> status body,
-    /// not an HTTP error, and are classified by the command poll loop.
+    /// Maps a gateway <c>error_code</c> (preferred) or, absent one, the raw status to a
+    /// <see cref="SandboxErrorKind"/>. One table serves the control-plane and direct APIs: the codes are
+    /// distinct strings, so a code always means the same thing wherever it appears. The operation terminal
+    /// states <c>timed_out</c>/<c>output_limit_exceeded</c> are NOT handled here — they arrive as a
+    /// <c>200</c> status body, not an HTTP error, and are classified by the command poll loop.
     /// </summary>
-    private static SandboxErrorKind MapDirectErrorKind(HttpStatusCode status, string? errorCode) =>
+    /// <remarks>
+    /// Image codes split by who failed (gateway image policy, ADR 0039): a refused or unusable REFERENCE
+    /// (<c>image_not_allowed</c>, <c>image_unsupported_backend</c>, <c>image_not_found</c>,
+    /// <c>image_unsupported</c>) is <see cref="SandboxErrorKind.ImageRejected"/> — retrying the same reference
+    /// cannot help, and <c>image_not_found</c> must never read as a missing SESSION. A failed or timed-out
+    /// PULL (<c>image_pull_failed</c> 502, <c>image_pull_timeout</c> 504) is
+    /// <see cref="SandboxErrorKind.Unavailable"/>: the registry or the gateway's network failed, and the same
+    /// request may succeed later. The gateway sends no <c>retryable</c> on image errors, so
+    /// <see cref="SandboxException.Retryable"/> stays <c>null</c> for them.
+    /// </remarks>
+    private static SandboxErrorKind MapGatewayErrorKind(HttpStatusCode status, string? errorCode) =>
         errorCode switch
         {
             "invalid_env" => SandboxErrorKind.InvalidEnv,
             "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" =>
                 SandboxErrorKind.NotFound,
-            "idempotency_conflict" or "operation_running" or "target_locked" => SandboxErrorKind.Conflict,
+            "idempotency_conflict"
+            or "operation_running"
+            or "target_locked"
+            or "workspace_in_use"
+            or "only_partial_snapshots" => SandboxErrorKind.Conflict,
             "workspace_required" => SandboxErrorKind.WorkspaceRequired,
+            "workspace_purged" => SandboxErrorKind.WorkspacePurged,
+            "image_not_allowed" or "image_unsupported_backend" or "image_not_found" or "image_unsupported" =>
+                SandboxErrorKind.ImageRejected,
             "operation_api_unavailable"
             or "operation_probe_failed"
             or "operation_concurrency_limit"
             or "operation_capacity_exhausted"
             or "too_many_concurrent_requests"
-            or "sandbox_busy" => SandboxErrorKind.Unavailable,
+            or "sandbox_busy"
+            or "workspace_restore_failed"
+            or "image_pull_failed"
+            or "image_pull_timeout" => SandboxErrorKind.Unavailable,
             _ => status switch
             {
                 HttpStatusCode.NotFound => SandboxErrorKind.NotFound,
                 HttpStatusCode.Conflict => SandboxErrorKind.Conflict,
+                HttpStatusCode.Gone => SandboxErrorKind.WorkspacePurged,
+                HttpStatusCode.ServiceUnavailable => SandboxErrorKind.Unavailable,
                 _ => SandboxErrorKind.Protocol,
             },
         };

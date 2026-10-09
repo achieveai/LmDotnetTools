@@ -51,6 +51,23 @@ this SDK still speaks unchanged. It is *not* a runnable floor: the direct API di
 commit, so a gateway pinned there cannot serve this SDK's command or file operations. The image tag in
 the workflow is the operative pin.
 
+**Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
+`origin/master` `7f19413` (v0.1.16). That sync covers:
+
+- REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
+  non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
+  backup refusal's `snapshots` (`SnapshotIds`).
+- New kinds: `WorkspacePurged` (`410` / `workspace_purged`), `ImageRejected` (`image_not_allowed`,
+  `image_unsupported_backend`, `image_not_found`, `image_unsupported` — `image_not_found` is not
+  `NotFound`), `ExecutableNotRunnable` (operation `error_code`, #198), and `McpCallFailed` (a JSON-RPC
+  `error` envelope, carrying `JsonRpcCode`).
+- `409` → `Conflict` (incl. `workspace_in_use`, `only_partial_snapshots`); `503`, `workspace_restore_failed`,
+  `image_pull_failed` (`502`) and `image_pull_timeout` (`504`) → `Unavailable`.
+- Operations: a `failed` status with no exit code → `OperationFailed` with the gateway's reason (poll and
+  stream); poll status `cancelled` → `OperationFailed`; the streaming `timeout_secs` follows
+  `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
+  `capabilities` are refused client-side.
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -211,6 +228,10 @@ UTF-8.
   returned, since the result would be incomplete).
 - **Client-side transport timeout / lost response** → `SandboxErrorKind.TransportTimeout`, carrying the
   recoverable `SandboxException.OperationId`.
+- **Executable could not run** (gateway `error_code` `executable_not_runnable`) →
+  `SandboxErrorKind.ExecutableNotRunnable`, quoting the gateway's bounded reason.
+- **Failed with no exit code** (a pre-spawn rejection or a signal kill), or **cancelled by the gateway**
+  → `SandboxErrorKind.OperationFailed`.
 - **Caller cancellation** → a plain `OperationCanceledException`.
 
 Neither timeout claims the remote process tree was terminated — the gateway may still be running the
@@ -389,10 +410,11 @@ covers every malformed-response case, and the SDK never lets one surface as a ra
   optional per the gateway's contract, e.g. a `"context_file"` item never has one) or a `null`
   collection element in any lifecycle/catalog/discovery list; a malformed operation-status or
   directory-listing body; or a write whose reported `bytes_written` does not match what was sent.
-- A non-success direct-API response carries the gateway's stable `{ error, code, error_code,
+- A non-success REST or direct-API response carries the gateway's stable `{ error, code, error_code,
   retryable }` body; only the closed-vocabulary `error_code` is mapped to a `SandboxErrorKind` and
-  surfaced on `SandboxException.ErrorCode` — the gateway-controlled free-text `error` message is never
-  copied into the exception (see Security below).
+  surfaced on `SandboxException.ErrorCode` (with `Retryable`, `RetryAfter`, `SnapshotIds` beside it) —
+  the gateway-controlled free-text `error` message is never copied into the exception (see Security
+  below). A body that is missing, malformed, or over 64 KiB falls back to classification by status.
 - An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
@@ -408,4 +430,6 @@ covers every malformed-response case, and the SDK never lets one surface as a ra
   echo credential material), and a direct-API error's gateway-controlled free-text `error` message is
   never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
   echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the
-  closed-vocabulary `error_code` are ever surfaced.
+  closed-vocabulary `error_code` (plus `retryable`, `Retry-After`, and snapshot ids) are surfaced from a
+  REST error. Two gateway texts *are* quoted, length-bounded: an operation's `error` reason (the
+  gateway allow-lists and sanitizes it before sending) and a JSON-RPC `error.message`.

@@ -247,9 +247,11 @@ internal sealed record OperationArtifactsDto(
 );
 
 /// <c>POST</c>/<c>GET .../operations</c> status snapshot. <c>status</c> is one of
-/// <c>running|succeeded|failed|timed_out|output_limit_exceeded|internal_failure</c>; <c>error</c>
-/// carries a sanitized message on the failure states (never surfaced by the SDK); <c>artifacts</c> is
-/// present once the session has a writable workspace (always true for a submitted operation).
+/// <c>running|succeeded|failed|timed_out|output_limit_exceeded|cancelled|internal_failure</c>; <c>error</c>
+/// carries the gateway's allow-listed, path-free message on the failure states (surfaced, bounded, only
+/// when a <c>failed</c> operation has no exit code); <c>error_code</c> is the allow-listed reason code
+/// (today only <c>executable_not_runnable</c>, issue #198); <c>artifacts</c> is present once the session
+/// has a writable workspace (always true for a submitted operation).
 internal sealed record OperationStatusDto(
     [property: JsonPropertyName("operation_id")] string OperationId,
     [property: JsonPropertyName("status")] string Status,
@@ -259,7 +261,8 @@ internal sealed record OperationStatusDto(
     [property: JsonPropertyName("stdout_bytes")] long? StdoutBytes,
     [property: JsonPropertyName("stderr_bytes")] long? StderrBytes,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("artifacts")] OperationArtifactsDto? Artifacts
+    [property: JsonPropertyName("artifacts")] OperationArtifactsDto? Artifacts,
+    [property: JsonPropertyName("error_code")] string? ErrorCode = null
 );
 
 /// One entry of a directory listing. <c>type</c> is <c>file|directory|symlink</c> (symlinks reported,
@@ -282,10 +285,11 @@ internal sealed record ListDirectoryResponseDto(
 /// <c>PUT .../files/{mount_id}</c> response.
 internal sealed record WriteFileResponseDto([property: JsonPropertyName("bytes_written")] long BytesWritten);
 
-/// The gateway's stable direct-API error body: <c>{ error, code, error_code, retryable }</c>. Only
-/// the fixed-string <c>error_code</c> — a closed, gateway-defined vocabulary, not caller free text —
-/// is ever surfaced by the SDK; the human <c>error</c> message is never echoed into a
-/// <see cref="SandboxException"/> (it may contain captured output/credential material).
+/// The gateway's stable error body: <c>{ error, code, error_code?, retryable? }</c> (direct API, image
+/// policy, backup). Only the fixed-string <c>error_code</c> — a closed, gateway-defined vocabulary, not
+/// caller free text — and the structured fields below are ever surfaced by the SDK; the human <c>error</c>
+/// message is never echoed into a <see cref="SandboxException"/> (it may contain captured
+/// output/credential material).
 internal sealed record GatewayErrorDto(
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("code")] int? Code,
@@ -293,7 +297,9 @@ internal sealed record GatewayErrorDto(
     [property: JsonPropertyName("retryable")] bool? Retryable,
     // Present on invalid_env (400): the offending env-map keys. A closed-vocabulary structured field,
     // not caller free text, so it is safe to surface on SandboxException like ErrorCode itself.
-    [property: JsonPropertyName("keys")] IReadOnlyList<string>? Keys = null
+    [property: JsonPropertyName("keys")] IReadOnlyList<string>? Keys = null,
+    // Present on only_partial_snapshots (409): the gateway-minted partial snapshot ids to restore from.
+    [property: JsonPropertyName("snapshots")] IReadOnlyList<string>? Snapshots = null
 );
 
 // --- Session env REST contract (gateway PR #183 / v0.1.11) ---

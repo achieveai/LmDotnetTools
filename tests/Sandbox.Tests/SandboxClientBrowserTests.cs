@@ -62,6 +62,25 @@ public sealed class SandboxClientBrowserTests
     }
 
     [Fact]
+    public async Task BrowserCall_JsonRpcErrorEnvelope_SurfacesCodeAndMessage()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        // Shape of the gateway's McpResponse::error (server.rs): a JSON-RPC error with no result.
+        handler.OnJson(
+            HttpMethod.Post,
+            "/mcp",
+            """{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid agent_id: must be 1-64 characters"}}"""
+        );
+
+        var act = () => client.CallBrowserAsync("owned-browser", "playwright", "browser_snapshot");
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.McpCallFailed);
+        thrown.JsonRpcCode.Should().Be(-32602);
+        thrown.Message.Should().Contain("Invalid agent_id: must be 1-64 characters");
+    }
+
+    [Fact]
     public async Task CloseBrowser_AddressesOnlyTheNamedLease_AndMissingLeaseIsAlreadyClosed()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

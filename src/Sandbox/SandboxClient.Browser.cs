@@ -15,7 +15,7 @@ public sealed partial class SandboxClient
         using var response = await SendRestAsync(HttpMethod.Get, "mcp/tools", null, null, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser capability discovery");
+            throw await MapErrorResponseAsync(response, "browser capability discovery", ct).ConfigureAwait(false);
         }
         var listing = await ReadBrowserJsonAsync(response, ct).ConfigureAwait(false);
         if (!listing.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
@@ -67,13 +67,63 @@ public sealed partial class SandboxClient
         using var response = await SendRestAsync(HttpMethod.Post, "mcp", payload, null, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser tool call");
+            throw await MapErrorResponseAsync(response, "browser tool call", ct).ConfigureAwait(false);
         }
         var envelope = await ReadBrowserJsonAsync(response, ct).ConfigureAwait(false);
+        return UnwrapJsonRpcResult(envelope, "browser tool call");
+    }
+
+    /// <summary>Longest gateway JSON-RPC error message copied into a <see cref="SandboxException"/>.</summary>
+    internal const int MaxJsonRpcMessageChars = 512;
+
+    /// <summary>
+    /// Returns a JSON-RPC response's <c>result</c> object, or throws for every other shape. The one place
+    /// an MCP call in this SDK interprets an envelope, so every call speaks the same error contract:
+    /// <list type="bullet">
+    /// <item>An <c>error</c> object → <see cref="SandboxErrorKind.McpCallFailed"/> carrying its integer
+    /// <c>code</c> on <see cref="SandboxException.JsonRpcCode"/> and its <c>message</c> (bounded to
+    /// <see cref="MaxJsonRpcMessageChars"/>) in the exception message. The gateway authors that message for
+    /// the caller (e.g. <c>Invalid agent_id</c>, <c>Session not found</c>, a browser-tool failure), and it is
+    /// the only explanation the caller gets.</item>
+    /// <item>Neither an <c>error</c> nor an object <c>result</c> → <see cref="SandboxErrorKind.Protocol"/>.</item>
+    /// </list>
+    /// </summary>
+    private static JsonElement UnwrapJsonRpcResult(JsonElement envelope, string operation)
+    {
+        if (envelope.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+        {
+            int? code =
+                error.TryGetProperty("code", out var codeElement)
+                && codeElement.ValueKind == JsonValueKind.Number
+                && codeElement.TryGetInt32(out var parsedCode)
+                    ? parsedCode
+                    : null;
+            var message =
+                error.TryGetProperty("message", out var messageElement)
+                && messageElement.ValueKind == JsonValueKind.String
+                    ? messageElement.GetString()
+                    : null;
+            if (message is { Length: > MaxJsonRpcMessageChars })
+            {
+                message = message[..MaxJsonRpcMessageChars] + "…";
+            }
+
+            var codeText = code is { } value ? $" {value}" : string.Empty;
+            var messageText = string.IsNullOrEmpty(message) ? "." : $": {message}";
+            throw new SandboxException(
+                SandboxErrorKind.McpCallFailed,
+                $"Sandbox gateway {operation} returned JSON-RPC error{codeText}{messageText}"
+            )
+            {
+                JsonRpcCode = code,
+            };
+        }
+
         if (!envelope.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
         {
-            throw new SandboxException(SandboxErrorKind.Protocol, "Gateway browser call returned no MCP result.");
+            throw new SandboxException(SandboxErrorKind.Protocol, $"Gateway {operation} returned no MCP result.");
         }
+
         return result.Clone();
     }
 
@@ -95,7 +145,7 @@ public sealed partial class SandboxClient
         }
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser close");
+            throw await MapErrorResponseAsync(response, "browser close", ct).ConfigureAwait(false);
         }
         return true;
     }

@@ -8,10 +8,15 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// </summary>
 /// <remarks>
 /// The message is always built from information that is safe to surface to callers/logs: the
-/// gateway response status code and the local operation being attempted. It never echoes response
-/// bodies (which, on an auth-rejection path, are the upstream output most likely to include
-/// credential material), a JSON-RPC error's <c>message</c> (or any other error field), or any
-/// <see cref="SandboxClientOptions.ClientSecret"/>-derived value.
+/// gateway response status code, the closed-vocabulary <c>error_code</c>, and the local operation being
+/// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a
+/// <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to include
+/// credential material), and never includes any <see cref="SandboxClientOptions.ClientSecret"/>-derived
+/// value. Two gateway-authored texts ARE included, length-bounded, because they are the only explanation
+/// the caller gets and the gateway produces them for callers: an operation's sanitized <c>error</c> on a
+/// failed command (<see cref="SandboxErrorKind.OperationFailed"/> /
+/// <see cref="SandboxErrorKind.ExecutableNotRunnable"/>; the gateway passes only an allow-listed, path-free
+/// message), and a JSON-RPC error's <c>message</c> (<see cref="SandboxErrorKind.McpCallFailed"/>).
 /// </remarks>
 public sealed class SandboxException : Exception
 {
@@ -45,10 +50,11 @@ public sealed class SandboxException : Exception
     public string? OperationId { get; }
 
     /// <summary>
-    /// The gateway's stable, machine-readable <c>error_code</c> from the direct-API error body (e.g.
-    /// <c>path_not_found</c>, <c>session_not_found</c>, <c>mount_not_found</c>), when the failure came from
-    /// a direct file/command/directory call that carried one. <c>null</c> for control-plane failures, auth
-    /// rejections (whose body is deliberately never read), and any response with no machine-readable body.
+    /// The gateway's stable, machine-readable <c>error_code</c> from a non-2xx error body (e.g.
+    /// <c>path_not_found</c>, <c>session_not_found</c>, <c>image_not_found</c>, <c>workspace_purged</c>) or
+    /// from a failed operation's status (<c>executable_not_runnable</c>), when the gateway sent one.
+    /// <c>null</c> for auth rejections (whose body is deliberately never read) and any response with no
+    /// machine-readable body.
     /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error
     /// <c>code</c> — so a caller can distinguish, for example, a genuinely missing PATH from an evicted
     /// SESSION even though both classify as <see cref="SandboxErrorKind.NotFound"/>. Never the gateway's
@@ -91,6 +97,32 @@ public sealed class SandboxException : Exception
     /// constructor so its signature stays binary-stable for already-compiled callers).
     /// </summary>
     public IReadOnlyList<string>? InvalidKeys { get; init; }
+
+    /// <summary>
+    /// The gateway's own <c>retryable</c> hint from the error body: whether the same request might succeed
+    /// unchanged on retry. <c>null</c> when the body did not carry one (several gateway routes, including the
+    /// image-policy errors, never do) or was not read. Branch on <see cref="Kind"/> first; this refines it.
+    /// </summary>
+    public bool? Retryable { get; init; }
+
+    /// <summary>
+    /// The delay the gateway asked for in a <c>Retry-After</c> header (delta-seconds form), when it sent one —
+    /// today only the browser relay's <c>503 browser_capacity</c>. <c>null</c> otherwise.
+    /// </summary>
+    public TimeSpan? RetryAfter { get; init; }
+
+    /// <summary>
+    /// The partial snapshot ids from a <c>409 only_partial_snapshots</c> create rejection: the workspace has
+    /// only incomplete backups, and one of these must be restored explicitly before the create is retried.
+    /// <c>null</c> for every other failure.
+    /// </summary>
+    public IReadOnlyList<string>? SnapshotIds { get; init; }
+
+    /// <summary>
+    /// The JSON-RPC <c>error.code</c> of a <see cref="SandboxErrorKind.McpCallFailed"/> failure, when the
+    /// envelope carried an integer code. <c>null</c> for every other failure.
+    /// </summary>
+    public int? JsonRpcCode { get; init; }
 
     public SandboxException(
         SandboxErrorKind kind,
