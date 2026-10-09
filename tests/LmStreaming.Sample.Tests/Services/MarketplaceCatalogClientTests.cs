@@ -82,17 +82,23 @@ public class MarketplaceCatalogClientTests
         handler
             .LastRequest!.RequestUri!.ToString()
             .Should()
-            .Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview?marketplaces=official%2Cclaude_plugins");
+            .Be(
+                $"{GatewayBaseUrl}/api/v1/marketplaces/preview?app_id=lmstreaming-sample&marketplaces=official%2Cclaude_plugins"
+            );
     }
 
     [Fact]
-    public async Task GetCatalogAsync_NoAliases_OmitsQueryString()
+    public async Task GetCatalogAsync_NoAliases_SendsOnlyTheAppId()
     {
         var (client, handler) = CreateClient(_ => Ok(CatalogJson));
 
         _ = await client.GetCatalogAsync();
 
-        handler.LastRequest!.RequestUri!.ToString().Should().Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview");
+        // app_id (gateway ADR 0041) lets a dev gateway include this app's git marketplaces; no marketplaces filter.
+        handler
+            .LastRequest!.RequestUri!.ToString()
+            .Should()
+            .Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview?app_id=lmstreaming-sample");
     }
 
     [Fact]

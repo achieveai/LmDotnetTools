@@ -415,6 +415,34 @@ Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unrea
 `Unavailable` (capacity carries `RetryAfter`); `invalid_browser_id` / `invalid_cdp_path` /
 `unknown_browser_mcp` / `body_too_large` → `Protocol`; `cdp_upgrade_rejected` → `NotFound`.
 
+## Per-app git marketplaces (gateway ADR 0041)
+
+An app can register public git repositories as its own plugin marketplaces. The gateway clones each one
+and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway with
+`MARKETPLACE_STORE_PATH` set.
+
+- `RegisterAppMarketplaceAsync(alias, url, gitRef?)` — register, or re-point an existing alias (a different
+  URL or ref replaces it). `gitRef` null means `latest` (follow the default branch); a tag, branch or commit
+  pins it. The gateway clones before answering, so a bad URL or ref fails here, not at sandbox create.
+- `ListAppMarketplacesAsync()` — the app's registrations as `SandboxAppMarketplace` (`ResolvedSha`,
+  `LastError` of the last failed background sync, timestamps as text).
+- `SyncAppMarketplaceAsync(alias)` — fetch `latest` now; a pin is returned unchanged.
+- `RemoveAppMarketplaceAsync(alias)` — `false` when the alias was not registered. Sandboxes already
+  using it keep their commit.
+
+**Behaviour change:** creating a sandbox without `Marketplaces` now mounts the operator default set
+**plus all of the app's registrations**. Name aliases to mount fewer. `PreviewMarketplacesAsync` lists
+the registrations' plugins too. Every marketplace call (and the preview) sends `app_id`, which a gateway
+with `AUTH_ENFORCE` off requires and an enforcing gateway ignores.
+
+Error codes: `marketplaces_disabled` (404), `git_failed` (502), `store_failed` / `registry_failed`
+(500) → `Unavailable`; `alias_taken` (409, the alias is an operator marketplace's) → `Conflict`;
+`marketplace_not_registered` → `NotFound`; `invalid_alias` / `invalid_url` / `host_not_allowed` /
+`invalid_ref` / `ref_not_found` / `app_id_required` (400) → `Protocol`. `ErrorCode` names the reason.
+
+Not supported upstream: a "cloud" marketplace whose catalog only points at plugins in other git repos
+(`github` / `url` / `git-subdir` plugin sources are skipped). Tracked as gateway issue #202.
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which

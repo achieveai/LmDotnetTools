@@ -467,6 +467,12 @@ try
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
+    // This app's git marketplaces (api/marketplaces/app). Registering clones before answering, so the
+    // timeout is longer than the catalog's.
+    _ = builder.Services.AddSingleton<IAppMarketplaceClient>(_ => new AppMarketplaceClient(
+        sandboxOptions,
+        GatewayHttpClient(TimeSpan.FromSeconds(120))
+    ));
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();

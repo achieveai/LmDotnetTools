@@ -667,6 +667,14 @@ public sealed partial class SandboxClient
                 SandboxErrorKind.Protocol,
             // Chrome refused the CDP upgrade with its own status, typically an unknown target id.
             "cdp_upgrade_rejected" => SandboxErrorKind.NotFound,
+            // App git marketplaces (api/app_marketplaces.rs). alias_taken means the alias is an operator
+            // marketplace's. marketplaces_disabled (404) is a gateway feature switch, never a missing session.
+            // The 400 argument rejections (invalid_alias/url/ref, host_not_allowed, ref_not_found,
+            // app_id_required) stay Protocol like every other 400, with ErrorCode naming the reason.
+            "marketplace_not_registered" => SandboxErrorKind.NotFound,
+            "alias_taken" => SandboxErrorKind.Conflict,
+            "marketplaces_disabled" or "git_failed" or "store_failed" or "registry_failed" =>
+                SandboxErrorKind.Unavailable,
             "workspace_purged" => SandboxErrorKind.WorkspacePurged,
             "image_not_allowed" or "image_unsupported_backend" or "image_not_found" or "image_unsupported" =>
                 SandboxErrorKind.ImageRejected,
