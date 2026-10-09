@@ -163,4 +163,20 @@ public enum SandboxErrorKind
     /// a tool/server failure) and the message carries the gateway's error message, bounded.
     /// </summary>
     McpCallFailed,
+
+    /// <summary>
+    /// The leased browser behind a browser id was destroyed mid-use (idle reap, crash, or delete): HTTP
+    /// <c>502 browser_restarted</c>, or a CDP WebSocket closed with <c>1011 browser_restarted</c>. The next
+    /// request binds a FRESH browser, so retrying is safe, but every page, target, CDP socket and browser MCP
+    /// session from the old instance is gone: reconnect and redo the page setup. Distinct from
+    /// <see cref="Unavailable"/> (capacity, launch failure, unreachable), where nothing was lost.
+    /// </summary>
+    BrowserRestarted,
+
+    /// <summary>
+    /// The gateway does not enable leased browsers (<c>404 browser_unsupported</c>). Deliberately NOT
+    /// <see cref="NotFound"/>: a browser id is bound implicitly on first use, so a <c>404</c> on a browser
+    /// route never means "that browser is gone". Retrying cannot help; configure a browser-enabled gateway.
+    /// </summary>
+    BrowserUnsupported,
 }

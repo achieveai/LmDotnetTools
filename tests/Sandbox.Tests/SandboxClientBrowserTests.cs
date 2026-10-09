@@ -81,11 +81,34 @@ public sealed class SandboxClientBrowserTests
     }
 
     [Fact]
-    public async Task CloseBrowser_AddressesOnlyTheNamedLease_AndMissingLeaseIsAlreadyClosed()
+    public async Task CloseBrowser_IdempotentNoContent_AddressesOnlyTheNamedBrowser()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnStatus(HttpMethod.Delete, "/api/v1/browsers/owned-browser", HttpStatusCode.NotFound);
-        (await client.CloseBrowserAsync("owned-browser")).Should().BeFalse();
-        handler.Requests.Should().ContainSingle().Which.Uri.AbsolutePath.Should().Be("/api/v1/browsers/owned-browser");
+        handler.OnStatus(HttpMethod.Delete, "/api/v1/browsers/owned-browser", HttpStatusCode.NoContent);
+
+        await client.CloseBrowserAsync("owned-browser");
+        await client.CloseBrowserAsync("owned-browser");
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Should().AllSatisfy(r => r.Uri.AbsolutePath.Should().Be("/api/v1/browsers/owned-browser"));
+    }
+
+    [Fact]
+    public async Task CloseBrowser_NotFoundMeansBrowsersUnsupported_AndThrows()
+    {
+        // relay.rs scope(): DELETE answers 404 only when the gateway has no browser manager.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Delete,
+            "/api/v1/browsers/owned-browser",
+            """{"error":"x","code":404,"error_code":"browser_unsupported","retryable":false}""",
+            HttpStatusCode.NotFound
+        );
+
+        var act = () => client.CloseBrowserAsync("owned-browser");
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.BrowserUnsupported);
+        thrown.ErrorCode.Should().Be("browser_unsupported");
     }
 }

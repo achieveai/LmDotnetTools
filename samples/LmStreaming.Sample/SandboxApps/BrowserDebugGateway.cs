@@ -14,7 +14,9 @@ public interface IBrowserDebugGateway
         JsonElement? arguments,
         CancellationToken ct
     );
-    Task<bool> CloseAsync(string browserId, CancellationToken ct);
+
+    /// <summary>Destroys the browser; idempotent, so closing an already-closed browser succeeds.</summary>
+    Task CloseAsync(string browserId, CancellationToken ct);
 }
 
 public sealed class BrowserDebugGateway(SandboxClient client) : IBrowserDebugGateway, IDisposable
@@ -29,7 +31,7 @@ public sealed class BrowserDebugGateway(SandboxClient client) : IBrowserDebugGat
         CancellationToken ct
     ) => client.CallBrowserAsync(browserId, toolkit, toolName, arguments, ct);
 
-    public Task<bool> CloseAsync(string browserId, CancellationToken ct) => client.CloseBrowserAsync(browserId, ct);
+    public Task CloseAsync(string browserId, CancellationToken ct) => client.CloseBrowserAsync(browserId, ct);
 
     public void Dispose() => client.Dispose();
 }

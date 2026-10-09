@@ -659,6 +659,14 @@ public sealed partial class SandboxClient
             or "workspace_in_use"
             or "only_partial_snapshots" => SandboxErrorKind.Conflict,
             "workspace_required" => SandboxErrorKind.WorkspaceRequired,
+            // Leased browsers (relay.rs). A browser id binds implicitly, so no browser code is NotFound.
+            "browser_restarted" => SandboxErrorKind.BrowserRestarted,
+            "browser_unsupported" => SandboxErrorKind.BrowserUnsupported,
+            "browser_capacity" or "browser_launch_failed" or "browser_unreachable" => SandboxErrorKind.Unavailable,
+            "invalid_browser_id" or "invalid_cdp_path" or "unknown_browser_mcp" or "body_too_large" =>
+                SandboxErrorKind.Protocol,
+            // Chrome refused the CDP upgrade with its own status, typically an unknown target id.
+            "cdp_upgrade_rejected" => SandboxErrorKind.NotFound,
             "workspace_purged" => SandboxErrorKind.WorkspacePurged,
             "image_not_allowed" or "image_unsupported_backend" or "image_not_found" or "image_unsupported" =>
                 SandboxErrorKind.ImageRejected,

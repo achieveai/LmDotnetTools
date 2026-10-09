@@ -391,6 +391,30 @@ Two further consequences worth stating plainly:
   writable. Pick any other path for your own files.
 
 
+## Leased browsers (CDP and MCP relay)
+
+The gateway leases a Chrome per `(app, browser id)`; the first request with a new id binds one. Ids are
+`[A-Za-z0-9._:-]{1,128}`. Every relay call goes through the client's auth stamping, so the
+`X-Sbx-App-*` headers (and any future per-request header) are added in one place.
+
+- `GetBrowserCdpUri` / `GetBrowserCdpWebSocketUri` — the relay's HTTP and `ws`/`wss` URLs.
+- `GetBrowserVersionAsync` — `/json/version`, with `BrowserInstance` and the debugger target reduced
+  to a path on this gateway.
+- `ConnectBrowserCdpAsync` — an authenticated CDP WebSocket. Targets must stay under the browser's own
+  `/cdp/` endpoint. A gateway close `1011 browser_restarted` surfaces from `ReceiveTextAsync` as
+  `SandboxErrorKind.BrowserRestarted` (retryable): reconnect to get a fresh browser.
+- `ConnectBrowserMcpAsync(id, BrowserMcpServer.Playwright | DevTools)` — a streamable-HTTP
+  `McpClient` (ModelContextProtocol.Core). `IsBrowserReplaced` turns true when a later response names
+  a different `X-Sbx-Browser-Instance`.
+- `CloseBrowserAsync` — idempotent (`204` even for an unknown id). A `404` means the gateway has
+  browsers disabled and throws `BrowserUnsupported`.
+- `BrowserRequestSignature` — verifies the `X-Sbx-Browser-Signature` the gateway adds to pinned
+  browser egress (HMAC-SHA256, ±300 s skew, constant-time compare).
+
+Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unreachable` →
+`Unavailable` (capacity carries `RetryAfter`); `invalid_browser_id` / `invalid_cdp_path` /
+`unknown_browser_mcp` / `body_too_large` → `Protocol`; `cdp_upgrade_rejected` → `NotFound`.
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which

@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.Sandbox;
@@ -127,28 +126,28 @@ public sealed partial class SandboxClient
         return result.Clone();
     }
 
-    /// <summary>Closes only the browser lease under this client's credential; false means already absent.</summary>
-    public async Task<bool> CloseBrowserAsync(string browserId, CancellationToken ct = default)
+    /// <summary>
+    /// Destroys the browser bound to <paramref name="browserId"/> under this client's app, now. Idempotent:
+    /// the gateway answers <c>204</c> whether or not a browser was bound, so closing twice succeeds twice.
+    /// The next request for the same id binds a fresh browser.
+    /// </summary>
+    /// <exception cref="SandboxException">
+    /// <see cref="SandboxErrorKind.BrowserUnsupported"/> when the gateway does not enable browsers (its only
+    /// <c>404</c> on this route), or the usual transport/authorization kinds.
+    /// </exception>
+    public async Task CloseBrowserAsync(string browserId, CancellationToken ct = default)
     {
         ValidateBrowserId(browserId);
-        using var response = await SendRestAsync(
-                HttpMethod.Delete,
-                $"api/v1/browsers/{Uri.EscapeDataString(browserId)}",
-                null,
-                null,
-                ct
-            )
+        using var response = await SendRestAsync(HttpMethod.Delete, BrowserPath(browserId), null, null, ct)
             .ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            return false;
-        }
         if (!response.IsSuccessStatusCode)
         {
             throw await MapErrorResponseAsync(response, "browser close", ct).ConfigureAwait(false);
         }
-        return true;
     }
+
+    private static string BrowserPath(string browserId, string suffix = "") =>
+        $"api/v1/browsers/{Uri.EscapeDataString(browserId)}{suffix}";
 
     private static void ValidateBrowserId(string browserId)
     {
