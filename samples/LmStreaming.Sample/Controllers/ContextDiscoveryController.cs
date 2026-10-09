@@ -101,10 +101,10 @@ public sealed class ContextDiscoveryController(
                 Path = item.Path,
                 Content = item.Content,
                 Truncated = item.Truncated,
-                // Copy the triggering-agent id PER ITEM, not from the envelope: the gateway stamps it
-                // on the individual discovery (a batch can mix a sub-agent-triggered file with a
-                // session-level root file that carries none), so a batch-wide value would misroute.
-                AgentId = item.AgentId,
+                // The gateway (v0.1.16, ADR 0040) notifies per agent: each batch belongs to ONE agent and
+                // carries its id on the ENVELOPE ("" for the default agent). A per-item id, should a
+                // gateway ever send one, wins over the batch-wide value.
+                AgentId = string.IsNullOrWhiteSpace(item.AgentId) ? body.AgentId : item.AgentId,
             };
 
             if (!IsValid(payload))
@@ -393,6 +393,14 @@ public sealed record ContextDiscoveryEnvelope
 
     [JsonPropertyName("app_id")]
     public string? AppId { get; init; }
+
+    /// <summary>
+    /// The agent this batch is delivered to (gateway ADR 0040): the id a sub-agent presented on
+    /// <c>X-Sbx-Agent-ID</c>, or <c>""</c> for the default (primary) agent. The gateway notifies per
+    /// agent, so the same discovery may arrive once per agent id.
+    /// </summary>
+    [JsonPropertyName("agent_id")]
+    public string? AgentId { get; init; }
 
     [JsonPropertyName("discoveries")]
     public List<ContextDiscoveryItem>? Discoveries { get; init; }

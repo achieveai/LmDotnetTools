@@ -1386,7 +1386,8 @@ try
                                 toolNames: null,
                                 omitServerPrefix: true,
                                 handlerDecorator: SandboxToolHealth.Wrap,
-                                transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey)
+                                transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey),
+                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
                             );
                             copilotResources.AddRange(clients.Cast<IAsyncDisposable>());
                             var (contracts, handlers) = sandboxTools.Build();
@@ -1729,7 +1730,12 @@ try
                         omitServerPrefix: true,
                         handlerDecorator: SandboxToolHealth.Wrap,
                         transportHandler: sandboxTransportHandler,
-                        existingClient: keptSandboxClient
+                        existingClient: keptSandboxClient,
+                        // Per-agent gateway state (ADR 0040): a sub-agent calling these inherited tools sends
+                        // its stable X-Sbx-Agent-ID (SandboxSubAgentIdentity); the primary sends none. No
+                        // cleanup when a sub-agent stops (product decision) — a future "retire sub-agent"
+                        // action is where SandboxClient.DeleteAgentAsync will be called.
+                        agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
                     );
 
                     if (sandboxClients.Count > 0)
@@ -5565,7 +5571,8 @@ public partial class Program
         string name,
         string endpoint,
         IReadOnlyDictionary<string, string> headers,
-        HttpMessageHandler? transportHandler
+        HttpMessageHandler? transportHandler,
+        Func<string?>? agentIdResolver = null
     )
     {
         var transportOptions = new HttpClientTransportOptions
@@ -5577,12 +5584,25 @@ public partial class Program
         };
 
         // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
-        // the SDK opens its own real HttpClient exactly as before this seam existed.
-        var transport = transportHandler is null
+        // the SDK opens its own real HttpClient exactly as before this seam existed. A sandbox client
+        // also gets the per-request X-Sbx-Agent-ID stamp (SandboxAgentIdHandler) in front of whichever
+        // handler sends; the borrowed test handler is never disposed with the client.
+        HttpMessageHandler? sendHandler = transportHandler;
+        var disposeHandler = false;
+        if (agentIdResolver is not null)
+        {
+            disposeHandler = transportHandler is null;
+            sendHandler = new SandboxAgentIdHandler(agentIdResolver)
+            {
+                InnerHandler = transportHandler ?? new SocketsHttpHandler(),
+            };
+        }
+
+        var transport = sendHandler is null
             ? new HttpClientTransport(transportOptions)
             : new HttpClientTransport(
                 transportOptions,
-                new HttpClient(transportHandler, disposeHandler: false),
+                new HttpClient(sendHandler, disposeHandler),
                 loggerFactory: null,
                 ownsHttpClient: true
             );
@@ -5619,6 +5639,10 @@ public partial class Program
     ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
+    /// <param name="agentIdResolver">
+    ///     Sandbox clients only: evaluated per request to stamp <c>X-Sbx-Agent-ID</c> (see
+    ///     <see cref="SandboxAgentIdHandler"/>); null omits the handler entirely.
+    /// </param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5629,7 +5653,8 @@ public partial class Program
         bool omitServerPrefix,
         Func<ToolHandler, ToolHandler> handlerDecorator,
         HttpMessageHandler? transportHandler = null,
-        McpClient? existingClient = null
+        McpClient? existingClient = null,
+        Func<string?>? agentIdResolver = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5637,7 +5662,8 @@ public partial class Program
         try
         {
             // See ConnectHttpMcpClient: an existing client is registered from, not reconnected.
-            var client = existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler);
+            var client =
+                existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler, agentIdResolver);
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };

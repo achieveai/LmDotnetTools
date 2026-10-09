@@ -96,16 +96,37 @@ public sealed partial class SandboxClient
     /// workspace, over the existing session-discovery REST endpoint. V1: this is a narrow read of
     /// already-discovered items — it does not add proactive discovery or crawling.
     /// </summary>
+    public Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
+        string sessionId,
+        CancellationToken ct = default
+    ) => ListDiscoveredAsync(sessionId, agentId: null, ct);
+
+    /// <summary>
+    /// Lists discovered items for <paramref name="sessionId"/>, narrowed to the rows one agent has been
+    /// notified of (gateway ADR 0040, <c>?agent_id=</c>).
+    /// </summary>
+    /// <param name="sessionId">The sandbox session.</param>
+    /// <param name="agentId">
+    /// <c>null</c> lists every row (no filter); <c>""</c> lists the rows the default (primary) agent was
+    /// notified of; any other value must be a valid <see cref="SandboxAgentId"/> and lists that agent's.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
         string sessionId,
+        string? agentId,
         CancellationToken ct = default
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (agentId is { Length: > 0 })
+        {
+            SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
+        }
 
+        var query = agentId is null ? string.Empty : $"?agent_id={Uri.EscapeDataString(agentId)}";
         using var response = await SendRestAsync(
                 HttpMethod.Get,
-                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/discovered",
+                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/discovered{query}",
                 body: null,
                 sessionId: null,
                 ct
@@ -159,7 +180,13 @@ public sealed partial class SandboxClient
                     item.Path,
                     item.Content,
                     item.QualifiedName
-                ),
+                )
+                {
+                    Frontmatter = item.Frontmatter?.Clone(),
+                    Plugin = item.Plugin,
+                    DiscoveredAt = item.DiscoveredAt,
+                    Notified = item.Notified,
+                },
                 operation,
                 statusCode
             );

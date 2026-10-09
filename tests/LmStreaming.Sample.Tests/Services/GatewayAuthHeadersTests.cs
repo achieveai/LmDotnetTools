@@ -41,6 +41,37 @@ public class GatewayAuthHeadersTests
     }
 
     [Fact]
+    public void ForMcp_adds_the_agent_header_for_a_named_agent()
+    {
+        var headers = GatewayAuthHeaders.ForMcp("sess-1", "app", "c2VjcmV0", agentId: "agent-1.abc");
+
+        headers[GatewayAuthHeaders.AgentIdHeader].Should().Be("agent-1.abc");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void ForMcp_never_sends_an_empty_agent_header_for_the_primary(string? agentId)
+    {
+        // The gateway answers an empty X-Sbx-Agent-ID with JSON-RPC -32602; the primary sends none.
+        var headers = GatewayAuthHeaders.ForMcp("sess-1", "app", "c2VjcmV0", agentId);
+
+        headers.Should().NotContainKey(GatewayAuthHeaders.AgentIdHeader);
+    }
+
+    [Fact]
+    public void ApplyAgentId_rejects_an_invalid_id_and_clears_on_null()
+    {
+        var headers = new Dictionary<string, string> { [GatewayAuthHeaders.AgentIdHeader] = "old" };
+
+        var act = () => GatewayAuthHeaders.ApplyAgentId(headers, "bad id");
+        act.Should().Throw<ArgumentException>();
+
+        GatewayAuthHeaders.ApplyAgentId(headers, null);
+        headers.Should().NotContainKey(GatewayAuthHeaders.AgentIdHeader);
+    }
+
+    [Fact]
     public void IsConfigured_requires_both_id_and_non_blank_key()
     {
         GatewayAuthHeaders.IsConfigured("app", "key").Should().BeTrue();
