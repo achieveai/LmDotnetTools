@@ -21,7 +21,11 @@ internal sealed record CreateSandboxRequestDto(
     // Per-sandbox environment variables (gateway PR #183 / v0.1.11). Omitted entirely when the
     // caller's request has none, matching this SDK's nulls-omitted REST convention.
     [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null,
-    [property: JsonPropertyName("plugins")] IReadOnlyList<PluginMountDto>? Plugins = null
+    [property: JsonPropertyName("plugins")] IReadOnlyList<PluginMountDto>? Plugins = null,
+    // Client image (ADR 0039) and workspace home (issue #142). Top-level `home` mirrors the top-level
+    // `workspace` this DTO already sends (the gateway accepts both it and `mounts.home`). Omitted when unset.
+    [property: JsonPropertyName("image")] string? Image = null,
+    [property: JsonPropertyName("home")] string? Home = null
 );
 
 internal sealed record PluginMountDto(
@@ -81,7 +85,11 @@ internal sealed record CreateSandboxResponseDto(
     // invented status would be indistinguishable from a reported one.
     [property: JsonPropertyName("status")] string? Status = null,
     [property: JsonPropertyName("inventory")] SandboxInventoryDto? Inventory = null,
-    [property: JsonPropertyName("pluginResolution")] PluginResolutionDto? PluginResolution = null
+    [property: JsonPropertyName("pluginResolution")] PluginResolutionDto? PluginResolution = null,
+    // ADR 0039: present on the CREATE response only (the GET detail carries no image fields).
+    [property: JsonPropertyName("image")] string? Image = null,
+    [property: JsonPropertyName("image_digest")] string? ImageDigest = null,
+    [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null
 );
 
 /// <summary>
@@ -126,7 +134,9 @@ internal sealed record WorkspaceVolumeDto(
     // The persisted session_mounts.id (issue #119) — the integer every direct file/command API is
     // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
     // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
-    [property: JsonPropertyName("id")] long? Id
+    [property: JsonPropertyName("id")] long? Id,
+    // The normalized, persisted home (issue #142); absent when the home is the workspace root.
+    [property: JsonPropertyName("home")] string? Home = null
 );
 
 /// <summary>
@@ -303,7 +313,9 @@ internal sealed record GatewayErrorDto(
     // not caller free text, so it is safe to surface on SandboxException like ErrorCode itself.
     [property: JsonPropertyName("keys")] IReadOnlyList<string>? Keys = null,
     // Present on only_partial_snapshots (409): the gateway-minted partial snapshot ids to restore from.
-    [property: JsonPropertyName("snapshots")] IReadOnlyList<string>? Snapshots = null
+    [property: JsonPropertyName("snapshots")] IReadOnlyList<string>? Snapshots = null,
+    // Present on a 422 image_unsupported conformance-probe rejection: the runtime's report on the image.
+    [property: JsonPropertyName("report")] ImageReportDto? Report = null
 );
 
 // --- Session env REST contract (gateway PR #183 / v0.1.11) ---

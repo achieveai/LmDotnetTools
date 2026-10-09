@@ -194,13 +194,18 @@ describe('ConversationInspector Files section', () => {
     expect(wrapper.get('#inspector-panel-files').attributes('style')).toContain('display: none');
   });
 
-  it('orders the monitoring sections Work, Files, Agents', () => {
+  it('orders the monitoring sections Work, Files, Sandbox, Agents', () => {
     const wrapper = mountWithFiles();
     const headings = wrapper
       .get('[data-testid="workspace-monitoring-region"]')
       .findAll('h3 button')
       .map((button) => button.attributes('id'));
-    expect(headings).toEqual(['inspector-tab-work', 'inspector-tab-files', 'inspector-tab-agents']);
+    expect(headings).toEqual([
+      'inspector-tab-work',
+      'inspector-tab-files',
+      'inspector-tab-sandbox',
+      'inspector-tab-agents',
+    ]);
   });
 
   it('revealSection("files") expands Files and focuses its disclosure', async () => {

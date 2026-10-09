@@ -462,6 +462,34 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_PollReportsInternalFailure_ThrowsOperationFailedLikeTheStreamPath()
+    {
+        const string sessionId = "sess-internal";
+        const string operationId = "op-internal";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"internal_failure\",\"stdout_bytes\":0,\"stderr_bytes\":0}"
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["true"], operationId: operationId));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown
+            .Kind.Should()
+            .Be(
+                SandboxErrorKind.OperationFailed,
+                "internal_failure is a coherent gateway outcome (the stream path already maps it so), not a malformed response"
+            );
+        thrown.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_PollDeadlineElapses_ThrowsExecutionTimeout()
     {
         const string sessionId = "sess-stuck";

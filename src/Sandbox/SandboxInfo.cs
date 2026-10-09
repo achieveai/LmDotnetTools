@@ -52,6 +52,33 @@ public sealed class SandboxInfo
     /// </summary>
     public SandboxPluginResolution? PluginResolution { get; }
 
+    /// <summary>
+    /// The image the sandbox was created from after the gateway resolved it (request, then app default,
+    /// then server default; ADR 0039). Reported on a <see cref="SandboxClient.CreateAsync"/> result only:
+    /// the gateway's GET and list responses carry no image fields, so this is <see langword="null"/> there
+    /// and against a gateway that predates client images.
+    /// </summary>
+    public string? Image { get; }
+
+    /// <summary>
+    /// The registry digest reference (<c>repo@sha256:…</c>) the session is pinned to, from a create result.
+    /// <see langword="null"/> for a locally built image, on GET/list results, and on older gateways.
+    /// </summary>
+    public string? ImageDigest { get; }
+
+    /// <summary>
+    /// The runtime's conformance report on the image, with its non-fatal warnings, from a create result.
+    /// <see langword="null"/> under the gateway's legacy image contract, on GET/list results, and on older gateways.
+    /// </summary>
+    public SandboxImageReport? ImageReport { get; }
+
+    /// <summary>
+    /// The sandbox home the gateway persisted for the workspace mount (normalized, relative to the
+    /// workspace), reported on create and GET results. <see langword="null"/> when the home is the
+    /// workspace root, and on a list result.
+    /// </summary>
+    public string? WorkspaceHome { get; }
+
     public SandboxInfo(
         string sessionId,
         string? containerId = null,
@@ -59,7 +86,11 @@ public sealed class SandboxInfo
         long? workspaceMountId = null,
         string? status = null,
         SandboxInventory? inventory = null,
-        SandboxPluginResolution? pluginResolution = null
+        SandboxPluginResolution? pluginResolution = null,
+        string? image = null,
+        string? imageDigest = null,
+        SandboxImageReport? imageReport = null,
+        string? workspaceHome = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -73,5 +104,9 @@ public sealed class SandboxInfo
         // question, so a caller never has to distinguish "no items" from "no field".
         Inventory = inventory ?? SandboxInventory.Unavailable(SandboxInventory.NoInventoryReported);
         PluginResolution = pluginResolution;
+        Image = image;
+        ImageDigest = imageDigest;
+        ImageReport = imageReport;
+        WorkspaceHome = workspaceHome;
     }
 }

@@ -48,13 +48,23 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// same session (today: a plugin-selection migration) can reproduce its marketplace scope instead of
 /// re-deriving it from whatever the global default happens to be by then. <see langword="null"/> when
 /// the create omitted the field and let the gateway pick its own default.</param>
+/// <param name="Image">The image ref the gateway acknowledged on create (its default when the workspace
+/// named none); <see langword="null"/> from a gateway that predates client images.</param>
+/// <param name="ImageDigest">The resolved image digest, when the gateway could resolve one.</param>
+/// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
+/// <param name="WorkspaceHome">The workspace-relative home the gateway acknowledged, or
+/// <see langword="null"/> for the workspace root.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
     string SessionId,
     string WorkspaceRelPath,
     string HostPath,
     SandboxPluginResolution? PluginResolution = null,
-    IReadOnlyList<string>? Marketplaces = null
+    IReadOnlyList<string>? Marketplaces = null,
+    string? Image = null,
+    string? ImageDigest = null,
+    SandboxImageReport? ImageReport = null,
+    string? WorkspaceHome = null
 );
 
 /// <summary>
@@ -83,12 +93,18 @@ public sealed record SandboxSession(
 /// also wants an app layer applied must top the recreated session up itself via
 /// <c>EnsureSessionEnvAsync</c> after acquiring it.
 /// </param>
+/// <param name="Image">Client image ref for the sandbox (gateway allow-list applies), or <see langword="null"/>
+/// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
+/// <param name="Home">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
+/// the workspace root. See <see cref="SandboxCreateRequest.Home"/>.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
     IReadOnlyList<string>? Marketplaces = null,
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
-    IReadOnlyDictionary<string, string>? Env = null
+    IReadOnlyDictionary<string, string>? Env = null,
+    string? Image = null,
+    string? Home = null
 );
 
 /// <summary>
@@ -1441,7 +1457,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             pluginMounts:
             [
                 .. _options.PluginMounts.Select(mount => new SandboxPluginMount(mount.Path, mount.Name, mount.Origin)),
-            ]
+            ],
+            image: workspaceRef.Image,
+            home: workspaceRef.Home
         );
 
         if (createRequest.Env.Count > 0)
@@ -1539,8 +1557,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // A success status with an unusable body (missing session id or malformed JSON), which the
                 // SDK classifies as Protocol. Mirrors the pre-SDK "success but no session id"
                 // InvalidOperationException.
+                // The SDK message is carried because it is the only place that says WHICH part was unusable
+                // (no session id, or a home the gateway did not acknowledge — a sandbox it already deleted).
                 throw new InvalidOperationException(
-                    $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'.",
+                    $"Sandbox gateway returned a success status but an unusable response for workspace "
+                        + $"'{workspaceId}': {ex.Message}",
                     ex
                 );
             }
@@ -1550,15 +1571,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // surfaces the gateway body, so the previous body-in-log/message diagnostic is dropped in
                 // favour of the status code; the observable outcome (SandboxSessionUnavailableException
                 // carrying the gateway status) is unchanged.
+                // The gateway's machine-readable error_code (e.g. image_not_allowed) names the reason without
+                // echoing the free-text body, so it is safe to log and to surface.
                 _logger.LogError(
-                    "Sandbox create failed for workspace {WorkspaceId}: {StatusCode}",
+                    "Sandbox create failed for workspace {WorkspaceId}: {StatusCode} {ErrorCode}",
                     workspaceId,
-                    ex.StatusCode
+                    ex.StatusCode,
+                    ex.ErrorCode
                 );
                 throw new SandboxSessionUnavailableException(
                     workspaceId,
                     ex.StatusCode,
-                    $"Sandbox gateway returned {ex.StatusCode} creating a session for " + $"workspace '{workspaceId}'."
+                    $"Sandbox gateway returned {ex.StatusCode}"
+                        + (ex.ErrorCode is { } errorCode ? $" ({errorCode})" : string.Empty)
+                        + $" creating a session for workspace '{workspaceId}'."
                 );
             }
 
@@ -1574,7 +1600,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 info.PluginResolution,
                 // The EFFECTIVE list resolved above, so a replacement session can be created with the
                 // same marketplace scope without re-reading the global default.
-                marketplaces
+                marketplaces,
+                info.Image,
+                info.ImageDigest,
+                info.ImageReport,
+                info.WorkspaceHome
             );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one

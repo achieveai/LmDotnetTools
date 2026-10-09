@@ -550,8 +550,9 @@ public sealed partial class SandboxClient
                 "The command's combined stdout+stderr exceeded the operation's output cap.",
                 operationId: operationId
             ),
+            // A coherent gateway outcome, not a malformed response: OperationFailed, matching the stream path.
             "internal_failure" => throw new SandboxException(
-                SandboxErrorKind.Protocol,
+                SandboxErrorKind.OperationFailed,
                 $"Sandbox gateway reported an internal failure running operation '{operationId}'.",
                 operationId: operationId
             ),
