@@ -48,6 +48,24 @@ public sealed class SandboxCreateRequest
     /// </summary>
     public IReadOnlyDictionary<string, string> Env { get; }
 
+    /// <summary>
+    /// The sandbox base image (ADR 0039): a reference such as <c>debian:bookworm-slim</c> or a pinned
+    /// <c>repo@sha256:…</c> digest. <c>null</c> omits the field so the gateway applies the app's default
+    /// image, else its own. The gateway's allow-list decides what is accepted; a refusal surfaces as
+    /// <see cref="SandboxErrorKind.ImageRejected"/>. The acknowledged image comes back on
+    /// <see cref="SandboxInfo.Image"/>.
+    /// </summary>
+    public string? Image { get; }
+
+    /// <summary>
+    /// The sandbox home (gateway issue #142): a subdirectory of the workspace, relative and
+    /// <c>/</c>-separated, that becomes the default directory for relative paths, shells and operations.
+    /// Created on demand and immutable for the session. <c>null</c> keeps the home at the workspace root.
+    /// <see cref="SandboxClient.CreateAsync"/> requires the gateway to acknowledge exactly this home (in its
+    /// normalized form) and fails otherwise; see <see cref="SandboxInfo.WorkspaceHome"/>.
+    /// </summary>
+    public string? Home { get; }
+
     public SandboxCreateRequest(
         string workspace,
         IReadOnlyList<string>? marketplaces = null,
@@ -56,7 +74,9 @@ public sealed class SandboxCreateRequest
         SandboxDiscoverySettings? discovery = null,
         IReadOnlyList<SandboxPluginRef>? pluginSelection = null,
         IReadOnlyDictionary<string, string>? env = null,
-        IReadOnlyList<SandboxPluginMount>? pluginMounts = null
+        IReadOnlyList<SandboxPluginMount>? pluginMounts = null,
+        string? image = null,
+        string? home = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -72,6 +92,20 @@ public sealed class SandboxCreateRequest
         // (tri-state plugin selection): null must stay null, not collapse to an empty list.
         PluginSelection = pluginSelection is null ? null : [.. pluginSelection];
         PluginMounts = pluginMounts is null ? [] : [.. pluginMounts];
+        // Null means "not requested"; a present value must say something, because the gateway would
+        // otherwise reject an empty home (it can never name the root) or resolve an empty image oddly.
+        if (image is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(image);
+        }
+
+        if (home is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(home);
+        }
+
+        Image = image;
+        Home = home;
         Env = env is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(env, StringComparer.Ordinal);

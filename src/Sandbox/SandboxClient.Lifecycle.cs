@@ -17,8 +17,11 @@ public sealed partial class SandboxClient
     /// (<see cref="SandboxErrorKind.ImageRejected"/>); the workspace is busy or has only partial backups
     /// (<see cref="SandboxErrorKind.Conflict"/>) or was purged (<see cref="SandboxErrorKind.WorkspacePurged"/>);
     /// an image pull or workspace restore failed (<see cref="SandboxErrorKind.Unavailable"/>); or the gateway
-    /// returned an unexpected response (<see cref="SandboxErrorKind.Protocol"/>).
-    /// <see cref="SandboxException.ErrorCode"/> names the exact reason.
+    /// returned an unexpected response (<see cref="SandboxErrorKind.Protocol"/>), including a create that
+    /// did not acknowledge the requested <see cref="SandboxCreateRequest.Home"/> exactly (that sandbox is
+    /// deleted before the exception is thrown).
+    /// <see cref="SandboxException.ErrorCode"/> names the exact reason; a <c>422 image_unsupported</c>
+    /// also carries <see cref="SandboxException.ImageReport"/>.
     /// </exception>
     public async Task<SandboxInfo> CreateAsync(SandboxCreateRequest request, CancellationToken ct = default)
     {
@@ -37,6 +40,12 @@ public sealed partial class SandboxClient
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
+        if (request.Home is { } home)
+        {
+            // Before seeding the mount cache: a sandbox whose home was not honored is deleted, not used.
+            await RequireAcknowledgedHomeAsync(info, home, (int)response.StatusCode, ct).ConfigureAwait(false);
+        }
+
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -176,7 +185,9 @@ public sealed partial class SandboxClient
             Env: request.Env.Count > 0 ? request.Env : null,
             Plugins: request.PluginMounts.Count > 0
                 ? [.. request.PluginMounts.Select(mount => new PluginMountDto(mount.Path, mount.Name, mount.Origin))]
-                : null
+                : null,
+            Image: request.Image,
+            Home: request.Home
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -213,7 +224,11 @@ public sealed partial class SandboxClient
             dto.Volumes?.Workspace?.Id,
             dto.Status,
             ToInventory(dto.Inventory, operation, statusCode),
-            ToPluginResolution(dto.PluginResolution, operation, statusCode)
+            ToPluginResolution(dto.PluginResolution, operation, statusCode),
+            dto.Image,
+            dto.ImageDigest,
+            dto.ImageReport is null ? null : ToImageReportOrThrow(dto.ImageReport, operation, statusCode),
+            dto.Volumes?.Workspace?.Home
         );
 
     /// <summary>

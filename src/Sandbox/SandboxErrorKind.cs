@@ -110,7 +110,7 @@ public enum SandboxErrorKind
     /// <item><see cref="SandboxClient.ExecuteAsync"/> or <see cref="SandboxClient.ExecuteStreamingAsync"/> sees
     /// status <c>failed</c> with NO exit code and no more specific <c>error_code</c> — the command was
     /// rejected before it spawned (e.g. not found on <c>PATH</c>, or refused by policy) or was killed by a
-    /// signal; or the gateway reported <c>cancelled</c> (or, for streaming, <c>internal_failure</c>). The
+    /// signal; or the gateway reported <c>cancelled</c> or <c>internal_failure</c>. The
     /// message carries the gateway's sanitized <c>error</c> text.</item>
     /// </list>
     /// Distinct from <see cref="Protocol"/> (reserved for a malformed/unrecognized gateway response): here the

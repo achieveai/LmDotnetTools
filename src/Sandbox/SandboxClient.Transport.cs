@@ -473,6 +473,7 @@ public sealed partial class SandboxClient
             InvalidKeys = error?.Keys,
             SnapshotIds = error?.Snapshots,
             RetryAfter = response.Headers.RetryAfter?.Delta,
+            ImageReport = error?.Report is { } report ? TryToImageReport(report) : null,
         };
     }
 
@@ -646,17 +647,32 @@ public sealed partial class SandboxClient
     /// <see cref="SandboxErrorKind.Unavailable"/>: the registry or the gateway's network failed, and the same
     /// request may succeed later. The gateway sends no <c>retryable</c> on image errors, so
     /// <see cref="SandboxException.Retryable"/> stays <c>null</c> for them.
+    /// <para>
+    /// Backup codes (gateway <c>api/backup.rs</c>): <c>404 backup_disabled</c> is
+    /// <see cref="SandboxErrorKind.Unavailable"/> with <c>retryable: false</c> — the gateway does not offer
+    /// backups, which says nothing about a missing session, so it must not read as
+    /// <see cref="SandboxErrorKind.NotFound"/>. <c>snapshot_not_found</c> is <see cref="SandboxErrorKind.NotFound"/>,
+    /// <c>workspace_attached</c> (retryable) is <see cref="SandboxErrorKind.Conflict"/>, and
+    /// <c>backup_unavailable</c> (retryable) is <see cref="SandboxErrorKind.Unavailable"/>. The <c>400</c>
+    /// argument rejections (<c>app_id_required</c>, <c>invalid_app_id</c>, <c>invalid_workspace</c>,
+    /// <c>invalid_group_by</c>, <c>invalid_since</c>) stay <see cref="SandboxErrorKind.Protocol"/> like every other
+    /// <c>400</c>, with <see cref="SandboxException.ErrorCode"/> naming the field.
+    /// </para>
     /// </remarks>
     private static SandboxErrorKind MapGatewayErrorKind(HttpStatusCode status, string? errorCode) =>
         errorCode switch
         {
             "invalid_env" => SandboxErrorKind.InvalidEnv,
-            "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" =>
-                SandboxErrorKind.NotFound,
+            "session_not_found"
+            or "mount_not_found"
+            or "operation_not_found"
+            or "path_not_found"
+            or "snapshot_not_found" => SandboxErrorKind.NotFound,
             "idempotency_conflict"
             or "operation_running"
             or "target_locked"
             or "workspace_in_use"
+            or "workspace_attached"
             or "only_partial_snapshots" => SandboxErrorKind.Conflict,
             "workspace_required" => SandboxErrorKind.WorkspaceRequired,
             "workspace_purged" => SandboxErrorKind.WorkspacePurged,
@@ -670,7 +686,9 @@ public sealed partial class SandboxClient
             or "sandbox_busy"
             or "workspace_restore_failed"
             or "image_pull_failed"
-            or "image_pull_timeout" => SandboxErrorKind.Unavailable,
+            or "image_pull_timeout"
+            or "backup_unavailable"
+            or "backup_disabled" => SandboxErrorKind.Unavailable,
             _ => status switch
             {
                 HttpStatusCode.NotFound => SandboxErrorKind.NotFound,

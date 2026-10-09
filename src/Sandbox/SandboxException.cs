@@ -124,6 +124,14 @@ public sealed class SandboxException : Exception
     /// </summary>
     public int? JsonRpcCode { get; init; }
 
+    /// <summary>
+    /// The conformance report from a <c>422 image_unsupported</c> create rejection, when the gateway's probe
+    /// produced one (a wrong os/architecture rejected before the probe carries none). Says why the image was
+    /// refused, for example <see cref="SandboxImageReport.DebianFamily"/> <c>false</c>. <c>null</c> for every
+    /// other failure.
+    /// </summary>
+    public SandboxImageReport? ImageReport { get; init; }
+
     public SandboxException(
         SandboxErrorKind kind,
         string message,

@@ -64,7 +64,7 @@ the workflow is the operative pin.
 - `409` → `Conflict` (incl. `workspace_in_use`, `only_partial_snapshots`); `503`, `workspace_restore_failed`,
   `image_pull_failed` (`502`) and `image_pull_timeout` (`504`) → `Unavailable`.
 - Operations: a `failed` status with no exit code → `OperationFailed` with the gateway's reason (poll and
-  stream); poll status `cancelled` → `OperationFailed`; the streaming `timeout_secs` follows
+  stream); status `cancelled` or `internal_failure` → `OperationFailed` (poll and stream); the streaming `timeout_secs` follows
   `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
   `capabilities` are refused client-side.
 
@@ -91,6 +91,28 @@ the workflow is the operative pin.
 - **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
+
+## Images, home and workspace backup (gateway v0.1.16)
+
+- **Image** (ADR 0039): `new SandboxCreateRequest(ws, image: "debian:bookworm-slim")` (or `repo@sha256:…`).
+  The gateway's allow-list decides; a refusal is `ImageRejected` with `ErrorCode` `image_not_allowed`,
+  `image_not_found`, `image_unsupported` (with `SandboxException.ImageReport`) or
+  `image_unsupported_backend`. The create result carries `Image`, `ImageDigest` and `ImageReport`
+  (conformance + `Warnings`, e.g. "image has no pwsh"). The gateway's GET and list responses carry no image
+  fields, so those are `null` on `GetAsync`/`ListAsync` results.
+- **Home** (issue #142): `new SandboxCreateRequest(ws, home: "worktrees/issue-142")`, sent as top-level
+  `home` beside top-level `workspace`. `CreateAsync` requires `SandboxInfo.WorkspaceHome` to equal the
+  normalized request (`./a//b/` → `a/b`); on a missing or different acknowledgement it deletes the sandbox
+  and throws `Protocol`. On Docker the home must already exist and be owned by the sandbox user: v0.1.16
+  creates a missing home root-owned and refuses it with a code-less `400`.
+- **Backup** (issue #191): `ListBackupSnapshotsAsync(workspace)`, `RestoreBackupSnapshotAsync(workspace,
+  snapshotId)`, `PurgeBackupWorkspaceAsync(workspace)` and `GetBackupCostsAsync(since, groupBy)`. Every call
+  sends `app_id` = `AppId`, which the gateway needs with `AUTH_ENFORCE` off and ignores with it on. A
+  restore is refused (`Conflict`, `workspace_attached`, retryable) while a sandbox still mounts the
+  workspace: delete it first. **Purge is destructive**: it deletes this gateway's sandboxes on the workspace,
+  then its snapshots and directory. `backup_disabled` is `Unavailable` (not `NotFound`),
+  `snapshot_not_found` is `NotFound`, `backup_unavailable` is `Unavailable`, and the `400 invalid_*` /
+  `app_id_required` refusals are `Protocol` with `ErrorCode` set.
 
 ## File transfer
 
