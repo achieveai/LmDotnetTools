@@ -467,6 +467,13 @@ try
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
+    // Workspace backups for the conversation inspector (gateway v0.1.16 /api/v1/backup/*).
+    _ = builder.Services.AddSingleton(sp => new SandboxWorkspaceBackup(
+        sandboxOptions,
+        () => sp.GetRequiredService<SandboxGatewayLifetime>().GatewayBaseUrl,
+        sp.GetRequiredService<IWorkspaceStore>(),
+        GatewayHttpClient()
+    ));
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
@@ -5793,7 +5800,9 @@ public partial class Program
             workspace?.DirectoryRelPath,
             workspace?.Marketplaces,
             ToSandboxPluginRefs(workspace?.PluginSelection),
-            workspace?.Env
+            workspace?.Env,
+            workspace?.Image,
+            workspace?.Home
         );
 
     /// <summary>
