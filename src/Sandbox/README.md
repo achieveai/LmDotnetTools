@@ -79,7 +79,8 @@ the workflow is the operative pin.
 - **Marketplace preview:** `PreviewMarketplacesAsync` — a read-only browse of plugins, skills, and
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
-  session-discovery REST endpoint.
+  session-discovery REST endpoint; `ListDiscoveredAsync(sessionId, agentId)` narrows it to one agent.
+- **Per-agent state:** `ListAgentsAsync`, `DeleteAgentAsync`. See [Per-agent state](#per-agent-state).
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
   its exact captured output back. See [Command execution](#command-execution) below.
@@ -442,6 +443,34 @@ Error codes: `marketplaces_disabled` (404), `git_failed` (502), `store_failed` /
 
 Not supported upstream: a "cloud" marketplace whose catalog only points at plugins in other git repos
 (`github` / `url` / `git-subdir` plugin sources are skipped). Tracked as gateway issue #202.
+
+## Per-agent state
+
+Several agents can share one sandbox session (gateway ADR 0040). Each MCP call names its agent in
+the `X-Sbx-Agent-ID` header. The gateway then keeps that agent's read-before-write marks, loaded
+skills, tasks and PowerShell contexts apart from every other agent's. A call with no header belongs
+to the default agent, whose id is `""`.
+
+- **Agent ids:** 1–64 characters of `A-Z a-z 0-9 . _ -`. Use `SandboxAgentId.IsValid` to check one.
+  Send no header for the default agent. An empty header is a JSON-RPC `-32602` error.
+- **Freshness is per agent:** an agent's `Edit` fails with "File has been modified since you read
+  it" when anyone else changed the file after this agent last read it. That agent must read the
+  file again.
+- **`ListAgentsAsync(sessionId)`:** every agent the session has seen, as `SandboxAgentInfo`.
+  `IsDefault` is true for the default agent.
+- **`DeleteAgentAsync(sessionId, agentId)`:** forgets one named agent's state. An unknown agent is
+  `NotFound` (404). The default agent cannot be deleted: that is `Conflict` (409). A busy sandbox is
+  `Unavailable` (503). The SDK refuses an invalid id before sending.
+- **`ListDiscoveredAsync(sessionId, agentId)`:**
+  - `null` lists every row.
+  - `""` lists the rows the default agent was notified of.
+  - A named id lists that agent's notified rows.
+  - Each item carries `DiscoveredAt`, `Notified`, `Plugin` and a sub-agent's `Frontmatter`.
+    Treat `Frontmatter` as untrusted.
+
+Only the gateway's `/mcp` endpoint reads the agent header. No REST call takes it, so the SDK has
+none to send.
+
 
 ## Errors
 

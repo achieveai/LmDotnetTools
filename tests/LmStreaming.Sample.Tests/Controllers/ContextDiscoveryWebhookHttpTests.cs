@@ -119,8 +119,16 @@ public sealed class ContextDiscoveryWebhookHttpTests
     // equivalent manual/browser instruction-chain flow (a backgrounded sub-agent parked on a long Wait) is
     // documented in samples/LmStreaming.Sample/PromptExamples.md → "Backgrounded sub-agent parked on a long
     // wait (webhook-routing fixture)".
-    [Fact]
-    public async Task PostRoutedContextFileWebhook_ToLiveSubAgent_DeliversWithoutTouchingPrimary()
+    //
+    // Two wire shapes reach the same sub-agent. "item": the per-item agent_id this test was written
+    // against, naming the sub-agent directly. "envelope": what gateway v0.1.16 actually sends (ADR 0040)
+    // — agent_id on the batch envelope, carrying the sub-agent's gateway id
+    // (SandboxSubAgentIdentity.ForSubAgent(root thread, sub-agent id)), which the injector maps back.
+    // A duplicate delivery of the same batch must not inject twice.
+    [Theory]
+    [InlineData("item")]
+    [InlineData("envelope")]
+    public async Task PostRoutedContextFileWebhook_ToLiveSubAgent_DeliversWithoutTouchingPrimary(string shape)
     {
         const string ProbeAgentId = "ctx-probe";
 
@@ -244,27 +252,52 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         using var client = host.GetTestClient();
 
-        // The gateway stamps agent_id: "ctx-probe" on the discovery; the injector routes it into
-        // ctx-probe's own conversation rather than fanning it out to the primary.
-        var json = $$"""
-            {
-              "event": "context_discovery",
-              "session_id": "{{SessionId}}",
-              "discoveries": [
-                { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ProbeAgentId}}" }
-              ]
-            }
-            """;
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
-        {
-            Content = new StringContent(json, Encoding.UTF8, "application/json"),
-        };
-        request.Headers.TryAddWithoutValidation("Authorization", Secret);
+        // The gateway stamps the opening agent on the discovery; the injector routes it into ctx-probe's
+        // own conversation rather than fanning it out to the primary.
+        var probeId = primaryLoop.SubAgentManager.KnownAgents().Single(a => a.Name == ProbeAgentId).AgentId;
+        var json =
+            shape == "item"
+                ? $$"""
+                    {
+                      "event": "context_discovery",
+                      "session_id": "{{SessionId}}",
+                      "discoveries": [
+                        { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ProbeAgentId}}" }
+                      ]
+                    }
+                    """
+                : $$"""
+                    {
+                      "event": "context_discovery",
+                      "session_id": "{{SessionId}}",
+                      "agent_id": "{{SandboxSubAgentIdentity.ForSubAgent(ThreadId, probeId)}}",
+                      "discoveries": [
+                        { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules" }
+                      ]
+                    }
+                    """;
 
-        var response = await client.SendAsync(request);
+        async Task<HttpResponseMessage> PostAsync()
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Authorization", Secret);
+            return await client.SendAsync(request);
+        }
+
+        var response = await PostAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         // With ctx-probe live, the discovery is ROUTED to the sub-agent (Delivered) — never fanned out.
+        diagnostics.RoutingSnapshot().Routed.Should().Be(1);
+        diagnostics.RoutingSnapshot().Fallback.Should().Be(0);
+
+        // The gateway re-posts per agent and after a failed delivery; the same batch must not inject twice.
+        (await PostAsync())
+            .StatusCode.Should()
+            .Be(HttpStatusCode.OK);
         diagnostics.RoutingSnapshot().Routed.Should().Be(1);
         diagnostics.RoutingSnapshot().Fallback.Should().Be(0);
 

@@ -272,10 +272,18 @@ public sealed class ContextDiscoveryInjector
                 continue;
             }
 
+            // The gateway stamps the id the sub-agent presented on X-Sbx-Agent-ID, which the host derived
+            // from (root thread, sub-agent id) — see SandboxSubAgentIdentity. Map it back for the thread it
+            // belongs to; any other id (another conversation's, or one the host did not derive) is passed
+            // through unchanged and this sink answers NotOwned.
+            var sinkAgentId = SandboxSubAgentIdentity.TryGetSubAgentId(agentId, threadId, out var subAgentId)
+                ? subAgentId
+                : agentId;
+
             SubAgentContextDeliveryResult result;
             try
             {
-                result = await sink.TryDeliverContextAsync(agentId, messages, ct).ConfigureAwait(false);
+                result = await sink.TryDeliverContextAsync(sinkAgentId, messages, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

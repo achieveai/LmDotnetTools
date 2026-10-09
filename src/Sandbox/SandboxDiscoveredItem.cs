@@ -1,8 +1,10 @@
+using System.Text.Json;
+
 namespace AchieveAi.LmDotnetTools.Sandbox;
 
 /// <summary>
 /// An item the gateway's background discovery sweep found for a session's workspace (e.g. a
-/// sub-agent, skill, or context file), as returned by <see cref="SandboxClient.ListDiscoveredAsync"/>.
+/// sub-agent, skill, or context file), as returned by <c>SandboxClient.ListDiscoveredAsync</c>.
 /// </summary>
 /// <remarks>
 /// Only <see cref="Kind"/> and <see cref="Path"/> are required by the gateway's
@@ -31,6 +33,24 @@ public sealed class SandboxDiscoveredItem
 
     public string? Content { get; }
     public string? QualifiedName { get; }
+
+    /// <summary>
+    /// A sub-agent's YAML frontmatter as JSON (gateway issue #124); <c>null</c> for other kinds.
+    /// Agent-authored, untrusted content: never render it as HTML/markdown.
+    /// </summary>
+    public JsonElement? Frontmatter { get; init; }
+
+    /// <summary>The owning plugin of a marketplace sub-agent; <c>null</c> otherwise.</summary>
+    public string? Plugin { get; init; }
+
+    /// <summary>When the gateway discovered the item; <c>null</c> only if the gateway omitted it.</summary>
+    public DateTimeOffset? DiscoveredAt { get; init; }
+
+    /// <summary>
+    /// Whether the item's notification was delivered — to the default agent for an unfiltered or
+    /// <c>agent_id=""</c> listing; <c>null</c> only if the gateway omitted it.
+    /// </summary>
+    public bool? Notified { get; init; }
 
     public SandboxDiscoveredItem(
         string kind,

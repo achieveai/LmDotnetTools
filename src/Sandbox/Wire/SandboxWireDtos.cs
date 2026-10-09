@@ -164,7 +164,11 @@ internal sealed record DiscoveredItemDto(
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("content")] string? Content,
-    [property: JsonPropertyName("qualified_name")] string? QualifiedName
+    [property: JsonPropertyName("qualified_name")] string? QualifiedName,
+    [property: JsonPropertyName("frontmatter")] System.Text.Json.JsonElement? Frontmatter = null,
+    [property: JsonPropertyName("plugin")] string? Plugin = null,
+    [property: JsonPropertyName("discovered_at")] DateTimeOffset? DiscoveredAt = null,
+    [property: JsonPropertyName("notified")] bool? Notified = null
 );
 
 internal sealed record DiscoveredItemsResponseDto(
