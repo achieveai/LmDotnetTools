@@ -81,7 +81,12 @@ public class AppMarketplacesController(IAppMarketplaceClient client, ILogger<App
                 status,
                 ex.ErrorCode
             );
-            return StatusCode(status, new { error = ex.ErrorCode ?? "gateway_error", detail = ex.Message });
+            // A gateway 401/403 rejects the SAMPLE's app credential, not the user's session: passing it through
+            // would make the client treat it as an expired sign-in. Report it as a bad gateway instead.
+            var forwarded = status is StatusCodes.Status401Unauthorized or StatusCodes.Status403Forbidden
+                ? StatusCodes.Status502BadGateway
+                : status;
+            return StatusCode(forwarded, new { error = ex.ErrorCode ?? "gateway_error", detail = ex.Message });
         }
         catch (SandboxException ex)
         {

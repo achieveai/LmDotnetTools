@@ -52,7 +52,9 @@ commit, so a gateway pinned there cannot serve this SDK's command or file operat
 the workflow is the operative pin.
 
 **Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
-`origin/master` `7f19413` (v0.1.16). That sync covers:
+`origin/master` `7f19413` (v0.1.16), and CI pins image tag `0.1.16`: images, homes, backups, per-agent
+state and leased browsers need it. Per-app git marketplaces (below) are built against the gateway commit
+`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. That sync covers:
 
 - REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
   non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
@@ -426,9 +428,9 @@ The gateway leases a Chrome per `(app, browser id)`; the first request with a ne
 - `ConnectBrowserCdpAsync` — an authenticated CDP WebSocket. Targets must stay under the browser's own
   `/cdp/` endpoint. A gateway close `1011 browser_restarted` surfaces from `ReceiveTextAsync` as
   `SandboxErrorKind.BrowserRestarted` (retryable): reconnect to get a fresh browser.
-- `ConnectBrowserMcpAsync(id, BrowserMcpServer.Playwright | DevTools)` — a streamable-HTTP
-  `McpClient` (ModelContextProtocol.Core). `IsBrowserReplaced` turns true when a later response names
-  a different `X-Sbx-Browser-Instance`.
+- `ConnectBrowserMcpAsync(id, BrowserMcpServer.Playwright | DevTools)` — a `BrowserMcpSession` whose
+  `Client` is a streamable-HTTP `McpClient` (ModelContextProtocol.Core). Its `IsBrowserReplaced` turns
+  true when a later response names a different `X-Sbx-Browser-Instance`.
 - `CloseBrowserAsync` — idempotent (`204` even for an unknown id). A `404` means the gateway has
   browsers disabled and throws `BrowserUnsupported`.
 - `BrowserRequestSignature` — verifies the `X-Sbx-Browser-Signature` the gateway adds to pinned
@@ -441,8 +443,9 @@ Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unrea
 ## Per-app git marketplaces (gateway ADR 0041)
 
 An app can register public git repositories as its own plugin marketplaces. The gateway clones each one
-and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway with
-`MARKETPLACE_STORE_PATH` set.
+and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway build
+containing commit `bac5a32` (not yet released; absent from v0.1.16, and numbered ADR 0040 on that
+commit's own branch) with `MARKETPLACE_STORE_PATH` set.
 
 - `RegisterAppMarketplaceAsync(alias, url, gitRef?)` — register, or re-point an existing alias (a different
   URL or ref replaces it). `gitRef` null means `latest` (follow the default branch); a tag, branch or commit

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -102,6 +103,36 @@ public sealed class SandboxClientImageHomeTests
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.Message.Should().Contain("s-1").And.Contain("worktrees/issue-1").And.Contain("deleted");
         handler.Requests.Should().Contain(r => r.Method == HttpMethod.Delete && r.Uri.AbsolutePath.EndsWith("/s-1"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_HomeNotAcknowledged_CallerCancelsDuringCleanup_StillDeletesTheSandbox()
+    {
+        // Once CreateAsync throws, nothing else holds the session id: a caller cancelling while the cleanup DELETE
+        // is in flight must not abandon it.
+        using var cts = new CancellationTokenSource();
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson(null), HttpStatusCode.Created);
+        handler.On(
+            r => r.Method == HttpMethod.Delete,
+            _ =>
+            {
+                cts.Cancel();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"session_id\":\"s-1\",\"message\":\"ok\"}",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                };
+            }
+        );
+
+        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", home: "worktrees/issue-1"), cts.Token);
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Message.Should().Contain("It was deleted.");
     }
 
     [Fact]

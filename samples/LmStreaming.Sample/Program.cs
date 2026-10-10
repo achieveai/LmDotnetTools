@@ -476,7 +476,6 @@ try
     // Workspace backups for the conversation inspector (gateway v0.1.16 /api/v1/backup/*).
     _ = builder.Services.AddSingleton(sp => new SandboxWorkspaceBackup(
         sandboxOptions,
-        () => sp.GetRequiredService<SandboxGatewayLifetime>().GatewayBaseUrl,
         sp.GetRequiredService<IWorkspaceStore>(),
         GatewayHttpClient()
     ));
@@ -5607,7 +5606,9 @@ public partial class Program
             disposeHandler = transportHandler is null;
             sendHandler = new SandboxAgentIdHandler(agentIdResolver)
             {
-                InnerHandler = transportHandler ?? new SocketsHttpHandler(),
+                // No auto-redirect: the app key rides in AdditionalHeaders, which a redirect would replay to
+                // another origin (same rule as GatewayHttpClient).
+                InnerHandler = transportHandler ?? new SocketsHttpHandler { AllowAutoRedirect = false },
             };
         }
 

@@ -118,6 +118,8 @@ public class SandboxClientAgentTests
     [Theory]
     [InlineData("")]
     [InlineData("bad id")]
+    [InlineData(".")] // legal ids, but URI dot-segment normalization would retarget the DELETE
+    [InlineData("..")]
     public async Task DeleteAgentAsync_InvalidAgentId_ThrowsBeforeSending(string agentId)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

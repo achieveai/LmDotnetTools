@@ -22,7 +22,7 @@ public sealed partial class SandboxClient
     {
         // app_id makes the preview include this app's registered git marketplaces when the gateway runs with
         // AUTH_ENFORCE off; with it on, the authenticated app wins and the parameter is ignored.
-        var relativeUri = $"api/v1/marketplaces/preview?{AppMarketplaceAppIdQuery()}";
+        var relativeUri = $"api/v1/marketplaces/preview?{AppIdQuery()}";
         if (marketplaces is { Count: > 0 })
         {
             relativeUri += $"&marketplaces={Uri.EscapeDataString(string.Join(',', marketplaces))}";

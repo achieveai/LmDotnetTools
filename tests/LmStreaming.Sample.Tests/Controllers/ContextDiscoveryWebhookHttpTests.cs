@@ -84,6 +84,36 @@ public sealed class ContextDiscoveryWebhookHttpTests
     }
 
     [Fact]
+    public async Task PostBatchedContextFileWebhook_DefaultAgentEnvelope_EmptyAgentId_ReachesThePrimaryWithRoutingOn()
+    {
+        // Gateway v0.1.16 stamps every default-agent batch with envelope agent_id "". With routing on, that must
+        // still mean "the primary agent", not an unknown sub-agent.
+        await using var app = await TestApp.BuildAsync(routeToOpeningSubAgent: true);
+
+        const string json = """
+            {
+              "event": "context_discovery",
+              "session_id": "sess-http",
+              "app_id": "lmstreaming",
+              "agent_id": "",
+              "discoveries": [
+                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules", "truncated": false }
+              ]
+            }
+            """;
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", Secret);
+
+        var response = await app.Client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        app.Agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>();
+    }
+
+    [Fact]
     public async Task PostContextFileWebhook_WithWrongSecret_Returns401_AndDoesNotInject()
     {
         await using var app = await TestApp.BuildAsync();
@@ -344,7 +374,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
         public HttpClient Client { get; }
         public RecordingMultiTurnAgent Agent { get; }
 
-        public static async Task<TestApp> BuildAsync()
+        public static async Task<TestApp> BuildAsync(bool routeToOpeningSubAgent = false)
         {
             var sessionSecretStore = new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
@@ -383,7 +413,9 @@ public sealed class ContextDiscoveryWebhookHttpTests
                         services.AddSingleton(pool);
                         services.AddSingleton(sessionSecretStore);
                         services.AddSingleton<ContextDiscoveryFormatter>();
-                        services.AddSingleton(new ContextDiscoveryOptions());
+                        services.AddSingleton(
+                            new ContextDiscoveryOptions { RouteToOpeningSubAgent = routeToOpeningSubAgent }
+                        );
                         services.AddSingleton<ContextDiscoveryInjector>();
                         services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                         services.AddSingleton<ContextDiscoveryDiagnostics>();

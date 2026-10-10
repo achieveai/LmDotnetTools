@@ -1325,10 +1325,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// stamp, the creating credential
     /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
     /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
-    /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
+    /// (<see cref="DestroyWorkspaceSessionsCoreAsync"/>) funnel through here so a new per-session collection
     /// can never be wired into one lifecycle path and silently forgotten by the other. Deliberately does
     /// NOT touch the <see cref="_sessions"/> creation slot (its removal differs per caller) and does NOT
-    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
+    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionsCoreAsync"/> does that, and it calls
     /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
     /// </summary>
     /// <remarks>
@@ -1714,14 +1714,33 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// swallowed so run teardown never throws. Cancellation is observed only BEFORE each entry is
     /// removed from the cache (the point of no return); once an entry is committed to teardown its
     /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
-    /// can never orphan the remote session or its persisted secret.
+    /// can never orphan the remote session or its persisted secret. A creation still in flight is awaited
+    /// and then destroyed, never skipped: skipped, it would finish into a removed slot and live on untracked.
     /// </summary>
-    public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
+    public Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default) =>
+        DestroyWorkspaceSessionsCoreAsync(workspaceId, appId: null, ct);
+
+    /// <summary>
+    /// As <see cref="DestroyWorkspaceSessionAsync(string, CancellationToken)"/>, but only for the sessions created
+    /// under <paramref name="appId"/>: other apps' sandboxes on the same workspace are left running.
+    /// </summary>
+    public Task DestroyWorkspaceSessionAsync(string workspaceId, string appId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+        return DestroyWorkspaceSessionsCoreAsync(workspaceId, appId, ct);
+    }
+
+    private async Task DestroyWorkspaceSessionsCoreAsync(string workspaceId, string? appId, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
 
-        var matchingKeys = _sessions.Keys.Where(key => key.WorkspaceId == workspaceId).ToList();
+        var matchingKeys = _sessions
+            .Keys.Where(key =>
+                key.WorkspaceId == workspaceId
+                && (appId is null || string.Equals(key.AppId, appId, StringComparison.Ordinal))
+            )
+            .ToList();
 
         foreach (var key in matchingKeys)
         {
@@ -1738,12 +1757,23 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // rather than as the successor of one the caller asked to be destroyed.
             _ = _replacedSessions.TryRemove(key, out _);
 
-            if (!_sessions.TryRemove(key, out var lazy) || !lazy.IsValueCreated || !lazy.Value.IsCompletedSuccessfully)
+            if (!_sessions.TryRemove(key, out var lazy) || !lazy.IsValueCreated)
             {
                 continue;
             }
 
-            var session = lazy.Value.Result;
+            SandboxSession session;
+            try
+            {
+                // Usually already complete. When a create is still in flight, wait for it: skipped, the create
+                // would finish into the removed slot and leave a gateway sandbox nothing here tracks.
+                session = await lazy.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A create that failed or was cancelled left no session to tear down.
+                continue;
+            }
 
             // The cache entry is now removed — teardown is COMMITTED. Run the gateway DELETE and the
             // per-session state eviction under CancellationToken.None so a cancellation cannot orphan the

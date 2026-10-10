@@ -72,7 +72,7 @@ public sealed partial class SandboxClient
         const string operation = "listing app marketplaces";
         using var response = await SendRestAsync(
                 HttpMethod.Get,
-                $"{AppMarketplacesPath}?{AppMarketplaceAppIdQuery()}",
+                $"{AppMarketplacesPath}?{AppIdQuery()}",
                 body: null,
                 sessionId: null,
                 ct
@@ -153,9 +153,7 @@ public sealed partial class SandboxClient
     }
 
     private string AppMarketplaceUri(string alias, string? suffix) =>
-        $"{AppMarketplacesPath}/{Uri.EscapeDataString(alias)}{suffix}?{AppMarketplaceAppIdQuery()}";
-
-    private string AppMarketplaceAppIdQuery() => "app_id=" + Uri.EscapeDataString(_options.AppId);
+        $"{AppMarketplacesPath}/{Uri.EscapeDataString(alias)}{suffix}?{AppIdQuery()}";
 
     private async Task<SandboxAppMarketplace> ReadAppMarketplaceRowAsync(
         HttpResponseMessage response,

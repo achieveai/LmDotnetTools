@@ -10,8 +10,9 @@ namespace LmStreaming.Sample.Controllers;
 /// <summary>
 /// The conversation inspector's sandbox panel: what the conversation's live sandbox runs on (the image, digest
 /// and conformance warnings the gateway acknowledged on create, and its home), plus the workspace's backups
-/// (snapshots, restore, costs, purge). Authorized exactly like the Mini App routes: an interactive end user
-/// with write access to the conversation. Never creates a sandbox.
+/// (snapshots, restore, costs, purge). Authorized like the Mini App routes: an interactive end user with write
+/// access to the conversation, refused (403) when a server-to-server caller established the conversation's
+/// sandbox. Never creates a sandbox.
 /// </summary>
 [ApiController]
 [Route("api/conversations/{threadId}/sandbox")]
@@ -84,7 +85,7 @@ public sealed class SandboxController(
                 var restored = await backup.RestoreAsync(
                     target.GatewayWorkspace,
                     request.SnapshotId,
-                    release => registry.DestroyWorkspaceSessionAsync(target.WorkspaceId, release),
+                    release => registry.DestroyWorkspaceSessionAsync(target.WorkspaceId, backup.AppId, release),
                     token
                 );
                 return restored is null
@@ -118,7 +119,7 @@ public sealed class SandboxController(
                 return Ok(
                     await backup.PurgeAsync(
                         target.GatewayWorkspace,
-                        release => registry.DestroyWorkspaceSessionAsync(target.WorkspaceId, release),
+                        release => registry.DestroyWorkspaceSessionAsync(target.WorkspaceId, backup.AppId, release),
                         token
                     )
                 );
@@ -181,6 +182,10 @@ public sealed class SandboxController(
         var (status, workspaceId) = await access.ResolveWorkspaceAsync(threadId, authorizer.Current, ct);
         if (status != StatusCodes.Status200OK || workspaceId is null)
             return (StatusCode(status), null, null);
+        // The Mini App routes' cross-actor guard (CredentialConflict): an interactive caller may not act on a
+        // conversation whose sandbox an S2S caller established.
+        if (registry.TryGetEstablishedBinding(threadId, out var binding) && binding?.CallerCredential is not null)
+            return (StatusCode(StatusCodes.Status403Forbidden), null, null);
         var gatewayWorkspace = await backup.ResolveGatewayWorkspaceAsync(workspaceId, ct);
         return gatewayWorkspace is null
             ? (Conflict(new { error = "No sandbox workspace is configured for this conversation." }), null, null)

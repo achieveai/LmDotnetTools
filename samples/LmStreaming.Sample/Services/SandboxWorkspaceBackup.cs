@@ -14,37 +14,31 @@ public sealed class SandboxWorkspaceBackup : IDisposable
 {
     private readonly SandboxGatewayOptions _options;
     private readonly IWorkspaceStore _workspaces;
-    private readonly Lazy<SandboxClient> _client;
+    private readonly SandboxClient _client;
 
-    public SandboxWorkspaceBackup(
-        SandboxGatewayOptions options,
-        Func<string> gatewayBaseUrl,
-        IWorkspaceStore workspaces,
-        HttpClient httpClient
-    )
+    public SandboxWorkspaceBackup(SandboxGatewayOptions options, IWorkspaceStore workspaces, HttpClient httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        ArgumentNullException.ThrowIfNull(gatewayBaseUrl);
         _workspaces = workspaces ?? throw new ArgumentNullException(nameof(workspaces));
         ArgumentNullException.ThrowIfNull(httpClient);
-        // Lazy: the gateway base URL is the one the session registry talks to, which a spawned gateway
-        // only settles once it is running.
-        _client = new Lazy<SandboxClient>(() =>
-            new SandboxClient(
-                new SandboxClientOptions(
-                    new Uri(gatewayBaseUrl().TrimEnd('/') + "/", UriKind.Absolute),
-                    options.AppId,
-                    clientSecret: string.Empty,
-                    executionTimeout: TimeSpan.FromMinutes(2),
-                    transportTimeout: httpClient.Timeout > TimeSpan.Zero
-                        ? httpClient.Timeout
-                        : TimeSpan.FromSeconds(100),
-                    allowInsecureDevelopmentTransport: true
-                ),
-                httpClient
-            )
+        _client = new SandboxClient(
+            new SandboxClientOptions(
+                new Uri(options.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
+                options.AppId,
+                clientSecret: string.Empty,
+                executionTimeout: TimeSpan.FromMinutes(2),
+                transportTimeout: httpClient.Timeout > TimeSpan.Zero ? httpClient.Timeout : TimeSpan.FromSeconds(100),
+                allowInsecureDevelopmentTransport: true
+            ),
+            httpClient
         );
     }
+
+    /// <summary>
+    /// The app the backups belong to. The gateway only refuses a restore over THIS app's sandboxes, so releasing
+    /// is scoped to it and other apps' sandboxes on the same workspace keep running.
+    /// </summary>
+    public string AppId => _options.AppId;
 
     /// <summary>
     /// The gateway workspace name a conversation workspace's sandboxes are created on — the same leaf the
@@ -60,7 +54,7 @@ public sealed class SandboxWorkspaceBackup : IDisposable
     public Task<IReadOnlyList<SandboxBackupSnapshot>> ListSnapshotsAsync(
         string gatewayWorkspace,
         CancellationToken ct
-    ) => _client.Value.ListBackupSnapshotsAsync(gatewayWorkspace, ct);
+    ) => _client.ListBackupSnapshotsAsync(gatewayWorkspace, ct);
 
     /// <summary>
     /// Restores <paramref name="snapshotId"/>, or returns <see langword="null"/> when the workspace has no such
@@ -83,13 +77,34 @@ public sealed class SandboxWorkspaceBackup : IDisposable
         }
 
         await releaseSandboxes(ct).ConfigureAwait(false);
-        return await _client.Value.RestoreBackupSnapshotAsync(gatewayWorkspace, snapshotId, ct).ConfigureAwait(false);
+        try
+        {
+            return await _client.RestoreBackupSnapshotAsync(gatewayWorkspace, snapshotId, ct).ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            // The live sandboxes are already stopped; say so, or the user retries believing nothing happened.
+            throw new SandboxException(
+                ex.Kind,
+                $"This workspace's live sandboxes were stopped, but the restore failed: {ex.Message}",
+                ex.StatusCode,
+                ex
+            )
+            {
+                ErrorCode = ex.ErrorCode,
+                Retryable = ex.Retryable,
+                RetryAfter = ex.RetryAfter,
+                SnapshotIds = ex.SnapshotIds,
+            };
+        }
     }
 
     /// <summary>
     /// Purges the workspace, then lets <paramref name="releaseSandboxes"/> forget the sessions the gateway just
     /// deleted. In that order the result's <see cref="SandboxBackupPurgeResult.SandboxesDeleted"/> names them,
-    /// instead of reporting none because they were already stopped.
+    /// instead of reporting none because they were already stopped. The release runs whatever the purge's
+    /// outcome and uncancelled: the gateway deletes sandboxes one by one before it can fail, so after any attempt
+    /// the cached sessions may already be gone.
     /// </summary>
     public async Task<SandboxBackupPurgeResult> PurgeAsync(
         string gatewayWorkspace,
@@ -98,19 +113,18 @@ public sealed class SandboxWorkspaceBackup : IDisposable
     )
     {
         ArgumentNullException.ThrowIfNull(releaseSandboxes);
-        var purged = await _client.Value.PurgeBackupWorkspaceAsync(gatewayWorkspace, ct).ConfigureAwait(false);
-        await releaseSandboxes(ct).ConfigureAwait(false);
-        return purged;
+        try
+        {
+            return await _client.PurgeBackupWorkspaceAsync(gatewayWorkspace, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await releaseSandboxes(CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     public Task<SandboxBackupCosts> GetCostsAsync(CancellationToken ct) =>
-        _client.Value.GetBackupCostsAsync(since: null, SandboxBackupCostGrouping.Workspace, ct);
+        _client.GetBackupCostsAsync(since: null, SandboxBackupCostGrouping.Workspace, ct);
 
-    public void Dispose()
-    {
-        if (_client.IsValueCreated)
-        {
-            _client.Value.Dispose();
-        }
-    }
+    public void Dispose() => _client.Dispose();
 }

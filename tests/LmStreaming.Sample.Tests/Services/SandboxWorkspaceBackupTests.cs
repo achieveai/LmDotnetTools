@@ -79,12 +79,40 @@ public class SandboxWorkspaceBackupTests
         requests.Should().Equal("DELETE /api/v1/backup/workspace", "release");
     }
 
-    private static (SandboxWorkspaceBackup Backup, List<string> Requests) Create()
+    [Fact]
+    public async Task PurgeAsync_GatewayFailsPartWay_StillReleasesTheCachedSessions()
+    {
+        // The gateway deletes sandboxes one by one before it can fail, so a failed purge may already have
+        // removed the ones the registry still caches.
+        var (backup, requests) = Create(failPurge: true);
+
+        var act = () =>
+            backup.PurgeAsync(
+                "ws",
+                token =>
+                {
+                    token.CanBeCanceled.Should().BeFalse("the release must not be skippable by the request's token");
+                    requests.Add("release");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        requests.Should().Equal("DELETE /api/v1/backup/workspace", "release");
+    }
+
+    private static (SandboxWorkspaceBackup Backup, List<string> Requests) Create(bool failPurge = false)
     {
         var requests = new List<string>();
         var handler = new StubHandler(request =>
         {
             requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            if (failPurge && request.RequestUri!.AbsolutePath == "/api/v1/backup/workspace")
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+
             return request.RequestUri!.AbsolutePath switch
             {
                 "/api/v1/backup/snapshots" => Json(SnapshotsJson),
@@ -96,8 +124,7 @@ public class SandboxWorkspaceBackupTests
             };
         });
         var backup = new SandboxWorkspaceBackup(
-            new SandboxGatewayOptions { AppId = "app-1" },
-            () => "http://localhost:3000",
+            new SandboxGatewayOptions { AppId = "app-1", BaseUrl = "http://localhost:3000" },
             new Mock<IWorkspaceStore>(MockBehavior.Strict).Object,
             new HttpClient(handler)
         );

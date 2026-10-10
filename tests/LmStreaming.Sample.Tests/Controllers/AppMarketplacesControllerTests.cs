@@ -31,6 +31,23 @@ public class AppMarketplacesControllerTests
         objectResult.Value.Should().BeEquivalentTo(new { error = "ref_not_found" });
     }
 
+    [Theory]
+    [InlineData(StatusCodes.Status401Unauthorized)]
+    [InlineData(StatusCodes.Status403Forbidden)]
+    public async Task List_GatewayRejectsTheSamplesAppCredential_Is502_NotTheUsersOwnAuthStatus(int gatewayStatus)
+    {
+        // The browser reads a 401 on /api as its own sign-in expiring; a rejected app key is a server fault.
+        var fake = new FakeClient
+        {
+            Failure = new SandboxException(SandboxErrorKind.Authorization, "app key rejected", gatewayStatus),
+        };
+        var controller = new AppMarketplacesController(fake, NullLogger<AppMarketplacesController>.Instance);
+
+        var result = await controller.List(CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status502BadGateway);
+    }
+
     [Fact]
     public async Task Register_BlankRef_IsForwardedAsLatest()
     {

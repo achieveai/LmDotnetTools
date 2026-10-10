@@ -78,6 +78,9 @@ public static class GatewayAuthHeaders
     /// always, plus the two app-bearer headers when configured, plus <see cref="AgentIdHeader"/> when
     /// <paramref name="agentId"/> is non-empty (see <see cref="ApplyAgentId"/>). Replaces the inline
     /// <c>new Dictionary { ["X-Session-ID"] = sessionId }</c> at every sandbox MCP transport site.
+    /// <paramref name="agentId"/> pins EVERY call on the transport to that one agent's state: use it only for a
+    /// client that serves a single agent. A client shared by the primary agent and its sub-agents stamps the id
+    /// per request with <see cref="SandboxAgentIdHandler"/> instead.
     /// </summary>
     public static Dictionary<string, string> ForMcp(
         string sessionId,

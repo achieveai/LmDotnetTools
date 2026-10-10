@@ -107,7 +107,7 @@ public sealed partial class SandboxClient
             : ToCdpPath(browserId, cdpPath);
         var uri = GetBrowserCdpWebSocketUri(browserId, path);
 
-        var handler = new BrowserRelayHandler(this, "browser CDP upgrade");
+        var handler = new BrowserRelayHandler(this, "browser CDP upgrade", isUpgrade: true);
         var socket = new ClientWebSocket();
         using var budgetCts = StartTransportBudget();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
@@ -286,7 +286,14 @@ public sealed partial class SandboxClient
     /// a gateway <c>error_code</c> becomes a typed <see cref="SandboxException"/>; anything else (an MCP
     /// server's own error, a stale <c>Mcp-Session-Id</c>) is handed back unchanged for its client to handle.
     /// </summary>
-    internal sealed class BrowserRelayHandler(SandboxClient owner, string operation) : HttpMessageHandler
+    /// <param name="owner">The client whose transport, credentials and budget the relay uses.</param>
+    /// <param name="operation">The operation named in typed failures.</param>
+    /// <param name="isUpgrade">
+    /// A WebSocket upgrade, where every non-101 answer is a failure. Without a gateway <c>error_code</c> it is still
+    /// classified by status, because <see cref="ClientWebSocket"/> would otherwise drop the status entirely.
+    /// </param>
+    internal sealed class BrowserRelayHandler(SandboxClient owner, string operation, bool isUpgrade = false)
+        : HttpMessageHandler
     {
         private readonly object _gate = new();
         private string? _firstInstance;
@@ -382,13 +389,20 @@ public sealed partial class SandboxClient
             }
 
             byte[] body;
+            using var budgetCts = owner.StartTransportBudget();
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budgetCts.Token);
             try
             {
-                body = await ReadStreamCappedAsync(response, "error body", null, MaxErrorBodyBytes, cancellationToken)
+                body = await ReadStreamCappedAsync(response, "error body", null, MaxErrorBodyBytes, readCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (SandboxException ex) when (ex.IsDirectReadCapExceeded)
+            catch (Exception ex)
+                when (ex is SandboxException { IsDirectReadCapExceeded: true } or IOException or HttpRequestException
+                    || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                )
             {
+                // The status already arrived; a body that is oversized, cut off or stalled is a lost body, not a
+                // new failure. Classify by status, as TryReadGatewayErrorAsync does on the control plane.
                 using (response)
                 {
                     throw Fail(ToGatewayException(response, operation, null, operationId: null));
@@ -408,7 +422,7 @@ public sealed partial class SandboxClient
                 // Not a gateway error body: the upstream MCP server or Chrome answered; pass it through.
             }
 
-            if (!string.IsNullOrEmpty(error?.ErrorCode))
+            if (isUpgrade || !string.IsNullOrEmpty(error?.ErrorCode))
             {
                 using (response)
                 {

@@ -77,11 +77,21 @@ public sealed partial class SandboxClient
     /// (unreachable from here — the id is validated non-empty first); a sandbox in a maintenance critical
     /// section (<c>503 sandbox_busy</c>) is <see cref="SandboxErrorKind.Unavailable"/>.
     /// </remarks>
-    /// <exception cref="ArgumentException"><paramref name="agentId"/> is not a valid, non-default agent id.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="agentId"/> is not a valid, non-default agent id, or is <c>.</c> or <c>..</c>: legal ids, but
+    /// URI dot-segment normalization would send the DELETE to a different route, so no URL can address them.
+    /// </exception>
     public async Task DeleteAgentAsync(string sessionId, string agentId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
+        if (agentId is "." or "..")
+        {
+            throw new ArgumentException(
+                $"Agent id '{agentId}' cannot be addressed in a URL path: dot segments are normalized away.",
+                nameof(agentId)
+            );
+        }
 
         using var response = await SendRestAsync(
                 HttpMethod.Delete,

@@ -28,7 +28,9 @@ public sealed partial class SandboxClient
         string cleanup;
         try
         {
-            await DeleteAsync(info.SessionId, ct).ConfigureAwait(false);
+            // Not the caller's token: once this throws nothing else holds the session id, so a cancellation here
+            // would orphan the sandbox. The transport budget still bounds the call.
+            await DeleteAsync(info.SessionId, CancellationToken.None).ConfigureAwait(false);
             cleanup = "It was deleted.";
         }
         catch (SandboxException ex)

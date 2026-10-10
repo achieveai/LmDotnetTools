@@ -62,7 +62,11 @@ env:
   # Env_CreateThenPatch_RoundTrips_AndReachesBash contract test requires. The tag already
   # had to be at least this high for the retention reason above, so nothing moved here —
   # but a future bump must not drop BELOW 0.1.11 or that test loses its route.
-  IMAGE_TAG: '0.1.14'
+  #
+  # 0.1.16 is the floor for SandboxAgentLiveContractTests: per-agent state and the /agents
+  # routes (upstream ADR 0040) and the executable_not_runnable operation error_code (#198)
+  # first ship there. Below it those tests fail, not skip.
+  IMAGE_TAG: '0.1.16'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   GATEWAY_PORT: '3987'

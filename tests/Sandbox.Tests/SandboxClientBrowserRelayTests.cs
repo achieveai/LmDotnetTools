@@ -211,6 +211,79 @@ public sealed class SandboxClientBrowserRelayTests
         handler.Requests.Should().OnlyContain(r => r.Uri.AbsolutePath == "/api/v1/browsers/b1/mcp/devtools");
     }
 
+    [Theory]
+    [InlineData(401, SandboxErrorKind.Authorization)]
+    [InlineData(403, SandboxErrorKind.Authorization)]
+    [InlineData(302, SandboxErrorKind.Protocol)] // refused, never followed: following replays the app key
+    public async Task ConnectMcp_RelayAuthRejectionOrRedirect_IsTyped_AndNeverFollowed(
+        int status,
+        SandboxErrorKind expected
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(
+            _ => true,
+            _ =>
+            {
+                var response = new HttpResponseMessage((HttpStatusCode)status);
+                if (status == 302)
+                {
+                    response.Headers.Location = new Uri("http://elsewhere.invalid/mcp");
+                }
+
+                return response;
+            }
+        );
+
+        var act = () => client.ConnectBrowserMcpAsync("b1", BrowserMcpServer.DevTools);
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(expected);
+        thrown.StatusCode.Should().Be(status);
+        handler.Requests.Should().OnlyContain(r => r.Uri.Host == "127.0.0.1");
+    }
+
+    [Theory]
+    [InlineData(503, SandboxErrorKind.Unavailable)]
+    [InlineData(404, SandboxErrorKind.NotFound)]
+    public async Task ConnectCdp_UpgradeRefusedWithoutAGatewayCode_KeepsItsStatus(int status, SandboxErrorKind expected)
+    {
+        // A proxy's error page, or a gateway without browser routes: no error_code, but the status still classifies.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(
+            _ => true,
+            _ => new HttpResponseMessage((HttpStatusCode)status)
+            {
+                Content = new StringContent("<html>upstream error</html>", Encoding.UTF8, "text/html"),
+            }
+        );
+
+        var act = () => client.ConnectBrowserCdpAsync("b1", "/devtools/page/T1");
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(expected);
+        thrown.StatusCode.Should().Be(status);
+    }
+
+    [Fact]
+    public async Task ConnectMcp_RelayErrorBodyBreaksMidRead_IsClassifiedByStatus()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(
+            _ => true,
+            _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StreamContent(new BrokenStream()),
+            }
+        );
+
+        var act = () => client.ConnectBrowserMcpAsync("b1", BrowserMcpServer.DevTools);
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.Unavailable);
+        thrown.StatusCode.Should().Be(503);
+    }
+
     private static HttpResponseMessage GatewayError(
         int status,
         string errorCode,
@@ -234,6 +307,34 @@ public sealed class SandboxClientBrowserRelayTests
         }
 
         return response;
+    }
+
+    /// <summary>A response body whose connection drops on the first read.</summary>
+    private sealed class BrokenStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("The connection was reset.");
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            throw new IOException("The connection was reset.");
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private static HttpResponseMessage WithInstance(HttpResponseMessage response, string instance = Instance)
