@@ -12,7 +12,8 @@ namespace LmStreaming.Sample.Controllers;
 /// and conformance warnings the gateway acknowledged on create, and its home), plus the workspace's backups
 /// (snapshots, restore, costs, purge). Authorized like the Mini App routes: an interactive end user with write
 /// access to the conversation, refused (403) when a server-to-server caller established the conversation's
-/// sandbox. Never creates a sandbox.
+/// sandbox. Restore and purge also need the operator secret (<see cref="OperatorSecretAuthAttribute"/>): workspaces
+/// have no owner, so without it any user bound to a workspace could wipe it for everyone. Never creates a sandbox.
 /// </summary>
 [ApiController]
 [Route("api/conversations/{threadId}/sandbox")]
@@ -74,6 +75,7 @@ public sealed class SandboxController(
     /// files. The client confirms that with the user before calling.
     /// </summary>
     [HttpPost("backup/restore")]
+    [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Restore(string threadId, [FromBody] RestoreRequest request, CancellationToken ct) =>
         RunAsync(
             threadId,
@@ -106,6 +108,7 @@ public sealed class SandboxController(
     /// workspace name, so a stray request cannot purge.
     /// </summary>
     [HttpPost("backup/purge")]
+    [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Purge(string threadId, [FromBody] PurgeRequest request, CancellationToken ct) =>
         RunAsync(
             threadId,

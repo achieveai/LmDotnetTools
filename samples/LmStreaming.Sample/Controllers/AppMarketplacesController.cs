@@ -12,6 +12,8 @@ public sealed record RegisterAppMarketplaceRequest(string Url, string? Ref);
 /// re-point) an alias, list the registrations with their resolved commit and last sync error, sync now, and
 /// remove. A gateway rejection keeps its status and <c>error_code</c> (<c>{ error, detail }</c>) so the UI can say
 /// why; an unreachable gateway is <c>503 marketplace_gateway_unavailable</c>, like the catalog endpoint.
+/// Register, sync and remove change what every user's new sandboxes mount, so they also need the operator secret
+/// (<see cref="OperatorSecretAuthAttribute"/>); listing does not.
 /// </summary>
 [ApiController]
 [Route("api/marketplaces/app")]
@@ -23,6 +25,7 @@ public class AppMarketplacesController(IAppMarketplaceClient client, ILogger<App
         Run("list", alias: null, async () => Ok(await client.ListAsync(ct)));
 
     [HttpPut("{alias}")]
+    [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Register(
         string alias,
         [FromBody] RegisterAppMarketplaceRequest request,
@@ -51,10 +54,12 @@ public class AppMarketplacesController(IAppMarketplaceClient client, ILogger<App
         );
 
     [HttpPost("{alias}/sync")]
+    [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Sync(string alias, CancellationToken ct) =>
         Run("sync", alias, async () => Ok(await client.SyncAsync(alias, ct)));
 
     [HttpDelete("{alias}")]
+    [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Remove(string alias, CancellationToken ct) =>
         Run(
             "remove",

@@ -1,4 +1,5 @@
 import { apiFetch } from '@/api/http';
+import { operatorRefusalMessage, withOperatorSecret } from '@/api/operatorSecret';
 
 /** What the conversation's live sandbox was created from, as the gateway acknowledged it. */
 export interface SandboxSessionInfo {
@@ -76,9 +77,14 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
     let message = `Sandbox request failed (${response.status})`;
     let errorCode: string | null = null;
     try {
-      const body = await response.json() as { error?: unknown; errorCode?: unknown };
+      const body = await response.json() as { error?: unknown; errorCode?: unknown; code?: unknown };
       if (typeof body.error === 'string') message = body.error;
       if (typeof body.errorCode === 'string') errorCode = body.errorCode;
+      const refusal = operatorRefusalMessage(body.code);
+      if (refusal) {
+        message = refusal;
+        errorCode = body.code as string;
+      }
     } catch {
       // Not JSON (e.g. a bare status): keep the status message.
     }
@@ -102,7 +108,7 @@ export function listBackupSnapshots(threadId: string, signal?: AbortSignal): Pro
 export function restoreBackupSnapshot(
   threadId: string, snapshotId: string, signal?: AbortSignal,
 ): Promise<BackupRestoreResult> {
-  return call(sandboxUrl(threadId, '/backup/restore'), postJson({ snapshotId }, signal));
+  return call(sandboxUrl(threadId, '/backup/restore'), withOperatorSecret(postJson({ snapshotId }, signal)));
 }
 
 export function getBackupCosts(threadId: string, signal?: AbortSignal): Promise<BackupCosts> {
@@ -112,5 +118,5 @@ export function getBackupCosts(threadId: string, signal?: AbortSignal): Promise<
 export function purgeBackupWorkspace(
   threadId: string, confirmWorkspace: string, signal?: AbortSignal,
 ): Promise<BackupPurgeResult> {
-  return call(sandboxUrl(threadId, '/backup/purge'), postJson({ confirmWorkspace }, signal));
+  return call(sandboxUrl(threadId, '/backup/purge'), withOperatorSecret(postJson({ confirmWorkspace }, signal)));
 }

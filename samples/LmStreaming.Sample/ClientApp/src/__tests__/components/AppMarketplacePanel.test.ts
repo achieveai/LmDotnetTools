@@ -22,7 +22,10 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('AppMarketplacePanel', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
 
   it('registers with a null ref for latest, lists the row and tells the catalog to reload', async () => {
     let registered = false;
@@ -65,5 +68,41 @@ describe('AppMarketplacePanel', () => {
       "Could not register 'team' (400 ref_not_found)"
     );
     expect(wrapper.emitted('changed')).toBeUndefined();
+  });
+
+  it('sends the operator secret typed into the panel on register, and none on list', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) =>
+      init?.method === 'PUT' ? json(row) : json([])
+    );
+    const wrapper = mount(AppMarketplacePanel);
+    await flushPromises();
+
+    await wrapper.find('[data-testid="operator-secret"]').setValue('s3cret');
+    await wrapper.find('[data-testid="app-marketplace-alias"]').setValue('team');
+    await wrapper.find('[data-testid="app-marketplace-url"]').setValue(row.url);
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    const put = fetchSpy.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+    expect(new Headers(put[1]!.headers).get('X-Operator-Secret')).toBe('s3cret');
+    const list = fetchSpy.mock.calls[0];
+    expect(new Headers(list[1]?.headers).get('X-Operator-Secret')).toBeNull();
+  });
+
+  it.each([
+    ['operator_auth_failed', 403, 'Needs the operator secret'],
+    ['operator_secret_not_configured', 503, 'LMSTREAMING_IDENTITY_OPERATOR_SECRET'],
+  ])('explains an operator refusal (%s)', async (code, status, expected) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) =>
+      init?.method === 'DELETE' ? json({ error: 'forbidden', code }, status) : json([row])
+    );
+    const wrapper = mount(AppMarketplacePanel);
+    await flushPromises();
+
+    await wrapper.find('[data-testid="app-marketplace-remove-team"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="app-marketplace-error"]').text()).toContain(expected);
+    expect(wrapper.find('[data-testid="app-marketplace-row-team"]').exists()).toBe(true);
   });
 });

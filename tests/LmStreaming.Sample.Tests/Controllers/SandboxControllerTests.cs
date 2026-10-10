@@ -1,10 +1,13 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Text;
+using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using static LmStreaming.Sample.Tests.Services.WorkspacePluginSelectionServiceTests;
 
 namespace LmStreaming.Sample.Tests.Controllers;
@@ -106,6 +109,86 @@ public class SandboxControllerTests
         fixture.Harness.Registry.TryGetSessionById(theirs.SessionId, out _).Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task BackupRoutes_WithoutTheRightOperatorSecret_Are403_AndStopNothing(string route)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var session = await SeedSessionAsync(fixture.Harness, fixture.Workspace, BackupAppId);
+        using var host = await StartAsync(fixture, OperatorGateTestServer.Secret);
+
+        foreach (var presented in new[] { null, "not-the-secret" })
+        {
+            // 403, not 401: the SPA reads a 401 on /api as its own sign-in expiring.
+            var response = await SendAsync(host, fixture, route, presented);
+            response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+
+        fixture.BackupRequests.Should().BeEmpty();
+        fixture.Harness.Gateway.DeletedSessionIds.Should().BeEmpty();
+        fixture.Harness.Registry.TryGetSessionById(session.SessionId, out _).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task BackupRoutes_OperatorSecretUnconfigured_Are503_ButSnapshotsStillList(string route)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        using var host = await StartAsync(fixture, secret: null);
+
+        var refused = await SendAsync(host, fixture, route, "anything");
+        var snapshots = await OperatorGateTestServer.SendAsync(
+            host,
+            HttpMethod.Get,
+            $"/api/conversations/{ThreadId}/sandbox/backup/snapshots",
+            presentedSecret: null
+        );
+
+        refused.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        snapshots.StatusCode.Should().Be(HttpStatusCode.OK);
+        fixture.BackupRequests.Should().Equal(["GET /api/v1/backup/snapshots"]);
+    }
+
+    [Fact]
+    public async Task Restore_WithTheOperatorSecret_ReachesTheGateway()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        using var host = await StartAsync(fixture, OperatorGateTestServer.Secret);
+
+        var response = await SendAsync(host, fixture, "restore", OperatorGateTestServer.Secret);
+
+        // The stub gateway knows snap-1 but has no restore route, so the restore itself fails; the point is that
+        // the request got past the operator gate and reached the gateway.
+        response.StatusCode.Should().NotBe(HttpStatusCode.Forbidden);
+        fixture.BackupRequests.Should().Contain("POST /api/v1/backup/restore");
+    }
+
+    private static Task<IHost> StartAsync(Fixture fixture, string? secret) =>
+        OperatorGateTestServer.StartAsync(
+            secret,
+            services =>
+            {
+                _ = services.AddSingleton(fixture.Access);
+                _ = services.AddSingleton(fixture.Harness.Registry);
+                _ = services.AddSingleton(fixture.Backup);
+                _ = services.AddSingleton(fixture.Authorizer);
+                _ = services.AddLogging();
+            }
+        );
+
+    private static Task<HttpResponseMessage> SendAsync(IHost host, Fixture fixture, string route, string? secret) =>
+        OperatorGateTestServer.SendAsync(
+            host,
+            HttpMethod.Post,
+            $"/api/conversations/{ThreadId}/sandbox/backup/{route}",
+            secret,
+            route == "restore"
+                ? new SandboxController.RestoreRequest("snap-1")
+                : new SandboxController.PurgeRequest(fixture.Workspace.DirectoryRelPath)
+        );
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required Harness Harness { get; init; }
@@ -113,6 +196,8 @@ public class SandboxControllerTests
         public required SandboxController Controller { get; init; }
         public required List<string> BackupRequests { get; init; }
         public required SandboxWorkspaceBackup Backup { get; init; }
+        public required SandboxAppAccess Access { get; init; }
+        public required ConversationAuthorizer Authorizer { get; init; }
 
         public static async Task<Fixture> CreateAsync(bool restoreConflict = false)
         {
@@ -139,8 +224,9 @@ public class SandboxControllerTests
                 new HttpClient(new BackupGateway(requests, workspace.DirectoryRelPath, restoreConflict))
             );
             var authorizer = TestAuthorizers.Disabled();
+            var access = new SandboxAppAccess(conversations.Object, Mock.Of<IWorkspaceFileBrowser>(), authorizer);
             var controller = new SandboxController(
-                new SandboxAppAccess(conversations.Object, Mock.Of<IWorkspaceFileBrowser>(), authorizer),
+                access,
                 harness.Registry,
                 backup,
                 authorizer,
@@ -153,6 +239,8 @@ public class SandboxControllerTests
                 Controller = controller,
                 BackupRequests = requests,
                 Backup = backup,
+                Access = access,
+                Authorizer = authorizer,
             };
         }
 

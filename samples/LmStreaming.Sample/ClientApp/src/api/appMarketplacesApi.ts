@@ -1,4 +1,5 @@
 import { apiFetch } from '@/api/http';
+import { operatorRefusalMessage, withOperatorSecret } from '@/api/operatorSecret';
 
 /** One git marketplace this app registered with the sandbox gateway (gateway ADR 0041). */
 export interface AppMarketplace {
@@ -31,36 +32,48 @@ export async function registerAppMarketplace(
   url: string,
   ref?: string
 ): Promise<AppMarketplace> {
-  const response = await apiFetch(`${BASE}/${encodeURIComponent(alias)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, ref: ref?.trim() ? ref.trim() : null }),
-  });
+  const response = await apiFetch(
+    `${BASE}/${encodeURIComponent(alias)}`,
+    withOperatorSecret({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, ref: ref?.trim() ? ref.trim() : null }),
+    })
+  );
   await throwIfFailed(response, `register '${alias}'`);
   return response.json();
 }
 
 /** Fetches `alias` now; returns the refreshed registration. */
 export async function syncAppMarketplace(alias: string): Promise<AppMarketplace> {
-  const response = await apiFetch(`${BASE}/${encodeURIComponent(alias)}/sync`, { method: 'POST' });
+  const response = await apiFetch(
+    `${BASE}/${encodeURIComponent(alias)}/sync`,
+    withOperatorSecret({ method: 'POST' })
+  );
   await throwIfFailed(response, `sync '${alias}'`);
   return response.json();
 }
 
 /** Unregisters `alias`. */
 export async function removeAppMarketplace(alias: string): Promise<void> {
-  const response = await apiFetch(`${BASE}/${encodeURIComponent(alias)}`, { method: 'DELETE' });
+  const response = await apiFetch(
+    `${BASE}/${encodeURIComponent(alias)}`,
+    withOperatorSecret({ method: 'DELETE' })
+  );
   await throwIfFailed(response, `remove '${alias}'`);
 }
 
 /** Throws with the gateway's error code (e.g. `ref_not_found`) so the UI can say why. */
 async function throwIfFailed(response: Response, action: string): Promise<void> {
   if (response.ok) return;
-  let code: string | null = null;
+  let body: { error?: unknown; code?: unknown } | null = null;
   try {
-    code = (await response.json())?.error ?? null;
+    body = await response.json();
   } catch {
     // Unreadable body: the status alone is all there is.
   }
+  const refusal = operatorRefusalMessage(body?.code);
+  if (refusal) throw new Error(`Could not ${action}: ${refusal}`);
+  const code = typeof body?.error === 'string' ? body.error : null;
   throw new Error(`Could not ${action} (${response.status}${code ? ` ${code}` : ''})`);
 }

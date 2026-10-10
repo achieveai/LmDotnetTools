@@ -7,6 +7,7 @@ import {
   syncAppMarketplace,
   type AppMarketplace,
 } from '@/api/appMarketplacesApi';
+import OperatorSecretField from '@/components/OperatorSecretField.vue';
 
 /** `changed` fires after a register or remove, so the catalog below can reload with the alias's plugins. */
 const emit = defineEmits<{ changed: [] }>();
@@ -69,6 +70,8 @@ onMounted(() => load());
 <template>
   <section class="app-marketplaces" data-testid="app-marketplaces">
     <h3 class="am-title">Git marketplaces (this app)</h3>
+
+    <OperatorSecretField purpose="register, sync, remove" />
 
     <form class="am-form" @submit.prevent="register">
       <input v-model="alias" aria-label="Alias" placeholder="alias" required data-testid="app-marketplace-alias" />

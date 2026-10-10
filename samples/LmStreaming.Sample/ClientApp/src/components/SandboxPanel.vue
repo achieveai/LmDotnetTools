@@ -10,6 +10,7 @@ import {
   type BackupSnapshot,
   type SandboxPanelInfo,
 } from "@/api/sandboxApi";
+import OperatorSecretField from "@/components/OperatorSecretField.vue";
 
 /**
  * The inspector's Sandbox section: the image/digest/home the gateway acknowledged for the conversation's
@@ -169,6 +170,8 @@ onBeforeUnmount(() => abort?.abort());
         <button :disabled="busy" data-testid="sandbox-snapshots-load" @click="loadSnapshots">Snapshots</button>
         <button :disabled="busy" data-testid="sandbox-costs-load" @click="loadCosts">Costs</button>
       </div>
+
+      <OperatorSecretField v-if="snapshots || info" purpose="restore, purge" />
 
       <template v-if="snapshots">
         <p v-if="!snapshots.length" class="muted" data-testid="sandbox-snapshots-empty">No snapshots yet.</p>
