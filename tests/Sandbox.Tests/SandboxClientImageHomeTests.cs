@@ -159,10 +159,29 @@ public sealed class SandboxClientImageHomeTests
     }
 
     [Fact]
-    public async Task GetAsync_ReportsTheHome_ButNoImageFieldsBecauseTheGatewaySendsNone()
+    public async Task GetAsync_ReportsTheImageAndDigest_WhenTheGatewaysDetailCarriesThem()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        // The gateway's GET detail (SandboxDetail): session, container, created_at and volumes only.
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/s-1",
+            "{\"session_id\":\"s-1\",\"container_id\":\"c-1\",\"image\":\"ghcr.io/acme/py:3.12\","
+                + "\"image_digest\":\"ghcr.io/acme/py@sha256:abc\",\"volumes\":"
+                + "{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":31}}}"
+        );
+
+        var info = await client.GetAsync("s-1");
+
+        info.Image.Should().Be("ghcr.io/acme/py:3.12");
+        info.ImageDigest.Should().Be("ghcr.io/acme/py@sha256:abc");
+        info.ImageReport.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetAsync_ReportsTheHome_ButNoImageFields_FromAGatewayWhoseDetailSendsNone()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        // A gateway before the GET image fields: session, container, created_at and volumes only.
         handler.OnJson(
             HttpMethod.Get,
             "/api/v1/sandboxes/s-1",

@@ -596,7 +596,14 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
                 await CleanupAsync(binding);
             }
             _owned.Clear();
-            (_gateway as IDisposable)?.Dispose();
+            if (_gateway is IAsyncDisposable asyncGateway)
+            {
+                await asyncGateway.DisposeAsync();
+            }
+            else
+            {
+                (_gateway as IDisposable)?.Dispose();
+            }
         }
         finally
         {

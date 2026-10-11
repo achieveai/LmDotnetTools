@@ -101,8 +101,9 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   The gateway's allow-list decides; a refusal is `ImageRejected` with `ErrorCode` `image_not_allowed`,
   `image_not_found`, `image_unsupported` (with `SandboxException.ImageReport`) or
   `image_unsupported_backend`. The create result carries `Image`, `ImageDigest` and `ImageReport`
-  (conformance + `Warnings`, e.g. "image has no pwsh"). The gateway's GET and list responses carry no image
-  fields, so those are `null` on `GetAsync`/`ListAsync` results.
+  (conformance + `Warnings`, e.g. "image has no pwsh"). `GetAsync` reports `Image`/`ImageDigest` when the
+  gateway's GET carries them (a session recorded without an image reports the server default); older GETs
+  and every `ListAsync` result leave them `null`, and `ImageReport` is create-only.
 - **Home** (issue #142): `new SandboxCreateRequest(ws, home: "worktrees/issue-142")`, sent as top-level
   `home` beside top-level `workspace`. `CreateAsync` requires `SandboxInfo.WorkspaceHome` to equal the
   normalized request (`./a//b/` → `a/b`); on a missing or different acknowledgement it deletes the sandbox

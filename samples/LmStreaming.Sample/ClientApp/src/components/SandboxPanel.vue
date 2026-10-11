@@ -147,7 +147,7 @@ onBeforeUnmount(() => abort?.abort());
         <dd data-testid="sandbox-info-workspace">{{ info.gatewayWorkspace }}</dd>
         <template v-if="info.session">
           <dt>Image</dt>
-          <dd data-testid="sandbox-info-image">{{ info.session.image ?? "gateway default (not reported)" }}</dd>
+          <dd data-testid="sandbox-info-image">{{ info.session.image ?? "default" }}</dd>
           <dt>Digest</dt>
           <dd class="mono" data-testid="sandbox-info-digest">{{ info.session.imageDigest ?? "unresolved" }}</dd>
           <dt>Home</dt>

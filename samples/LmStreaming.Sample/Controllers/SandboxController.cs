@@ -36,8 +36,8 @@ public sealed class SandboxController(
         if (target.Failure is { } failure)
             return failure;
 
-        // Image fields come only from the create acknowledgement, so they exist only for a session this process
-        // created; a GET of the sandbox would report none of them.
+        // Image fields come from the create acknowledgement of a session this process created. A null image means
+        // the gateway did not report one (an older gateway), so the sandbox runs the server default.
         var session = registry.TryGetExistingSession(target.WorkspaceId!);
         return Ok(
             new

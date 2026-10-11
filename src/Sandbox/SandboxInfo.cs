@@ -54,15 +54,16 @@ public sealed class SandboxInfo
 
     /// <summary>
     /// The image the sandbox was created from after the gateway resolved it (request, then app default,
-    /// then server default; ADR 0039). Reported on a <see cref="SandboxClient.CreateAsync"/> result only:
-    /// the gateway's GET and list responses carry no image fields, so this is <see langword="null"/> there
-    /// and against a gateway that predates client images.
+    /// then server default; ADR 0039). Reported on a <see cref="SandboxClient.CreateAsync"/> result and, from
+    /// gateways that report it on GET, on a <see cref="SandboxClient.GetAsync"/> result (a session recorded
+    /// without an image reports the server default there). <see langword="null"/> on list results, on GET
+    /// from a gateway that does not report it, and against a gateway that predates client images.
     /// </summary>
     public string? Image { get; }
 
     /// <summary>
-    /// The registry digest reference (<c>repo@sha256:…</c>) the session is pinned to, from a create result.
-    /// <see langword="null"/> for a locally built image, on GET/list results, and on older gateways.
+    /// The registry digest reference (<c>repo@sha256:…</c>) the session is pinned to, from a create result or a
+    /// GET that reports it. <see langword="null"/> for a locally built image, on list results, and on older gateways.
     /// </summary>
     public string? ImageDigest { get; }
 

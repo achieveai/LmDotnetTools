@@ -86,7 +86,8 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("status")] string? Status = null,
     [property: JsonPropertyName("inventory")] SandboxInventoryDto? Inventory = null,
     [property: JsonPropertyName("pluginResolution")] PluginResolutionDto? PluginResolution = null,
-    // ADR 0039: present on the CREATE response only (the GET detail carries no image fields).
+    // ADR 0039: present on the CREATE response; the GET detail carries `image`/`image_digest` only on gateways
+    // that report them (never `image_report`).
     [property: JsonPropertyName("image")] string? Image = null,
     [property: JsonPropertyName("image_digest")] string? ImageDigest = null,
     [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null
