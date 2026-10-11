@@ -160,7 +160,7 @@ public enum SandboxErrorKind
     /// The gateway answered an MCP JSON-RPC call (for example <see cref="SandboxClient.CallBrowserAsync"/>)
     /// with an <c>error</c> envelope instead of a <c>result</c>. <see cref="SandboxException.JsonRpcCode"/>
     /// carries the JSON-RPC code (<c>-32602</c> invalid params, <c>-32601</c> unknown method, <c>-32000</c>
-    /// a tool/server failure) and the message carries the gateway's error message, bounded.
+    /// a tool/server failure). The gateway's error message is untrusted and never copied into the exception.
     /// </summary>
     McpCallFailed,
 

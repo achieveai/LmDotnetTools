@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.Sandbox;
 using static LmStreaming.Sample.Tests.Services.WorkspacePluginSelectionServiceTests;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -40,5 +41,76 @@ public class SandboxSessionRegistryWorkspaceTeardownTests
 
         h.Gateway.DeletedSessionIds.Should().Equal(mine.SessionId);
         h.Registry.TryGetSessionById(theirs.SessionId, out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ReleaseWorkspaceSessionsAsync_DeleteFails_KeepsTheSessionTracked_AndARetryStopsIt()
+    {
+        await using var h = Harness.Create();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var session = await SeedSessionAsync(h, workspace, "app-a");
+        h.Gateway.FailNextDeletes(1);
+
+        var first = () => h.Registry.ReleaseWorkspaceSessionsAsync(workspace.Id, "app-a");
+
+        var thrown = (await first.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.StatusCode.Should().Be(503);
+        h.Gateway.DeletedSessionIds.Should().BeEmpty();
+        h.Registry.TryGetSessionById(session.SessionId, out _)
+            .Should()
+            .BeTrue("a sandbox that is still running must stay tracked, or nothing can stop it later");
+
+        await h.Registry.ReleaseWorkspaceSessionsAsync(workspace.Id, "app-a");
+
+        h.Gateway.DeletedSessionIds.Should().Equal(session.SessionId);
+        h.Registry.TryGetSessionById(session.SessionId, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Teardown_RightAfterAPluginMigration_StopsTheReplacementSandbox()
+    {
+        // The migration republishes the replacement into the cache; nothing reads that slot before the teardown.
+        await using var h = Harness.Create();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var original = await SeedSessionAsync(h, workspace, "app-a");
+        _ = await h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        var replacement = h.Gateway.CreatedSessionIds.Single(id => id != original.SessionId);
+
+        await h.Registry.ReleaseWorkspaceSessionsAsync(workspace.Id, "app-a");
+
+        h.Gateway.DeletedSessionIds.Should()
+            .Equal(
+                [original.SessionId, replacement],
+                "the migration retired the original; the release stops its replacement"
+            );
+        h.Registry.TryGetSessionById(replacement, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DestroyWorkspaceSessionAsync_ForOneApp_RightAfterAPluginMigration_StopsOnlyThatAppsReplacement()
+    {
+        await using var h = Harness.Create();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var originals = new[]
+        {
+            (await SeedSessionAsync(h, workspace, "app-a")).SessionId,
+            (await SeedSessionAsync(h, workspace, "app-b")).SessionId,
+        };
+        _ = await h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        var replacements = h.Gateway.CreatedSessionIds.Except(originals).ToArray();
+
+        await h.Registry.DestroyWorkspaceSessionAsync(workspace.Id, "app-a");
+
+        var stopped = h.Gateway.DeletedSessionIds.Except(originals).ToArray();
+        stopped.Should().ContainSingle("app-a's replacement is stopped").Which.Should().BeOneOf(replacements);
+        h.Registry.TryGetSessionById(replacements.Single(id => id != stopped[0]), out _)
+            .Should()
+            .BeTrue("app-b's replacement keeps running");
     }
 }

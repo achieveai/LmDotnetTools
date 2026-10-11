@@ -26,47 +26,63 @@ const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const busy = ref(false);
 const purgeConfirm = ref("");
-let abort: AbortController | null = null;
 
-function fresh(): AbortSignal {
-  abort?.abort();
-  abort = new AbortController();
-  return abort.signal;
+/** Bumped on every thread change; an operation from an older epoch publishes nothing. */
+let epoch = 0;
+/** The in-flight read, cancelled by a thread change. */
+let readAbort: AbortController | null = null;
+/** Cancels everything on unmount. A thread change does not cancel a restore or purge mid-way. */
+const unmounted = new AbortController();
+
+interface Operation {
+  threadId: string;
+  signal: AbortSignal;
+  /** False once the panel has switched to another thread: drop the results. */
+  current: () => boolean;
 }
 
-async function run(action: () => Promise<void>): Promise<void> {
-  if (busy.value) return;
+/** Runs one operation for the selected thread, holding that thread across its awaits. */
+async function run(kind: "read" | "write", action: (op: Operation) => Promise<void>): Promise<void> {
+  const threadId = props.threadId;
+  if (busy.value || !threadId) return;
+  const started = epoch;
+  const current = () => started === epoch;
+  let signal = unmounted.signal;
+  if (kind === "read") {
+    readAbort = new AbortController();
+    signal = readAbort.signal;
+  }
   busy.value = true;
   error.value = null;
   notice.value = null;
   try {
-    await action();
+    await action({ threadId, signal, current });
   } catch (e) {
-    if (!(e instanceof DOMException && e.name === "AbortError"))
+    if (current() && !(e instanceof DOMException && e.name === "AbortError"))
       error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    busy.value = false;
+    if (current()) busy.value = false;
   }
 }
 
 function loadInfo(): Promise<void> {
-  return run(async () => {
-    if (!props.threadId) return;
-    info.value = await getSandboxInfo(props.threadId, fresh());
+  return run("read", async ({ threadId, signal, current }) => {
+    const value = await getSandboxInfo(threadId, signal);
+    if (current()) info.value = value;
   });
 }
 
 function loadSnapshots(): Promise<void> {
-  return run(async () => {
-    if (!props.threadId) return;
-    snapshots.value = await listBackupSnapshots(props.threadId, fresh());
+  return run("read", async ({ threadId, signal, current }) => {
+    const value = await listBackupSnapshots(threadId, signal);
+    if (current()) snapshots.value = value;
   });
 }
 
 function loadCosts(): Promise<void> {
-  return run(async () => {
-    if (!props.threadId) return;
-    costs.value = await getBackupCosts(props.threadId, fresh());
+  return run("read", async ({ threadId, signal, current }) => {
+    const value = await getBackupCosts(threadId, signal);
+    if (current()) costs.value = value;
   });
 }
 
@@ -78,15 +94,18 @@ function restore(snapshot: BackupSnapshot): Promise<void> {
       + "aside as an orphan snapshot first.",
   );
   if (!ok) return Promise.resolve();
-  return run(async () => {
-    if (!props.threadId) return;
-    const result = await restoreBackupSnapshot(props.threadId, snapshot.id, fresh());
+  return run("write", async ({ threadId, signal, current }) => {
+    const result = await restoreBackupSnapshot(threadId, snapshot.id, signal);
+    if (!current()) return;
     notice.value = result.restoredSnapshotId
       ? `Restored ${result.restoredSnapshotId.slice(0, 8)}`
         + (result.orphanSnapshotId ? `; previous files saved as ${result.orphanSnapshotId.slice(0, 8)}.` : ".")
       : "The workspace already matched that snapshot; nothing changed.";
-    info.value = await getSandboxInfo(props.threadId);
-    snapshots.value = await listBackupSnapshots(props.threadId);
+    const refreshedInfo = await getSandboxInfo(threadId, signal);
+    const refreshedSnapshots = await listBackupSnapshots(threadId, signal);
+    if (!current()) return;
+    info.value = refreshedInfo;
+    snapshots.value = refreshedSnapshots;
   });
 }
 
@@ -97,14 +116,15 @@ function purge(): Promise<void> {
     `PERMANENTLY delete '${workspace}': its sandboxes, every snapshot and all files? This cannot be undone.`,
   );
   if (!ok) return Promise.resolve();
-  return run(async () => {
-    if (!props.threadId) return;
-    const result = await purgeBackupWorkspace(props.threadId, purgeConfirm.value, fresh());
+  return run("write", async ({ threadId, signal, current }) => {
+    const result = await purgeBackupWorkspace(threadId, workspace, signal);
+    if (!current()) return;
     notice.value = `Purged '${result.workspace}': ${plural(result.snapshotsDeleted, "snapshot")} and `
       + `${plural(result.sandboxesDeleted.length, "sandbox", "sandboxes")} deleted.`;
     purgeConfirm.value = "";
     snapshots.value = null;
-    info.value = await getSandboxInfo(props.threadId);
+    const refreshedInfo = await getSandboxInfo(threadId, signal);
+    if (current()) info.value = refreshedInfo;
   });
 }
 
@@ -125,14 +145,24 @@ function formatBytes(bytes: number | null): string {
 watch(
   () => props.threadId,
   () => {
+    // Before the busy gate: the old thread's pending operation must neither publish here nor skip this load.
+    epoch++;
+    readAbort?.abort();
+    busy.value = false;
+    error.value = null;
+    notice.value = null;
     info.value = null;
     snapshots.value = null;
     costs.value = null;
+    purgeConfirm.value = "";
     void loadInfo();
   },
   { immediate: true },
 );
-onBeforeUnmount(() => abort?.abort());
+onBeforeUnmount(() => {
+  readAbort?.abort();
+  unmounted.abort();
+});
 </script>
 
 <template>

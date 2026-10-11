@@ -1730,6 +1730,94 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         return DestroyWorkspaceSessionsCoreAsync(workspaceId, appId, ct);
     }
 
+    /// <summary>
+    /// Stops this app's sandboxes on <paramref name="workspaceId"/> and confirms each one is gone, for a caller
+    /// that needs the workspace free (a backup restore). Unlike
+    /// <see cref="DestroyWorkspaceSessionAsync(string, string, CancellationToken)"/> it is not best-effort: a
+    /// session is forgotten only after its DELETE succeeds (a <c>404</c> counts as gone). A session whose DELETE
+    /// fails stays cached, so a retry deletes it, and the call then throws.
+    /// </summary>
+    /// <exception cref="SandboxException">At least one sandbox could not be stopped; it is still tracked.</exception>
+    public async Task ReleaseWorkspaceSessionsAsync(string workspaceId, string appId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+
+        var entries = _sessions
+            .Where(entry =>
+                entry.Key.WorkspaceId == workspaceId && string.Equals(entry.Key.AppId, appId, StringComparison.Ordinal)
+            )
+            .ToList();
+        var failures = 0;
+        SandboxException? lastFailure = null;
+        foreach (var entry in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!entry.Value.IsValueCreated)
+            {
+                // A create that has not started yet: there is no sandbox to stop.
+                continue;
+            }
+
+            SandboxSession session;
+            try
+            {
+                session = await entry.Value.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A create that failed or was cancelled left no sandbox.
+                continue;
+            }
+
+            try
+            {
+                await ClientFor(CredentialFor(session.SessionId))
+                    .DeleteAsync(session.SessionId, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (SandboxException ex) when (ex.StatusCode == 404)
+            {
+                // Already gone (deleted elsewhere, expired, or purged).
+            }
+            catch (SandboxException ex)
+            {
+                _logger.LogWarning(
+                    "Sandbox release returned {StatusCode} for session {SessionId}; it stays tracked for a retry",
+                    ex.StatusCode,
+                    session.SessionId
+                );
+                failures++;
+                lastFailure = ex;
+                continue;
+            }
+
+            _logger.LogInformation("Released sandbox session {SessionId}", session.SessionId);
+            // Confirmed gone. Exact removal, so a slot republished meanwhile is kept.
+            if (_sessions.TryRemove(entry))
+            {
+                _ = _replacedSessions.TryRemove(entry.Key, out _);
+            }
+            await EvictSessionStateAsync(session).ConfigureAwait(false);
+        }
+
+        if (lastFailure is not null)
+        {
+            throw new SandboxException(
+                lastFailure.Kind,
+                $"{failures} sandbox(es) on workspace '{workspaceId}' could not be stopped: {lastFailure.Message}",
+                lastFailure.StatusCode,
+                lastFailure
+            )
+            {
+                ErrorCode = lastFailure.ErrorCode,
+                Retryable = lastFailure.Retryable,
+                RetryAfter = lastFailure.RetryAfter,
+            };
+        }
+    }
+
     private async Task DestroyWorkspaceSessionsCoreAsync(string workspaceId, string? appId, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

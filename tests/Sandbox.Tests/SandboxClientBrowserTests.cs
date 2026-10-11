@@ -61,15 +61,27 @@ public sealed class SandboxClientBrowserTests
         (await act.Should().ThrowAsync<SandboxException>()).Which.IsDirectReadCapExceeded.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task BrowserCall_JsonRpcErrorEnvelope_SurfacesCodeAndMessage()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BrowserCall_JsonRpcErrorEnvelope_SurfacesTheCode_ButNeverTheGatewayMessage(bool longMessage)
     {
+        const string Sentinel = "sk-live-SENTINEL-0123456789";
+        var message = longMessage ? $"tool output: {Sentinel} {new string('x', 2000)}" : $"Invalid key {Sentinel}";
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        // Shape of the gateway's McpResponse::error (server.rs): a JSON-RPC error with no result.
+        // Shape of the gateway's McpResponse::error (server.rs): a JSON-RPC error with no result. The message is
+        // gateway-controlled and can echo tool output or credentials (ADR 0001).
         handler.OnJson(
             HttpMethod.Post,
             "/mcp",
-            """{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid agent_id: must be 1-64 characters"}}"""
+            JsonSerializer.Serialize(
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    error = new { code = -32602, message },
+                }
+            )
         );
 
         var act = () => client.CallBrowserAsync("owned-browser", "playwright", "browser_snapshot");
@@ -77,7 +89,8 @@ public sealed class SandboxClientBrowserTests
         var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
         thrown.Kind.Should().Be(SandboxErrorKind.McpCallFailed);
         thrown.JsonRpcCode.Should().Be(-32602);
-        thrown.Message.Should().Contain("Invalid agent_id: must be 1-64 characters");
+        thrown.Message.Should().Contain("-32602").And.NotContain(Sentinel);
+        thrown.ToString().Should().NotContain(Sentinel);
     }
 
     [Fact]

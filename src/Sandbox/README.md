@@ -538,5 +538,6 @@ covers every malformed-response case, and the SDK never lets one surface as a ra
   never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
   echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the
   closed-vocabulary `error_code` (plus `retryable`, `Retry-After`, and snapshot ids) are surfaced from a
-  REST error. Two gateway texts *are* quoted, length-bounded: an operation's `error` reason (the
-  gateway allow-lists and sanitizes it before sending) and a JSON-RPC `error.message`.
+  REST error. A JSON-RPC `error.message` is never copied either: `McpCallFailed` carries only
+  `JsonRpcCode`. One gateway text *is* quoted, length-bounded: an operation's `error` reason (the
+  gateway allow-lists and sanitizes it before sending).

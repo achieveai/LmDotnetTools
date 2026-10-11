@@ -60,7 +60,8 @@ public sealed class SandboxWorkspaceBackup : IDisposable
     /// Restores <paramref name="snapshotId"/>, or returns <see langword="null"/> when the workspace has no such
     /// snapshot. The gateway refuses a restore while any sandbox mounts the workspace, so
     /// <paramref name="releaseSandboxes"/> stops them first — but only once the snapshot is known to exist, so a
-    /// stale or mistyped id never costs anyone their live sandbox.
+    /// stale or mistyped id never costs anyone their live sandbox. When the release fails, nothing is restored
+    /// and the error says so; the release keeps any sandbox it could not stop, so a retry stops it.
     /// </summary>
     public async Task<SandboxBackupRestoreResult?> RestoreAsync(
         string gatewayWorkspace,
@@ -76,7 +77,18 @@ public sealed class SandboxWorkspaceBackup : IDisposable
             return null;
         }
 
-        await releaseSandboxes(ct).ConfigureAwait(false);
+        try
+        {
+            await releaseSandboxes(ct).ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            throw Rewrap(
+                ex,
+                $"Nothing was restored: this workspace's live sandboxes could not all be stopped. Retry the restore. ({ex.Message})"
+            );
+        }
+
         try
         {
             return await _client.RestoreBackupSnapshotAsync(gatewayWorkspace, snapshotId, ct).ConfigureAwait(false);
@@ -84,20 +96,18 @@ public sealed class SandboxWorkspaceBackup : IDisposable
         catch (SandboxException ex)
         {
             // The live sandboxes are already stopped; say so, or the user retries believing nothing happened.
-            throw new SandboxException(
-                ex.Kind,
-                $"This workspace's live sandboxes were stopped, but the restore failed: {ex.Message}",
-                ex.StatusCode,
-                ex
-            )
-            {
-                ErrorCode = ex.ErrorCode,
-                Retryable = ex.Retryable,
-                RetryAfter = ex.RetryAfter,
-                SnapshotIds = ex.SnapshotIds,
-            };
+            throw Rewrap(ex, $"This workspace's live sandboxes were stopped, but the restore failed: {ex.Message}");
         }
     }
+
+    private static SandboxException Rewrap(SandboxException ex, string message) =>
+        new(ex.Kind, message, ex.StatusCode, ex)
+        {
+            ErrorCode = ex.ErrorCode,
+            Retryable = ex.Retryable,
+            RetryAfter = ex.RetryAfter,
+            SnapshotIds = ex.SnapshotIds,
+        };
 
     /// <summary>
     /// Purges the workspace, then lets <paramref name="releaseSandboxes"/> forget the sessions the gateway just

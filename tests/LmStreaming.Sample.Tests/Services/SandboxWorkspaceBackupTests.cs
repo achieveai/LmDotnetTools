@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -58,6 +59,26 @@ public class SandboxWorkspaceBackupTests
             .Where(r => r == "release" || r.StartsWith("POST", StringComparison.Ordinal))
             .Should()
             .Equal("release", "POST /api/v1/backup/restore");
+    }
+
+    [Fact]
+    public async Task RestoreAsync_ReleaseFails_RestoresNothing_AndSaysSo()
+    {
+        var (backup, requests) = Create();
+
+        var act = () =>
+            backup.RestoreAsync(
+                "ws",
+                "snap-1",
+                _ =>
+                    throw new SandboxException(SandboxErrorKind.Unavailable, "1 sandbox(es) could not be stopped", 503),
+                CancellationToken.None
+            );
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Message.Should().StartWith("Nothing was restored");
+        thrown.StatusCode.Should().Be(503);
+        requests.Should().NotContain(r => r.EndsWith("/api/v1/backup/restore", StringComparison.Ordinal));
     }
 
     [Fact]

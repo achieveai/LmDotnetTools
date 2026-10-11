@@ -12,11 +12,11 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a
 /// <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to include
 /// credential material), and never includes any <see cref="SandboxClientOptions.ClientSecret"/>-derived
-/// value. Two gateway-authored texts ARE included, length-bounded, because they are the only explanation
-/// the caller gets and the gateway produces them for callers: an operation's sanitized <c>error</c> on a
-/// failed command (<see cref="SandboxErrorKind.OperationFailed"/> /
-/// <see cref="SandboxErrorKind.ExecutableNotRunnable"/>; the gateway passes only an allow-listed, path-free
-/// message), and a JSON-RPC error's <c>message</c> (<see cref="SandboxErrorKind.McpCallFailed"/>).
+/// value. A JSON-RPC error's <c>message</c> is never included either (<see cref="SandboxErrorKind.McpCallFailed"/>
+/// carries only <see cref="JsonRpcCode"/>). One gateway-authored text IS included, length-bounded, because it
+/// is the only explanation the caller gets: an operation's sanitized <c>error</c> on a failed command
+/// (<see cref="SandboxErrorKind.OperationFailed"/> / <see cref="SandboxErrorKind.ExecutableNotRunnable"/>; the
+/// gateway passes only an allow-listed, path-free message).
 /// </remarks>
 public sealed class SandboxException : Exception
 {

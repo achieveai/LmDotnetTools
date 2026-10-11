@@ -192,7 +192,8 @@ button:disabled {
 .am-meta,
 .am-url,
 .am-empty {
-  color: var(--muted, #888);
+  /* #666 on the modal's white is 5.7:1, above WCAG's 4.5:1 for small text. */
+  color: var(--muted, #666);
   font-size: 0.8rem;
 }
 

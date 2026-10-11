@@ -87,7 +87,7 @@ public sealed class SandboxController(
                 var restored = await backup.RestoreAsync(
                     target.GatewayWorkspace,
                     request.SnapshotId,
-                    release => registry.DestroyWorkspaceSessionAsync(target.WorkspaceId, backup.AppId, release),
+                    release => registry.ReleaseWorkspaceSessionsAsync(target.WorkspaceId, backup.AppId, release),
                     token
                 );
                 return restored is null
