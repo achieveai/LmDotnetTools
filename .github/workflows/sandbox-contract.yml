@@ -143,6 +143,8 @@ jobs:
           # The gateway talks to the host Docker socket via bollard; it must be in
           # the socket's group to open it.
           docker_gid="$(stat -c '%g' /var/run/docker.sock)"
+          # AUTH_WEBHOOK_HTTP_LOOPBACK_HOSTS: the agent live-contract test registers an http://127.0.0.1
+          # discovery webhook; without the allowlist the gateway refuses the create with 400.
           docker run -d --name wi187-gateway \
             -p "127.0.0.1:${GATEWAY_PORT}:3000" \
             --group-add "$docker_gid" \
@@ -160,6 +162,7 @@ jobs:
             -e "PROXY_SERVICE_CRED=${PROXY_CRED}" \
             -e "GATEWAY_PROXY_CRED=${PROXY_CRED}" \
             -e DB_PATH=/tmp/gw.db \
+            -e AUTH_WEBHOOK_HTTP_LOOPBACK_HOSTS=127.0.0.1 \
             "${GATEWAY_IMAGE}:${IMAGE_TAG}"
 
       - name: Wait for gateway health
