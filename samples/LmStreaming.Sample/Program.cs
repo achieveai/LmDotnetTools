@@ -610,13 +610,34 @@ try
     });
     _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
-    // Register the FileConversationStore for conversation persistence (it also implements the
-    // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
-    var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    var conversationStore = new IndexedConversationStore(
-        new FileConversationStore(conversationsPath, timeProvider: null, strictMetadataReads: true),
-        Path.Combine(conversationsPath, ".parent-child-index.json")
+    // Register the conversation store: SqliteConversationStore (fast appends, queryable by thread id)
+    // wrapped in IndexedConversationStore (the parent-child hierarchy index). The same instance also
+    // implements the IRunLedgerStore run-status ledger, so register it under both interfaces.
+    // Why SQLite instead of the former FileConversationStore: the file store rewrote a thread's whole
+    // messages.json on every append, so opening a long conversation got progressively slower; SQLite
+    // inserts one row and indexes by thread_id. Streaming incrementals stay in memory (merged by the
+    // pipeline); only finished messages are persisted.
+    var conversationDbPath = builder.Configuration["LmStreaming:ConversationDbPath"];
+    if (string.IsNullOrWhiteSpace(conversationDbPath))
+    {
+        conversationDbPath = Path.Combine(AppContext.BaseDirectory, "conversations.db");
+    }
+    // Microsoft.Data.Sqlite opens but does NOT create the database file's parent directory (unlike the
+    // former FileConversationStore, which created its root in its constructor). A configured path whose
+    // parent does not exist (a per-test temp dir, a fresh deploy) fails to open otherwise.
+    var conversationDbDir = Path.GetDirectoryName(Path.GetFullPath(conversationDbPath));
+    if (!string.IsNullOrEmpty(conversationDbDir))
+    {
+        _ = Directory.CreateDirectory(conversationDbDir);
+    }
+    // IndexedConversationStore keeps its OWN parent-child hierarchy index in a JSON file; SQLite does
+    // not replace it. Home it beside the database now that there is no conversations/ directory.
+    var conversationIndexPath = Path.Combine(
+        conversationDbDir ?? AppContext.BaseDirectory,
+        "conversations.parent-child-index.json"
     );
+    var innerConversationStore = new SqliteConversationStore(conversationDbPath);
+    var conversationStore = new IndexedConversationStore(innerConversationStore, conversationIndexPath);
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
 
@@ -2823,6 +2844,16 @@ try
     {
         await indexedStore.InitializeAsync();
     }
+
+    // IndexedConversationStore does not own/dispose its inner store, and SqliteConversationStore is
+    // IAsyncDisposable-only, so a container-tracked singleton would make the synchronous
+    // ServiceProvider.Dispose() (used by BrowserWebAppFactory's IHost.Dispose()) throw. Dispose the
+    // inner SQLite store asynchronously on shutdown instead. Deliberately NOT calling the process-wide
+    // SqliteConnection.ClearAllPools() here: it would evict the pooled connections of parallel E2E
+    // hosts in the same process. The WAL is durable; the pool drains on process exit.
+    app.Lifetime.ApplicationStopped.Register(() =>
+        innerConversationStore.DisposeAsync().AsTask().GetAwaiter().GetResult()
+    );
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();

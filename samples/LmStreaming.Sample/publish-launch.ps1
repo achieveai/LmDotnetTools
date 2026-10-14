@@ -106,7 +106,8 @@
 
     On an upgrade, these are copied forward from the existing deployment and are never taken from
     the build output: `.env`, `oauth-tokens/`, `conversations/`, `recordings/`, `workspaces/`,
-    `logs/`, `notify-waits.db` (with its -wal/-shm/-journal sidecars), `.run-state.json`.
+    `logs/`, `notify-waits.db` and `conversations.db` (each with its -wal/-shm/-journal sidecars),
+    `.run-state.json`.
 
     The swap itself is two renames on the same volume (existing -> `<dir>.backup-<utc>-<pid>`, then
     `<dir>.candidate-<utc>-<pid>` -> destination), so the destination is never partially written. If
@@ -128,7 +129,7 @@
 .EXAMPLE
     ./publish-launch.ps1 -Configuration Release -DestinationDirectory D:\apps\lmstreaming
     Build and publish a Release artifact and deploy it into D:\apps\lmstreaming, preserving that
-    deployment's .env, oauth-tokens/, conversations/ and notify-waits.db. Launches nothing.
+    deployment's .env, oauth-tokens/, conversations/, notify-waits.db and conversations.db. Launches nothing.
 #>
 [CmdletBinding()]
 param(
@@ -481,6 +482,7 @@ function Invoke-GitMetadata {
 # EXISTING destination only, never from staging.
 $script:DestinationPreserveList = @(
     'conversations',
+    'conversations.db',
     'notify-waits.db',
     'oauth-tokens',
     'workspaces',
@@ -491,15 +493,24 @@ $script:DestinationPreserveList = @(
     '.env'
 )
 
-# notify-waits.db's SQLite sidecar names: Copy-PreserveSet already carries these over correctly
-# FROM THE EXISTING DESTINATION (see below), but Copy-ReplaceSet must ALSO refuse to copy them
-# from staged -- otherwise a stray sidecar present in a staged publish output could leak straight
-# into the destination whenever the existing destination has no sidecar of its own to overwrite
-# it with.
-$script:NotifyWaitsSidecarNames = @(
+# SQLite sidecar names for the preserved databases (notify-waits.db and conversations.db):
+# Copy-PreserveSet already carries these over correctly FROM THE EXISTING DESTINATION (see below),
+# but Copy-ReplaceSet must ALSO refuse to copy them from staged -- otherwise a stray sidecar
+# present in a staged publish output could leak straight into the destination whenever the existing
+# destination has no sidecar of its own to overwrite it with.
+# The databases whose -wal/-shm/-journal sidecars are carried forward alongside the .db file.
+$script:SqliteDbPreserveNames = @(
+    'notify-waits.db',
+    'conversations.db'
+)
+
+$script:SqliteSidecarNames = @(
     'notify-waits.db-wal',
     'notify-waits.db-shm',
-    'notify-waits.db-journal'
+    'notify-waits.db-journal',
+    'conversations.db-wal',
+    'conversations.db-shm',
+    'conversations.db-journal'
 )
 
 # The published executable's file name, and the exact marker set that defines a "Recognized"
@@ -730,7 +741,7 @@ function Copy-ReplaceSet {
         if ($script:DestinationPreserveList -contains $_.Name) {
             return
         }
-        if ($script:NotifyWaitsSidecarNames -contains $_.Name) {
+        if ($script:SqliteSidecarNames -contains $_.Name) {
             return
         }
         $targetPath = Join-Path $CandidateDirectory $_.Name
@@ -743,8 +754,9 @@ function Copy-ReplaceSet {
 }
 
 # Copies every preserve-list entry that exists on the EXISTING destination into the
-# candidate, byte-for-byte. notify-waits.db's SQLite sidecars (-wal/-shm/-journal) are copied
-# alongside it, but only whichever of those sidecar files is actually present.
+# candidate, byte-for-byte. The SQLite sidecars (-wal/-shm/-journal) of every database in
+# $script:SqliteDbPreserveNames are copied alongside it, but only whichever of those sidecar
+# files is actually present.
 function Copy-PreserveSet {
     param(
         [Parameter(Mandatory)] [string] $DestinationDirectory,
@@ -765,7 +777,7 @@ function Copy-PreserveSet {
 
         Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
 
-        if ($name -eq 'notify-waits.db') {
+        if ($script:SqliteDbPreserveNames -contains $name) {
             foreach ($suffix in @('-wal', '-shm', '-journal')) {
                 $sidecarSource = $sourcePath + $suffix
                 if (Test-Path -LiteralPath $sidecarSource) {

@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -41,6 +40,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly string _providerMode;
     private readonly ITestAgentBuilder? _builder;
     private readonly string _conversationPath;
+    private readonly string _conversationDbPath;
     private readonly int? _fixedPort;
     private readonly IMarketplaceCatalogClient? _catalogClient;
     private readonly HttpMessageHandler? _sandboxGatewayHandler;
@@ -145,6 +145,10 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             Guid.NewGuid().ToString("N"),
             "conversations"
         );
+        // The sample now persists to a SQLite file (LmStreaming:ConversationDbPath). Keep it INSIDE the
+        // per-test temp tree (a sibling of the former conversations/ dir) so the factory temp-dir cleanup
+        // removes the .db plus its -wal/-shm sidecars and the parent-child index along with everything else.
+        _conversationDbPath = Path.Combine(Path.GetDirectoryName(_conversationPath)!, "conversations.db");
 
         // Program.cs reads LM_PROVIDER_MODE at the top-level, well before any host-builder
         // callback fires. Set it here so the sample picks the right test-mode agent factory.
@@ -180,9 +184,24 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         }
     }
 
+    /// <summary>
+    /// Absolute path to this factory's isolated SQLite conversation database
+    /// (<c>LmStreaming:ConversationDbPath</c>). Exposed so a test can read the persisted rows directly
+    /// and assert conversations are queryable by thread id. The file plus its <c>-wal</c>/<c>-shm</c>
+    /// sidecars and the parent-child index live under the factory temp tree and are cleaned on dispose.
+    /// </summary>
+    public string ConversationDbPath => _conversationDbPath;
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
+
+        // Isolate conversation storage to this factory's temp SQLite file. Set BEFORE the _settings loop
+        // so a test that deliberately overrides LmStreaming:ConversationDbPath still wins (UseSetting is
+        // last-wins). Driving the real config key exercises the production store construction path
+        // (SqliteConversationStore inside IndexedConversationStore) rather than swapping in a different
+        // store instance.
+        builder.UseSetting("LmStreaming:ConversationDbPath", _conversationDbPath);
 
         // Per-test host configuration, applied before ConfigureTestServices so the options the sample
         // binds at startup (collaboration above all) see the overridden values.
@@ -196,9 +215,6 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
-            services.RemoveAll<IConversationStore>();
-            services.AddSingleton<IConversationStore>(new FileConversationStore(_conversationPath));
-
             // ConfigureTestServices runs after Program.cs's default registrations, so
             // AddSingleton + RemoveAll last-wins semantics guarantee our builder is resolved.
             // For *-mock modes the builder is unused (real CLI drives the in-process mock host),

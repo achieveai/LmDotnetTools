@@ -454,7 +454,11 @@ public sealed class SqliteConversationStore
     )
     {
         var listOptions = options ?? ConversationListOptions.Default;
-        RefuseUnsupportedSortOrder(listOptions);
+
+        // LastUsed pages in SQL (thread_metadata.last_updated exists). Created has no created_at
+        // column, so it is ordered and paged in memory below through ConversationListOptions.Order -
+        // the same helper the in-memory stores use - rather than refused.
+        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
@@ -477,12 +481,16 @@ public sealed class SqliteConversationStore
             -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
             -- between the page-1 and page-2 statements: one row comes back twice and another
             -- never comes back at all. Must match ConversationListOptions.Order.
-            ORDER BY last_updated DESC, thread_id DESC
-            LIMIT $limit OFFSET $offset;
+            {(pageInSql
+                ? "ORDER BY last_updated DESC, thread_id DESC\n            LIMIT $limit OFFSET $offset"
+                : "")};
             """
         );
-        _ = command.Parameters.AddWithValue("$limit", limit);
-        _ = command.Parameters.AddWithValue("$offset", offset);
+        if (pageInSql)
+        {
+            _ = command.Parameters.AddWithValue("$limit", limit);
+            _ = command.Parameters.AddWithValue("$offset", offset);
+        }
 
         var metadataList = new List<ThreadMetadata>();
 
@@ -492,7 +500,9 @@ public sealed class SqliteConversationStore
             metadataList.Add(ReadMetadata(reader));
         }
 
-        return metadataList;
+        // Created order (and its paging) is derived here to avoid a second, divergent copy of the
+        // creation-time derivation in SQL.
+        return pageInSql ? metadataList : [.. listOptions.Order(metadataList).Skip(offset).Take(limit)];
     }
 
     /// <inheritdoc />
@@ -507,7 +517,10 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(scope);
 
         var listOptions = options ?? ConversationListOptions.Default;
-        RefuseUnsupportedSortOrder(listOptions);
+
+        // See the unscoped overload: LastUsed pages in SQL; Created is ordered and paged in memory
+        // via ConversationListOptions.Order so the scoped and unscoped listings agree.
+        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
@@ -554,8 +567,9 @@ public sealed class SqliteConversationStore
               AND {exclusionClause}
             -- Same total order as the unscoped overload above, and as
             -- ConversationListOptions.Order: a scoped listing must not page differently.
-            ORDER BY t.last_updated DESC, t.thread_id DESC
-            LIMIT $limit OFFSET $offset;
+            {(pageInSql
+                ? "ORDER BY t.last_updated DESC, t.thread_id DESC\n            LIMIT $limit OFFSET $offset"
+                : "")};
             """
         );
 
@@ -565,8 +579,11 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
         _ = command.Parameters.AddWithValue("$tenantPublished", Visibility.TenantPublished.ToString());
-        _ = command.Parameters.AddWithValue("$limit", limit);
-        _ = command.Parameters.AddWithValue("$offset", offset);
+        if (pageInSql)
+        {
+            _ = command.Parameters.AddWithValue("$limit", limit);
+            _ = command.Parameters.AddWithValue("$offset", offset);
+        }
 
         // An app-only principal never consults grants (7.4 step 3), so it binds the empty array
         // rather than its own set - json_each over "[]" yields no rows, which is the same answer
@@ -587,52 +604,7 @@ public sealed class SqliteConversationStore
             metadataList.Add(ReadMetadata(reader));
         }
 
-        return metadataList;
-    }
-
-    /// <summary>
-    /// Refuses a sort order this store cannot answer, loudly, at the call site.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <c>thread_metadata</c> has no <c>created_at</c> column - the record itself has no creation
-    /// field either, which is why <see cref="ConversationListOptions.CreationTimestampOf"/> derives
-    /// one from the thread id. That derivation is not reproducible in SQL without a fragile
-    /// <c>substr</c>/<c>CAST</c> expression that would have to re-implement, in a second language,
-    /// the "prefix, then a delimiter, then digits, else fall back to last_updated" rule - and would
-    /// then be free to diverge from it silently, on exactly the deployments large enough that nobody
-    /// checks the order by hand.
-    /// </para>
-    /// <para>
-    /// So this throws instead of approximating, following the precedent the scoped listing overload
-    /// already set with its throwing default implementation: a store that cannot answer a listing
-    /// must say so where it is called, rather than answer something plausible. Adding a real
-    /// <c>created_at</c> column, backfilled from the id, is the fix that makes this path work; until
-    /// then the exception names both the missing column and the helper any implementation must agree
-    /// with. This is not reachable from the conversation sidebar today - the sample registers
-    /// <see cref="FileConversationStore"/> - but it is documented rather than hidden, because a
-    /// deployment that swaps in SQLite would otherwise discover it as a silently different ordering.
-    /// </para>
-    /// </remarks>
-    /// <param name="options">The resolved (never null) listing options.</param>
-    /// <exception cref="NotSupportedException">
-    /// The requested sort order has no faithful SQL expression here.
-    /// </exception>
-    private static void RefuseUnsupportedSortOrder(ConversationListOptions options)
-    {
-        if (options.SortOrder == ConversationSortOrder.LastUsed)
-        {
-            return;
-        }
-
-        throw new NotSupportedException(
-            $"{nameof(SqliteConversationStore)} cannot order a listing by "
-                + $"{nameof(ConversationSortOrder)}.{options.SortOrder}: the thread_metadata table "
-                + "has no created_at column, and deriving one in SQL would be a second, silently "
-                + "divergent copy of "
-                + $"{nameof(ConversationListOptions)}.{nameof(ConversationListOptions.CreationTimestampOf)}. "
-                + "Add a backfilled created_at column before enabling this ordering on SQLite."
-        );
+        return pageInSql ? metadataList : [.. listOptions.Order(metadataList).Skip(offset).Take(limit)];
     }
 
     /// <summary>
