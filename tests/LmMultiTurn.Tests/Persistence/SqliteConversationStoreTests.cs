@@ -457,6 +457,94 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
     #endregion
 
+    #region ListThreadsAsync Sort-Order Parity Tests
+
+    /// <summary>
+    ///     <see cref="ConversationSortOrder.Created"/> orders by the creation time derived from the
+    ///     thread id, NOT by <c>LastUpdated</c>. Mirrors the file-store parity test so the SQLite store
+    ///     keeps the same <c>created</c> ordering the host already relies on.
+    /// </summary>
+    /// <remarks>
+    ///     The two orderings are seeded to DISAGREE completely - the earliest-created thread carries the
+    ///     newest <c>LastUpdated</c>, so the expected sequences are exact reverses of one another. A seed
+    ///     in which they agreed could not distinguish the two implementations and would pass against a
+    ///     store that quietly ignored <c>Created</c> (the exact regression this test guards).
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_OrdersByDerivedCreationTime_WhenSortOrderIsCreated()
+    {
+        // Arrange
+        await _store.SaveMetadataAsync(
+            "thread-1000-aaa",
+            new ThreadMetadata { ThreadId = "thread-1000-aaa", LastUpdated = 9_000 }
+        );
+        await _store.SaveMetadataAsync(
+            "thread-2000-bbb",
+            new ThreadMetadata { ThreadId = "thread-2000-bbb", LastUpdated = 8_000 }
+        );
+        await _store.SaveMetadataAsync(
+            "thread-3000-ccc",
+            new ThreadMetadata { ThreadId = "thread-3000-ccc", LastUpdated = 7_000 }
+        );
+
+        // Act
+        var byLastUsed = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.LastUsed }
+        );
+        var byCreated = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
+
+        // Assert
+        byLastUsed.Select(m => m.ThreadId).Should().Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
+        byCreated.Select(m => m.ThreadId).Should().Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
+    }
+
+    /// <summary>
+    ///     A thread id that carries no parseable timestamp segment sorts by <c>LastUpdated</c> under
+    ///     <see cref="ConversationSortOrder.Created"/> - it is neither dropped nor sorted to position
+    ///     zero. Mirrors the file-store fallback parity test.
+    /// </summary>
+    /// <remarks>
+    ///     Both ways an id can lack a timestamp are seeded: a <c>thread-{guid:N}</c> id with no
+    ///     delimiter after the prefix, and a <c>thread-notatimestamp-zzz</c> id whose segment does not
+    ///     parse. Both fallback rows are placed ABOVE the parseable rows, so an implementation that
+    ///     treated an unparseable id as zero would order them last and fail here.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_FallsBackToLastUpdated_WhenTheThreadIdCarriesNoTimestamp()
+    {
+        // Arrange
+        var provisioned = $"thread-{Guid.NewGuid():N}";
+        const string NonNumeric = "thread-notatimestamp-zzz";
+        await _store.SaveMetadataAsync(
+            "thread-5000-aaa",
+            new ThreadMetadata { ThreadId = "thread-5000-aaa", LastUpdated = 1_000 }
+        );
+        await _store.SaveMetadataAsync(provisioned, new ThreadMetadata { ThreadId = provisioned, LastUpdated = 7_000 });
+        await _store.SaveMetadataAsync(NonNumeric, new ThreadMetadata { ThreadId = NonNumeric, LastUpdated = 6_500 });
+        await _store.SaveMetadataAsync(
+            "thread-6000-bbb",
+            new ThreadMetadata { ThreadId = "thread-6000-bbb", LastUpdated = 2_000 }
+        );
+
+        // Act
+        var byCreated = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
+
+        // Assert - both fallbacks (7,000 and 6,500) rank above the parsed 6,000 and 5,000.
+        byCreated
+            .Select(m => m.ThreadId)
+            .Should()
+            .Equal(provisioned, NonNumeric, "thread-6000-bbb", "thread-5000-aaa");
+    }
+
+    #endregion
+
     #region Schema Initialization Tests
 
     [Fact]

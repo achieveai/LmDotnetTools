@@ -619,10 +619,43 @@ try
     });
     _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
-    // Register the FileConversationStore for conversation persistence (it also implements the
-    // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
-    var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    var conversationStore = new FileConversationStore(conversationsPath);
+    // Register the SqliteConversationStore for conversation persistence. It implements EVERY store
+    // role the host consumes — IConversationStore, IRunLedgerStore, IConversationOwnershipStore,
+    // IRunLifecycleStore, IInputAcceptanceStore — and the host reaches the latter three by CASTING the
+    // single IConversationStore instance (e.g. `store is IInputAcceptanceStore`), so registering this
+    // one instance under IConversationStore + IRunLedgerStore covers all of them.
+    //
+    // Why SQLite instead of the former FileConversationStore: the file store rewrote a thread's whole
+    // messages.json on every append (O(n) per message), so opening/continuing a long conversation grew
+    // steadily slower. SQLite appends one indexed row and answers "load thread N" / watermark / range
+    // reads directly. Behavioural parity is already pinned by the shared ConversationStoreHarness, which
+    // runs the SAME suite across the sqlite/file/memory stores.
+    //
+    // Registered as an INSTANCE (not a factory): Microsoft.Extensions.DependencyInjection does NOT track
+    // externally-created instances for disposal, so the synchronous ServiceProvider.Dispose() that the
+    // E2E host teardown uses will NOT touch this IAsyncDisposable-only object and cannot throw
+    // "only implements IAsyncDisposable" (that failure mode is specific to FACTORY registration, which
+    // the container owns). Deterministic release is wired on ApplicationStopped after Build() below.
+    // Path is configurable (default a sibling of the binary, beside notify-waits.db) so a
+    // WebApplicationFactory test can point it at an isolated file.
+    var conversationDbPath = builder.Configuration["LmStreaming:ConversationDbPath"];
+    if (string.IsNullOrWhiteSpace(conversationDbPath))
+    {
+        conversationDbPath = Path.Combine(AppContext.BaseDirectory, "conversations.db");
+    }
+
+    // Microsoft.Data.Sqlite opens — but does not CREATE — the database file's directory (unlike the
+    // former FileConversationStore, which created its root in its constructor). A configured path whose
+    // parent does not yet exist (an isolated temp dir in a WebApplicationFactory test, or a fresh deploy
+    // target) therefore fails host startup with "SQLite Error 14: unable to open database file". Create
+    // the parent up front so both production and tests boot regardless of whether the directory preexists.
+    var conversationDbDir = Path.GetDirectoryName(Path.GetFullPath(conversationDbPath));
+    if (!string.IsNullOrEmpty(conversationDbDir))
+    {
+        _ = Directory.CreateDirectory(conversationDbDir);
+    }
+
+    var conversationStore = new SqliteConversationStore(conversationDbPath);
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
 
@@ -2822,6 +2855,16 @@ try
     _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
+
+    // Deterministic release of the SQLite conversation store. The container does NOT dispose it (it was
+    // instance-registered above, so it is untracked), so dispose it ourselves when the host stops: this
+    // waits for in-flight connections to return and releases the factory's semaphores. ApplicationStopped
+    // callbacks are synchronous, so the async disposal is bridged with GetAwaiter().GetResult() — safe
+    // here because shutdown runs on a thread-pool thread with no synchronization context. ClearAllPools()
+    // is deliberately NOT called: it is process-wide and would close a PARALLEL E2E host's live pooled
+    // connections mid-test. The WAL (.db-wal/.db-shm) is durable and checkpoints on the next open, so no
+    // committed write is lost by leaving the process-wide pool to be reclaimed at exit.
+    app.Lifetime.ApplicationStopped.Register(() => conversationStore.DisposeAsync().AsTask().GetAwaiter().GetResult());
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();

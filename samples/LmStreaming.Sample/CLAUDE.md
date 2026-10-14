@@ -21,7 +21,8 @@ For a one-command **standalone Production** build+launch (no Vite dev server: `n
 `-DestinationDirectory <path>` switches it to **deploy mode**: same build and publish, but the
 artifact is swapped into `<path>` and **nothing is launched**. The destination is classified before
 any build work runs — an existing deployment is upgraded in place with `.env`, `oauth-tokens/`,
-`conversations/`, `recordings/`, `workspaces/`, `logs/` and `notify-waits.db` carried forward
+`conversations/`, `recordings/`, `workspaces/`, `logs/`, `notify-waits.db` and `conversations.db`
+(the SQLite conversation store, with its `-wal`/`-shm`/`-journal` sidecars) carried forward
 byte-for-byte; a non-empty directory that is *not* a previous deployment is refused outright, and
 nothing is built. The swap is two same-volume renames via `<path>.candidate-*` / `<path>.backup-*`
 siblings, so the destination is never partially written. Deploying over a **running** instance is
