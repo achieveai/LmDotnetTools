@@ -167,6 +167,15 @@ public sealed class CopilotAnthropicLiveTests
     ///     normal turn WITH a <c>Thinking</c> budget and asserts the request succeeds and returns
     ///     assistant text. If Copilot ever starts REJECTING thinking, this test fails — the signal to
     ///     gate thinking off for sonnet/haiku (the same way web_search is gated off).
+    ///     <para>
+    ///     The thinking SHAPE follows the catalog, as the provider's does (CopilotReasoningShaper /
+    ///     the sample's BuildReasoningExtraProperties): a model advertising
+    ///     <c>capabilities.supports.adaptive_thinking</c> rejects the classic budget request with 400
+    ///     ("thinking.type.enabled is not supported for this model"), so it gets
+    ///     <see cref="AnthropicThinking.Adaptive"/>. Sending the classic shape regardless failed this
+    ///     canary as soon as the cheapest catalog Claude became adaptive-only, which is not a rejection
+    ///     of thinking.
+    ///     </para>
     /// </summary>
     [SkippableFact]
     public async Task Thinking_param_is_accepted_by_copilot_backend()
@@ -176,7 +185,8 @@ public sealed class CopilotAnthropicLiveTests
         var cancellationToken = cts.Token;
 
         var model = await _fixture.ResolveAnthropicModelAsync(cancellationToken);
-        _output.WriteLine($"Anthropic model: {model}");
+        var adaptive = (await _fixture.GetModelInfoAsync(model, cancellationToken))?.SupportsAdaptiveThinking == true;
+        _output.WriteLine($"Anthropic model: {model} adaptiveThinking={adaptive}");
 
         var agent = CopilotAnthropicAgentFactory.Create(
             "copilot-anthropic-thinking",
@@ -195,7 +205,7 @@ public sealed class CopilotAnthropicLiveTests
                 Temperature = 1,
                 ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty.Add(
                     "Thinking",
-                    new AnthropicThinking(1024)
+                    adaptive ? AnthropicThinking.Adaptive() : new AnthropicThinking(1024)
                 ),
             },
             cancellationToken
