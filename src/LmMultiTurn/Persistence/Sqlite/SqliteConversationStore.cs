@@ -509,17 +509,31 @@ public sealed class SqliteConversationStore
 
         try
         {
-            using var deleteMessagesCmd = connection.CreateCommand();
-            deleteMessagesCmd.Transaction = transaction;
-            deleteMessagesCmd.CommandText = "DELETE FROM messages WHERE thread_id = $thread_id;";
-            _ = deleteMessagesCmd.Parameters.AddWithValue("$thread_id", threadId);
-            _ = await deleteMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            // Every thread-scoped table carries a thread_id column; clear the thread's rows from
+            // each in the same transaction. Deleting only messages + thread_metadata left run,
+            // admission, and ledger rows orphaned, so recreating the same thread id and replaying
+            // an idempotency key saw a stale acceptance and returned queued:false. The names are
+            // fixed literals (not caller input), so interpolating them into the DELETE is safe.
+            string[] threadScopedTables =
+            [
+                "messages",
+                "thread_metadata",
+                "run_ledger",
+                "run_lifecycle",
+                "run_deferred_calls",
+                "accepted_inputs",
+                "input_acceptances",
+                "notify_waits",
+            ];
 
-            using var deleteMetadataCmd = connection.CreateCommand();
-            deleteMetadataCmd.Transaction = transaction;
-            deleteMetadataCmd.CommandText = "DELETE FROM thread_metadata WHERE thread_id = $thread_id;";
-            _ = deleteMetadataCmd.Parameters.AddWithValue("$thread_id", threadId);
-            _ = await deleteMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            foreach (var table in threadScopedTables)
+            {
+                using var deleteCmd = connection.CreateCommand();
+                deleteCmd.Transaction = transaction;
+                deleteCmd.CommandText = $"DELETE FROM {table} WHERE thread_id = $thread_id;";
+                _ = deleteCmd.Parameters.AddWithValue("$thread_id", threadId);
+                _ = await deleteCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
 
             transaction.Commit();
         }

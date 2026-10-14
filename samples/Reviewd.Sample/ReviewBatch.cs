@@ -319,6 +319,17 @@ internal static class ReviewBatch
                     candidates.FirstOrDefault(value => value["status"]!.GetValue<string>() is "held" or "closed-held")
                     ?? candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
                 attempt ??= await ReadAsync(database, AttemptKey(entry));
+                // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
+                // was already released belongs to an EARLIER head of this PR; once the PR advances,
+                // its new head is a fresh review, not a stuck retry. Drop the stale attempt so the
+                // lane admits the new head below instead of parking it as an unresumable outcome.
+                if (
+                    attempt is not null
+                    && attempt["stage"]?.GetValue<string>() == "completed-verified"
+                    && Reusable(attempt)
+                    && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
+                )
+                    attempt = null;
                 if (
                     entry["status"]!.GetValue<string>() is "held" or "closed-held"
                     || (attempt is not null && !Resumable(attempt))
