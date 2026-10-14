@@ -1,0 +1,464 @@
+{
+  "service": "bluebird",
+  "tools": {
+    "code_history": {
+      "approval": false,
+      "bounds": {
+        "limit": [
+          1,
+          50
+        ],
+        "pull_request_id": [
+          1,
+          2147483647
+        ]
+      },
+      "conditional": [
+        {
+          "required": [
+            "commit_id"
+          ],
+          "when": {
+            "method": "diff"
+          }
+        },
+        {
+          "required": [
+            "file_path"
+          ],
+          "when": {
+            "method": "file_history"
+          }
+        },
+        {
+          "required": [
+            "pull_request_id"
+          ],
+          "when": {
+            "method": "pull_request"
+          }
+        }
+      ],
+      "defaults": {
+        "limit": 10
+      },
+      "enums": {
+        "method": [
+          "commits",
+          "diff",
+          "file_history",
+          "pull_request"
+        ]
+      },
+      "nonblank": [
+        "organization",
+        "original_user_question",
+        "project",
+        "query",
+        "repository"
+      ],
+      "parameters": {
+        "author": "author",
+        "branch": "branch",
+        "commit_id": "commit_id",
+        "end_time": "end_time",
+        "file_path": "file_path",
+        "limit": "limit",
+        "method": "method",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "project": "project",
+        "pull_request_id": "pull_request_id",
+        "query": "query",
+        "repository": "repository",
+        "start_time": "start_time"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "code_history"
+    },
+    "code_navigate": {
+      "any_required": [
+        [
+          "node_id",
+          "node_name"
+        ]
+      ],
+      "approval": false,
+      "enums": {
+        "method": [
+          "CALLS",
+          "CALLED_BY",
+          "OVERRIDES",
+          "OVERRIDDEN_BY",
+          "DERIVES_FROM",
+          "BASE_TYPE_OF",
+          "IMPLEMENTS",
+          "IMPLEMENTED_BY",
+          "INSTANTIATES",
+          "INSTANTIATED_BY",
+          "ACCESSES",
+          "ACCESSED_BY",
+          "EXPANDS",
+          "EXPANDED_BY",
+          "DECLARES",
+          "DECLARED_BY",
+          "TYPE_OF",
+          "MEMBER_OF",
+          "MEMBER_FUNCTIONS",
+          "MEMBER_VARIABLES",
+          "NESTED_TYPES",
+          "HAS_CHILD",
+          "CONTAINED_BY",
+          "TYPE_FOR",
+          "IMPORTED_BY",
+          "QUALIFIED_BY",
+          "EXTENDED_BY",
+          "CONSTRAINED_AS"
+        ],
+        "node_type": [
+          "Function",
+          "Class",
+          "Struct",
+          "Interface",
+          "Macro",
+          "Field",
+          "Variable",
+          "Typedef",
+          "Enum",
+          "File",
+          "FunctionDeclaration"
+        ],
+        "view": [
+          "definition",
+          "call_site"
+        ]
+      },
+      "nonblank": [
+        "organization",
+        "original_user_question",
+        "project",
+        "repository"
+      ],
+      "parameters": {
+        "branch": "branch",
+        "connected_node_types": "connected_node_types",
+        "method": "method",
+        "node_id": "node_id",
+        "node_name": "node_name",
+        "node_type": "node_type",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "project": "project",
+        "repository": "repository",
+        "view": "view"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "code_navigate"
+    },
+    "code_read": {
+      "approval": false,
+      "bounds": {
+        "end_line": [
+          1,
+          10000000
+        ],
+        "limit": [
+          1,
+          50
+        ],
+        "start_line": [
+          1,
+          10000000
+        ]
+      },
+      "conditional": [
+        {
+          "any": [
+            "path",
+            "node_id",
+            "node_name"
+          ],
+          "when": {
+            "method": "content"
+          }
+        },
+        {
+          "required": [
+            "query"
+          ],
+          "when": {
+            "method": "files"
+          }
+        }
+      ],
+      "defaults": {
+        "limit": 10
+      },
+      "enums": {
+        "method": [
+          "content",
+          "directory",
+          "files"
+        ],
+        "node_type": [
+          "File",
+          "Class",
+          "Function",
+          "Struct",
+          "Macro",
+          "Field",
+          "Enum",
+          "Union",
+          "Variable",
+          "Typedef"
+        ]
+      },
+      "nonblank": [
+        "organization",
+        "original_user_question",
+        "path",
+        "project",
+        "query",
+        "repository"
+      ],
+      "ordered": [
+        [
+          "start_line",
+          "end_line"
+        ]
+      ],
+      "parameters": {
+        "branch": "branch",
+        "end_line": "end_line",
+        "limit": "limit",
+        "method": "method",
+        "node_id": "node_id",
+        "node_name": "node_name",
+        "node_type": "node_type",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "path": "path",
+        "project": "project",
+        "query": "query",
+        "repository": "repository",
+        "start_line": "start_line"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "code_read"
+    },
+    "code_search": {
+      "approval": false,
+      "bounds": {
+        "limit": [
+          1,
+          50
+        ]
+      },
+      "conditional": [
+        {
+          "required": [
+            "repository"
+          ],
+          "when": {
+            "method": "semantic"
+          }
+        }
+      ],
+      "defaults": {
+        "limit": 10
+      },
+      "enums": {
+        "method": [
+          "keyword",
+          "semantic"
+        ],
+        "search_index": [
+          "General",
+          "File",
+          "Class",
+          "Struct",
+          "Function",
+          "Macro"
+        ]
+      },
+      "nonblank": [
+        "organization",
+        "original_user_question",
+        "query",
+        "path",
+        "project",
+        "repository"
+      ],
+      "parameters": {
+        "branch": "branch",
+        "ext": "ext",
+        "file": "file",
+        "limit": "limit",
+        "method": "method",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "path": "path",
+        "project": "project",
+        "query": "query",
+        "repository": "repository",
+        "search_index": "search_index"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "code_search"
+    },
+    "metadata": {
+      "approval": false,
+      "conditional": [
+        {
+          "required": [
+            "repository"
+          ],
+          "when": {
+            "method": "repo_status"
+          }
+        }
+      ],
+      "enums": {
+        "method": [
+          "connection_info",
+          "list_orgs",
+          "repo_status"
+        ]
+      },
+      "nonblank": [
+        "original_user_question",
+        "organization",
+        "project",
+        "repository"
+      ],
+      "parameters": {
+        "method": "method",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "project": "project",
+        "repository": "repository"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "metadata"
+    },
+    "project_search": {
+      "approval": false,
+      "bounds": {
+        "limit": [
+          1,
+          50
+        ]
+      },
+      "defaults": {
+        "limit": 10
+      },
+      "enums": {
+        "method": [
+          "wiki",
+          "work_items"
+        ]
+      },
+      "nonblank": [
+        "organization",
+        "original_user_question",
+        "query",
+        "project"
+      ],
+      "parameters": {
+        "limit": "limit",
+        "method": "method",
+        "organization": "organization",
+        "original_user_question": "original_user_question",
+        "project": "project",
+        "query": "query",
+        "wiki": "wiki"
+      },
+      "reason": "Reviewed retrieval/discovery operation; no remote business-data change is requested.",
+      "requires": {
+        "branch": [
+          "organization",
+          "project",
+          "repository"
+        ],
+        "project": [
+          "organization"
+        ],
+        "repository": [
+          "organization",
+          "project"
+        ]
+      },
+      "wire_name": "project_search"
+    }
+  }
+}
